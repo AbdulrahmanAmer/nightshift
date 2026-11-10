@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from installer.stage2.context import StepContext
 from ns_common import first_start
-from ns_common.atomic import read_bytes_retry, read_text_retry
+from ns_common.atomic import read_bytes_retry
 from ns_common.config import load_runtime, save_runtime
 from ns_common.errors import NsError
 from ns_common.models import HfFile, Runtime, WhisperCfg
@@ -89,6 +89,8 @@ class Found:
     has a wrong type or value (``why`` says which). ``newer``: the ONLY complaints are fields this version
     does not know, so a newer Nightshift wrote it: ``runtime`` is the file without exactly those fields and
     ``removed`` names them (dotted: ``llama.flags.x``). Both kinds of complaint together are ``damaged``.
+    ``recode``: it reads fine but is not plain UTF-8 (a byte order mark, or UTF-16): every setting is kept and
+    the file is written again as plain UTF-8, which is all the rest of Nightshift reads; ``why`` says which.
     """
 
     state: str
@@ -130,22 +132,58 @@ def _classify(text: str) -> Found:
                 node = node[step]
             del node[err["loc"][-1]]
         return Found("newer", Runtime.model_validate(data), removed=names)
-    except (ValueError, KeyError, IndexError, TypeError) as e:
+    except (ValueError, KeyError, IndexError, TypeError, RecursionError) as e:
         return Found("damaged", why=f"fields this version does not know ({', '.join(names)}) could not be "
                                     f"taken out: {type(e).__name__}")
 
 
-def inspect_runtime(paths: Paths) -> Found:
-    """What runtime.json is (see ``Found``).
+#: A real runtime.json is a few kilobytes. A file over this is not one (garbage, a wrong file): not read.
+MAX_BYTES = 1_000_000
 
-    A file that exists but cannot be opened (another program holds it) raises ``OSError``: it is neither
-    missing nor known to be damaged, so nothing may be moved or rewritten on that evidence.
+
+def _decode(data: bytes) -> tuple[str, str]:
+    """(text, how) of the file's bytes; how is empty for plain UTF-8. A UTF-8 byte order mark and UTF-16 with
+    a byte order mark (what some Windows editors save) are unambiguous text: read, and the file is written as
+    plain UTF-8 (``recode``), nothing lost. Any other bytes raise ``UnicodeDecodeError``."""
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data[3:].decode("utf-8"), "UTF-8 with a byte order mark"
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return data.decode("utf-16"), "UTF-16"
+    return data.decode("utf-8"), ""
+
+
+def inspect_runtime(paths: Paths) -> Found:
+    """What runtime.json is (see ``Found``). Every way reading it can go is one deliberate answer:
+
+    - not there, or gone between two looks: ``missing``
+    - plain UTF-8, UTF-8 with a byte order mark, UTF-16 with one: read (the last two are ``recode``)
+    - other bytes, empty or whitespace only, not JSON, JSON that is not an object, over ``MAX_BYTES``, a known
+      field with a bad value: ``damaged``
+    - only unknown fields: ``newer``
+    - a folder of that name, or a file that cannot be opened (another program holds it, no permission):
+      ``OSError``, which ``ensure_baseline`` turns into NS-E125; nothing is moved or rewritten then.
     """
+    path = paths.runtime_file
     try:
-        text = read_text_retry(paths.runtime_file)
+        if path.is_dir():
+            raise IsADirectoryError(21, "is a folder")
+        size = path.stat().st_size
+        if size > MAX_BYTES:
+            return Found("damaged", why=f"it is {size} bytes, far too large for a settings file")
+        data = read_bytes_retry(path)
     except FileNotFoundError:
         return Found("missing")
-    return _classify(text)
+    if len(data) > MAX_BYTES:
+        return Found("damaged", why=f"it is {len(data)} bytes, far too large for a settings file")
+    try:
+        text, how = _decode(data)
+    except UnicodeDecodeError:
+        return Found("damaged", why="it is not text this version can read (not UTF-8, and not UTF-16 with a "
+                                    "byte order mark)")
+    found = _classify(text)
+    if found.state == "ok" and how:
+        return Found("recode", found.runtime, why=how)
+    return found
 
 
 def runtime_is_usable(ctx: StepContext) -> bool:
@@ -175,14 +213,22 @@ def _few(names: tuple[str, ...], most: int = 8) -> str:
 
 
 def newer_sentence(kept_as: str, removed: tuple[str, ...]) -> str:
-    """What the owner is told when runtime.json was written by a newer Nightshift (row, report, console)."""
+    """What the owner is told when runtime.json has settings this version does not know (a newer Nightshift
+    wrote it, or a hand edit misspelt a name): row, report and console."""
     return (
-        f"Your runtime.json was written by a newer Nightshift: this version does not know {_few(removed)}, "
-        f"took out only that, and kept every other setting. The file as it was is kept as {kept_as}."
+        f"Your runtime.json has settings this version does not know (a newer Nightshift, or a hand edit): "
+        f"{_few(removed)}; they were removed and every other setting was kept. The file as it was is kept as "
+        f"{kept_as}. Tuning runs again for it (1 to 3 minutes)."
     )
 
 
 def _refuse(path: Path, what: str, e: OSError) -> NsError:
+    if isinstance(e, IsADirectoryError):
+        return NsError(
+            "NS-E125",
+            f"{path} is a folder, not a file. Nightshift will not move a folder: rename or remove the folder "
+            "runtime.json in the config folder, then choose Retry. Nothing has been changed.",
+        )
     return NsError(
         "NS-E125",
         f"{path} {what}: {type(e).__name__}: {e}. Close any program that has runtime.json open (an editor, a "
@@ -195,10 +241,11 @@ def _free_name(path: Path, suffix: str, n: int) -> Path:
     return path.with_name(path.name + suffix + (f".{n}" if n else ""))
 
 
-def _set_aside(path: Path, why: str, suffix: str = BAD_NAME) -> Path:
+def _set_aside(path: Path, why: str, suffix: str = BAD_NAME) -> Path | None:
     """Rename a damaged ``path`` to ``<name>.bad``, or ``.bad.1``, ``.bad.2`` ... when that name is taken.
 
-    Nothing is overwritten and nothing is deleted. A rename the system refuses (a program holds the file, the
+    None when the file is gone by then. Nothing is overwritten and nothing is deleted. A rename the system
+    refuses (a program holds the file, the
     folder is not writable) is NS-E125 naming the file and what to close; the file is then as it was.
     """
     first_start.guard(path)     # the settings copy of a first start after an older updater, before any change
@@ -210,6 +257,8 @@ def _set_aside(path: Path, why: str, suffix: str = BAD_NAME) -> Path:
             _rename(path, target)
         except FileExistsError:     # taken between the check and the rename: next name
             continue
+        except FileNotFoundError:   # gone since it was read: there is nothing to keep
+            return None
         except OSError as e:
             raise _refuse(path, f"is damaged ({why}) and could not be set aside as {target.name}", e) from e
         return target
@@ -221,7 +270,7 @@ def _set_aside(path: Path, why: str, suffix: str = BAD_NAME) -> Path:
     )
 
 
-def _keep_copy(path: Path, suffix: str) -> Path:
+def _keep_copy(path: Path, suffix: str) -> Path | None:
     """Copy ``path`` to ``<name>.newer`` (``.newer.1`` ... when taken), never over an existing file. A copy
     rather than a rename: the file stays whole until the stripped one replaces it in one step."""
     first_start.guard(path)
@@ -233,6 +282,8 @@ def _keep_copy(path: Path, suffix: str) -> Path:
                 out.write(data)
         except FileExistsError:
             continue
+        except FileNotFoundError:   # gone since it was read: no original to keep
+            return None
         except OSError as e:
             what = f"was written by a newer Nightshift and could not be copied to {target.name}"
             raise _refuse(path, what, e) from e
@@ -246,19 +297,20 @@ def _keep_copy(path: Path, suffix: str) -> Path:
 
 
 #: What "this runtime.json is new" makes untrue: the tuning sweep, and the smoke test that ran on its numbers.
+#: A file with unknown fields counts: a setting's meaning may have changed within its accepted range.
 FRESH_CLEARS = ("tuned", "smoke", "smoke_version")
-#: A newer file's settings are carried over (tuned numbers included), only the smoke test's evidence is not.
-CARRIED_CLEARS = ("smoke", "smoke_version")
 
 
-def write_runtime(ctx: StepContext, rt: Runtime, *, fresh: bool) -> None:
+def write_runtime(ctx: StepContext, rt: Runtime, *, clears: tuple[str, ...] = FRESH_CLEARS) -> None:
     """The one place setup writes a runtime.json that did not come from a tuning or an owner's setting.
 
-    A baseline from the answers (``fresh``) was never tuned, so the flags that say it was are forgotten
-    FIRST: a run killed between the two steps re-tunes, where the other order would leave a baseline that
-    the flag calls tuned. Every step that writes a baseline (s02 on the voice fallback, s03, s06 ...) reaches
-    this through ``ensure_baseline``, so the tuning step cannot find a flag that describes another file."""
-    ctx.clear_flags(*(FRESH_CLEARS if fresh else CARRIED_CLEARS))
+    A baseline from the answers, or a file that had to lose settings, was never tuned by this version, so
+    the flags that say it was are forgotten FIRST: a run killed between the two steps re-tunes, where the
+    other order would leave a file the flag calls tuned. Every step that writes one (s02 on the voice
+    fallback, s03, s06 ...) reaches this through ``ensure_baseline``, so the tuning step cannot find a flag
+    that describes another file. A file only written again as plain UTF-8 changes no setting: ``clears=()``.
+    """
+    ctx.clear_flags(*clears)
     save_runtime(ctx.paths, rt)
 
 
@@ -266,13 +318,15 @@ def ensure_baseline(ctx: StepContext) -> Runtime:
     """Load runtime.json.
 
     - missing: written from the answers;
-    - damaged (not JSON, or a field this version knows has a wrong value): set aside as ``runtime.json.bad``
-      (never overwritten, never deleted), a baseline written from the answers;
-    - written by a newer Nightshift (the only complaints are fields this version does not know): copied to
-      ``runtime.json.newer``, then rewritten without exactly those fields and with every other setting kept.
+    - damaged (not readable text, not JSON, not an object, too large, or a field this version knows has a
+      wrong value): set aside as ``runtime.json.bad`` (never overwritten, never deleted), a baseline written
+      from the answers;
+    - settings this version does not know (and nothing else wrong): copied to ``runtime.json.newer``, then
+      rewritten without exactly those, every other setting kept, tuning to run again;
+    - a byte order mark or UTF-16: the same settings, written again as plain UTF-8;
+    - a folder of that name, or a file that cannot be opened: NS-E125 naming it, nothing changed.
 
-    The owner is told on the step's row, in the report and in the log. A baseline clears the flags that say
-    tuning ran (``write_runtime``)."""
+    The owner is told on the step's row, in the report and in the log (not for the plain re-encoding)."""
     path = ctx.paths.runtime_file
     try:
         found = inspect_runtime(ctx.paths)
@@ -280,22 +334,29 @@ def ensure_baseline(ctx: StepContext) -> Runtime:
         raise _refuse(path, "exists but could not be read", e) from e
     if found.state == "ok" and found.runtime is not None:
         return found.runtime
+    if found.state == "recode" and found.runtime is not None:
+        ctx.log.info("runtime_recoded", f"{path} was {found.why}; written again as plain UTF-8")
+        ctx.ui.say(f"runtime.json was {found.why}; it is written again as plain UTF-8 (no setting changed).")
+        write_runtime(ctx, found.runtime, clears=())
+        return load_runtime(ctx.paths)
     if found.state == "newer" and found.runtime is not None:
         kept = _keep_copy(path, ".newer")
-        sentence = newer_sentence(kept.name, found.removed)
-        took = ", ".join(found.removed)
-        ctx.log.warn("runtime_newer_stripped", f"{path}: took out {took}; original at {kept}")
-        ctx.ui.say(sentence, "yellow")
-        ctx.note_step(sentence)
-        write_runtime(ctx, found.runtime, fresh=False)
+        if kept is not None:
+            sentence = newer_sentence(kept.name, found.removed)
+            took = ", ".join(found.removed)
+            ctx.log.warn("runtime_newer_stripped", f"{path}: took out {took}; original at {kept}")
+            ctx.ui.say(sentence, "yellow")
+            ctx.note_step(sentence)
+        write_runtime(ctx, found.runtime)
         return load_runtime(ctx.paths)
     if found.state == "damaged":
         kept = _set_aside(path, found.why)
-        sentence = aside_sentence(kept.name, found)
-        ctx.log.warn("runtime_set_aside", f"{path}: {found.why}; kept as {kept}")
-        ctx.ui.say(sentence, "yellow")
-        ctx.note_step(sentence)
-    write_runtime(ctx, build_runtime(ctx), fresh=True)
+        if kept is not None:
+            sentence = aside_sentence(kept.name, found)
+            ctx.log.warn("runtime_set_aside", f"{path}: {found.why}; kept as {kept}")
+            ctx.ui.say(sentence, "yellow")
+            ctx.note_step(sentence)
+    write_runtime(ctx, build_runtime(ctx))
     return load_runtime(ctx.paths)
 
 

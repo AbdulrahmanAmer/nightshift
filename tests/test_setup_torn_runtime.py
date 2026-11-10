@@ -312,10 +312,11 @@ def test_newer_file_only_unknown_fields_keeps_every_known_value_and_the_original
     assert (again.paths.config / "runtime.json.newer").read_text(encoding="utf-8") == text
     said = ui.last()
     assert said[:2] == ("s06_tune", "warning") and said[2] is not None
-    for part in ("written by a newer Nightshift", "future_setting", "llama.flags.future_flag",
-                 "kept every other setting", "runtime.json.newer"):
+    for part in ("has settings this version does not know", "a newer Nightshift, or a hand edit",
+                 "future_setting", "llama.flags.future_flag", "they were removed",
+                 "every other setting was kept", "runtime.json.newer", "Tuning runs again"):
         assert part in said[2], part
-    assert "could not be read" not in said[2]
+    assert "could not be read" not in said[2] and "was written by a newer" not in said[2]
     assert report(again)["steps"]["s06_tune"]["note"] == said[2]
 
 
@@ -374,10 +375,10 @@ def test_a_file_that_cannot_be_opened_is_ns_e125_not_a_bare_permission_error(
     ctx = context(tmp_path)
     damage(ctx, TORN)
 
-    def held(path: Any, encoding: str = "utf-8") -> str:
+    def held(path: Any) -> bytes:
         raise PermissionError(13, "The process cannot access the file")
 
-    monkeypatch.setattr(runtime_cfg, "read_text_retry", held)
+    monkeypatch.setattr(runtime_cfg, "read_bytes_retry", held)
     seen: Exception | None = None
     try:
         runtime_cfg.ensure_baseline(ctx)
@@ -437,3 +438,153 @@ def test_a_baseline_written_by_any_step_forgets_what_said_it_was_tuned(tmp_path:
     ctx.paths.runtime_file.unlink()
     runtime_cfg.ensure_baseline(ctx)
     assert (ctx.flag("tuned"), ctx.flag("smoke"), ctx.flag("smoke_version")) == (None, None, None)
+
+
+def test_a_file_with_unknown_settings_is_tuned_again(tmp_path: Path) -> None:
+    """A setting's meaning may have changed within its accepted range: the numbers are not trusted."""
+    ctx, _ = finished_install(tmp_path)
+    newer_file(ctx)
+    ctx.set_flag("smoke", "passed")
+    runtime_cfg.ensure_baseline(ctx)
+    assert (ctx.flag("tuned"), ctx.flag("smoke")) == (None, None)
+    ui = RowUi()
+    again = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=ui)
+    newer_file(again)
+    assert Wizard(again, [S06Tune()], backoff=()).run() == EXIT_OK
+    assert tuned_calls(again) == 1 and again.flag("tuned") == "tuned"
+
+
+def test_a_hand_edit_with_a_misspelt_name_is_worded_truthfully(tmp_path: Path) -> None:
+    ctx, _ = finished_install(tmp_path)
+    data = json.loads(ctx.paths.runtime_file.read_text(encoding="utf-8"))
+    data["supervisor_prot"] = 8123
+    ctx.paths.runtime_file.write_text(json.dumps(data), encoding="utf-8")
+    ui = RowUi()
+    again = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=ui)
+    assert setup_again(again) == EXIT_OK
+    said = ui.last()[2] or ""
+    assert "supervisor_prot" in said and "hand edit" in said and "newer Nightshift, or" in said
+
+
+# ------------------------------------------- every way of reading the file, through the tuning step
+GARBAGE = bytes(range(0x80, 0xC0)) * 3
+ROWS_DAMAGED = {
+    "not utf-8 (a power cut)": GARBAGE,
+    "utf-16 mark then half a character": b"\xff\xfe{",
+    "an old code page, accented name": '{"profile": "gpu", "name": "caf\xe9"}'.encode("cp1252"),
+    "utf-16 mark, odd garbage after it": b"\xfe\xff\x00{\x00",
+    "empty": b"",
+    "whitespace only": b" \r\n\t  \r\n",
+    "only a NUL": b"\x00",
+    "json list": b"[]",
+    "json number": b"5",
+    "json null": b"null",
+    "json string": b'"runtime"',
+    "too large to be real": b" " * (runtime_cfg.MAX_BYTES + 1),
+}
+
+
+def row_context(tmp_path: Path, data: bytes) -> tuple[Any, RowUi]:
+    ctx, _ = finished_install(tmp_path)
+    ctx.paths.runtime_file.write_bytes(data)
+    ui = RowUi()
+    return make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=ui), ui
+
+
+@pytest.mark.parametrize("data", list(ROWS_DAMAGED.values()), ids=list(ROWS_DAMAGED))
+def test_row_read_damaged_is_set_aside_rewritten_and_said_through_the_tuning_step(
+    tmp_path: Path, data: bytes
+) -> None:
+    again, ui = row_context(tmp_path, data)
+    assert S06Tune().check(again) is False              # never an exception out of the step's decision
+    assert setup_again(again) == EXIT_OK                # nor out of its work
+    assert kept(again) == ["runtime.json.bad"]
+    assert (again.paths.config / "runtime.json.bad").read_bytes() == data
+    assert load_runtime(again.paths).llama.model_path == build_runtime(again).llama.model_path
+    assert ui.last()[:2] == ("s06_tune", "warning") and "kept as runtime.json.bad" in (ui.last()[2] or "")
+    assert tuned_calls(again) == 1 and again.flag("tuned") == "tuned"
+    again2 = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=RowUi())
+    assert setup_again(again2) == EXIT_OK and kept(again2) == ["runtime.json.bad"]  # again: nothing new
+
+
+def recoded(text: str, encoding: str) -> bytes:
+    data = json.loads(text)
+    data["supervisor_port"] = 8123
+    body = json.dumps(data, indent=2)
+    return {"utf-8-sig": body.encode("utf-8-sig"), "utf-16": body.encode("utf-16"),
+            "utf-16-be": b"\xfe\xff" + body.encode("utf-16-be")}[encoding]
+
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "utf-16-be"])
+def test_row_read_fine_a_byte_order_mark_or_utf_16_keeps_every_setting_as_plain_utf_8(
+    tmp_path: Path, encoding: str
+) -> None:
+    ctx, _ = finished_install(tmp_path)
+    ctx.paths.runtime_file.write_bytes(recoded(ctx.paths.runtime_file.read_text(encoding="utf-8"), encoding))
+    ui = RowUi()
+    again = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=ui)
+    assert setup_again(again) == EXIT_OK
+    assert kept(again) == [] and newer_kept(again) == []                    # not damaged, nothing set aside
+    assert load_runtime(again.paths).supervisor_port == 8123                # every setting kept
+    assert not again.paths.runtime_file.read_bytes().startswith((b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff"))
+    assert ui.last() == ("s06_tune", "done", None) and "no setting changed" in ui.text
+    assert tuned_calls(again) == 1                  # the step ran (its check wants a plain file)
+
+
+def test_row_refusal_a_folder_named_runtime_json_is_ns_e125_and_retry_works_once_it_is_gone(
+    tmp_path: Path,
+) -> None:
+    ctx, _ = finished_install(tmp_path)
+    ctx.paths.runtime_file.unlink()
+    ctx.paths.runtime_file.mkdir()
+    assert S06Tune().check(ctx) is False
+    again = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=RowUi())
+    assert setup_again(again) == EXIT_FAILED
+    row = load_install_state(again.paths).steps["s06_tune"]
+    assert row.status == "failed" and (row.error or "").startswith("NS-E125")
+    said = row.error or ""
+    assert str(again.paths.runtime_file) in said and "is a folder, not a file" in said
+    assert again.paths.runtime_file.is_dir() and kept(again) == []              # nothing moved
+    again.paths.runtime_file.rmdir()
+    retry = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=RowUi())
+    assert setup_again(retry) == EXIT_OK and load_runtime(retry.paths).llama.model_path
+
+
+def test_row_the_file_vanishing_between_the_look_and_the_read_is_a_missing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = finished_install(tmp_path)
+    ui = RowUi()
+    again = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=ui)
+    real = runtime_cfg.read_bytes_retry
+    once: list[int] = []
+
+    def vanish(path: Path) -> bytes:
+        if not once:
+            once.append(1)
+            path.unlink()
+            raise FileNotFoundError(2, "gone")
+        return real(path)
+
+    ctx.set_flag("tuned", "tuned")
+    monkeypatch.setattr(runtime_cfg, "read_bytes_retry", vanish)
+    assert setup_again(again) == EXIT_OK
+    assert kept(again) == [] and load_runtime(again.paths).llama.model_path
+    assert ui.last()[0] == "s06_tune" and ui.last()[1] in ("done", "warning")
+    assert tuned_calls(again) == 1
+
+
+def test_row_the_file_vanishing_between_the_read_and_the_rename_is_a_missing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = finished_install(tmp_path)
+    damage(ctx, TORN)
+    again = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=RowUi())
+
+    def gone(src: Any, dst: Any) -> None:
+        Path(src).unlink()
+        raise FileNotFoundError(2, "gone")
+
+    monkeypatch.setattr(runtime_cfg, "_rename", gone)
+    assert setup_again(again) == EXIT_OK
+    assert kept(again) == [] and load_runtime(again.paths).llama.model_path
