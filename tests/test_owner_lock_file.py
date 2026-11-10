@@ -38,7 +38,6 @@ import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -74,8 +73,10 @@ TRANSIENT = PermissionError(
 # ------------------------------------------------------------------ helpers
 def _fixed_run_id(monkeypatch: pytest.MonkeyPatch, now: datetime) -> str:
     """Make the nightly's run id known (`daily-<date>-beef`), so a test can prepare its lock file."""
-    monkeypatch.setattr(daily, "secrets", SimpleNamespace(token_hex=lambda n=2: "beef"))
-    return f"daily-{now:%Y%m%d}-beef"
+    run_id = f"daily-{now:%Y%m%d}-beef"
+    # the night takes its id through `claim_job_id` (D-ids); these tests need the id, not the draw
+    monkeypatch.setattr(daily, "claim_job_id", lambda slug, claim, when=None: run_id)
+    return run_id
 
 
 def _night(env: jobs.Env, now: datetime, **kw: Any) -> dict[str, Any]:

@@ -194,7 +194,8 @@ def test_a_notice_marker_that_cannot_be_looked_up_gives_the_warning_instead_of_r
 def test_a_restore_does_not_bring_back_the_mark_that_the_warning_was_given_for_another_drive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from ns_supervisor import backup, config_snapshot
+    from ns_common import config_snapshot  # moved from ns_supervisor by F-10c
+    from ns_supervisor import backup
 
     marker = f"config/{secret_file.NOTICE_FILE}"
     assert marker in backup.MACHINE_FILES and secret_file.NOTICE_FILE in config_snapshot.LEFT_ALONE
