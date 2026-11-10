@@ -294,6 +294,9 @@ if (-not $Launcher) {
     exit 2
 }
 if (Test-Path -LiteralPath $Launcher -PathType Leaf) {
+    # A PC can hold several Nightshift folders and has one NIGHTSHIFT_HOME: a shortcut runs the install this
+    # file is in, whatever the variable names (the launchers read the variable before their own place).
+    if (Test-Path -LiteralPath (Join-Path (Join-Path $nsHome 'config') 'runtime.json') -PathType Leaf) { $env:NIGHTSHIFT_HOME = $nsHome }
     [void](Restore-AfterMiss $false)
     $global:LASTEXITCODE = 0
     & $Launcher

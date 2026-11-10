@@ -8,7 +8,17 @@
     variable. models\ and the user data (outbox, rejected, data, imports, cache) are kept unless you answer
     yes (default No) or pass -DeleteModels / -DeleteData. Safe to run more than once.
 
-    -HomeDir     folder to clean (default: NIGHTSHIFT_HOME, then %LOCALAPPDATA%\Nightshift).
+    A PC has one 'Nightshift Daily' task, one Desktop, one notification registration, one set of stored
+    stock-footage keys and one NIGHTSHIFT_HOME, and can hold several Nightshift folders. This script removes
+    each of them only when it belongs to the folder it is cleaning, or to a folder that is gone; what
+    another Nightshift folder uses (one that exists, or whose drive is not there now) is left, and a line
+    starting with "Left" says so. A shortcut or a task it cannot read exactly is left too.
+
+    -HomeDir     folder to clean (default: the folder this script is installed in, <home>\app\installer;
+                 then NIGHTSHIFT_HOME, then %LOCALAPPDATA%\Nightshift).
+    -DesktopDir  the Desktop folder to look in, instead of this user's and the public one.
+    -StateFile   with -DryRun only: a JSON file {task: {arguments} or null, userHome, toastKey} that stands in
+                 for what Windows has, so a dry run reads nothing of this PC (the tests use it).
     -DryRun      print "[dry-run] <action>" lines, change nothing, exit 0.
     -SkipSystem  leave the scheduled task, shortcuts and environment variable alone (used by CI).
     -KeepBin     leave bin for the caller to remove after it has exited (the uninstall window itself has
@@ -24,7 +34,9 @@ param(
     [switch]$DeleteData,
     [switch]$SkipSystem,
     [switch]$KeepBin,
-    [switch]$Ui
+    [switch]$Ui,
+    [string]$DesktopDir = '',
+    [string]$StateFile = ''
 )
 
 Set-StrictMode -Version Latest
@@ -40,7 +52,126 @@ if (($env:NS_UNDER_TEST -or $env:PYTEST_CURRENT_TEST) -and -not $SkipSystem -and
     Write-Host 'uninstall.ps1: refused. A test run may only call it with -SkipSystem or -DryRun (it would change this PC).'
     exit 3
 }
+if ($StateFile -and -not $DryRun) {
+    Write-Host 'uninstall.ps1: refused. -StateFile describes a PC for a dry run; it is read with -DryRun only.'
+    exit 2
+}
 $TaskName = 'Nightshift Daily'
+$machine = $null
+if ($StateFile) { $machine = (Get-Content -LiteralPath $StateFile -Raw -Encoding UTF8) | ConvertFrom-Json }
+
+function Get-MachineValue {
+    # One value of the -StateFile description ($null when it does not name it).
+    param([string]$Name)
+    if ($null -eq $machine) { return $null }
+    $found = $machine.PSObject.Properties[$Name]
+    if ($null -eq $found) { return $null }
+    return $found.Value
+}
+
+function Get-UserHomeVariable {
+    if ($null -ne $machine) { return [string](Get-MachineValue 'userHome') }
+    return [string][Environment]::GetEnvironmentVariable('NIGHTSHIFT_HOME', 'User')
+}
+
+function Get-TaskArguments {
+    # The arguments of the nightly task's action; $null when Windows has no such task.
+    if ($null -ne $machine) {
+        $described = Get-MachineValue 'task'
+        if ($null -eq $described) { return $null }
+        $named = $described.PSObject.Properties['arguments']
+        if ($null -eq $named) { return '' }
+        return [string]$named.Value
+    }
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($null -eq $task) { return $null }
+    $action = @($task.Actions) | Select-Object -First 1
+    if ($null -eq $action) { return '' }
+    return [string]$action.Arguments
+}
+
+function Read-LinkArguments {
+    # The arguments of a shell link, read from its bytes (MS-SHLLINK; the strings are UTF-16, so any folder
+    # name is read exactly): the same reading as installer/stage2/shortcut_owner.py. $null when the file is
+    # not a shell link that can be read.
+    param([string]$Path)
+    try {
+        $d = [IO.File]::ReadAllBytes($Path)
+        if ($d.Length -lt 76 -or [BitConverter]::ToUInt32($d, 0) -ne 76) { return $null }
+        if (([BitConverter]::ToString($d, 4, 16) -replace '-', '') -ne '0114020000000000C000000000000046') { return $null }
+        $flags = [int64][BitConverter]::ToUInt32($d, 20)
+        $at = 76
+        if ($flags -band 1) { $at += 2 + [int][BitConverter]::ToUInt16($d, $at) }
+        if ($flags -band 2) { $at += [int][BitConverter]::ToUInt32($d, $at) }
+        $unicode = [bool]($flags -band 128)
+        foreach ($bit in @(4, 8, 16, 32)) {
+            if (-not ($flags -band $bit)) { continue }
+            $size = [int][BitConverter]::ToUInt16($d, $at)
+            if ($unicode) { $size = $size * 2 }
+            if ($at + 2 + $size -gt $d.Length) { return $null }
+            if ($bit -eq 32) {
+                if ($unicode) { return [Text.Encoding]::Unicode.GetString($d, $at + 2, $size) }
+                return [Text.Encoding]::Default.GetString($d, $at + 2, $size)
+            }
+            $at += 2 + $size
+        }
+        return ''
+    }
+    catch {
+        Write-Verbose "cannot read $Path as a shortcut: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Get-LinkHome {
+    # The Nightshift folder a shortcut belongs to: the folder of the launch script it starts through
+    # (<home>\nightshift-launch.ps1), else the folder above the program folder 'app' of its launcher; a direct
+    # shortcut to a launcher of the program folder this script is in belongs to the folder being cleaned.
+    # '' when the arguments are not a Nightshift shortcut's.
+    param([string]$Arguments)
+    try {
+        $m = [regex]::Match($Arguments, '-File\s+"([^"]+)"(?:\s+-Launcher\s+"([^"]+)")?\s*$', 'IgnoreCase')
+        if (-not $m.Success) { return '' }
+        $launcher = $m.Groups[1].Value
+        $stub = ''
+        if ($m.Groups[2].Value) { $launcher = $m.Groups[2].Value; $stub = $m.Groups[1].Value }
+        if (-not $launcher.ToLowerInvariant().EndsWith('.ps1')) { return '' }
+        $launchers = [IO.Path]::GetDirectoryName($launcher)
+        if ([IO.Path]::GetFileName($launchers) -ine 'launchers') { return '' }
+        if ($stub) {
+            if ([IO.Path]::GetFileName($stub) -ine 'nightshift-launch.ps1') { return '' }
+            return [string][IO.Path]::GetDirectoryName($stub)
+        }
+        $program = [IO.Path]::GetDirectoryName($launchers)
+        if ([IO.Path]::GetFileName($program) -ieq 'app') { return [string][IO.Path]::GetDirectoryName($program) }
+        if ($program.TrimEnd('\') -ieq (Split-Path -Parent $PSScriptRoot).TrimEnd('\')) { return $nsHome }
+        return ''
+    }
+    catch {
+        Write-Verbose "cannot tell which Nightshift a shortcut opens: $($_.Exception.Message)"
+        return ''
+    }
+}
+
+function Get-FolderState {
+    # Whose a folder named by the task, a shortcut or NIGHTSHIFT_HOME is, seen from the folder being cleaned:
+    # mine; other (another folder that exists); unreachable (its drive or share is not there now: it may come
+    # back); gone (the drive is there and the folder is not: a Nightshift deleted by hand).
+    param([string]$Folder)
+    $there = $Folder.Trim().TrimEnd('\')
+    $here = $nsHome.Trim().TrimEnd('\')
+    $root = ''
+    try {
+        $there = [IO.Path]::GetFullPath($there).TrimEnd('\')
+        $here = [IO.Path]::GetFullPath($here).TrimEnd('\')
+        $root = [string][IO.Path]::GetPathRoot($there)
+    }
+    catch { Write-Verbose "cannot normalize $Folder" }
+    if ($there -ieq $here) { return 'mine' }
+    if (Test-Path -LiteralPath $Folder -PathType Container) { return 'other' }
+    if ($root -and (Test-Path -LiteralPath $root)) { return 'gone' }
+    return 'unreachable'
+}
 
 function Show-Action {
     param([Parameter(Mandatory = $true)][string]$Text)
@@ -106,7 +237,16 @@ function Remove-UserPathEntry {
 
 # ---- where is the install -------------------------------------------------------------------------------
 $nsHome = $HomeDir
-if (-not $nsHome) { $nsHome = [Environment]::GetEnvironmentVariable('NIGHTSHIFT_HOME', 'User') }
+if (-not $nsHome) {
+    # UNINSTALL.cmd passes no folder. Run from an install's own program folder (<home>\app) it removes THAT
+    # install, whatever NIGHTSHIFT_HOME names: on a PC with two Nightshift folders the variable names one.
+    $programDir = Split-Path -Parent $PSScriptRoot
+    if ((Split-Path -Leaf $programDir) -ieq 'app') {
+        $above = Split-Path -Parent $programDir
+        if ($above -and (Test-Path -LiteralPath (Join-Path $above 'config') -PathType Container)) { $nsHome = $above }
+    }
+}
+if (-not $nsHome) { $nsHome = Get-UserHomeVariable }
 if (-not $nsHome) { $nsHome = $env:NIGHTSHIFT_HOME }
 if (-not $nsHome) { $nsHome = Join-Path $env:LOCALAPPDATA 'Nightshift' }
 
@@ -172,13 +312,34 @@ if (Test-Path -LiteralPath $nsHome) {
 }
 
 # ---- system integration ---------------------------------------------------------------------------------
+# The other Nightshift folders found to use what this PC has one of (the task, a Desktop shortcut,
+# NIGHTSHIFT_HOME): while there is one, the notification registration and the stored keys stay too.
+$others = New-Object System.Collections.Generic.List[string]
+$varState = 'none'
+$userHome = ''
 if (-not $SkipSystem) {
-    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    if ($null -ne $task) {
-        if ($script:IsDry) { Show-Action "remove scheduled task '$TaskName'" }
+    $taskArgs = Get-TaskArguments
+    if ($null -ne $taskArgs) {
+        $named = [regex]::Match($taskArgs, 'NIGHTSHIFT_HOME=([^"]+)"')
+        $taskHome = ''
+        if ($named.Success) { $taskHome = $named.Groups[1].Value.Trim() }
+        $taskState = 'unknown'
+        if ($taskHome) { $taskState = Get-FolderState $taskHome }
+        if ($taskState -eq 'mine' -or $taskState -eq 'gone') {
+            if ($script:IsDry) { Show-Action "remove scheduled task '$TaskName'" }
+            else {
+                Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+                Write-Host "  removed scheduled task '$TaskName'"
+            }
+        }
+        elseif ($taskState -eq 'unknown') {
+            Write-Host "Left '$TaskName': it does not say which Nightshift it runs; delete it in Task Scheduler if it is not needed."
+        }
         else {
-            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-            Write-Host "  removed scheduled task '$TaskName'"
+            if (-not $others.Contains($taskHome)) { $others.Add($taskHome) }
+            $away = ''
+            if ($taskState -eq 'unreachable') { $away = ' (its drive is not there now)' }
+            Write-Host "Left '$TaskName': it runs the Nightshift at $taskHome$away."
         }
     }
     # config\schedule.json is Nightshift's record of that task ("Automatic runs are on"). With "keep my data"
@@ -192,24 +353,39 @@ if (-not $SkipSystem) {
             else { Remove-Item -LiteralPath $scheduleRecord -Force -ErrorAction SilentlyContinue; Write-Host "  removed $scheduleRecord" }
         }
     }
-    # The toast identity the installer registered (HKCU, no admin needed).
-    $aumidKey = 'HKCU:\Software\Classes\AppUserModelId\Nightshift'
-    if (Test-Path -LiteralPath $aumidKey) {
-        if ($script:IsDry) { Show-Action "remove toast registration $aumidKey" }
-        else {
-            Remove-Item -LiteralPath $aumidKey -Recurse -Force
-            Write-Host '  removed the notification registration'
-        }
-    }
     # The FFmpeg fallback put its folder on the user PATH; the environment variable change below broadcasts it.
     [void](Remove-UserPathEntry -Directory (Join-Path (Join-Path $nsHome 'bin') 'ffmpeg'))
-    foreach ($desktop in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'))) {
+    $desktops = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'))
+    if ($DesktopDir) { $desktops = @($DesktopDir) }
+    $leftFor = New-Object System.Collections.Specialized.OrderedDictionary
+    foreach ($desktop in $desktops) {
         if (-not $desktop -or -not (Test-Path -LiteralPath $desktop)) { continue }
         foreach ($lnk in @(Get-ChildItem -LiteralPath $desktop -Filter 'Nightshift*.lnk' -File -ErrorAction SilentlyContinue)) {
-            if ($script:IsDry) { Show-Action "delete shortcut $($lnk.FullName)" }
+            # whose shortcut: only one that opens this folder, or a folder that is gone, is removed
+            $linkArgs = Read-LinkArguments $lnk.FullName
+            $linkHome = ''
+            $linkState = 'unread'
+            if ($null -ne $linkArgs) {
+                $linkHome = Get-LinkHome $linkArgs
+                $linkState = 'foreign'
+                if ($linkHome) { $linkState = Get-FolderState $linkHome }
+            }
+            if ($linkState -eq 'mine' -or $linkState -eq 'gone') {
+                if ($script:IsDry) { Show-Action "delete shortcut $($lnk.FullName)" }
+                else {
+                    Remove-Item -LiteralPath $lnk.FullName -Force
+                    Write-Host "  removed shortcut $($lnk.Name)"
+                }
+            }
+            elseif ($linkState -eq 'other' -or $linkState -eq 'unreachable') {
+                if (-not $others.Contains($linkHome)) { $others.Add($linkHome) }
+                if ($leftFor.Contains($linkHome)) { $leftFor[$linkHome] = [int]$leftFor[$linkHome] + 1 } else { $leftFor.Add($linkHome, 1) }
+            }
+            elseif ($linkState -eq 'unread') {
+                Write-Host "Left the Desktop shortcut $($lnk.FullName): it could not be read, so it is not known which Nightshift it opens."
+            }
             else {
-                Remove-Item -LiteralPath $lnk.FullName -Force
-                Write-Host "  removed shortcut $($lnk.Name)"
+                Write-Host "Left the Desktop shortcut $($lnk.FullName): it is not one this Nightshift made."
             }
         }
         # the note the launch script leaves when a nightly run could not start (installer/launch.ps1); a
@@ -226,13 +402,36 @@ if (-not $SkipSystem) {
             }
         }
     }
+    foreach ($folder in @($leftFor.Keys)) {
+        if ([int]$leftFor[$folder] -eq 1) { Write-Host "Left 1 Desktop shortcut: it opens the Nightshift at $folder." }
+        else { Write-Host "Left $($leftFor[$folder]) Desktop shortcuts: they open the Nightshift at $folder." }
+    }
+    # NIGHTSHIFT_HOME is decided here and removed last (below): it counts as a user of the shared things too.
+    $userHome = (Get-UserHomeVariable).Trim()
+    if ($userHome) { $varState = Get-FolderState $userHome }
+    if (($varState -eq 'other' -or $varState -eq 'unreachable') -and -not $others.Contains($userHome)) { $others.Add($userHome) }
+    # The toast identity the installer registered (HKCU, no admin needed): one for the PC, so it stays while
+    # another Nightshift folder was found above.
+    $aumidKey = 'HKCU:\Software\Classes\AppUserModelId\Nightshift'
+    $toastKey = $false
+    if ($null -ne $machine) { $toastKey = [bool](Get-MachineValue 'toastKey') } else { $toastKey = Test-Path -LiteralPath $aumidKey }
+    if ($toastKey) {
+        if ($others.Count -gt 0) { Write-Host "Left the notification registration: the Nightshift at $($others[0]) uses it." }
+        elseif ($script:IsDry) { Show-Action "remove toast registration $aumidKey" }
+        else {
+            Remove-Item -LiteralPath $aumidKey -Recurse -Force
+            Write-Host '  removed the notification registration'
+        }
+    }
+    # (the stored stock-footage keys follow below, by the same rule)
 }
 
 # ---- the stock-footage keys -----------------------------------------------------------------------------
 # A key left in Credential Manager or config\secrets.dpapi made the next setup on this PC fail (it validated the
 # stale key and stopped). Forget both copies, best effort, before the venv that can talk to the vault goes.
 if (-not $SkipSystem) {
-    if ($script:IsDry) { Show-Action 'forget the Pexels and Pixabay keys in Credential Manager' }
+    if ($others.Count -gt 0) { Write-Host "Left the stock-footage keys in Credential Manager: the Nightshift at $($others[0]) uses them." }
+    elseif ($script:IsDry) { Show-Action 'forget the Pexels and Pixabay keys in Credential Manager' }
     else {
         $kpy = Join-Path $nsHome 'venvs\supervisor\Scripts\python.exe'
         $forgot = $false
@@ -266,6 +465,8 @@ foreach ($leaf in @('install_state.json', 'install_state.json.bak', 'wizard_flag
 
 # ---- folders --------------------------------------------------------------------------------------------
 Remove-Tree -Path (Join-Path $nsHome 'venvs')
+# This install's own set of shortcuts (setup makes it; the Desktop's may be another install's).
+Remove-Tree -Path (Join-Path $nsHome 'Shortcuts')
 # The update worker's private copy of the supervisor venv (150-300 MB after any update) lives in run, under updater.
 Remove-Tree -Path (Join-Path (Join-Path $nsHome 'run') 'updater')
 if ($KeepBin) { Write-Host '  bin and run are removed when the uninstall window closes' }
@@ -291,8 +492,13 @@ if (-not $SkipSystem) {
     # first dev-mode uninstall; with -KeepBin the window still runs from that venv, so only bootstrap goes then.
     $leaves = @('bootstrap', 'browser', 'webview2', 'venvs', 'run', 'state', 'tmp')
     if ($KeepBin) { $leaves = @('bootstrap') }
-    foreach ($leaf in $leaves) {
-        Remove-Tree -Path (Join-Path (Join-Path $env:LOCALAPPDATA 'Nightshift') $leaf)
+    $setupRoot = Join-Path $env:LOCALAPPDATA 'Nightshift'
+    if ($others.Count -gt 0) {
+        # setup's own files (its Python environment, the window's browser profile) serve every install here
+        if (Test-Path -LiteralPath $setupRoot) { Write-Host "Left setup's files in ${setupRoot}: the Nightshift at $($others[0]) uses them for its own setup and repair." }
+    }
+    else {
+        foreach ($leaf in $leaves) { Remove-Tree -Path (Join-Path $setupRoot $leaf) }
     }
 }
 foreach ($d in @('state', 'tmp')) { Remove-Tree -Path (Join-Path $nsHome $d) }    # internal, never user data
@@ -302,10 +508,15 @@ if ($wipeData) {
 
 # ---- environment variable (last, so a half-finished run can be repeated) --------------------------------
 if (-not $SkipSystem) {
-    if ($script:IsDry) { Show-Action 'remove user environment variable NIGHTSHIFT_HOME' }
-    else {
-        [Environment]::SetEnvironmentVariable('NIGHTSHIFT_HOME', $null, 'User')
-        Write-Host '  removed user environment variable NIGHTSHIFT_HOME'
+    if ($varState -eq 'mine' -or $varState -eq 'gone') {
+        if ($script:IsDry) { Show-Action 'remove user environment variable NIGHTSHIFT_HOME' }
+        else {
+            [Environment]::SetEnvironmentVariable('NIGHTSHIFT_HOME', $null, 'User')
+            Write-Host '  removed user environment variable NIGHTSHIFT_HOME'
+        }
+    }
+    elseif ($varState -ne 'none') {
+        Write-Host "Left NIGHTSHIFT_HOME: it names the Nightshift at $userHome."
     }
 }
 

@@ -228,6 +228,9 @@ INTERACTIVE_NOTE = f"runs {INTERACTIVE_MARK} (Windows refused the unattended mod
 
 
 DISABLED_NOTE = "DISABLED: dev mode, it never runs by itself"
+#: What `install` answers when a dev install (or `--disabled`) finds the PC's task running another
+#: Nightshift folder: the folder follows, then `;`. Setup's scheduler step reads the folder from it.
+DEV_LEFT = "left as it is, it runs the Nightshift at "
 
 KEPT_OFF_MARK = "kept SWITCHED OFF"
 KEPT_OFF_NOTE = (
@@ -681,17 +684,32 @@ def install(
     registered enabled (an install for real over a dev one). No task at all is registered enabled. If the
     task cannot be read nothing is changed (`ScheduleError`). The message says when it runs only while
     signed in.
+
+    A disabled registration reads the task first in every case, and leaves one that runs another Nightshift
+    folder (one that exists, or whose drive is not there now) exactly as it is, enabled or not: the
+    message carries `DEV_LEFT` and that folder. A task of this folder, of a deleted one, or one that does
+    not say what it runs is registered disabled as before.
     """
     if run_time and not valid_time(run_time):
         raise ScheduleError(f"time must be HH:MM (24 h), got {run_time!r}")
     log = _logger(paths, log)
     with _locked(paths):
-        before = read_task() if keep_state else None
+        off = disabled or is_dev(paths)
+        # a disabled registration always reads first: it must never land on another install's task
+        before = read_task() if keep_state or off else None
         when = (
-            run_time or (before.run_time if before is not None else None)
+            run_time or (before.run_time if before is not None and keep_state else None)
             or read_run_time(paths, include_disabled=True) or remembered_run_time(paths) or DEFAULT_TIME
         )
-        if disabled or is_dev(paths):               # a dev install never gets an enabled task, whoever asks
+        if off:                                     # a dev install never gets an enabled task, whoever asks
+            if before is not None and before.home and task_owner(paths, before) in (OTHER, UNREACHABLE):
+                # The PC's one task runs another Nightshift folder (enabled or not): registering it disabled
+                # for this one would switch the other install's nightly run off. Left, whatever was asked.
+                log.warn("schedule_dev_left", f"'{TASK_NAME}' runs the Nightshift at {before.home}; left")
+                return (
+                    f"not changed ({TASK_NAME}: {DEV_LEFT}{before.home}; a dev install never takes another "
+                    "install's nightly task)"
+                )
             _run(build_install_script(paths, when, app_path, disabled=True))
             write_run_time(paths, when, MODE_DISABLED)
             return f"registered ({TASK_NAME} daily at {when}; {DISABLED_NOTE})"

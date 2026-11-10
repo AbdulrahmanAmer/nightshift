@@ -31,6 +31,7 @@ DRAFT = {
     "homePath": "D:\\Nightshift", "llmTier": "small", "voice": {"speaker": "Ryan"},
     "modelsSource": {"kind": "internet", "path": None}, "runTime": "03:00", "mastersPerWeek": 1,
     "nightly": True, "nightlySeen": "new",
+    "shortcutsHere": False, "shortcutsNow": {"state": "mine", "path": None, "line": None},
     "installCode": True, "theme": "dark", "pexelsKey": "demo-pexels-key", "pixabayKey": "demo-pixabay-key",
 }
 
@@ -151,6 +152,7 @@ def build(name: str, app_path: Path | None = None) -> dict[str, Any]:
                 "shortcuts": ["Nightshift Dashboard", "Nightshift Outbox", "Nightshift - Diagnostics"],
                 "runTime": "03:00", "scheduled": True, "nightly": "on",
                 "nightlyLine": "Automatic runs: on at 03:00, every night (the PC wakes itself for it).",
+                "shortcutsLine": "Desktop shortcuts: they open this install.", "homeVarLine": None,
                 "diagnosticsZip": "C:\\Users\\Abdo\\Desktop\\nightshift-diagnostics-20261102.zip",
                 "stockKeyMissing": True, "durationS": 3480, "warnings": [],
             }

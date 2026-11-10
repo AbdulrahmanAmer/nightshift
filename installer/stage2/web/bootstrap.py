@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 
+import installer.stage2.shortcut_owner as shortcut_owner
 import ns_common.testguard as testguard
 import ns_common.vcruntime as vcruntime
 from installer.stage2.web import appcopy, filesdir, pathcheck
@@ -653,7 +654,7 @@ class B02Home:
         """True when the folder tree, the variable, a uv that runs and the answers file are all there."""
         return (
             all((boot.home / d).is_dir() for d in TOP_DIRS)
-            and boot.get_home_var(HOME_VAR) == str(boot.home)
+            and (boot.get_home_var(HOME_VAR) == str(boot.home) or self._var_of_another(boot) is not None)
             and self._uv_is_pinned(boot)
             and (boot.home / "config" / "answers.json").is_file()
             and (not boot.install_app or appcopy.is_current(boot.app_path, boot.home))
@@ -844,13 +845,28 @@ class B02Home:
             boot.say(f"Updated the install: {res.old_version} -> {res.new_version}; kept {kept}")
         boot.say(f"Program folder: {appcopy.app_dir(boot.home)} (the folder you extracted can be deleted)")
 
+    @staticmethod
+    def _var_of_another(boot: Boot) -> str | None:
+        """The other Nightshift folder NIGHTSHIFT_HOME names (one that exists, or whose drive is not there
+        now); None when it names this folder, nothing, or a folder that is gone. Such a variable is that
+        install's (card second-install-takeover): this step leaves it, and setup's scheduler step moves it
+        only with the owner's yes and says which it is. Every program setup starts gets its home passed."""
+        named = (boot.get_home_var(HOME_VAR) or "").strip()
+        if not named:
+            return None
+        state = shortcut_owner.folder_state(named, boot.home)
+        return named if state in (shortcut_owner.OTHER, shortcut_owner.UNREACHABLE) else None
+
     def run(self, boot: Boot) -> None:
         """Create everything, set the variable, copy the program folder and uv, write answers.json."""
         for d in TOP_DIRS:
             (boot.home / d).mkdir(parents=True, exist_ok=True)
         boot.say(f"Install folder: {boot.home}")
         self._install_app(boot)
-        if not boot.set_home_var(HOME_VAR, str(boot.home)):
+        theirs = self._var_of_another(boot)
+        if theirs is not None:
+            boot.say(f"NIGHTSHIFT_HOME names the Nightshift at {theirs}; it is left as it is for now")
+        elif not boot.set_home_var(HOME_VAR, str(boot.home)):
             raise BootstrapError("NS-E121", "could not set the NIGHTSHIFT_HOME user variable")
         os.environ[HOME_VAR] = str(boot.home)
         if not self._uv_is_pinned(boot):
@@ -862,7 +878,7 @@ class B02Home:
         missing = [d for d in TOP_DIRS if not (boot.home / d).is_dir()]
         if missing:
             raise BootstrapError("NS-E121", f"{boot.home} lacks {', '.join(missing)}")
-        if boot.get_home_var(HOME_VAR) != str(boot.home):
+        if boot.get_home_var(HOME_VAR) != str(boot.home) and self._var_of_another(boot) is None:
             raise BootstrapError("NS-E121", "NIGHTSHIFT_HOME does not point at the install folder")
         if not (boot.home / "bin" / "uv" / "uv.exe").is_file():
             raise BootstrapError("NS-E105", "uv was not copied into the install folder (bin/uv/uv.exe)")
