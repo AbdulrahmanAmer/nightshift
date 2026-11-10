@@ -303,7 +303,8 @@ def _refusal_words(error: StudioError) -> tuple[str, str]:
     reason = f"the file that marks a run as alive cannot be made ({getattr(error, 'path', None)}: {why})"
     note = (
         f"The night's run did not start: {reason}. Nothing was made and nothing was lost. Check that the "
-        "folder is not read-only, full or blocked by antivirus; the next nightly run tries again."
+        "folder is not read-only, full or blocked by antivirus; the next nightly run tries again "
+        "(while Automatic runs are on in Settings), or start a run yourself."
     )
     return note, reason
 

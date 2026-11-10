@@ -293,7 +293,7 @@ again for about a second. If it still cannot be made (the folder is read-only, f
 run really is running with the same name, the night does not start: **Last night** in the Queue shows a red
 "Something stopped" line, "The night: NS-E327." followed by the reason, and the Dashboard leaves a morning note with
 the same reason in plain words (unless notifications are off in Settings; the **Last night** line stays either way).
-The next nightly run tries again.
+The next nightly run tries again (while Automatic runs are on in Settings).
 
 ### Your own examples and prompts
 
@@ -342,7 +342,9 @@ before that night (an older one waits for **Retry** in the Queue; a resume durin
 continue it that night). Its Queue card says "its channel was paused during the night's run" and that the next
 nightly run continues it after you resume. A video that a power cut or a restart interrupted, and whose channel
 you paused afterwards, says the same way back ("Resume the channel: the next nightly run then continues it"),
-not "Press Retry": Retry is refused while the channel is paused. A waiting video holds no part of the graphics card: the engine is
+not "Press Retry": Retry is refused while the channel is paused. All of this needs a nightly run, and one comes
+only while **Automatic runs** are on in Settings (every such card says so); with them off, press **Retry** after
+the resume or start the run yourself. A waiting video holds no part of the graphics card: the engine is
 free for other work until it continues, and a job that is paused between two steps does not ask for the
 graphics card again, so no model is loaded for it. A `studio run` typed by hand in a
 terminal refuses a paused channel with NS-E330 ("The channel is paused."): `--channel <it>` and `--resume <its job>` start

@@ -73,6 +73,9 @@ CREATE_GRACE_S = 180.0
 LEGACY_IN_PROGRESS_H = 12
 #: The nightly resumes an interrupted job of its own up to this old; an older one waits for Retry.
 RESUME_WITHIN_DAYS = 3
+# Since Automatic runs became a switch (Settings), a nightly run comes only while it is on. A card's words are
+# fixed when it is written, so every sentence that promises "the next nightly run" carries this condition.
+WHILE_NIGHTLY_ON = "A nightly run comes only while Automatic runs are on in Settings."
 #: Records of runs and jobs that ended cleanly are kept this long (they only explain `studio status`).
 KEEP_ENDED_DAYS = 30
 #: A lock another process really holds is retried this often before `hold` gives up (a liveness probe takes
@@ -884,12 +887,12 @@ def _card_text(stage: str | None, resume: str, reason: str | None = None, owner:
         return (
             f"{stopped}{since} Resume the channel: the next nightly run then continues it, if the job "
             f"started no more than {RESUME_WITHIN_DAYS} days before that run; or press Retry after the "
-            "resume."
+            f"resume. {WHILE_NIGHTLY_ON}"
         )
     if resume == "pending":
         return (
             f"{stopped} The next nightly run continues it, or press Retry (if its channel is paused by then, "
-            "both wait for the resume)."
+            f"both wait for the resume). {WHILE_NIGHTLY_ON}"
         )
     why = f" ({reason})" if reason else ""
     return f"{stopped} Press Retry to continue it{why}."
@@ -1431,17 +1434,21 @@ def recovery_message(
                 f"The nightly run continued it, but it stopped again ({code}); {_way_back(j)} to try again."
             )
         elif what == "waiting":
-            tail = f"The GPU was busy, so it waits for the next nightly run; or {_way_back(j)}."
+            tail = (
+                f"The GPU was busy, so it waits for the next nightly run; or {_way_back(j)}. "
+                f"{WHILE_NIGHTLY_ON}"
+            )
         elif what == "busy":
             tail = "It is being continued right now from the Queue."
         elif what == "paused":
             tail = (
                 "Its channel was paused during the night, so it waits; resume the channel and the next "
                 f"nightly run continues it, as long as the job started no more than {RESUME_WITHIN_DAYS} "
-                f"days before that run; an older one is not continued by the night, so {_way_back(j)}."
+                f"days before that run; an older one is not continued by the night, so {_way_back(j)}. "
+                f"{WHILE_NIGHTLY_ON}"
             )
         elif j.resumable:
-            tail = f"It continues at the next nightly run, or {_way_back(j)}."
+            tail = f"It continues at the next nightly run, or {_way_back(j)}. {WHILE_NIGHTLY_ON}"
         else:
             tail = (
                 "Press Retry in the Queue to continue it" if j.has_card else f"To continue it, {_way_back(j)}"
@@ -1593,7 +1600,7 @@ def status_lines(paths: Paths, db: SqlDb, channel: str) -> list[str]:
             if has_card(rec):
                 way = "press Retry in the Queue"
                 if rec.get("origin") == "daily":
-                    way += " or the next nightly run continues it"
+                    way += " or the next nightly run continues it (while Automatic runs are on in Settings)"
             else:
                 way = f"continue it with studio run --resume {job_id}"
             lines.append(f"  interrupted: job {job_id} stopped{at}; {way}")

@@ -211,7 +211,10 @@ def interrupted_line(item: dict[str, Any]) -> str:
     if fate == "resumed":
         return f"job {job} was interrupted{at} and has been resumed and finished"
     if fate == "waiting":
-        return f"job {job} was interrupted{at}: the GPU was busy, the next nightly run continues it"
+        return (
+            f"job {job} was interrupted{at}: the GPU was busy, the next nightly run continues it "
+            "(while Automatic runs are on in Settings)"
+        )
     again = "it was continued and stopped again" if fate == "failed_again" else "it was not continued"
     if item.get("has_card", True):
         return f"job {job} was interrupted{at} ({again}): press Retry in the Queue"
