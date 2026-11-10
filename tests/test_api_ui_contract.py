@@ -371,7 +371,11 @@ def seed(tmp_home: Path) -> Any:
     )
     state.db.execute(
         "INSERT INTO runs(run_id, started_at, finished_at, mode, summary_json) VALUES ('r1', ?, ?, 'daily', ?)",
-        (now, now, json.dumps({"jobs": [{"job_id": "j1", "channel": "after-dark", "stages": 12}], "failures": []})),
+        (now, now, json.dumps({
+            "jobs": [{"job_id": "j1", "channel": "after-dark", "stages": 12}], "failures": [],
+            # P47: what `daily._hold_for_pause` writes for a channel paused during the night
+            "paused": [{"channel": "after-dark", "jobs": 1, "reason": "its channel was paused during the night", "job_id": "j2"}],
+        })),
     )
     (state.paths.home / "run").mkdir(exist_ok=True)
     (state.paths.home / "run" / "morning_note.json").write_text(

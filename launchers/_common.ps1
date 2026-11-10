@@ -392,46 +392,289 @@ function Wait-NsPort {
     return $false
 }
 
+function Get-NsJsonProp {
+    # The value of property -Name of a parsed JSON object, or $null when it is not there (or -Object is not an
+    # object). Safe under strict mode, also for an object with no property at all ("tools": {} in a file the
+    # owner edited: listing the names of nothing is an error there, asking for one by name is not).
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
+    if ($Object -isnot [System.Management.Automation.PSCustomObject]) { return $null }
+    $prop = $Object.PSObject.Properties[$Name]
+    if ($null -ne $prop) { return $prop.Value }
+    return $null
+}
+
+function Set-NsJsonProp {
+    # Puts -Value in property -Name of the parsed JSON object -Object; true when the object changed. With
+    # -OnlyIfMissing a property that is already there (whatever its value) stays as the owner set it.
+    param($Object, [string]$Name, $Value, [switch]$OnlyIfMissing)
+    $prop = $Object.PSObject.Properties[$Name]   # by name: an object with no property at all is no error
+    if ($null -ne $prop) {
+        if ($OnlyIfMissing -and $null -ne $prop.Value) { return $false }   # JSON null counts as missing
+        if ($prop.Value -ceq $Value) { return $false }
+        $prop.Value = $Value
+        return $true
+    }
+    Add-Member -InputObject $Object -NotePropertyName $Name -NotePropertyValue $Value
+    return $true
+}
+
+function Read-NsLlamaConfig {
+    # What the launchers need from config\runtime.json: Host, Port, Ctx (llama.flags.ctx) and ModelPath, each
+    # with the value Python's Runtime model gives it when the file does not write it. $null when there is no
+    # runtime.json; throws when it cannot be read as JSON.
+    $runtime = Join-Path (Get-NsHome) 'config\runtime.json'
+    if (-not (Test-Path -LiteralPath $runtime)) { return $null }
+    $rt = (Read-NsTextRetry -Path $runtime) | ConvertFrom-Json
+    $llama = Get-NsJsonProp $rt 'llama'
+    $flags = Get-NsJsonProp $llama 'flags'
+    $hostName = Get-NsJsonProp $llama 'host'
+    $port = Get-NsJsonProp $llama 'port'
+    $ctx = Get-NsJsonProp $flags 'ctx'
+    $modelPath = Get-NsJsonProp $llama 'model_path'
+    return [pscustomobject]@{
+        Host      = $(if ($null -ne $hostName) { [string]$hostName } else { '127.0.0.1' })
+        Port      = $(if ($null -ne $port) { [int]$port } else { 8080 })
+        Ctx       = $(if ($null -ne $ctx) { [int]$ctx } else { 16384 })
+        ModelPath = $(if ($null -ne $modelPath) { [string]$modelPath } else { '' })
+    }
+}
+
+function Get-NsEngineLlamaCtx {
+    # The context the running engine starts llama-server with: services.llama.ctx of its /status answer
+    # (supervisor core.py status). $null when there is no answer or an older engine does not report it.
+    param($Status)
+    $llama = Get-NsJsonProp (Get-NsJsonProp $Status 'services') 'llama'
+    $ctx = Get-NsJsonProp $llama 'ctx'
+    if ($null -eq $ctx) { return $null }
+    return [int]$ctx
+}
+
+function Get-NsCodeContextRefusal {
+    # D-34: the text that stops Nightshift Code, or '' when it may go on. It is shown to the person who
+    # started Nightshift Code, in its console, before the engine is asked for the graphics card.
+    #   The number that counts is the one llama-server runs with. A running engine says it (-EngineCtx); it
+    #   read config\runtime.json only when it started, so an edit of the file is not seen until it restarts.
+    #   No engine running: the engine this launcher starts will read the file, so the file's number counts.
+    #   Running engine that does not say (older, or its answer failed): the file's number is the best there is.
+    #   No readable runtime.json and no engine answer: nothing to compare, no refusal.
+    param([int]$MinCtx, $FileCtx, [bool]$EngineUp, $EngineCtx)
+    $more = ' This context is also the one the nightly run uses, so it needs more memory for every job.'
+    if ($EngineUp -and $null -ne $EngineCtx) { $ctx = [int]$EngineCtx; $fromEngine = $true }
+    else { $ctx = $FileCtx; $fromEngine = $false }
+    if ($null -eq $ctx) { return '' }
+    if ($ctx -ge $MinCtx) {
+        if ($EngineUp -and $null -eq $EngineCtx) {
+            Write-Host ('The running engine does not say which context it uses; using the ' + $ctx + ' in config\runtime.json.')
+        }
+        return ''
+    }
+    $head = 'Nightshift Code needs ' + $MinCtx + ' tokens of context; '
+    if (-not $fromEngine) {
+        return ($head + 'this install has ' + $ctx + '. Set llama.flags.ctx in config\runtime.json to ' + $MinCtx + ' or more, then start Nightshift Code again.' + $more)
+    }
+    if ($null -ne $FileCtx -and [int]$FileCtx -ge $MinCtx) {
+        return ($head + 'the running engine has ' + $ctx + ' (config\runtime.json says ' + $FileCtx + ', but the engine reads it only when it starts). Restart Nightshift: run Nightshift - Stop All, then start Nightshift Code again.' + $more)
+    }
+    return ($head + 'this install has ' + $ctx + '. Set llama.flags.ctx in config\runtime.json to ' + $MinCtx + ' or more, then run Nightshift - Stop All and start Nightshift Code again.' + $more)
+}
+
+# D-34: OpenCode's own prompt and tools come to about 15,300 tokens; the first request of a one-line question
+# must stay at most half of the context. These are the values installer\stage2\steps\s07_configs.py writes
+# (OPENCODE_PROMPT, TOOLS_OFF, CODE_OUTPUT_TOKENS); tests\test_opencode_budget.py keeps the two copies equal.
+# What the pinned OpenCode (1.19.5) needs to change a file is read, edit and write, and there a tool switch is
+# a permission: edit, write, patch and multiedit are ONE permission, so any of them set to false removes both
+# edit and write. None of $script:NsOpenCodeEditingSwitches may ever be in $script:NsOpenCodeToolsOff.
+$script:NsOpenCodeToolsOff = @('todowrite', 'todoread', 'webfetch', 'task', 'skill')
+$script:NsOpenCodeEditingSwitches = @('read', 'edit', 'write', 'patch', 'multiedit')
+# Switches an earlier build wrote and this one takes back (Sync-NsOpenCodePort says when it is Nightshift's).
+$script:NsOpenCodeToolsWithdrawn = @('patch')
+# SHA-256 of every earlier Nightshift prompt (its text with LF line ends, as UTF-8). A build prompt that is
+# exactly one of these was written by Nightshift and is replaced; any other text is the owner's and stays.
+$script:NsOpenCodeSupersededPrompts = @('8090d0ea5ad3c9800117cf679e06ce23f841b4e744095e0a4d963e12af31f287')
+$script:NsOpenCodePrompt = @'
+You are Nightshift Code, a coding assistant that runs on this computer with a small local model. Nothing you read or write leaves this machine. Your context is small: work in small steps and keep answers short.
+
+- Work in the Projects folder you start in; each folder in it is a project. Leave it, or touch the Nightshift program folders and settings, only when asked.
+- Read before you edit: open the file, look at the part that matters, then change it. Never guess what a file contains.
+- Search with grep or glob and read a few lines at a time instead of whole files.
+- Change the least you can: one edit, then say in a sentence or two what you changed and why. Add nothing that was not asked for.
+- Run a command only when it helps, and say what it showed.
+- If the request is unclear, ask one short question first. If you do not know, say so; never invent file names, functions or results.
+- Answer in plain short sentences and show only the lines of code that matter.
+- When done, name the files you changed. If a task is too big for your context, say so and offer the first small step.
+'@
+
+function Get-NsTextSha256 {
+    # Lower-case hex SHA-256 of -Text as UTF-8 with LF line ends.
+    param([string]$Text)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text.Replace("`r`n", "`n"))
+        return (-join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }))
+    }
+    finally { $sha.Dispose() }
+}
+
+function Get-NsOpenCodeEditingOff {
+    # The keys of a parsed opencode.json that switch file editing off in the pinned OpenCode, as dotted names
+    # ('tools.edit', 'permission.edit', 'agent.build.tools.write', ...); empty when Nightshift Code can change
+    # a file. A tool switch counts when it is false, a permission when it is the text "deny".
+    param($Config)
+    $found = @()
+    $build = Get-NsJsonProp (Get-NsJsonProp $Config 'agent') 'build'
+    foreach ($place in @(@('', $Config), @('agent.build.', $build))) {
+        $prefix = $place[0]
+        $tools = Get-NsJsonProp $place[1] 'tools'
+        $permission = Get-NsJsonProp $place[1] 'permission'
+        foreach ($name in $script:NsOpenCodeEditingSwitches) {
+            $value = Get-NsJsonProp $tools $name
+            if ($value -is [bool] -and -not $value) { $found += ($prefix + 'tools.' + $name) }
+        }
+        foreach ($name in @('read', 'edit')) {
+            $value = Get-NsJsonProp $permission $name
+            if ($value -is [string] -and $value -eq 'deny') { $found += ($prefix + 'permission.' + $name) }
+        }
+    }
+    return $found
+}
+
 function Sync-NsOpenCodePort {
     # OpenCode talks straight to llama-server, and config\opencode.json bakes the address in when it is
     # written at install time. If the llama address changed since (ns tune, a hand edit), OpenCode would talk
     # to the wrong port, so point the baseURL at the current one right before it starts. -BaseUrl is the
     # address the engine reported when it started llama-server; without it, runtime.json llama.host/port is
-    # used. Only that one value changes; the file is left alone when it already matches or does not exist,
-    # and a problem here is a note, never a reason to stop the launcher.
-    param([string]$BaseUrl = '')
+    # used.
+    # The same pass brings the file up to the budget of D-34 (a file written by 0.1.14 has none): the model's
+    # limit.context follows runtime.json llama.flags.ctx, its name follows llama.model_path, and the tool
+    # switches and the short build prompt are added when they are missing. Only those values are Nightshift's:
+    # baseURL, limit.context and the model name are set; every other key, including a limit.output, a tool
+    # switch or a prompt the owner changed, stays as it is. The file is left alone when everything matches or
+    # when it does not exist, and a problem here is a note, never a reason to stop the launcher.
+    # Two things an earlier build of 0.1.15 wrote are taken back, each only where it is Nightshift's:
+    #   "patch": false under tools. In the pinned OpenCode it removes the edit and write tools, so Nightshift
+    #     Code could not change a file. No release ever wrote it and OpenCode gives this model no patch tool,
+    #     so the key has no other effect: it is Nightshift's and is removed, with a note. The owner's way to
+    #     say "read only" is a key Nightshift never wrote ("edit" or "write": false, or permission edit
+    #     "deny"); when one of those is there, editing is off by the owner's choice, "patch" is left as it
+    #     is, and the note names the key instead, at every start.
+    #   The longer build prompt. A prompt that is exactly an earlier Nightshift text (by SHA-256) is replaced
+    #     by the current one; any other text is the owner's and stays.
+    # -Ctx is the context llama-server really runs with (the engine's answer, see Get-NsEngineLlamaCtx); without
+    # it runtime.json says (an engine reads that file only when it starts, so the two can differ).
+    # A key the owner set to null counts as missing.
+    param([string]$BaseUrl = '', [int]$Ctx = 0)
     $file = Join-Path (Get-NsHome) 'config\opencode.json'
+    $withdrawn = @()   # switches taken out of the parsed file; said only once the file is really written
     try {
         if (-not (Test-Path -LiteralPath $file)) { return }
+        $llama = $null
+        try { $llama = Read-NsLlamaConfig }
+        catch {
+            if ($BaseUrl -notmatch '^https?://') { throw }
+            Write-Host ('Could not read runtime.json (' + $_.Exception.Message + '); the context and model name in ' + $file + ' are left as they are.')
+        }
         if ($BaseUrl -match '^https?://') {
             $url = $BaseUrl
         }
+        elseif ($null -ne $llama) {
+            $url = 'http://' + $llama.Host + ':' + $llama.Port + '/v1'
+        }
         else {
-            $hostName = '127.0.0.1'
-            $port = 8080
-            $runtime = Join-Path (Get-NsHome) 'config\runtime.json'
-            if (Test-Path -LiteralPath $runtime) {
-                $rt = (Read-NsTextRetry -Path $runtime) | ConvertFrom-Json
-                if ($rt.PSObject.Properties.Name -contains 'llama') {
-                    $llama = $rt.llama
-                    if ($llama.PSObject.Properties.Name -contains 'host') { $hostName = [string]$llama.host }
-                    if ($llama.PSObject.Properties.Name -contains 'port') { $port = [int]$llama.port }
-                }
-            }
-            $url = 'http://' + $hostName + ':' + $port + '/v1'
+            $url = 'http://127.0.0.1:8080/v1'
         }
         # -Encoding UTF8: Windows PowerShell 5.1 reads a BOM-less file as ANSI, which would double-encode any
         # non-ASCII text the owner put in the file when it is written back as UTF-8 below.
         $cfg = (Read-NsTextRetry -Path $file) | ConvertFrom-Json
-        if (-not ($cfg.PSObject.Properties.Name -contains 'provider')) { return }
-        if (-not ($cfg.provider.PSObject.Properties.Name -contains 'local')) { return }
-        $options = $cfg.provider.local.options
-        if ($options.baseURL -eq $url) { return }
-        $options.baseURL = $url
+        $local = Get-NsJsonProp (Get-NsJsonProp $cfg 'provider') 'local'
+        if ($null -eq $local) { return }
+        $changed = $false
+        $options = Get-NsJsonProp $local 'options'
+        if ($null -ne $options -and (Set-NsJsonProp $options 'baseURL' $url)) { $changed = $true }
+
+        $code = Get-NsJsonProp (Get-NsJsonProp $local 'models') 'code'
+        if ($null -ne $code -and $null -ne $llama) {
+            $name = 'Local model'
+            if ($llama.ModelPath) {
+                $stem = [System.IO.Path]::GetFileNameWithoutExtension($llama.ModelPath)
+                if ($stem) { $name = $stem + ' (local)' }
+            }
+            if (Set-NsJsonProp $code 'name' $name) { $changed = $true }
+            $codeCtx = $llama.Ctx
+            if ($Ctx -gt 0) { $codeCtx = $Ctx }
+            $limit = Get-NsJsonProp $code 'limit'
+            if ($limit -is [System.Management.Automation.PSCustomObject]) {
+                if (Set-NsJsonProp $limit 'context' $codeCtx) { $changed = $true }
+                if (Set-NsJsonProp $limit 'output' 4096 -OnlyIfMissing) { $changed = $true }
+            }
+            elseif ($null -eq $limit -and (Set-NsJsonProp $code 'limit' ([pscustomobject][ordered]@{ context = $codeCtx; output = 4096 }) -OnlyIfMissing)) {
+                $changed = $true
+            }
+        }
+
+        $switches = [ordered]@{}
+        foreach ($tool in $script:NsOpenCodeToolsOff) { $switches[$tool] = $false }
+        if (Set-NsJsonProp $cfg 'tools' ([pscustomobject]$switches) -OnlyIfMissing) {
+            $changed = $true
+        }
+        else {
+            $tools = Get-NsJsonProp $cfg 'tools'
+            if ($tools -is [System.Management.Automation.PSCustomObject]) {   # anything else is the owner's: left alone
+                # the owner's own "read only" keys: whatever switches editing off except a withdrawn switch
+                $ownerOff = @(Get-NsOpenCodeEditingOff $cfg | Where-Object { $script:NsOpenCodeToolsWithdrawn -notcontains ($_ -replace '^tools[.]', '') })
+                foreach ($tool in $script:NsOpenCodeToolsWithdrawn) {
+                    $value = Get-NsJsonProp $tools $tool
+                    if ($value -is [bool] -and -not $value -and $ownerOff.Count -eq 0) {
+                        $tools.PSObject.Properties.Remove($tool)
+                        $changed = $true
+                        $withdrawn += $tool
+                    }
+                }
+                foreach ($tool in $script:NsOpenCodeToolsOff) {
+                    if (Set-NsJsonProp $tools $tool $false -OnlyIfMissing) { $changed = $true }
+                }
+            }
+        }
+        $editingOff = @(Get-NsOpenCodeEditingOff $cfg)
+        if ($editingOff.Count -gt 0) {
+            Write-Host ('Nightshift Code can read files and run commands but cannot change a file: ' + $file + ' switches editing off (' + ($editingOff -join ', ') + '). Remove or change that setting and start Nightshift Code again to bring editing back.')
+        }
+
+        $prompt = $script:NsOpenCodePrompt.Replace("`r`n", "`n")
+        $buildAgent = [pscustomobject][ordered]@{ prompt = $prompt }
+        if (Set-NsJsonProp $cfg 'agent' ([pscustomobject][ordered]@{ build = $buildAgent }) -OnlyIfMissing) {
+            $changed = $true
+        }
+        else {
+            $agent = Get-NsJsonProp $cfg 'agent'
+            if ($null -ne $agent) {
+                if (Set-NsJsonProp $agent 'build' $buildAgent -OnlyIfMissing) {
+                    $changed = $true
+                }
+                else {
+                    $build = Get-NsJsonProp $agent 'build'
+                    if ($null -ne $build) {
+                        $has = Get-NsJsonProp $build 'prompt'
+                        if ($has -is [string] -and $script:NsOpenCodeSupersededPrompts -contains (Get-NsTextSha256 $has)) {
+                            if (Set-NsJsonProp $build 'prompt' $prompt) { $changed = $true }
+                        }
+                        elseif (Set-NsJsonProp $build 'prompt' $prompt -OnlyIfMissing) { $changed = $true }
+                    }
+                }
+            }
+        }
+
+        if (-not $changed) { return }
         $json = ($cfg | ConvertTo-Json -Depth 20) + "`n"
         Write-NsFileAtomic -Path $file -Text $json
+        foreach ($tool in $withdrawn) {
+            Write-Host ('Removed "' + $tool + '": false from ' + $file + ': in this OpenCode it also removes the edit and write tools, so Nightshift Code could not change a file. To keep Nightshift Code read-only, set "edit": false under "tools" instead.')
+        }
     }
     catch {
         Write-Host ('Could not update the port in ' + $file + ': ' + $_.Exception.Message)
+        foreach ($tool in $withdrawn) {
+            Write-Host ('So "' + $tool + '": false is still in that file, and with it Nightshift Code can read files and run commands but cannot change a file. Close whatever keeps the file open and start Nightshift Code again, or remove that line yourself.')
+        }
     }
 }

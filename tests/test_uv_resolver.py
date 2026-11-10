@@ -14,6 +14,15 @@ from ns_common.uv import find_uv, home_uv
 from ns_supervisor import doctor, update
 
 
+@pytest.fixture(autouse=True)
+def _no_stage1_uv_on_this_pc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test sees only the uv it plants: not this PC's `%LOCALAPPDATA%` bootstrap folder or hand-over."""
+    empty_local = tmp_path / "no-stage1-uv"
+    empty_local.mkdir()
+    monkeypatch.setenv("LOCALAPPDATA", str(empty_local))
+    monkeypatch.delenv("NIGHTSHIFT_BOOTSTRAP_UV", raising=False)
+
+
 def put_home_uv(home: Path) -> Path:
     exe = home_uv(home)
     exe.parent.mkdir(parents=True, exist_ok=True)

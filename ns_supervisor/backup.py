@@ -41,6 +41,13 @@ TREES = ("config", "models/tts/voices", "exemplars", "prompt_overrides")
 RESTORE_ALLOWED = (*(t + "/" for t in TREES), "data/studio.db")
 #: `keys_unprotected.json` says the one-time NS-W116 was given for THIS home's drive: restored onto another
 #: home (a FAT stick) it would hide the warning that home still has to give, so it is machine specific too.
+#: Files a restore never writes, also with `--all`, with why. `schedule.json` is not a setting: it is the
+#: record of what this PC's Task Scheduler holds now, written only by `ns_supervisor.schedule` after Windows
+#: answered. An older copy would say "on" for a task that is gone (and the next look would then tell the
+#: owner it was "switched off outside Nightshift", which is untrue) or "off" for one that runs.
+NEVER_RESTORED = {
+    "config/schedule.json": "the record of this PC's nightly task; Automatic runs stay as they are",
+}
 MACHINE_FILES = frozenset(
     {
         "config/runtime.json",
@@ -173,8 +180,9 @@ def restore_backup(
     paths: Paths, zip_path: Path, *, include_machine: bool = False, now: datetime | None = None
 ) -> list[str]:
     """Restore a backup into NIGHTSHIFT_HOME. Overwritten files are first copied to
-    `data\\backup\\pre-restore-<time>\\`. Machine-specific config (runtime, install_state, schedule) is
-    skipped unless `include_machine`. Raises `NS-E703` for a file that is not a Nightshift backup.
+    `data\\backup\\pre-restore-<time>\\`. Machine-specific config (runtime, install_state) is
+    skipped unless `include_machine`; `schedule.json` is never restored (NEVER_RESTORED).
+    Raises `NS-E703` for a file that is not a Nightshift backup.
 
     The keys file (`config/secrets.dpapi`) is the one file a restore may leave out and carry on: on a drive
     without permissions (`NS-W116`) and when its lock fails (`NS-E120`) the old one stays as it was and the
@@ -201,6 +209,9 @@ def restore_backup(
                 raise NsError("NS-E703", f"unsafe path in backup: {name}")
             if not (name in RESTORE_ALLOWED or name.startswith(RESTORE_ALLOWED)):
                 lines.append(f"ignored {name}")
+                continue
+            if name in NEVER_RESTORED:
+                lines.append(f"skipped {name} ({NEVER_RESTORED[name]})")
                 continue
             if name in MACHINE_FILES and not include_machine:
                 lines.append(f"skipped {name} (machine specific)")

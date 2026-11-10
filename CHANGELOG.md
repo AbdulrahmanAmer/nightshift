@@ -9,14 +9,15 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [0.1.15] - 2026-11-10
 
-This is release candidate 0.1.15-rc2, published for testing. It is a prerelease: it is not offered as an update to a
-PC on 0.1.14, and you install it by hand (`Nightshift-Setup-0.1.15-rc2.zip` for a first install, or
-`Nightshift-Update-0.1.15-rc2.zip` through Settings > Updates > From a file). Compared with 0.1.15-rc1 it adds the
-first-start config copy and the safer rollback (F-10c), the keys file on a drive without permissions (F-9b), job
-ids that cannot collide (D-ids), the posting checklist that stays reachable after Approve (P14), a longer CI
-shard timeout and the first proof scripts. The final 0.1.15 will also contain the items of block B: the Code
-console must not keep the graphics card, pausing a channel must stop its queued jobs, and the join measurement of
-the render. Below is everything merged since 0.1.14; each "Not covered" line is a limit the change shipped with.
+This is release candidate 0.1.15-rc3, published for testing. It is a prerelease: it is not offered as an update to a
+PC on 0.1.14, and you install it by hand (`Nightshift-Setup-0.1.15-rc3.zip` for a first install, or
+`Nightshift-Update-0.1.15-rc3.zip` through Settings > Updates > From a file). Compared with 0.1.15-rc2 it adds the
+items of block B: the Code console gives the graphics card back when it is closed and Nightshift Code fits a 16K
+context and keeps its edit tools, pausing a channel stops its queued jobs, Automatic runs is a switch, work whose lock
+file cannot be opened is no longer held for ever, assembled audio keeps full precision, a model an install cannot use
+is refused up front, an updater test source, the clip captions with a hesitation, a stage table no job rewrites, a
+true hint for NS-E301, and the tests that measure every join of a video made in parts. Below is everything merged
+since 0.1.14; each "Not covered" line is a limit the change shipped with.
 
 ### Setup and install
 
@@ -72,6 +73,16 @@ the render. Below is everything merged since 0.1.14; each "Not covered" line is 
   a drive with less free space is refused with NS-E104. A drive whose free space cannot be read never blocks.
   The welcome text now says 60 to 72 GB for a first install and that setup shows the exact number. Not covered:
   the reserve is a stated estimate (twelve weeks of videos at the default pace), not a measurement of your use.
+- Getting a model this install cannot use is refused at once, with its own code (D-36). On an install whose profile
+  has no voice design (or story) model, Settings > Models > Get, Library > Voices > Get voice design model and `ns
+  models get voicedesign` now say NS-E122 ("This model is not made for this install's profile.") with the model and
+  the profile named; before, the page said "Downloading" and then failed with NS-E109, whose hint is about a bad
+  checksum. The refusal comes before anything is downloaded and writes no model state. NS-E109 keeps its meaning (a
+  failed SHA256). A profile that has the files still plans them, and a `cpu-dev` install on the `reference` voice
+  engine is not refused, because it can get voice design. Not covered: shown on a dev install through the route and
+  the command; the toast in the window was not looked at; a `runtime.json` or `manifest.json` that cannot be read
+  decides nothing here (Get goes on as before, D-35); the hint says the voice design and story models need the GPU
+  profile, which is broader than the rule; the Get button is not hidden on such an install.
 
 ### Updates, files and safety
 
@@ -89,6 +100,26 @@ the render. Below is everything merged since 0.1.14; each "Not covered" line is 
   replaced. Not covered: only the enabled flag and the first trigger's time are kept (extra or weekly triggers
   are replaced); the Settings row still says the PC wakes at that time for a task kept off; the first update
   after this release still runs the old re-registration; not tried on a real Task Scheduler.
+- Automatic runs are a switch (nightly-optional, part a). Settings > Schedule > Automatic runs adds the Windows task
+  "Nightshift Daily" at the run time beside it (on) or removes the task and its record (off); the time is kept either
+  way. The top bar, the Queue's countdown card and the Assistant's tonight plan say what Windows has, not what you
+  clicked: "Next run HH:MM", "Runs at HH:MM only while you are signed in" (NS-W205: Windows refused the unattended
+  mode; "Try again" asks for it again) or "Automatic runs off"; the Queue's countdown shows a time only while it is
+  on. A task you delete or disable in Task Scheduler is read as off within a minute, with one note (NS-W207), and left
+  as you set it. If Windows refuses a change, the switch stays where it was (NS-E204). An update, `ns verify --quick`,
+  a rollback and a backup restore never switch it on or off: the update and `--quick` settle the record before an
+  older updater could re-enable a disabled task, and a rollback and a restore leave `config\schedule.json` alone. Two
+  windows changing it at once wait for each other (10 seconds, then NS-E204). A dev install cannot switch it on
+  ("Automatic runs cannot be switched on in a dev install."). Not covered: setup still registers the nightly task, so
+  a first install starts with Automatic runs on, and a Repair or a reinstall that keeps your data switches them back
+  on, until the setup question ships in the next candidate (`OPERATOR.md` says the same). Shown on a dev install only
+  up to the dev-mode refusal (as installed: off; "on at 04:30" answered 409 and changed nothing; a time change while
+  off touched no task; `ns verify --quick` passed with the task unchanged); switching on, deleting the task by hand,
+  an update and a rollback were not run, because they need an engine-test install, and nothing was tried on a real
+  Task Scheduler with the switch. When Windows accepts a change but `config\schedule.json` cannot be written, every
+  page says off (or the old time) while Windows runs the new one, until the file can be written again; there is no
+  browser test of the Settings switch;
+  0.1.14's own updater still re-enables a disabled task if the one `ns verify --quick` look it calls fails.
 - An update saves a copy of the settings files it may rewrite (engine settings, setup answers, install state, the
   nightly time, dashboard settings, channels, formats) as `<folder>.prev-config.zip`, and `ns update --rollback`
   puts them back with the old program. Settings changed after the update are lost on rollback and the result
@@ -135,8 +166,21 @@ the render. Below is everything merged since 0.1.14; each "Not covered" line is 
   a row have failed and the process that started it is gone; a record with no process number counts as dead an
   hour after it was announced; a process that is still alive keeps it held. While it is held for that reason you
   get one morning note with NS-W117 and `studio status` shows a `held:` line. Not covered: nothing is closed or
-  restarted for you while it stays held; a job or night whose owner record is missing or cannot be read either
-  stays held until it can be read again (NS-W117 says so once).
+  restarted for you while it stays held; a job or night whose owner record is missing or cannot be read no longer
+  stays held for ever (see the next entry).
+- Work whose lock file cannot be opened is held for at most an hour, not for ever (lock-bound,
+  `ns_studio/ownership.py`). It stays "running" while its process is running and is not shown to be another
+  program: a process that started after the work was recorded is not its owner, a process number Windows reports as
+  holding the lock file counts as the owner whatever the clocks say (the Restart Manager answer is kept for a minute),
+  and a running process whose start time cannot be read is held too, without proof: its NS-W117 note says the process
+  may be another program and does not tell you to end it. In every other case the hold ends: three failed looks in a row
+  once the process is gone, or an hour after the work was last known to start (a record with no start time counts from
+  when its record or lock file was last written). You get one morning note with NS-W118 ("Nightshift cannot tell
+  whether this work is still running, and no process is known to be running it"), and after the hour the work counts
+  as interrupted: the next start of Nightshift or the next nightly run closes it, and its Queue card says how to
+  continue it (usually Retry). Not covered: work whose own process is still alive stays held for as long as it lives,
+  and Release in the Queue does not reach it (it frees the graphics card only; end that process or restart the PC);
+  shown on an install by making a lock file unreadable with `icacls`, not with a real antivirus or backup program.
 - A file Nightshift saves is no longer written over in place while another program reads it: the diagnostics
   zips, the backup zip and restored files, the config and state files, the job `stage_state.json` and the outbox
   videos and sheets are written beside the file and swapped in whole, and readers retry while Windows refuses an
@@ -192,6 +236,47 @@ the render. Below is everything merged since 0.1.14; each "Not covered" line is 
   "Interrupted". A lock file that cannot be made (5 tries in about 1 s) refuses the
   night with NS-E327 ("Something stopped" on the card) and a note. Not covered: a 0.1.14 nightly job that failed
   before the kill is resumed once; the refusal has no code of its own.
+- Closing the Nightshift Code console any way (its X, the process ended, signing out) gives the graphics card back
+  within one engine monitor pass, so that night's run starts instead of waiting two hours and giving up with NS-E201
+  (F-H47). The launcher sends its own process number with its request for the card; the engine records it with the
+  process's start time and frees the card when that process is gone (a process number reused by another program is not
+  the old one). A console that is open but idle keeps the card as before, a console that was closed while it waited
+  for the card no longer takes it when its turn comes, and the Studio and Assistant holds, and Release in the Queue,
+  work as before. Not covered: not shown on an install: on a dev install the language model is not a graphics-card
+  service, so the card is never recorded as held and no process number is watched (the closing of a real console is
+  for QA on a GPU install; the tests use a stand-in process); the process watched is the launcher's PowerShell, so
+  ending `powershell.exe` alone frees the card under a still-running OpenCode; two Nightshift Code consoles share the
+  owner name `opencode`, so closing either frees the card and the other loses its model.
+- Nightshift Code's first question fits a 16K context (D-34). Setup now writes `config\opencode.json` with the context
+  and output limits of the install (16384 and 4096), the to-do, web fetch, task and skill tools off, a short
+  Nightshift prompt in place of OpenCode's long one, and the model named after the installed file; the read, edit and
+  write tools stay on. Measured with the pinned OpenCode 1.19.5 against a recording stand-in for the language model:
+  the first request is 14,579 characters, about 4,165 tokens at 3.5 characters per token (7,125 at the 0.1.14 ratio of
+  2.046), against a budget of 8,192; 0.1.14's was 15,317 tokens counted by llama.cpp. Every start of the launcher
+  brings an older file up to this (keeping every key you added, and removing the `"patch": false` an earlier build of
+  this release wrote, because in this OpenCode it also switches the edit and write tools off), and takes the context
+  from the number the running engine uses. With a context under 16384 Nightshift Code does not start: it says
+  "Nightshift Code needs 16384 tokens of context; this install has N" before it takes the graphics card; a test
+  install at 8192 is refused, and the nightly run uses that same context, so a bigger one needs more memory for every
+  job. To make Code read-only set `"edit": false` under `"tools"`. Not covered: the token numbers are estimates from
+  characters, and no real model has answered a question under this setup; the install proof ran the pinned OpenCode
+  and the refusal on a dev install (which writes no `opencode.json` of its own, so the file came from setup's own
+  function) and found that the first version of this change had removed the edit and write tools; that is fixed here
+  and measured again with the figures above, but not repeated on an install; setup run again writes the file new and
+  drops keys you added.
+- An interrupted job is described truthfully in every process and for every way it was started. `studio status` and
+  the Dashboard's recovery named the stage after the one the job stopped in (a job that stopped in `policy_text` was
+  shown as "stopped at stage voice") because a process that only reads progress loaded no stage modules; the stage is
+  now named from the job's own complete plan wherever it is asked, with no set-up call. A job is called "the night's
+  run" only when the nightly started it: a job you started yourself (with `studio run`, Run now or a dashboard
+  request) is described as "A job you started yourself was interrupted" in the morning note and on its card, and no
+  nightly run is promised for it; before a Retry card exists, `studio status` names the command that works now
+  (`studio run --resume <id>`) and says when the card will come, and a card settled by `studio run --resume` says that
+  instead of crediting the nightly run. Where a card, the night's note or `OPERATOR.md` promises that the next nightly
+  run continues a job, it now says "while Automatic runs are on" and names the Automatic runs switch. Not covered:
+  cards already on screen keep the words they were written with; the install proof met the old wording and the wrong
+  stage, and these fixes are shown by tests (one per origin: the nightly, `studio run`, Run now, a dashboard request,
+  a series part, a clip) and were not run on an install again.
 
 ### Videos and stories
 
@@ -278,6 +363,60 @@ the render. Below is everything merged since 0.1.14; each "Not covered" line is 
   mark it posted, and "Finish posting" on the posted list opens it again. Before, the video left the screen about
   ten seconds after Approve together with its checklist. Not covered: the Ready tab's number still counts only
   videos to review; there is no browser test of this page in CI.
+- Pausing a channel holds its story jobs on every route (P47, pull request 203 and its follow-ups). A video of a
+  paused channel that is queued, scheduled (Create > Pick a time) or waiting for the engine does not start, also when
+  its time comes; it stays under Working now with "Paused: <channel> is paused since <time>; resume it to release this
+  job" and starts by itself, in its turn, after Resume. A video being made stops before its next step (the step under
+  way is finished first; Cancel stops at once), keeps what it made and continues from that step after the resume; a
+  Create request for several videos keeps the ones still owed (the status says, for example, "(3 videos still to make,
+  the first one half made)") and makes none twice. Retry changed for every Create request for several videos, paused
+  or not: Retry on a failed request now also makes the videos of that request that had not started (a request for
+  five that failed in the second gives four videos of work, not one), once; a second Retry of the same request is
+  refused, and the message after pressing Retry says how many videos it will make. Retry and the Assistant's
+  resume are refused for a paused channel
+  ("'<channel>' is paused. Resume it first."). `studio run --channel <it>` and `studio run --resume <its job>` refuse
+  with the new NS-E330 ("The channel is paused.") and start nothing; a run of every channel leaves it out; a pause
+  typed while a `studio run` works stops it before its next step, recorded failed with NS-E330, and the terminal
+  prints `studio run --resume <job id>`. A video the night was making is continued by the first night after the resume
+  if it started no more than three days before. The Queue's Last night card says how many jobs a pause held ("1 job
+  not started: <channel> is paused"), the Assistant's tonight plan says a held job starts "when <channel> is resumed",
+  an engine start no longer wakes the Dashboard for an overdue job of a paused channel, a profile that cannot be read
+  is not a pause (one warning, the night goes on), and a series part gets its title back after the resume instead of
+  "Queued". Not covered: shown on a fake-services install (two channels, a Short scheduled two minutes ahead, a run of
+  two Shorts: both stayed held past the scheduled time and were made after the resume, one Short per job); the Last
+  night card needs a nightly run and was not exercised; the Create page says "Waiting for the engine" or "Scheduled
+  for <time>" for a held job, not the pause; with `--count`, the videos a paused `studio run` had not started are not
+  made (type the run again); a resume during the same night does not continue the night's job that night, and a job
+  older than three days waits for Retry; Clipper jobs are still accepted for a paused channel; Cancel of a waiting
+  request leaves the half-made job's files in its folder.
+- A job runs the policy gates only when it asked for them, and no job rewrites the stage table (D-stages). Before, a
+  job's plan added `policy_text` to the module-wide table of its format at run time, so in a long-running process (the
+  Dashboard, the nightly) one gated job changed the plan of every later job. The gates and Short combos are now added
+  once when the stage modules load, and a job with the policy off drops them from its own plan: a `--no-policy` job
+  after a gated one has none, and the progress card, the orchestrator and the idea check read the same plan. The job's
+  choice is recorded in `job.json` (`policy`), a resume without a flag keeps it, an explicit `--policy` or
+  `--no-policy` on a resume wins and is recorded, and a folder made by 0.1.14 resumes with the gates when they are
+  available. A resumed clip job no longer gets the story gates (the Clipper has its own metadata check), and
+  calibration has no gates (as in a fresh `studio calibrate` before). Not covered: shown on a dev install in one
+  process (the table the same after every call and after a fake job, `--resume --dry-run` listing no gate); nothing
+  here changes what the gates check.
+- Assembled audio keeps its full sample precision (audio-fmt). `assemble_audio` joined each voice piece to a silence
+  in a filter graph that named the rate and channel layout but not the sample format, and FFmpeg settled the join on a
+  coarse one: every sample of `audio_raw.wav` was a multiple of 256 and a pure test tone through it left a steady
+  residual of 0.0184 of its size (rms; 0.0475 after loudness normalisation), which could add hiss or grit to quiet
+  passages. Every chain now names a float sample format: the residual is 0.00009 (0.00024 after loudness
+  normalisation) and most samples are no longer multiples of 256. The master, the Shorts cut from it and the Shorts
+  rendered directly all go through that function, also when it assembles in parts. Not covered: not shown on the
+  fake-services install, where the fake voice does not exercise the coarse join and the job's `audio_raw.wav` came out
+  byte-identical to a 0.1.14 job's; the proof is the tone test, which needs FFmpeg, and no real narration was
+  compared.
+- The NS-E301 hint says only the retry the product makes (F-H43, D-37). It promised "The job will retry once" although
+  a timeout and a refused request never were. It now reads: a story job tries once more after a few seconds when the
+  model sent a server error, the connection dropped or was refused, or the answer was empty; a timeout or a request
+  the model rejects (a 4xx answer) is not tried again, so run the job again once the model answers. The retry itself
+  did not change. Shown on the install through the Assistant's `explain_error` and the error registry. Not covered:
+  the Dashboard assistant, `ns verify` and `ns tune`'s benchmark raise NS-E301 with no retry at all (the hint names
+  the story job); the retry is shown by tests, not on an install.
 
 ### Clips and the Assistant
 
@@ -298,6 +437,14 @@ the render. Below is everything merged since 0.1.14; each "Not covered" line is 
   nothing to confirm." Not covered: `clone_voice` checks that the recording exists, not its length;
   `import_analytics` checks the file name and size, not the CSV columns; the `start_story_job` card still prints
   the raw format id (`shorts_only`).
+- With "remove fillers" on, a clip whose speaker says "um" or "uh" gets its captions, instead of failing at captions
+  (F-H95, D-38). The setting drops `um`, `uh`, `uhm`, `umm`, `er`, `erm` and `hmm` and keeps "like"; the captions kept
+  their words but were given the speaker list of all the words, so the stage stopped with "speaker_of must have one
+  entry per word". Both lists now come from the same kept words, so each caption keeps its own speaker's colour and
+  the break between speakers lands on the right word, a clip that is only hesitations ends with no dialogue and no
+  failure, and a cleaned spelling still lines up with its word. The setting is off by default. Not covered: shown on a
+  fake-services install with a prepared transcript (clip 1 covered three "um" and three "like": `c1.ass` has no "um"
+  and keeps "like"); no real recording or recogniser was run, so F-H95 and F-H127 stay open for QA's run.
 
 ### Engine-test installs and developer switches
 
@@ -320,6 +467,21 @@ the render. Below is everything merged since 0.1.14; each "Not covered" line is 
   target; cadence and notifications still count test outputs; a `runtime.json` saved by this version cannot be loaded
   by 0.1.14 (every one carries the `tiny_story` field), and the hop from 0.1.14 saves no settings copy; the dashboard cannot set the switch (it appears only in the
   settings data).
+- A dev or engine-test install can check for and take its update from a fake GitHub (H-15.9). The environment variable
+  `NS_RELEASE_SOURCE` names an `http` address on this PC (127.0.0.1, localhost or ::1), and every request of the
+  updater (`ns update --check` and `--github`, the Dashboard's check and Update button, the weekly check) then goes
+  there, and the zip and its checksum must come from the same host and port. It is read in one place and honoured only
+  on a dev install or an engine-test install (`tiny_story`, `fake_footage` or the fake voice engine). On any other
+  install, or with an address that is not on this PC, or with a `runtime.json` that cannot be read, it is refused with
+  NS-E704 (its detail says which reason and the way out) and no server is asked; the weekly check tells you once, by
+  notification or a Dashboard note, and again when the reason changes. A prerelease from the test source is still
+  refused (NS-E701), and without the variable nothing changes. `docs/DEV_MODE.md` describes it and
+  `proofs/_fakes/github.py` is the fake server. Not covered: the install proof ran the checks only, against that fake
+  serving the block's update zip (unset: GitHub is asked and 0.1.14 is the latest; set: one request to the fake; a
+  stand-in file named rc3: "Version 0.1.15-rc3 is available"; an address that is not on this PC, and a copy of the
+  config with every test switch off: NS-E704, no request); applying an update from the fake and rolling back were not
+  run, because they need the previous candidate installed first; a redirect to another host is followed once before it
+  is refused, and its answer is discarded.
 
 ### Behind the scenes
 
@@ -345,6 +507,14 @@ the render. Below is everything merged since 0.1.14; each "Not covered" line is 
   procedure and first-run wording in `OPERATOR.md`) and the Clipper spec text were brought in line with the code;
   change requests that were applied elsewhere were marked closed, stale ones rejected, and CR-H106-1 filed; the finalization lists carry the boxes ticked on the 0.1.14
   installs. No product behaviour.
+- Test only (H-5b): a new test renders a Short, a chapter and a whole master in parts with the real FFmpeg and
+  measures every join (each frame once and in order, an even clock, no gap or click in the sound, card frames, a
+  caption across a join); on the install proof the 695.6-second master (20,869 frames) and its four Shorts have every
+  frame step at exactly 1/30 s. Its sound measurement is what found the audio precision problem fixed above. No
+  product code changed.
+- Test only (B-flaky): the two uv resolver tests no longer see the stage-1 uv of the PC they run on, so
+  `tests/test_uv_resolver.py` gives the same answer on a PC with Nightshift's bootstrap uv as on the CI runner; the
+  `seed_output` id flake was confirmed gone (200 passes of the one test). No product code changed.
 
 ## [0.1.14] - 2026-11-09
 

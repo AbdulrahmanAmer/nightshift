@@ -11,6 +11,13 @@ system drops when the process ends can (`ns_common.singleton.FileLock`, the one 
   `done`, `failed`, `interrupted`. The OS releases the lock with the process, so a recycled pid can never
   pass for a live owner. No column was added to studio.db: owner info lives beside the job, so nothing
   needs a migration.
+* A lock that cannot be looked at (its file cannot be opened: an antivirus, a lost permission) is the one
+  place where the record's pid is asked, and there a pid alone proves nothing: Windows hands a dead process's
+  pid to the next one. So the work is held without a bound only while that pid is alive AND its process
+  started no later than the record says the work did (`_unprobed`, NS-W117, cleared by ending that process).
+  Every other state of such a lock (no pid, a pid that cannot be checked, a record that cannot be read) ends
+  `UNPROBED_UNKNOWN_PID_S` after the last time known from disk, with NS-W118; a pid that is gone or reused
+  ends after `UNPROBED_LIMIT` looks or at that same time, whichever comes first.
 * `liveness` is `live` while the lock is held (or a job was announced a moment ago and has not taken it
   yet), `dead` when a run or job that said `running` has no holder, `ended` after a clean end,
   `interrupted` once `recover` has closed it, and `unknown` for rows with no owner file (studio.db written
@@ -51,7 +58,7 @@ from ns_common.errors import describe
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.singleton import AlreadyRunning, FileLock
-from ns_studio.errors import UNEXPECTED, StudioError
+from ns_studio.errors import PAUSED, UNEXPECTED, StudioError
 
 OWNERS = "owners"
 INTERRUPTED_CODE = "NS-E328"
@@ -60,12 +67,25 @@ INTERRUPTED_HINT = (
     "it stopped: the finished stages are kept. If it happens every night, check the PC's sleep and restart "
     "settings."
 )
+#: The hint for a job that was not the nightly's (Run now, a scheduled request, `studio run`): no night's run
+#: was interrupted. The words are the dashboard's own for its interrupted jobs (`ns_dashboard.jobs`).
+INTERRUPTED_HINT_BY_HAND = (
+    "Nightshift or the PC restarted while this job ran. Press Retry from where it stopped: the finished "
+    "stages are kept. If it happens every night, check the PC's sleep and restart settings."
+)
+#: The `origin` of a record whose job the nightly run made. Every other origin (`manual`: Run now, a scheduled
+#: request, `studio run`, a series part) is a job the owner started: no text may call it the night's run.
+NIGHTLY_ORIGIN = "daily"
 #: A job announced by `make_job` is given this long to take its lock before it is called dead.
 CREATE_GRACE_S = 180.0
 #: Rows no owner file exists for (written by 0.1.0 to 0.1.14): younger than this they may still be running.
 LEGACY_IN_PROGRESS_H = 12
 #: The nightly resumes an interrupted job of its own up to this old; an older one waits for Retry.
 RESUME_WITHIN_DAYS = 3
+# Since Automatic runs became a switch (Settings), a nightly run comes only while it is on. A card's words are
+# fixed when it is written, so every sentence that promises "the next nightly run" carries this condition.
+WHILE_NIGHTLY_ON = "A nightly run comes only while Automatic runs are on in Settings."
+IF_NIGHTLY_ON = " (while Automatic runs are on in Settings)"  # the same condition inside a sentence
 #: Records of runs and jobs that ended cleanly are kept this long (they only explain `studio status`).
 KEEP_ENDED_DAYS = 30
 #: A lock another process really holds is retried this often before `hold` gives up (a liveness probe takes
@@ -81,13 +101,28 @@ OPEN_RETRY_WAITS_S = (0.1, 0.2, 0.3, 0.4)
 #: The same for a liveness probe, which is asked often (every `/api/status`) and must stay quick.
 PROBE_RETRY_WAITS_S = (0.05, 0.1)
 #: A lock that cannot be probed at all (an `OSError` that lasts: an antivirus or backup tool holding the file,
-#: a permission the folder lost) counts as HELD, so nobody closes work that may be running. That has a bound:
-#: after this many probes in a row that failed, and the owner's pid (from its record) is gone, the owner is
-#: dead; when the record has no pid the bound is `UNPROBED_UNKNOWN_PID_S` after the job was announced. A pid
-#: that is still alive keeps it held, with a coded note (`UNPROBED_CODE`) saying why work is held.
+#: a permission the folder lost) counts as HELD, so nobody closes work that may be running. Every such hold
+#: has a bound but one (`_unprobed` is the one place that decides):
+#: * the record's pid is alive and its process started no later than the record's own time plus
+#:   `PID_START_SLACK_S`, or its start time cannot be read, or Windows says it has the lock file open: held
+#:   for as long as that process lives, with the note `UNPROBED_CODE`;
+#: * the pid is gone, or alive but started later and not known to have the file open (a reused pid): dead
+#:   after `UNPROBED_LIMIT` failed probes in a row in this process, or at the time bound below, whichever
+#:   comes first (a process that asks once, such as the nightly's `recover`, never reaches the count);
+#: * anything else (no pid, a pid that cannot be checked, no readable record): dead `UNPROBED_UNKNOWN_PID_S`
+#:   after the last time known from disk (the record's `started_at`/`announced_at`, else the record file's
+#:   mtime, else the lock file's), with the note `UNPROBED_UNOWNED_CODE`. The clock is on disk because most
+#:   askers live for seconds (`studio status`, `recover`): a clock in memory would start again in each.
 UNPROBED_LIMIT = 3
 UNPROBED_UNKNOWN_PID_S = 3600.0
 UNPROBED_CODE = "NS-W117"
+UNPROBED_UNOWNED_CODE = "NS-W118"
+#: Record times are written in whole seconds, after the process started: a process that started up to this
+#: long after the record's time is still its writer.
+PID_START_SLACK_S = 2.0
+#: What Windows said about who has a lock file open (`_pid_holds`, a call that can take seconds) is kept
+#: this long per owner, so a status page that asks every few seconds does not repeat it.
+PID_HOLDS_KEEP_S = 60.0
 #: `recover` waits this long for another process that is closing the same things (the engine and the nightly
 #: start together after a power cut), then scans again: the nightly must not plan before the job is closed.
 RECOVER_WAIT_S = 20.0
@@ -95,6 +130,10 @@ OPEN_STATES = ("starting", "running")
 #: Whose dead jobs the Queue offers (a clip, a series part or a calibration has its own way back).
 STORY_ORIGINS = ("daily", "manual")
 OFFER_SOURCE = "nightly_recovery"
+#: The `owner` of a record the nightly closed because the job's channel was paused while it ran (P47): its
+#: Queue card says so, with NS-E330, instead of naming a restart that did not happen.
+PAUSED_OWNER = "its channel was paused"
+PAUSED_REASON = "its channel is paused"  # `resume_problem` of a job whose channel is paused
 
 Liveness = Literal["live", "dead", "interrupted", "ended", "unknown"]
 
@@ -227,28 +266,129 @@ def _acquire(lock: FileLock, waits: Sequence[float] | None = None) -> None:
     lock.acquire()
 
 
-#: Per owner (home + id), probes in a row whose lock could not be opened, and whether the owner has been told.
+#: Per owner (home + id): [failed probes in a row, the codes the owner was told, when the first of them
+#: failed, the live pid that keeps it held (None when none does), the kept answer of `_pid_holds` as
+#: (pid, answer, when), and for a live pid that could not be proven the owner the name of its program].
+#: A good probe removes the entry.
 _UNPROBED: dict[tuple[str, str], list[Any]] = {}
 
 
-def _pid_alive(pid: int) -> bool:
-    """True while a process with this pid exists. Tests replace this; a check that itself fails says alive."""
-    if pid == os.getpid():
-        return True
+def _pid_alive(pid: int) -> bool | None:
+    """True while a process with this pid exists, False when none does, None when that cannot be checked.
+
+    Never "alive" and never "gone" because a check failed: `_unprobed` bounds an unknown by time. tasklist
+    (`pid_alive`) answers "no process" also when it could not be run or timed out, so its "no" counts only
+    when psutil says the same; when psutil is missing or fails, "no" is "cannot tell". Tests replace this.
+    """
     try:
         from ns_supervisor.update_job import pid_alive
 
-        return bool(pid_alive(pid))
-    except Exception:  # noqa: BLE001 - cannot tell: the owner may be alive (fail closed)
-        return True
+        if pid_alive(pid):
+            return True
+        import psutil
+
+        return None if psutil.pid_exists(pid) else False
+    except Exception:  # noqa: BLE001 - cannot tell
+        return None
+
+
+def _pid_started(pid: int) -> datetime | None:
+    """When the process that has this pid now was started; None when there is none or it cannot be read."""
+    try:
+        import psutil
+
+        return datetime.fromtimestamp(psutil.Process(pid).create_time(), UTC)
+    except Exception:  # noqa: BLE001 - no psutil, no such process, access denied: not known
+        return None
+
+
+def _pid_holds(pid: int, lock: Path) -> bool | None:
+    """Whether the process with this pid has `lock` open (the holder of an owner lock keeps its file open
+    for as long as it holds it): True, False, or None when Windows will not say.
+
+    Asked of the Windows Restart Manager, which lists the processes using a file without opening it. It
+    answers for a file another program is holding (a scan, a backup) and refuses (None) for one this account
+    has lost the right to read; None too off Windows. It can take a second or two, so `_unprobed` asks only
+    before it would call a live process a reused pid.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class Unique(ctypes.Structure):
+            _fields_ = (("pid", wintypes.DWORD), ("start", wintypes.FILETIME))
+
+        class Info(ctypes.Structure):
+            _fields_ = (
+                ("process", Unique),
+                ("app", wintypes.WCHAR * 256),
+                ("service", wintypes.WCHAR * 64),
+                ("kind", ctypes.c_int),
+                ("status", wintypes.ULONG),
+                ("session", wintypes.DWORD),
+                ("restartable", wintypes.BOOL),
+            )
+
+        rm = ctypes.WinDLL("rstrtmgr")  # type: ignore[attr-defined]  # Windows only; else the except below
+        session = wintypes.DWORD()
+        if rm.RmStartSession(ctypes.byref(session), 0, ctypes.create_unicode_buffer(33)):
+            return None
+        try:
+            names = (wintypes.LPCWSTR * 1)(str(lock))
+            if rm.RmRegisterResources(session, 1, names, 0, None, 0, None):
+                return None
+            needed, got, reasons = wintypes.UINT(), wintypes.UINT(64), wintypes.DWORD()
+            infos = (Info * 64)()
+            if rm.RmGetList(session, ctypes.byref(needed), ctypes.byref(got), infos, ctypes.byref(reasons)):
+                return None  # access denied, or more users than fit: not known
+            return any(infos[i].process.pid == pid for i in range(got.value))
+        finally:
+            rm.RmEndSession(session)
+    except Exception:  # noqa: BLE001 - not Windows, no Restart Manager: not known
+        return None
+
+
+def _pid_name(pid: int) -> str | None:
+    """The program name of the process with this pid (`python.exe`), None when it cannot be read."""
+    try:
+        from ns_supervisor.control import image_name
+
+        return image_name(pid)
+    except Exception:  # noqa: BLE001 - not known
+        return None
 
 
 def unprobed_message(owner_id: str, pid: int | None = None) -> str:
     """The sentence the owner reads (morning note, `studio status`) while `owner_id` is held only because its
-    lock cannot be probed: the code's message and hint, and which work it is."""
-    d = describe(UNPROBED_CODE)
-    who = f" (process {pid} is still running)" if pid else ""
-    return f"{UNPROBED_CODE}: {d.message} {owner_id}{who}. {d.hint}"
+    lock cannot be probed: the code's message and hint, and which work it is.
+
+    NS-W117 when a live process is known to own it (`pid`, or the one `_unprobed` found), with how to clear
+    it; NS-W118 when none is, which says the hold ends by itself within the hour. When the live process could
+    not be proven to be the owner (its start time cannot be read) the note says so, names its program and
+    does not tell the owner to end it: it may be another program that was given the same number.
+    """
+    entry = next((st for (_, o), st in _UNPROBED.items() if o == owner_id and st[3]), None)
+    if pid is None and entry is not None:
+        pid = entry[3]
+    if pid and entry is not None and entry[3] == pid and entry[5]:
+        d = describe(UNPROBED_CODE)
+        return (
+            f"{UNPROBED_CODE}: {d.message} {owner_id} (process {pid}, {entry[5]}, has the number this work "
+            "recorded and is running, but Nightshift cannot read when it started, so it may be another "
+            f"program). {d.hint} Do not end process {pid} unless you know it is Nightshift's: restarting the "
+            "PC clears this safely either way. Release in the Queue does not clear it (it frees the graphics "
+            "card only)."
+        )
+    if pid:
+        d = describe(UNPROBED_CODE)
+        return (
+            f"{UNPROBED_CODE}: {d.message} {owner_id} (process {pid} is still running). {d.hint} Ending "
+            f"process {pid} in Task Manager clears it too: the next start of Nightshift or the next nightly "
+            "run then closes it as interrupted. Release in the Queue does not clear it (it frees the "
+            "graphics card only)."
+        )
+    d = describe(UNPROBED_UNOWNED_CODE)
+    return f"{UNPROBED_UNOWNED_CODE}: {d.message} {owner_id}. {d.hint}"
 
 
 def unprobed_owners(paths: Paths) -> list[str]:
@@ -256,44 +396,106 @@ def unprobed_owners(paths: Paths) -> list[str]:
     return sorted(o for (home, o), st in _UNPROBED.items() if home == str(paths.home) and st[0] > 0)
 
 
-def _unprobed(paths: Paths, owner_id: str) -> bool:
+def _unprobed(paths: Paths, owner_id: str, handed: Mapping[str, Any] | None = None) -> bool:
     """The answer of `lock_held` when the lock cannot be probed: True (held) or, once bounded, False (dead).
 
-    Dead when the record's pid is gone after `UNPROBED_LIMIT` failed probes in a row, or (a record with no
-    pid) `UNPROBED_UNKNOWN_PID_S` after it was announced. While it stays held the owner is told once, in a
-    coded morning note (`UNPROBED_CODE`), and `studio status` lists it.
+    The one place that decides it, for every state the record can be in (`handed` is the record `liveness`
+    had, used when the file can no longer be read: missing, locked or half written):
+
+    * its pid is this process: held exactly while this process holds the work (`_HELD`), else gone;
+    * its pid is alive and that process started no later than the record's newest time (`started_at`,
+      `announced_at`) plus `PID_START_SLACK_S`: held, with no bound, and the owner is told once per process
+      with NS-W117 (which process, and that ending it or restarting the PC clears it). Live work is never
+      released here;
+    * its pid is alive and its start time cannot be read: held the same way when its program is Python
+      (every owner is) or has no readable name; the note then says it may be another program and does not
+      tell the owner to end it. An unreadable start time never shortens the life of work that may be
+      running. A program with another name is not Nightshift's: a reused pid, gone;
+    * its pid is alive but started later than that: before it is called a reused pid, Windows is asked
+      whether that process has the lock file open (`_pid_holds`; the answer is kept `PID_HOLDS_KEEP_S`).
+      It has: held as above, whatever the clocks say (a clock set back after the process started must not
+      close live work). It has not, or Windows will not say: the pid was given to another program, gone;
+    * its pid is gone, or reused as above: dead after `UNPROBED_LIMIT` failed probes in a row in this
+      process, or at the time bound, whichever is first;
+    * no pid, a pid nothing can be asked about, a live pid with no time in the record to compare with, no
+      record: unknown. Held until `UNPROBED_UNKNOWN_PID_S` after the last known time, then dead; the owner
+      is told once per process with NS-W118 (it ends by itself; `recover` then closes the work).
+
+    The last known time is on disk, so a process that lives for seconds decides the same as one that has
+    watched for an hour: the record's newest time, else the record file's mtime, else the lock file's
+    (`stat` works where opening does not). Only when none of them can be read does it count from this
+    process's first failed probe. Limit: the times are wall-clock. When Windows will not say who has the
+    lock file open (a file this account may not read), a clock set back by more than the slack between a
+    process's start and its record still makes it look reused: it is closed as interrupted while it runs;
+    `_take` refuses a second start for as long as the file cannot be opened.
     """
     key = (str(paths.home), owner_id)
-    state = _UNPROBED.setdefault(key, [0, False])
+    now = _now()
+    state = _UNPROBED.setdefault(key, [0, set(), now, None, None, None])
     state[0] += 1
-    rec = read_record(paths, owner_id) or {}
+    rec = read_record(paths, owner_id) or handed or {}
     pid = rec.get("pid")
     pid = pid if isinstance(pid, int) and pid > 0 else None
-    if pid is not None:
-        gone = not _pid_alive(pid)
-    else:
-        announced = _parse(rec.get("announced_at")) or _parse(rec.get("started_at"))
-        gone = announced is not None and (_now() - announced).total_seconds() > UNPROBED_UNKNOWN_PID_S
-    if gone and (state[0] >= UNPROBED_LIMIT or pid is None):
+    times = [t for t in (_parse(rec.get(k)) for k in ("started_at", "announced_at")) if t is not None]
+    known = max(times) if times else None
+    alive: bool | None = None  # True: provably its owner; False: gone or reused; None: cannot tell
+    unsure: str | None = None  # the program of a live pid that is held without proof that it is the owner
+    if pid == os.getpid():
+        with _HELD_GUARD:
+            alive = (str(owners_dir(paths)), owner_id) in _HELD
+    elif pid is not None:
+        started = _pid_started(pid)
+        exists = True if started is not None else _pid_alive(pid)
+        if exists is False:
+            alive = False
+        elif exists and started is None:
+            name = _pid_name(pid)  # a process is there: never cut short, unless it is plainly not ours
+            alive = name is None or "python" in name.lower()
+            unsure = name or "a program whose name cannot be read"
+        elif started is not None and known is not None:
+            alive = (started - known).total_seconds() <= PID_START_SLACK_S
+            if not alive:  # looks reused: the lock file it holds open outranks the comparison of clocks
+                kept = state[4]
+                if kept is None or kept[0] != pid or abs((now - kept[2]).total_seconds()) > PID_HOLDS_KEEP_S:
+                    kept = state[4] = (pid, _pid_holds(pid, lock_path(paths, owner_id)), now)
+                alive = kept[1] is True
+    state[3] = pid if alive else None
+    state[5] = unsure if alive else None
+
+    def tell(code: str) -> None:
+        if code not in state[1]:
+            state[1].add(code)
+            with contextlib.suppress(Exception):  # a note must never make the probe fail
+                leave_note(paths, None, unprobed_message(owner_id, state[3]))
+
+    if alive:
+        tell(UNPROBED_CODE)
+        return True
+    last = known
+    for f in (record_path(paths, owner_id), lock_path(paths, owner_id)):
+        if last is None:
+            with contextlib.suppress(Exception):
+                last = datetime.fromtimestamp(f.stat().st_mtime, UTC)
+    if last is None:
+        last = state[2]
+    if (now - last).total_seconds() > UNPROBED_UNKNOWN_PID_S:
         return False
-    if gone:
-        return True  # its process is gone: a probe or two more settles it, nothing to tell the owner
-    if not state[1]:
-        state[1] = True
-        with contextlib.suppress(Exception):  # a note must never make the probe fail
-            leave_note(paths, None, unprobed_message(owner_id, pid))
+    if alive is False:
+        return state[0] < UNPROBED_LIMIT  # a probe or two more settles it: nothing to tell the owner
+    tell(UNPROBED_UNOWNED_CODE)
     return True
 
 
-def lock_held(paths: Paths, owner_id: str) -> bool:
+def lock_held(paths: Paths, owner_id: str, rec: Mapping[str, Any] | None = None) -> bool:
     """True while some process (this one too) holds the lock of `owner_id`, or when it cannot be probed.
 
     Fails closed, with a bound: an `OSError` while looking at or opening the lock file (another program holds
     it, the folder lost a permission) is "held", never "free", so `liveness` says "live" and nobody closes
     work that may be running: `recover` leaves it open for its next call, the planner (`in_progress`, cadence)
-    counts it, `run_state` says running and `studio status` lists it as working. The bound is `_unprobed`: the
-    owner's process gone (its pid, from its record) after `UNPROBED_LIMIT` failed probes in a row means dead,
-    and while it is held for this reason the owner sees the coded note `NS-W117`.
+    counts it, `run_state` says running and `studio status` lists it as working. The bound is `_unprobed`
+    (which gets `rec`, the record the caller had, for when the file can no longer be read): only a live
+    process that provably started the work keeps it held for good (note `NS-W117`); every other state ends
+    within `UNPROBED_UNKNOWN_PID_S` of its last known time (note `NS-W118`).
     """
     path = lock_path(paths, owner_id)
     key = (str(paths.home), owner_id)
@@ -302,7 +504,7 @@ def lock_held(paths: Paths, owner_id: str) -> bool:
             _UNPROBED.pop(key, None)
             return False
     except OSError:
-        return _unprobed(paths, owner_id)
+        return _unprobed(paths, owner_id, rec)
     probe = FileLock(path)
     try:
         _acquire(probe, PROBE_RETRY_WAITS_S)  # a file that cannot be opened for a moment is not "not held"
@@ -310,14 +512,20 @@ def lock_held(paths: Paths, owner_id: str) -> bool:
         _UNPROBED.pop(key, None)
         return True
     except OSError:
-        return _unprobed(paths, owner_id)  # could not look: held, within the bound
+        return _unprobed(paths, owner_id, rec)  # could not look: held, within the bound
     probe.release()
     _UNPROBED.pop(key, None)
     return False
 
 
 def liveness(paths: Paths, owner_id: str, rec: Mapping[str, Any] | None = None) -> Liveness:
-    """Whether `owner_id` has a live owner, from its record and its lock (see the module note)."""
+    """Whether `owner_id` has a live owner, from its record and its lock (see the module note).
+
+    A record that is missing or cannot be read when this starts is `unknown`, not live: its callers bound it
+    by age (`LEGACY_IN_PROGRESS_H`, in `in_progress`, `run_state` and `_recover_legacy`), so the lock is not
+    asked. A record this call did get is passed on to `lock_held`, which needs it when the lock cannot be
+    probed and the file can no longer be read.
+    """
     rec = rec if rec is not None else read_record(paths, owner_id)
     if rec is None:
         return "unknown"
@@ -326,7 +534,7 @@ def liveness(paths: Paths, owner_id: str, rec: Mapping[str, Any] | None = None) 
         return "interrupted"
     if state not in OPEN_STATES:
         return "ended"
-    if lock_held(paths, owner_id):
+    if lock_held(paths, owner_id, rec):
         return "live"
     announced = _parse(rec.get("announced_at"))
     if (
@@ -366,8 +574,9 @@ def job_info(paths: Paths, job_id: str) -> dict[str, Any]:
 def reached_stage(paths: Paths, job_id: str, fmt: str | None) -> str | None:
     """The stage a job stopped at: the first stage of its plan that `stage_state.json` does not call done.
 
-    The plan is the one `FORMAT_STAGES` holds for the job's format (an owner script or a series part runs its
-    own). None when the job has no plan; the last stage when all of them finished (the kill came at the end).
+    The plan is the one the job runs (`orchestrator.stage_names`: an owner script or a series part runs its
+    own, a job made without the policy gates has none). None when the job has no plan; the last stage when all
+    of them finished (the kill came at the end).
     """
     try:
         entries = json.loads((paths.job_dir(job_id) / "stage_state.json").read_text(encoding="utf-8"))
@@ -375,9 +584,9 @@ def reached_stage(paths: Paths, job_id: str, fmt: str | None) -> str | None:
     except (OSError, ValueError, AttributeError):
         done = set()
     try:
-        from ns_studio.orchestrator import FORMAT_STAGES, plan_format
+        from ns_studio.orchestrator import stage_names
 
-        names = list(FORMAT_STAGES.get(plan_format(fmt or "", paths.job_dir(job_id))) or [])
+        names = stage_names(fmt or "", paths.job_dir(job_id))
     except Exception:  # noqa: BLE001 - a plan that cannot be read only costs the stage name
         names = []
     for name in names:
@@ -669,15 +878,75 @@ def _our_row(rows: Sequence[Any]) -> Any | None:
     return None
 
 
-def _card_text(stage: str | None, resume: str, reason: str | None = None) -> str:
+def _card_text(
+    stage: str | None,
+    resume: str,
+    reason: str | None = None,
+    owner: str | None = None,
+    origin: str = NIGHTLY_ORIGIN,
+    by: str = "nightly",
+) -> str:
+    """The words of an interrupted job's Queue card. Three things are said, each from its own fact:
+
+    - what was interrupted, from who made the job (`origin`): the night's run only for a job of the nightly
+      run; a job the owner started (Run now, a scheduled request, `studio run`) stopped "while this job ran",
+      and nothing promises it a nightly run, because the nightly continues only its own jobs;
+    - who continued a job that has finished since (`by`): the nightly run, or `studio run --resume` by hand;
+    - the cause, from who stopped it last (`owner`): a pause, or a dead process;
+    - the way back, from why it waits NOW (`resume`, `reason`), whatever stopped it first. A job whose channel
+      is paused cannot be retried (Retry answers 409 `channel_paused`), so its card never says "press Retry"
+      without "after the resume", and it says that the first nightly run after the resume continues it. The
+      sentences stay true when the owner pauses or resumes later, because nothing rewrites a card then.
+    """
     at = f"Interrupted at {stage}" if stage else "Interrupted"
-    stopped = f"{at}: the PC or Nightshift stopped during the night's run."
-    if resume == "pending":
-        return f"{stopped} The next nightly run continues it, or press Retry."
+    cause = "its channel was paused" if owner == PAUSED_OWNER else "the PC or Nightshift stopped"
+    nightly = origin == NIGHTLY_ORIGIN
+    during = "during the night's run" if nightly else "while this job ran"
+    stopped = f"{at}: {cause} {during}."
     if resume == "resumed":
+        if by == "hand":
+            return f"{stopped} It was continued with studio run --resume and it finished."
         return f"{stopped} The nightly run continued it and it finished."
+    if not nightly:
+        why = f" ({reason})" if reason else ""
+        return f"{stopped} Press Retry to continue it{why}."
+    if reason == PAUSED_REASON:
+        since = "" if owner == PAUSED_OWNER else " Its channel was paused after that."
+        return (
+            f"{stopped}{since} Resume the channel: the next nightly run then continues it, if the job "
+            f"started no more than {RESUME_WITHIN_DAYS} days before that run; or press Retry after the "
+            f"resume. {WHILE_NIGHTLY_ON}"
+        )
+    if resume == "pending":
+        return (
+            f"{stopped} The next nightly run continues it, or press Retry (if its channel is paused by then, "
+            f"both wait for the resume). {WHILE_NIGHTLY_ON}"
+        )
     why = f" ({reason})" if reason else ""
     return f"{stopped} Press Retry to continue it{why}."
+
+
+def _card_error(
+    stage: str | None, owner: str | None, reason: str | None, origin: str = NIGHTLY_ORIGIN
+) -> dict[str, Any]:
+    """The code and hint of the card: NS-E330 when a pause stopped the job or holds it now (its hint says to
+    resume the channel first), else NS-E328 (its hint says to press Retry, which then works). The NS-E328 hint
+    names the night's run only for a job of the nightly run (`origin`)."""
+    if owner == PAUSED_OWNER or reason == PAUSED_REASON:
+        return {"code": PAUSED, "hint": describe(PAUSED).hint, "stage": stage}
+    hint = INTERRUPTED_HINT if origin == NIGHTLY_ORIGIN else INTERRUPTED_HINT_BY_HAND
+    return {"code": INTERRUPTED_CODE, "hint": hint, "stage": stage}
+
+
+def _origin_of(rec: Mapping[str, Any]) -> str:
+    """Who made the job of an owner record or of a card's `interrupted` block: `daily` or `manual`.
+
+    A record always says (`hold` and `announce_job` write it). A card written before the key existed does
+    not: there a `run_id` tells, because only the nightly run gives its jobs one."""
+    origin = rec.get("origin")
+    if isinstance(origin, str) and origin:
+        return origin
+    return NIGHTLY_ORIGIN if rec.get("run_id") else "manual"
 
 
 def _write_card(
@@ -701,9 +970,10 @@ def _card_result(
 ) -> dict[str, Any]:
     return {
         "studio_job_ids": [job_id],
-        "error": {"code": INTERRUPTED_CODE, "hint": INTERRUPTED_HINT, "stage": stage},
+        "error": _card_error(stage, rec.get("owner"), reason, _origin_of(rec)),
         "interrupted": {
             "stage": stage,
+            "origin": _origin_of(rec),
             "run_id": rec.get("run_id"),
             "owner": rec.get("owner") or "gone",
             "resume": resume,
@@ -731,7 +1001,7 @@ def offer_job(
     if mine is None and rows:
         return None
     result = _card_result(job_id, stage, rec, resume, reason)
-    message = _card_text(stage, resume, reason)
+    message = _card_text(stage, resume, reason, rec.get("owner"), _origin_of(rec))
     stamp = _iso(when)
     if mine is not None:
         _write_card(db, str(mine["job_id"]), "failed", message, result, finished=stamp)
@@ -775,8 +1045,11 @@ def _settle(
     reason: str | None = None,
     failure: tuple[str, str] | None = None,
     output_ids: Sequence[str] | None = None,
+    by: str = "nightly",
 ) -> None:
-    """Rewrite the card of an interrupted job after the nightly tried to continue it (no card, no change)."""
+    """Rewrite the card of an interrupted job after somebody tried to continue it (no card, no change).
+
+    `by` is who: the nightly run (it continues only its own jobs), or `hand` for `studio run --resume`."""
     mine = _our_row(_rows_for(db, job_id))
     if mine is None:
         return
@@ -791,7 +1064,10 @@ def _settle(
         interrupted["reason"] = reason
     result["interrupted"] = interrupted
     stage = interrupted.get("stage")
-    message = _card_text(stage, resume, reason)
+    origin = _origin_of(interrupted)
+    message = _card_text(stage, resume, reason, interrupted.get("owner"), origin, by)
+    if resume == "needs_retry":  # the code and hint follow the reason it waits now, like the words
+        result["error"] = _card_error(stage, interrupted.get("owner"), reason, origin)
     if status == "done":
         result.pop("error", None)
         result["output_ids"] = list(output_ids or [])
@@ -807,9 +1083,10 @@ def _settle(
     _write_card(db, str(mine["job_id"]), status, message, result, finished=_iso())
 
 
-def settle_resumed(db: SqlDb, job_id: str, output_ids: Sequence[str]) -> None:
-    """The nightly continued the job and it finished: its card is done, with the outputs."""
-    _settle(db, job_id, "done", "resumed", output_ids=output_ids)
+def settle_resumed(db: SqlDb, job_id: str, output_ids: Sequence[str], *, by: str = "nightly") -> None:
+    """The job was continued and it finished: its card is done, with the outputs, and says who continued it
+    (`by`: the nightly run, or `hand` for `studio run --resume`)."""
+    _settle(db, job_id, "done", "resumed", output_ids=output_ids, by=by)
 
 
 def settle_failed(db: SqlDb, job_id: str, code: str, detail: str) -> None:
@@ -900,9 +1177,9 @@ def job_finished(paths: Paths, db: SqlDb, job_id: str, fmt: str | None = None) -
         entries = None
     names: list[str] = []
     try:
-        from ns_studio.orchestrator import FORMAT_STAGES, plan_format
+        from ns_studio.orchestrator import stage_names
 
-        names = list(FORMAT_STAGES.get(plan_format(fmt or "", paths.job_dir(job_id))) or [])
+        names = stage_names(fmt or "", paths.job_dir(job_id))  # its own plan: gates only if it runs them
     except Exception:  # noqa: BLE001 - a plan that cannot be read: fall back to the output rows
         names = []
     if not isinstance(entries, dict) or not names:
@@ -1186,12 +1463,13 @@ def recovery_message(
     """The morning note for what `recover` closed, or None when nobody needs telling.
 
     `outcomes` is what the nightly then did with a resumable job, by job id: `("resumed", None)`,
-    `("failed", <code>)`, `("waiting", None)` (the GPU was busy) or `("busy", None)` (a Retry from the Queue
-    was already running it). Without an outcome the note never claims
-    the job is being continued: it says when it will be, and how to continue it by hand.
+    `("failed", <code>)`, `("waiting", None)` (the GPU was busy), `("paused", None)` (its channel was paused
+    during the night) or `("busy", None)` (a Retry from the Queue was already running it). Without an outcome
+    the note never claims the job is being continued: it says when it will be, and how to continue it by hand.
     """
     outcomes = outcomes or {}
-    lines: list[str] = []
+    night: list[str] = []  # jobs of the nightly run
+    hand: list[str] = []  # jobs the owner started: no night's run was interrupted for them
     unknown = False
     for j in out.jobs:
         if j.dashboard_owned:
@@ -1206,22 +1484,38 @@ def recovery_message(
                 f"The nightly run continued it, but it stopped again ({code}); {_way_back(j)} to try again."
             )
         elif what == "waiting":
-            tail = f"The GPU was busy, so it waits for the next nightly run; or {_way_back(j)}."
+            tail = (
+                f"The GPU was busy, so it waits for the next nightly run; or {_way_back(j)}. "
+                f"{WHILE_NIGHTLY_ON}"
+            )
         elif what == "busy":
             tail = "It is being continued right now from the Queue."
+        elif what == "paused":
+            tail = (
+                "Its channel was paused during the night, so it waits; resume the channel and the next "
+                f"nightly run continues it, as long as the job started no more than {RESUME_WITHIN_DAYS} "
+                f"days before that run; an older one is not continued by the night, so {_way_back(j)}. "
+                f"{WHILE_NIGHTLY_ON}"
+            )
         elif j.resumable:
-            tail = f"It continues at the next nightly run, or {_way_back(j)}."
+            tail = f"It continues at the next nightly run, or {_way_back(j)}. {WHILE_NIGHTLY_ON}"
         else:
             tail = (
                 "Press Retry in the Queue to continue it" if j.has_card else f"To continue it, {_way_back(j)}"
             ) + (f" ({j.problem})." if j.problem else ".")
-        lines.append(f"{j.channel or j.job_id} {where}. {tail}")
-    if not lines and out.runs:
-        unknown = any(r.get("owner") == "unknown" for r in out.runs)
-        lines.append("It had not made a video yet, so nothing is lost.")
-    if not lines:
+        (night if j.origin == NIGHTLY_ORIGIN else hand).append(f"{j.channel or j.job_id} {where}. {tail}")
+    if not night and out.runs:
+        unknown = unknown or any(r.get("owner") == "unknown" for r in out.runs)
+        night.append("It had not made a video yet, so nothing is lost.")
+    parts: list[str] = []
+    if night:  # a run of the night was closed, or a job it had made
+        parts.append("The night's run was interrupted (power cut, crash or restart). " + " ".join(night))
+    if hand:
+        head = "A job you started yourself was" if len(hand) == 1 else "Jobs you started yourself were"
+        parts.append(f"{head} interrupted (power cut, crash or restart). " + " ".join(hand))
+    if not parts:
         return None
-    text = "The night's run was interrupted (power cut, crash or restart). " + " ".join(lines)
+    text = " ".join(parts)
     return text + " (owner unknown: it was started by an older version.)" if unknown else text
 
 
@@ -1321,6 +1615,8 @@ def pending_resumes(paths: Paths, db: SqlDb, now: datetime | None = None) -> lis
                 write_record(paths, job_id, resume_problem=problem)
                 settle_needs_retry(db, job_id, problem)
             continue
+        if rec.get("resume_problem"):  # the problem is gone: a later one, the same again, is told again
+            write_record(paths, job_id, resume_problem=None)
         out.append(rec)
     return out
 
@@ -1355,12 +1651,21 @@ def status_lines(paths: Paths, db: SqlDb, channel: str) -> list[str]:
         ):
             stage = rec.get("interrupted_at_stage") or reached_stage(paths, job_id, rec.get("fmt"))
             at = f" at stage {stage}" if stage else ""
-            # a card exists for a job `make_job` announced (see `_close_job`); only the nightly's own jobs are
-            # continued by the nightly
-            if has_card(rec):
+            # A card stands for a job `make_job` announced, but only once `recover` has closed it (the next
+            # start of Nightshift, `studio run` or nightly run; this command closes nothing). Until then the
+            # Queue has no Retry for it and the one way that works now is the command. Only the nightly's
+            # own jobs are continued by the nightly.
+            if has_card(rec) and state == "interrupted":
                 way = "press Retry in the Queue"
-                if rec.get("origin") == "daily":
-                    way += " or the next nightly run continues it"
+                if rec.get("origin") == NIGHTLY_ORIGIN:
+                    way += f" or the next nightly run continues it{IF_NIGHTLY_ON}"
+            elif has_card(rec):
+                way = (
+                    f"its process is gone; continue it now with studio run --resume {job_id}, or press Retry"
+                    " in the Queue after the next start of Nightshift"
+                )
+                if rec.get("origin") == NIGHTLY_ORIGIN:
+                    way += f"; the next nightly run continues it too{IF_NIGHTLY_ON}"
             else:
                 way = f"continue it with studio run --resume {job_id}"
             lines.append(f"  interrupted: job {job_id} stopped{at}; {way}")

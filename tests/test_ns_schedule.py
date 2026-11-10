@@ -7,6 +7,7 @@ import pytest
 from ns_common.paths import Paths
 from ns_supervisor import notify, pwsh, schedule
 from ns_supervisor.schedule_cfg import read_run_time
+from tests.test_schedule_keeps_state import install_fake
 
 needs_powershell = pytest.mark.skipif(pwsh.find_powershell() is None, reason="powershell not on PATH")
 
@@ -47,23 +48,17 @@ def test_the_task_does_not_run_in_the_program_folder(tmp_path: Path) -> None:
 
 def test_install_runs_powershell_and_saves_the_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     paths = Paths(tmp_path / "ns")
-    seen: list[str] = []
-
-    def fake(script: str, **kw: object) -> subprocess.CompletedProcess[str]:
-        seen.append(script)
-        return done("registered\n")
-
-    monkeypatch.setattr(pwsh, "run_powershell", fake)
+    fake = install_fake(monkeypatch, None)
     msg = schedule.install(paths, "05:15", tmp_path)
-    assert "05:15" in msg and "Register-ScheduledTask" in seen[0]
+    assert "05:15" in msg and "Register-ScheduledTask" in fake.scripts[0]
     assert read_run_time(paths) == "05:15"
     # no --time: the saved time is reused
     schedule.install(paths, None, tmp_path)
-    assert "[datetime]'05:15'" in seen[1]
+    assert "[datetime]'05:15'" in [s for s in fake.scripts if "Register-ScheduledTask" in s][1]
 
 
 def test_default_time_is_three_am(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(pwsh, "run_powershell", lambda script, **kw: done("registered"))
+    install_fake(monkeypatch, None)
     schedule.install(Paths(tmp_path / "ns"), None, tmp_path)
     assert read_run_time(Paths(tmp_path / "ns")) == "03:00"
 
@@ -220,8 +215,8 @@ def test_when_both_modes_are_refused_the_error_reaches_the_caller(tmp_path: Path
 def test_install_says_when_it_could_only_register_the_interactive_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(pwsh, "run_powershell", lambda script, **kw: done("registered:interactive\n"))
+    fake = install_fake(monkeypatch, None, refuse_s4u=True)
     msg = schedule.install(Paths(tmp_path / "ns"), "03:00", tmp_path)
     assert schedule.INTERACTIVE_MARK in msg and "03:00" in msg
-    monkeypatch.setattr(pwsh, "run_powershell", lambda script, **kw: done("registered:s4u\n"))
+    fake.refuse_s4u = False
     assert schedule.INTERACTIVE_MARK not in schedule.install(Paths(tmp_path / "ns"), "03:00", tmp_path)

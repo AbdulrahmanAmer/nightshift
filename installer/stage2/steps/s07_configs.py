@@ -9,7 +9,7 @@ from __future__ import annotations
 import copy
 import json
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from installer.stage2.answers import InstallerAnswers, blank_secrets_in_file, default_voice_name, slugify
@@ -22,6 +22,46 @@ from ns_common.atomic import write_text_atomic
 from ns_common.config import load_channel, load_runtime, save_channel
 from ns_common.models import Channel, Runtime, Voice
 
+# D-34: OpenCode's own prompt and tool definitions come to about 15,300 tokens, which leaves a 16K
+# install about 1,000 tokens for the first question. The budget: the first request of a one-line
+# question is at most half of the context (8,192 tokens at 16,384). The tools below are switched off
+# and the build agent's prompt is replaced by the short one that follows. launchers/_common.ps1
+# (Sync-NsOpenCodePort) carries the same values for a file written by an older release;
+# tests/test_opencode_budget.py keeps the two copies equal.
+# Nightshift Code refuses to start below MIN_CODE_CONTEXT (launchers/nightshift-code.ps1)
+MIN_CODE_CONTEXT = 16384
+CODE_OUTPUT_TOKENS = 4096
+# OpenCode's own name for its default agent. A constant, so that no line here reads like a setter of
+# the runtime's unused llama build field (tests/test_change_requests_status.py searches the source for one).
+OPENCODE_AGENT = "build"
+# What the pinned OpenCode (1.19.5) needs to change a file: `read` (its edit tool refuses a file it has
+# not read), `edit` and `write`. In that version a tool switch is a permission: `edit`, `write`, `patch`
+# and `multiedit` are ONE permission, so any of them set to false removes both edit and write (measured
+# in the block B install proof: with "patch": false the request carried bash, glob, grep, read, skill
+# and no edit or write). None of these may ever be in TOOLS_OFF.
+EDITING_TOOLS = ("read", "edit", "write")
+EDITING_SWITCHES = ("read", "edit", "write", "patch", "multiedit")
+# Off: the to-do, web fetch and sub-agent tools, and `skill` (695 characters of tool text plus the
+# skills list in the system prompt for a tool Nightshift ships no skill for).
+TOOLS_OFF = ("todowrite", "todoread", "webfetch", "task", "skill")
+# A switch an earlier build of this release wrote and this one takes back (see EDITING_SWITCHES).
+TOOLS_OFF_WITHDRAWN = ("patch",)
+# SHA-256 of every earlier Nightshift build prompt (LF line ends, UTF-8). The launcher replaces a prompt that
+# is exactly one of these with OPENCODE_PROMPT; any other text is the owner's and stays.
+SUPERSEDED_PROMPT_SHA256 = ("8090d0ea5ad3c9800117cf679e06ce23f841b4e744095e0a4d963e12af31f287",)
+LOCAL_MODEL_NAME = "Local model"    # when runtime.json names no model file
+
+OPENCODE_PROMPT = """You are Nightshift Code, a coding assistant that runs on this computer with a small local model. Nothing you read or write leaves this machine. Your context is small: work in small steps and keep answers short.
+
+- Work in the Projects folder you start in; each folder in it is a project. Leave it, or touch the Nightshift program folders and settings, only when asked.
+- Read before you edit: open the file, look at the part that matters, then change it. Never guess what a file contains.
+- Search with grep or glob and read a few lines at a time instead of whole files.
+- Change the least you can: one edit, then say in a sentence or two what you changed and why. Add nothing that was not asked for.
+- Run a command only when it helps, and say what it showed.
+- If the request is unclear, ask one short question first. If you do not know, say so; never invent file names, functions or results.
+- Answer in plain short sentences and show only the lines of code that matter.
+- When done, name the files you changed. If a task is too big for your context, say so and offer the first small step."""  # noqa: E501 (the prompt is plain text; its lines are not wrapped)
+
 OPENCODE_CONFIG: dict[str, Any] = {
     "$schema": "https://opencode.ai/config.json",
     "enabled_providers": ["local"],
@@ -30,24 +70,44 @@ OPENCODE_CONFIG: dict[str, Any] = {
             "npm": "@ai-sdk/openai-compatible",
             "name": "Nightshift Local Qwen",
             "options": {"baseURL": "http://127.0.0.1:8080/v1", "apiKey": "local"},
-            "models": {"code": {"name": "Qwen3.6 35B-A3B (local)"}},
+            "models": {
+                "code": {
+                    "name": LOCAL_MODEL_NAME,
+                    "limit": {"context": MIN_CODE_CONTEXT, "output": CODE_OUTPUT_TOKENS},
+                }
+            },
         }
     },
     "model": "local/code",
     "small_model": "local/code",
+    "tools": {name: False for name in TOOLS_OFF},
+    "agent": {OPENCODE_AGENT: {"prompt": OPENCODE_PROMPT}},
     "autoupdate": False,
     "share": "disabled",
 }
 
 
-def opencode_config(host: str = "127.0.0.1", port: int = 8080) -> dict[str, Any]:
-    """OPENCODE_CONFIG pointed at the llama-server in runtime.json instead of the baked default.
+def opencode_model_name(model_path: str) -> str:
+    """The model's name in OpenCode: the installed file without folder and extension, or a plain fallback."""
+    stem = PureWindowsPath(model_path).stem if model_path else ""
+    return f"{stem} (local)" if stem else LOCAL_MODEL_NAME
 
-    OpenCode talks straight to llama-server, so a port changed by ns tune or by hand must reach its baseURL.
-    The launcher repeats this on every start (Sync-NsOpenCodePort); this keeps a fresh write correct too.
+
+def opencode_config(
+    host: str = "127.0.0.1", port: int = 8080, ctx: int = MIN_CODE_CONTEXT, model_path: str = ""
+) -> dict[str, Any]:
+    """OPENCODE_CONFIG for the llama-server and model in runtime.json instead of the baked defaults.
+
+    OpenCode talks straight to llama-server, so a port changed by ns tune or by hand must reach its
+    baseURL, and ``limit.context`` must be the context llama-server was started with so OpenCode compacts
+    before the server refuses. The launcher repeats this on every start (Sync-NsOpenCodePort); this keeps
+    a fresh write correct too.
     """
     cfg = copy.deepcopy(OPENCODE_CONFIG)
-    cfg["provider"]["local"]["options"]["baseURL"] = f"http://{host}:{port}/v1"
+    local = cfg["provider"]["local"]
+    local["options"]["baseURL"] = f"http://{host}:{port}/v1"
+    local["models"]["code"]["name"] = opencode_model_name(model_path)
+    local["models"]["code"]["limit"]["context"] = ctx
     return cfg
 
 
@@ -185,7 +245,10 @@ class S07Configs(Step):
             llama = load_runtime(ctx.paths).llama
             ctx.paths.opencode_file.parent.mkdir(parents=True, exist_ok=True)
             write_text_atomic(
-                ctx.paths.opencode_file, json.dumps(opencode_config(llama.host, llama.port), indent=2) + "\n")
+                ctx.paths.opencode_file,
+                json.dumps(
+                    opencode_config(llama.host, llama.port, llama.flags.ctx, llama.model_path),
+                    indent=2) + "\n")
 
         for key in KEY_NAMES:
             value = getattr(ans, key)

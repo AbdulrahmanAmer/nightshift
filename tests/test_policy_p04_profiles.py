@@ -193,8 +193,7 @@ def test_the_profile_moves_the_word_floor_but_not_the_policy_gate(
 def test_chosen_idea_is_classified_on_both_profiles(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch, profile: str
 ):
-    _policy_on(monkeypatch)
-    ctx = _profiled(tmp_home, profile)
+    ctx = _set_profile(_policy_on(tmp_home), profile)  # policy on is the job's own choice (D-stages)
     ctx.services.llm = _llm([_pc(unsafe_categories=["graphic_harm"], notes="gore"), _pc()])
     REGISTRY["ideas"].run(ctx)
     asked = [c for c in ctx.services.llm.calls if c["prompt_name"] == "policy_check"]  # type: ignore[attr-defined]
@@ -206,8 +205,7 @@ def test_chosen_idea_is_classified_on_both_profiles(
 def test_all_ideas_unsafe_is_e601_on_both_profiles(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch, profile: str
 ):
-    _policy_on(monkeypatch)
-    ctx = _profiled(tmp_home, profile)
+    ctx = _set_profile(_policy_on(tmp_home), profile)  # policy on is the job's own choice (D-stages)
     ctx.services.llm = _llm(_pc(unsafe_categories=["hate"], notes="slur"))
     with pytest.raises(NsError) as ei:
         REGISTRY["ideas"].run(ctx)
@@ -217,8 +215,7 @@ def test_all_ideas_unsafe_is_e601_on_both_profiles(
 def test_banked_idea_is_classified_on_both_profiles(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch, profile: str
 ):
-    _policy_on(monkeypatch)
-    ctx = _profiled(tmp_home, profile)
+    ctx = _set_profile(_policy_on(tmp_home), profile)  # policy on is the job's own choice (D-stages)
     ctx.db.execute(
         "insert into ideas(channel, premise, twist, created_at, status) values (?,?,?,?,?)",
         (ctx.channel.slug, "a banked premise", "a banked twist", "2026-10-01", "approved"),

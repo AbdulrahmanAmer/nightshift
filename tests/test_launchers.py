@@ -157,7 +157,7 @@ def test_code_launcher_acquires_as_opencode_and_releases_in_finally() -> None:
     assert "Sync-NsOpenCodePort -BaseUrl" in text and "'/v1'" in text
 
 
-OPENCODE_JSON = {
+OPENCODE_JSON_0114 = {      # what setup of 0.1.14 wrote: no limit, no tools, no agent, the baked model name
     "$schema": "https://opencode.ai/config.json",
     "enabled_providers": ["local"],
     "provider": {"local": {
@@ -173,8 +173,16 @@ OPENCODE_JSON = {
 }
 
 
+def current_opencode_json() -> dict:
+    """What setup writes now for a runtime with no model file and the default context."""
+    from installer.stage2.steps.s07_configs import opencode_config
+
+    return opencode_config("127.0.0.1", 8080, 16384, "")
+
+
 def run_sync(
-    tmp_path: Path, runtime: str | None, opencode: str | None, base_url: str | None = None
+    tmp_path: Path, runtime: str | None, opencode: str | None, base_url: str | None = None,
+    ctx: int | None = None,
 ) -> tuple[str, Path]:
     """Run Sync-NsOpenCodePort against a throwaway home; returns the helper's output and opencode.json."""
     import os
@@ -188,8 +196,10 @@ def run_sync(
     (home / "config" / "runtime.json").write_text(runtime if runtime is not None else "{}", encoding="utf-8")
     target = home / "config" / "opencode.json"
     if opencode is not None:
-        target.write_text(opencode, encoding="utf-8")
+        target.write_bytes(opencode.encode("utf-8"))   # as given: no newline translation
     call = "Sync-NsOpenCodePort" if base_url is None else f"Sync-NsOpenCodePort -BaseUrl '{base_url}'"
+    if ctx is not None:
+        call += f" -Ctx {ctx}"
     script = f". '{LAUNCHERS / '_common.ps1'}'\n{call}\n"
     env = {k: v for k, v in os.environ.items() if k.lower() != "psmodulepath"}
     env["NIGHTSHIFT_HOME"] = str(home)
@@ -202,11 +212,11 @@ def run_sync(
 @needs_powershell
 def test_sync_opencode_port_rewrites_only_the_base_url(tmp_path: Path) -> None:
     runtime = json.dumps({"llama": {"host": "127.0.0.1", "port": 9191}})
-    _out, target = run_sync(tmp_path, runtime, json.dumps(OPENCODE_JSON, indent=2) + "\n")
+    _out, target = run_sync(tmp_path, runtime, json.dumps(current_opencode_json(), indent=2) + "\n")
     raw = target.read_bytes()
     assert raw[:3] != bytes([0xEF, 0xBB, 0xBF])                       # no BOM
     got = json.loads(raw.decode("utf-8"))
-    expected = json.loads(json.dumps(OPENCODE_JSON))
+    expected = json.loads(json.dumps(current_opencode_json()))
     expected["provider"]["local"]["options"]["baseURL"] = "http://127.0.0.1:9191/v1"
     assert got == expected  # nothing else changed (arrays stay arrays)
 
@@ -215,7 +225,7 @@ def test_sync_opencode_port_rewrites_only_the_base_url(tmp_path: Path) -> None:
 def test_sync_opencode_port_prefers_the_address_the_engine_reported(tmp_path: Path) -> None:
     """/acquire returns the running llama-server's address; it wins over runtime.json, which may be stale."""
     runtime = json.dumps({"llama": {"host": "127.0.0.1", "port": 9191}})
-    text = json.dumps(OPENCODE_JSON, indent=2) + "\n"
+    text = json.dumps(current_opencode_json(), indent=2) + "\n"
     _out, target = run_sync(tmp_path / "a", runtime, text, base_url="http://127.0.0.1:7777/v1")
     got = json.loads(target.read_text(encoding="utf-8"))
     assert got["provider"]["local"]["options"]["baseURL"] == "http://127.0.0.1:7777/v1"
@@ -229,7 +239,7 @@ def test_sync_opencode_port_prefers_the_address_the_engine_reported(tmp_path: Pa
 @needs_powershell
 def test_sync_opencode_port_keeps_non_ascii_text_intact(tmp_path: Path) -> None:
     """Windows PowerShell 5.1 reads a BOM-less file as ANSI unless told UTF-8; edited text must survive."""
-    edited = json.loads(json.dumps(OPENCODE_JSON))
+    edited = json.loads(json.dumps(current_opencode_json()))
     edited["provider"]["local"]["name"] = "Nightshift Local Qwen — café مرحبا"
     runtime = json.dumps({"llama": {"host": "127.0.0.1", "port": 9191}})
     text = json.dumps(edited, indent=2, ensure_ascii=False) + "\n"
@@ -242,7 +252,7 @@ def test_sync_opencode_port_keeps_non_ascii_text_intact(tmp_path: Path) -> None:
 
 @needs_powershell
 def test_sync_opencode_port_leaves_a_matching_or_absent_file_alone(tmp_path: Path) -> None:
-    same = json.dumps(OPENCODE_JSON)
+    same = json.dumps(current_opencode_json())
     _out, target = run_sync(tmp_path / "a", json.dumps({"llama": {"port": 8080}}), same)
     assert target.read_text(encoding="utf-8") == same                 # already right: not rewritten
     _out, target = run_sync(tmp_path / "b", json.dumps({"llama": {"port": 9191}}), None)
@@ -256,6 +266,191 @@ def test_sync_opencode_port_never_stops_the_launcher(tmp_path: Path) -> None:
     out, target = run_sync(tmp_path, json.dumps({"llama": {"port": 9191}}), "{ not json")
     assert target.read_text(encoding="utf-8") == "{ not json"
     assert "opencode.json" in out                                      # a plain note, no exception
+
+
+@needs_powershell
+def test_code_launcher_brings_an_old_opencode_json_up_to_the_budget(tmp_path: Path) -> None:
+    """D-34: a 0.1.14 file (no limit, no tools, no agent) gets the budget keys and the install's context;
+    an owner's key stays; a second launch leaves the file byte for byte as it is."""
+    old = json.loads(json.dumps(OPENCODE_JSON_0114))
+    old["theme"] = "x"
+    runtime = json.dumps({"llama": {
+        "host": "127.0.0.1", "port": 8080, "model_path": r"D:\Night Home\models\llm\Qwen3-1.7B-Q8_0.gguf",
+        "flags": {"ctx": 32768}}})
+    _out, target = run_sync(tmp_path / "a", runtime, json.dumps(old, indent=2) + "\n")
+    got = json.loads(target.read_text(encoding="utf-8"))
+    code = got["provider"]["local"]["models"]["code"]
+    assert code.get("limit") == {"context": 32768, "output": 4096}
+    assert code.get("name") == "Qwen3-1.7B-Q8_0 (local)"
+    off = ("todowrite", "todoread", "webfetch", "task", "skill")
+    assert got.get("tools") == {name: False for name in off}    # no switch that removes edit or write
+    assert got.get("agent", {}).get("build", {}).get("prompt", "").startswith("You are Nightshift Code")
+    assert got["theme"] == "x"                                          # the owner's key stays
+    assert got["enabled_providers"] == ["local"] and got["provider"]["local"]["options"]["apiKey"] == "local"
+    first = target.read_bytes()
+    assert first[:3] != bytes([0xEF, 0xBB, 0xBF]) and first.endswith(b"\n")
+    # second launch: nothing to change, so the file is not rewritten
+    _out, target2 = run_sync(tmp_path / "b", runtime, first.decode("utf-8"))
+    assert target2.read_bytes() == first
+
+
+@needs_powershell
+def test_code_launcher_keeps_what_the_owner_set_and_follows_a_changed_context(tmp_path: Path) -> None:
+    """Only missing keys and the values Nightshift owns (baseURL, limit.context, model name) are written."""
+    cfg = current_opencode_json()
+    cfg["tools"]["webfetch"] = True                                     # the owner turned a tool back on
+    cfg["agent"]["build"]["prompt"] = "my own prompt"
+    cfg["provider"]["local"]["models"]["code"]["limit"] = {"context": 16384, "output": 2048}
+    del cfg["tools"]["task"]                                            # a missing tool switch is added
+    runtime = json.dumps({"llama": {"flags": {"ctx": 8192}}})           # `ns tune` changed the context
+    _out, target = run_sync(tmp_path, runtime, json.dumps(cfg, indent=2) + "\n")
+    got = json.loads(target.read_text(encoding="utf-8"))
+    assert got["tools"]["webfetch"] is True and got["tools"]["task"] is False
+    assert got["agent"]["build"]["prompt"] == "my own prompt"
+    assert got["provider"]["local"]["models"]["code"]["limit"] == {"context": 8192, "output": 2048}
+
+
+# The build prompt an earlier build of 0.1.15 (block B before its install proof) wrote, with "patch": false.
+OPENCODE_PROMPT_EARLIER = """You are Nightshift Code, a coding assistant that runs entirely on this computer with a small local model. Nothing you read or write leaves this machine.
+
+Your context is small, so work in small steps and keep every answer short.
+
+Where you work
+- Start in the Projects folder of the person using you. Each folder in it is a project. Do not leave it unless you are asked to.
+- Never touch the Nightshift program folders or its settings unless you are asked to.
+
+How you work
+- Read before you edit. Open a file, look at the part that matters, and only then change it. Do not guess what a file contains.
+- Look at a few lines at a time. Search with grep or glob instead of opening whole files or whole folders.
+- Change the least you can. Make one edit, then say what you changed and why in a sentence or two.
+- Do not rewrite a file that only needs a small change. Do not add features nobody asked for.
+- Run a command only when it helps answer the question. Say what you ran and what it showed.
+- If a request is unclear, ask one short question before you start.
+- If you do not know something, say so. Do not invent file names, functions or results.
+
+How you answer
+- Plain, short sentences. No long introductions and no summaries of what you were just told.
+- Show code in small blocks, only the lines that matter.
+- When a task is done, say so and name the files you changed.
+- If a task is too big for the context you have, say so and offer the first small step instead of starting something you cannot finish."""  # noqa: E501
+EARLIER_TOOLS = ("todowrite", "todoread", "webfetch", "task", "patch")
+SYNC_RUNTIME = json.dumps({"llama": {"host": "127.0.0.1", "port": 8080, "flags": {"ctx": 16384}}})
+
+
+def earlier_opencode_json() -> dict:
+    """What the earlier build's setup wrote: the current shape, its five switches, its longer prompt."""
+    cfg = current_opencode_json()
+    cfg["tools"] = {name: False for name in EARLIER_TOOLS}
+    cfg["agent"]["build"]["prompt"] = OPENCODE_PROMPT_EARLIER
+    return cfg
+
+
+def test_the_earlier_prompt_fixture_is_the_text_the_sync_knows() -> None:
+    import hashlib
+
+    from installer.stage2.steps import s07_configs
+
+    digest = hashlib.sha256(OPENCODE_PROMPT_EARLIER.encode("utf-8")).hexdigest()
+    assert digest in getattr(s07_configs, "SUPERSEDED_PROMPT_SHA256", ())
+
+
+@needs_powershell
+def test_code_launcher_brings_the_earlier_builds_file_to_what_setup_writes_now(tmp_path: Path) -> None:
+    """Block B proof, defect 1: "patch": false removed OpenCode's edit and write tools. A file the earlier
+    build wrote ends exactly as a fresh one (edit and write back, the skill tool off, the shorter prompt), an
+    owner's key stays, the owner is told once, and a second start changes nothing and says nothing."""
+    old = earlier_opencode_json()
+    old["theme"] = "x"
+    out, target = run_sync(tmp_path / "a", SYNC_RUNTIME, json.dumps(old, indent=2) + "\n")
+    got = json.loads(target.read_text(encoding="utf-8"))
+    assert "patch" not in got["tools"]
+    expected = current_opencode_json() | {"theme": "x"}
+    assert got == expected
+    assert 'Removed "patch": false' in out and "edit and write" in out and '"edit": false' in out
+    first = target.read_bytes()
+    out2, target2 = run_sync(tmp_path / "b", SYNC_RUNTIME, first.decode("utf-8"))
+    assert target2.read_bytes() == first and out2.strip() == ""
+
+
+@needs_powershell
+def test_code_launcher_takes_back_its_patch_switch_in_a_hand_edited_file_and_keeps_the_rest(
+    tmp_path: Path,
+) -> None:
+    """The earlier sync added "patch": false to a file the owner had edited: the switch goes, the owner's
+    prompt, the tool the owner turned back on and the owner's own keys stay."""
+    cfg = earlier_opencode_json()
+    cfg["tools"]["webfetch"] = True
+    cfg["tools"]["bash"] = False                                      # an owner's switch, not Nightshift's
+    cfg["agent"]["build"]["prompt"] = "my own prompt"
+    cfg["agent"]["build"]["temperature"] = 0.2
+    cfg["theme"] = "x"
+    out, target = run_sync(tmp_path, SYNC_RUNTIME, json.dumps(cfg, indent=2) + "\n")
+    got = json.loads(target.read_text(encoding="utf-8"))
+    assert got["tools"] == {"todowrite": False, "todoread": False, "webfetch": True, "task": False,
+                            "bash": False, "skill": False}
+    assert got["agent"]["build"] == {"prompt": "my own prompt", "temperature": 0.2} and got["theme"] == "x"
+    assert 'Removed "patch": false' in out and "cannot change a file:" not in out
+
+
+@needs_powershell
+@pytest.mark.parametrize(("edit", "named"), [
+    ({"tools": {"edit": False}}, "tools.edit"),
+    ({"tools": {"write": False}}, "tools.write"),
+    ({"permission": {"edit": "deny"}}, "permission.edit"),
+    ({"agent_tools": {"patch": False}}, "agent.build.tools.patch"),
+], ids=["edit", "write", "permission", "agent"])
+def test_code_launcher_leaves_an_owners_read_only_choice_and_says_so_at_every_start(
+    tmp_path: Path, edit: dict, named: str,
+) -> None:
+    """The owner's own way of saying "read only" is a key Nightshift never wrote. Then "patch": false is not
+    Nightshift's to remove (editing is off either way), nothing of the owner's is lost, and every start says
+    which key keeps Nightshift Code from changing a file and how to bring editing back."""
+    cfg = earlier_opencode_json()
+    cfg["agent"]["build"]["prompt"] = "my own prompt"
+    cfg["tools"].update(edit.get("tools", {}))
+    if "permission" in edit:
+        cfg["permission"] = edit["permission"]
+    if "agent_tools" in edit:
+        cfg["agent"]["build"]["tools"] = edit["agent_tools"]
+    out, target = run_sync(tmp_path / "a", SYNC_RUNTIME, json.dumps(cfg, indent=2) + "\n")
+    got = json.loads(target.read_text(encoding="utf-8"))
+    expected = json.loads(json.dumps(cfg))
+    expected["tools"]["skill"] = False                                  # the one missing switch is added
+    assert got == expected and got["tools"]["patch"] is False
+    assert "Removed" not in out
+    assert "cannot change a file:" in out and named in out and "start Nightshift Code again" in out
+    first = target.read_bytes()
+    out2, target2 = run_sync(tmp_path / "b", SYNC_RUNTIME, first.decode("utf-8"))
+    assert target2.read_bytes() == first and named in out2             # told again, file untouched
+
+
+@needs_powershell
+def test_code_launcher_brings_a_file_with_empty_blocks_up_instead_of_failing(tmp_path: Path) -> None:
+    """A hand-edited file with `"tools": {}` or an empty build agent, and a runtime.json that is `{}`: under
+    strict mode Windows PowerShell 5.1 fails on the names of an object that has none, and the whole sync was
+    skipped with a note at every start. The blocks are filled like missing ones and nothing is said."""
+    cfg = earlier_opencode_json()
+    cfg["tools"] = {}
+    cfg["agent"] = {"build": {}}
+    cfg["provider"]["local"]["models"]["code"] = {}
+    out, target = run_sync(tmp_path / "a", "{}", json.dumps(cfg, indent=2) + "\n")
+    assert out.strip() == "", out
+    assert json.loads(target.read_text(encoding="utf-8")) == current_opencode_json()
+    first = target.read_bytes()
+    out2, target2 = run_sync(tmp_path / "b", "{}", first.decode("utf-8"))
+    assert target2.read_bytes() == first and out2.strip() == ""
+
+
+@needs_powershell
+def test_code_launcher_leaves_a_patch_switch_turned_on_and_a_fresh_file_alone(tmp_path: Path) -> None:
+    cfg = current_opencode_json()
+    cfg["tools"]["patch"] = True
+    text = json.dumps(cfg, indent=2) + "\n"
+    out, target = run_sync(tmp_path / "a", SYNC_RUNTIME, text)
+    assert target.read_text(encoding="utf-8") == text and out.strip() == ""
+    fresh = json.dumps(current_opencode_json(), indent=2) + "\n"
+    out, target = run_sync(tmp_path / "b", SYNC_RUNTIME, fresh)
+    assert target.read_text(encoding="utf-8") == fresh and out.strip() == ""
 
 
 @needs_powershell
@@ -359,11 +554,15 @@ class FakeEngine:
 
     def __init__(self) -> None:
         self.posts: list[tuple[str, object]] = []
+        self.engine_ctx: int | None = None    # what GET /status says llama runs with (None: not reported)
         engine = self
 
         class Handler(BaseHTTPRequestHandler):
             def _reply(self) -> None:
                 body = b'{"state": "running"}'
+                if self.path == "/status" and engine.engine_ctx is not None:
+                    llama = {"state": "stopped", "ctx": engine.engine_ctx}
+                    body = json.dumps({"services": {"llama": llama}}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -415,6 +614,157 @@ def test_dashboard_warmup_posts_to_a_running_headless_engine(
     r = run_common(snippet, env)
     assert r.returncode == 0 and "warmed" in r.stdout, r.stdout + r.stderr
     assert eng.posts == [("/warmup", {"service": "dashboard"})]
+
+
+def test_code_launcher_sends_its_own_pid_in_the_acquire_body() -> None:
+    """F-H47: the supervisor frees the GPU when the console that holds it is gone (closed with X)."""
+    text = read("nightshift-code.ps1")
+    body = next(ln for ln in text.splitlines() if ln.strip().startswith("$body = @{"))
+    assert "owner = $owner" in body and "pid = $PID" in body, body
+    assert text.index("$body = @{") < text.index("$ep = Invoke-NsPost -Path '/acquire' -Body $body")
+    assert "finally" in text[text.index("OPENCODE_CONFIG") :]
+    assert text.rindex("finally") < text.rindex("/release")
+
+
+@needs_powershell
+def test_code_launcher_run_posts_its_pid_with_the_acquire_and_releases_after_opencode_exits(
+    engine: tuple[FakeEngine, dict[str, str]], tmp_path: Path
+) -> None:
+    """F-H47 under powershell.exe: the /acquire body carries the launcher's own $PID; /release follows."""
+    import os
+    import re
+    import shutil
+
+    eng, env = engine
+    opencode = tmp_path / "bin" / "opencode" / "opencode.exe"
+    opencode.parent.mkdir(parents=True)
+    system32 = Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32"
+    shutil.copy(system32 / "hostname.exe", opencode)  # stands in for OpenCode: prints a line and exits
+    env = {**env, "USERPROFILE": str(tmp_path / "profile")}  # the launcher makes %USERPROFILE%\Projects
+    script = f"Write-Output ('launcher-pid=' + $PID)\n& '{LAUNCHERS / 'nightshift-code.ps1'}'\n"
+    r = pwsh.run_powershell(script, env_extra=env, timeout_s=90)
+    assert r.returncode == 0, r.stdout + r.stderr
+    found = re.search(r"launcher-pid=(\d+)", r.stdout)
+    assert found, r.stdout
+    assert [p for p, _ in eng.posts] == ["/acquire", "/release"], eng.posts
+    acquire = eng.posts[0][1]
+    assert isinstance(acquire, dict) and acquire["owner"] == "opencode" and acquire["model_alias"] == "code"
+    assert acquire.get("pid") == int(found.group(1)), acquire  # an integer, the console's own process
+    assert eng.posts[1][1] == {"service": "llama", "owner": "opencode"}
+
+
+def code_launcher_run(
+    eng: FakeEngine, env: dict[str, str], home: Path, ctx_tokens: int | None
+) -> subprocess.CompletedProcess[str]:
+    """Run nightshift-code.ps1 under powershell.exe, OpenCode stood in for by hostname.exe."""
+    import os
+    import shutil
+
+    runtime: dict[str, object] = {"supervisor_port": eng.port}
+    if ctx_tokens is not None:
+        runtime["llama"] = {"flags": {"ctx": ctx_tokens}}
+    (home / "config" / "runtime.json").write_text(json.dumps(runtime), encoding="utf-8")
+    opencode = home / "bin" / "opencode" / "opencode.exe"
+    opencode.parent.mkdir(parents=True, exist_ok=True)
+    system32 = Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32"
+    shutil.copy(system32 / "hostname.exe", opencode)
+    env = {**env, "USERPROFILE": str(home / "profile")}
+    return pwsh.run_powershell(f"& '{LAUNCHERS / 'nightshift-code.ps1'}'\n", env_extra=env, timeout_s=90)
+
+
+@needs_powershell
+def test_code_launcher_refuses_a_context_under_16384_before_taking_the_gpu(
+    engine: tuple[FakeEngine, dict[str, str]], tmp_path: Path
+) -> None:
+    """D-34: OpenCode's first request needs about half of a 16k context; refuse at launch, take nothing."""
+    eng, env = engine
+    refused = code_launcher_run(eng, env, tmp_path, 8192)
+    assert "Nightshift Code needs 16384 tokens of context; this install has 8192" in refused.stdout, (
+        refused.stdout + refused.stderr)
+    assert refused.returncode != 0
+    assert eng.posts == [], eng.posts                                   # no /acquire, nothing to release
+    # failed, then retried after `ns tune` raised the context: it acquires as before
+    ok = code_launcher_run(eng, env, tmp_path, 16384)
+    assert ok.returncode == 0 and "needs 16384" not in ok.stdout, ok.stdout + ok.stderr
+    assert [p for p, _ in eng.posts] == ["/acquire", "/release"], eng.posts
+
+
+@needs_powershell
+def test_code_launcher_refuses_on_the_context_the_engine_runs_not_the_one_in_the_file(
+    engine: tuple[FakeEngine, dict[str, str]], tmp_path: Path
+) -> None:
+    """D-34 review: the engine read runtime.json when it started. The owner raised the file to 16384 as the
+    refusal said, but the running engine still loads 8192: the launcher must not pass, and must say so."""
+    eng, env = engine
+    eng.engine_ctx = 8192
+    refused = code_launcher_run(eng, env, tmp_path, 16384)       # the file says 16384, the engine runs 8192
+    out = refused.stdout
+    assert "Nightshift Code needs 16384 tokens of context; the running engine has 8192" in out, out
+    assert "config\\runtime.json says 16384" in out and "Stop All" in out and "nightly" in out, out
+    assert refused.returncode != 0 and eng.posts == [], (refused.stdout, eng.posts)
+    # file and engine both too small: the way out names the file edit AND the restart
+    both = code_launcher_run(eng, env, tmp_path, 8192)
+    assert "this install has 8192" in both.stdout and "llama.flags.ctx" in both.stdout, both.stdout
+    assert "Stop All" in both.stdout and "nightly" in both.stdout and eng.posts == [], both.stdout
+
+
+@needs_powershell
+def test_code_launcher_passes_when_the_engine_runs_16384_and_tells_opencode_that_number(
+    engine: tuple[FakeEngine, dict[str, str]], tmp_path: Path
+) -> None:
+    eng, env = engine
+    eng.engine_ctx = 16384
+    old = tmp_path / "config" / "opencode.json"
+    old.write_text(json.dumps(OPENCODE_JSON_0114), encoding="utf-8")
+    ok = code_launcher_run(eng, env, tmp_path, 8192)             # file lower than the engine: engine counts
+    assert ok.returncode == 0 and "needs 16384" not in ok.stdout, ok.stdout + ok.stderr
+    assert [p for p, _ in eng.posts] == ["/acquire", "/release"], eng.posts
+    limit = json.loads(old.read_text(encoding="utf-8"))["provider"]["local"]["models"]["code"]["limit"]
+    assert limit == {"context": 16384, "output": 4096}
+    eng.posts.clear()
+    eng.engine_ctx = 32768                                       # a bigger engine: OpenCode is told 32768
+    ok2 = code_launcher_run(eng, env, tmp_path, 16384)
+    assert ok2.returncode == 0, ok2.stdout + ok2.stderr
+    limit = json.loads(old.read_text(encoding="utf-8"))["provider"]["local"]["models"]["code"]["limit"]
+    assert limit["context"] == 32768
+
+
+@needs_powershell
+def test_code_launcher_with_no_engine_running_refuses_on_the_file_and_starts_nothing(
+    engine: tuple[FakeEngine, dict[str, str]], tmp_path: Path
+) -> None:
+    """No engine: the one this launcher would start reads the file, so the file's number counts. No restart
+    is asked for (there is nothing to restart) and nothing is started."""
+    eng, env = engine
+    eng.close()
+    refused = code_launcher_run(eng, env, tmp_path, 8192)
+    assert "Nightshift Code needs 16384 tokens of context; this install has 8192" in refused.stdout, (
+        refused.stdout + refused.stderr)
+    assert "llama.flags.ctx" in refused.stdout and "Stop All" not in refused.stdout
+    assert "nightly" in refused.stdout and refused.returncode != 0
+
+
+@needs_powershell
+def test_the_old_json_with_a_null_limit_still_gets_the_context(tmp_path: Path) -> None:
+    """An owner's `"limit": null` (or tools or agent set to null) counts as missing; the sync goes on."""
+    cfg = json.loads(json.dumps(OPENCODE_JSON_0114))
+    cfg["provider"]["local"]["models"]["code"]["limit"] = None
+    cfg["tools"] = None
+    cfg["agent"] = {"build": None}
+    _out, target = run_sync(tmp_path, json.dumps({"llama": {"flags": {"ctx": 32768}}}), json.dumps(cfg))
+    got = json.loads(target.read_text(encoding="utf-8"))
+    assert got["provider"]["local"]["models"]["code"]["limit"] == {"context": 32768, "output": 4096}
+    assert got["tools"]["webfetch"] is False
+    assert got["agent"]["build"]["prompt"].startswith("You are Nightshift Code")
+
+
+@needs_powershell
+def test_sync_takes_the_context_the_engine_runs_over_the_file(tmp_path: Path) -> None:
+    runtime = json.dumps({"llama": {"flags": {"ctx": 16384}}})
+    text = json.dumps(OPENCODE_JSON_0114)
+    _out, target = run_sync(tmp_path, runtime, text, ctx=32768)
+    limit = json.loads(target.read_text(encoding="utf-8"))["provider"]["local"]["models"]["code"]["limit"]
+    assert limit["context"] == 32768
 
 
 @needs_powershell

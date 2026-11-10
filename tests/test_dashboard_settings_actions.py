@@ -165,21 +165,25 @@ def test_csv_with_no_known_columns_is_a_coded_error(tmp_home: Path):
 
 
 def test_changing_the_run_time_reregisters_the_windows_task(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    from ns_dashboard import state as dash_state
     from ns_dashboard.adapters import RealScheduleAdapter
     from ns_supervisor import schedule
     from ns_supervisor.schedule_cfg import read_run_time
+    from tests.test_schedule_keeps_state import install_fake
 
-    scripts: list[str] = []
-    monkeypatch.setattr(schedule, "_run", lambda script: scripts.append(script) or "registered")
+    fake = install_fake(monkeypatch, ("Ready", "03:00"))  # Automatic runs are on
+    monkeypatch.setattr(dash_state, "SYNC_INLINE", True)
     client, state = make_env(tmp_home)
     state.adapters.schedule = RealScheduleAdapter(Paths.from_env())
     r = client.put("/api/settings", json={"schedule_time": "04:30"})
     assert r.status_code == 200, r.text
     assert r.json()["schedule_result"]["applied"] is True
-    # the task is read first (D-28: its state is kept), then replaced
-    assert len(scripts) == 2 and "Get-ScheduledTask" in scripts[0] and "Register-ScheduledTask" not in scripts[0]
-    assert "Register-ScheduledTask" in scripts[1] and "'04:30'" in scripts[1]
+    # the task is read first (D-28: its state is kept), then replaced, then read back
+    scripts = fake.scripts
+    assert "Get-ScheduledTask" in scripts[0] and "Register-ScheduledTask" not in scripts[0]
+    assert "Register-ScheduledTask" in scripts[1] and "'04:30'" in scripts[1] and fake.registered == 1
     assert read_run_time(Paths.from_env()) == "04:30"  # the supervisor's own copy of the time moved too
+    assert schedule.read_task() == schedule.TaskState(enabled=True, run_time="04:30")
 
 
 def test_a_refused_task_update_does_not_move_the_time_and_says_so(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):

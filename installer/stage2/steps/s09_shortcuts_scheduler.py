@@ -11,7 +11,6 @@ still show; the flag ``aumid`` records what worked (``registry+shortcut``, ``reg
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from installer.stage2.base import Step
@@ -23,11 +22,9 @@ from installer.stage2.winenv import (
     register_aumid,
     set_shortcut_aumid,
 )
-from ns_common import first_start
-from ns_common.atomic import write_text_atomic
-from ns_common.paths import Paths
 from ns_supervisor.notify import AUMID
 from ns_supervisor.schedule import INTERACTIVE_MARK, KEPT_OFF_MARK
+from ns_supervisor.schedule_cfg import remember_run_time
 
 # The brand icon ships with the dashboard build; without it a shortcut keeps PowerShell's own icon.
 ICON_RELATIVE = Path("ns_dashboard") / "static" / "brand" / "nightshift.ico"
@@ -72,25 +69,6 @@ def shortcut_icon(ctx: StepContext) -> Path | None:
     """The brand .ico under the app folder, or None when this build does not ship it."""
     icon = ctx.app_path / ICON_RELATIVE
     return icon if icon.is_file() else None
-
-
-def remember_run_time(paths: Paths, run_time: str) -> None:
-    """Keep the nightly time the owner chose in ``config\\dashboard.json`` (the dashboard's own settings).
-
-    ``config\\schedule.json`` is the time of a *registered* task: ``ns schedule install`` writes it after
-    Windows accepted the task, and the engine and the dashboard read it as "a run is coming". When Windows
-    refused the task (NS-W206) the chosen time is only a preference.
-    """
-    target = paths.config / "dashboard.json"
-    try:
-        data = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-    data["run_time"] = run_time
-    first_start.guard(target)
-    write_text_atomic(target, json.dumps(data, indent=2) + "\n")
 
 
 def desktop(ctx: StepContext) -> Path:
@@ -157,8 +135,8 @@ class S09ShortcutsScheduler(Step):
             ctx.set_flag("schedule", "installed")
             ctx.set_flag("schedule_mode", "disabled")
             ctx.ui.say(
-                f"Nightly task 'Nightshift Daily' registered for {run_time} but left SWITCHED OFF, "
-                "as you had it in Task Scheduler. Switch it on there when you want the nightly run."
+                "Nightly task 'Nightshift Daily' was left SWITCHED OFF, as you had it in Task Scheduler. "
+                "Switch Automatic runs on in Settings when you want the nightly run."
             )
         elif res.ok:
             ctx.set_flag("schedule", "installed")

@@ -243,19 +243,31 @@ In **Create**, the **When** step lets you choose **Pick a time** instead of **No
 (Queue shows "Scheduled for ...") and starts at that time or as soon as Nightshift is running after it.
 You can cancel it any time before. A waiting job does not keep Nightshift awake: if the PC is asleep or Nightshift
 was closed at that time, the job starts the next time the Dashboard opens or the nightly run begins. Nothing wakes a closed Nightshift at that time, and **Quit Nightshift** warns you when jobs are waiting.
-The nightly run itself is unchanged: **Settings -> Run time**.
+The nightly run itself is unchanged: **Settings -> Schedule** (the **Automatic runs** switch and the run time).
 
 ## Every night
 
 Nightshift wakes the PC at the time you chose (default 03:00), makes a video, saves it in the Outbox and the PC
 may go back to sleep. In the morning open the Dashboard and review. If the PC was off, it runs when you switch
 it on. Do not use Nightshift Code while a night run is due: the graphics card can serve only one at a time.
+Closing the Nightshift Code window any way (its X, Task Manager, signing out) gives the graphics card back within a few seconds.
+Nightshift Code needs a context of at least 16384 tokens. Its OpenCode setup is trimmed (the to-do, web fetch, task and skill tools are off and a short Nightshift prompt replaces OpenCode's long one; the read, edit and write tools stay on, because without them it cannot change a file) so that a one-line question is meant to use at most half of that context, which leaves the rest for files and the answer. With less context it does not start: it says "Nightshift Code needs 16384 tokens of context; this install has N" before it takes the graphics card. The number that counts is the one the running engine uses, because the engine reads `llama.flags.ctx` in `config/runtime.json` only when it starts. If you raise it in the file, run **Nightshift - Stop All** and start Nightshift Code again; if the engine is still running with the old number, the message says so and tells you to restart. That context is also the one the nightly run uses (there is one model server), so a bigger context needs more memory for every job. Every start brings `config/opencode.json` up to this setup and sets the model's context and name from what the engine runs and the installed model; keys you added yourself stay. To make Nightshift Code read-only, set `"edit": false` under `"tools"` in that file: every start then says that it cannot change a file and names the key. A `"patch": false` on its own is removed at the start with a note, because an earlier build wrote it and in this OpenCode it switches the edit and write tools off.
 If the graphics card is busy at that time, the run waits up to 2 hours and then skips the night (code `NS-E201`);
 it tries again the next night.
 
 When the run ends you get a Windows notification ("1 master + 5 Shorts ready for review", or "run failed
 (NS-E203), open Dashboard"). Switch it off in **Settings -> Notifications**. Right after the run Nightshift shuts
 its engine down by itself, unless the Dashboard is open.
+
+**Automatic runs are a switch.** Settings -> Schedule -> **Automatic runs** adds the Windows task "Nightshift Daily"
+(on) or removes it (off); the run time beside it is kept either way. The top bar, the Queue and the Assistant say
+which it is: "Next run ...", "Runs at ... only while you are signed in", or "Automatic runs off". The page shows
+what Windows has, not what you clicked: if you delete or disable the task in Task Scheduler, Nightshift reads that
+as off within a minute, tells you once (`NS-W207`) and leaves the task as you set it; switch Automatic runs on in
+Settings to get the nightly run back. An update and a rollback never switch it on or off. Setup does, for now:
+a Repair or a reinstall that keeps your data registers the task again, so Automatic runs are on afterwards even
+if you had switched them off; switch them off again in Settings. A backup restore leaves them as they are. If Windows
+refuses the change, the switch stays where it was and the message says so (`NS-E204`).
 
 If Windows will not let Nightshift register the task for unattended runs, it registers it for "only while you are
 logged on" and says so at the end of setup (`NS-W205`). Then keep the PC logged in overnight (lock the screen, do not
@@ -281,7 +293,7 @@ again for about a second. If it still cannot be made (the folder is read-only, f
 run really is running with the same name, the night does not start: **Last night** in the Queue shows a red
 "Something stopped" line, "The night: NS-E327." followed by the reason, and the Dashboard leaves a morning note with
 the same reason in plain words (unless notifications are off in Settings; the **Last night** line stays either way).
-The next nightly run tries again.
+The next nightly run tries again (while Automatic runs are on in Settings).
 
 ### Your own examples and prompts
 
@@ -294,14 +306,53 @@ instead of ours. To change a prompt, copy its file from `ns_studio\prompts\` to 
 ## If YouTube sends a warning or strike
 
 If YouTube sends a warning, a strike or a monetization notice about a channel, stop that channel first and look at
-what it made. A pause stops only new work: the night run skips a paused channel and the Dashboard refuses to start
-a story video for it (the Clipper does not check whether the channel is paused). Videos that are already made
-stay in the Queue. A story video that is already queued or scheduled (Create > **Pick a time**) still runs after
-the pause, because the Dashboard does not look at the channel again when it starts a waiting job: open **Create**
-and press **Cancel** on every job of that channel under **Working now**. The same goes for a story video that
-stopped with an error: **Retry from where it stopped** (on its card in **Create** and **Queue**) does not refuse a
-paused channel and starts that video again, so do not press it on any stopped card of that channel until you
-resume the channel.
+what it made. A pause holds the channel's story videos that have not started: the night run skips a paused
+channel (and, if the pause comes during the night, it starts no further video of that channel, new or half-made
+from an earlier night; the morning report lists them under `paused`, not under `skipped`; a half-made video it left
+waiting is continued by the first night after you resume the channel only if it started no more than three days before
+that night, an older one waits for **Retry** in the Queue), and the Dashboard
+refuses to start a story video for it (the Clipper does not check whether the channel is paused). A story video that
+is already queued or scheduled (Create > **Pick a time**) does not start while the channel is paused: it stays
+waiting under **Working now**, also when its time comes, and starts by itself, in its turn, after you
+resume the channel. This holds also for a video that was already waiting for the engine because the night run was
+using it: when the engine becomes free the Dashboard looks at the channel again, makes no video and puts the job
+back to waiting (until then its card still reads "Waiting for GPU"; if that wait for the engine runs out after two
+hours, the job fails with NS-E201 and no video is made). The job's status text says why ("Paused: <channel> is paused since <time>; resume it to release
+this job"); the Queue's **Render jobs** card shows it (Stage: Paused, with that text); the Create page does not
+print it yet: Create says "Waiting for the engine" for it, or "Scheduled for <time>" while the time it was set for
+is still ahead, which is not the real reason. **Retry from where it stopped** (on a
+stopped card in **Create** and **Queue**) and the Assistant's resume are refused for a paused channel with
+"'<channel>' is paused. Resume it first.", the same answer as a new video. A story video that is already being
+made stops before its next step: the step under way is finished first (press **Cancel** under **Working now** to
+stop at once), what it made so far is kept, the job goes back to waiting under **Working now** and continues from
+that step by itself after you resume the channel. Nothing you asked for is lost: a Create request for several
+videos does not start the next while paused, and after the resume it finishes the video it was making and then
+makes the ones still owed (the status text says how many, for example "(3 videos still to make, the first one half
+made)"); none is made twice. If you resume before the Dashboard has looked at the stopped job, nothing is lost
+either: the job goes back to waiting as "Queued" with the same videos still to make and continues in its turn
+(it does not stop with an error). Its card, while it waits and when it is finished, lists every video of the
+request, also those made before the pause. **Cancel** on a waiting request stops it for good: the card then says
+how many videos were made and names the half-made one, whose files stay in its job folder (nothing is deleted).
+**Retry from where it stopped** on a story card that stopped with an error or after a restart continues the video
+that stopped and also makes the videos of that request that had not started; once that has started work, pressing
+Retry on the old card again is refused, so nothing is made twice (the message that appears when you press
+Retry says how many videos it will make). A video the night run was making when you paused
+waits the same way and is continued by the first night after the resume if it started no more than three days
+before that night (an older one waits for **Retry** in the Queue; a resume during the same night does not
+continue it that night). Its Queue card says "its channel was paused during the night's run" and that the next
+nightly run continues it after you resume. A video that a power cut or a restart interrupted, and whose channel
+you paused afterwards, says the same way back ("Resume the channel: the next nightly run then continues it"),
+not "Press Retry": Retry is refused while the channel is paused. All of this needs a nightly run, and one comes
+only while **Automatic runs** are on in Settings (every such card says so); with them off, press **Retry** after
+the resume or start the run yourself. A waiting video holds no part of the graphics card: the engine is
+free for other work until it continues, and a job that is paused between two steps does not ask for the
+graphics card again, so no model is loaded for it. A `studio run` typed by hand in a
+terminal refuses a paused channel with NS-E330 ("The channel is paused."): `--channel <it>` and `--resume <its job>` start
+nothing, and a run of every channel leaves it out. A pause typed while a `studio run` works stops it before its
+next step: the video under way is left half made and recorded as failed with NS-E330, and the terminal prints
+`studio run --resume <job id>`, which continues it from that step once the channel is resumed (with `--count`,
+the videos it had not started are not made: type the run again). After the night, the Queue's **Last night** card says how many jobs a pause held ("1 job not started:
+<channel> is paused"). Videos that are already made stay in the Queue.
 
 Type the commands in a terminal opened after setup finished, with the full path of the studio program in the
 install folder. Windows Terminal opens PowerShell, and there the quoted path needs `&` in front of it, or

@@ -100,11 +100,6 @@ class NewVersion(Env):
         )
         return super().verify(app)
 
-    def reregister(self, app: Path) -> list[str]:
-        sched = self.paths.config / "schedule.json"
-        if sched.exists():  # `schedule.install` writes the file again, compactly
-            sched.write_text(json.dumps(json.loads(sched.read_text(encoding="utf-8"))), encoding="utf-8")
-        return super().reregister(app)
 
 
 def owner_changes(paths: Paths) -> None:
@@ -155,9 +150,10 @@ def test_update_then_rollback_restores_every_config_file_byte_for_byte(tmp_path:
     assert read_config(paths) == before  # byte-identical, including what must not move
     old_models_load(paths)  # the older program loads its own config again
     assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
-    for name in ("runtime.json", "install_state.json", "schedule.json", "channels/demo.yaml"):
+    for name in ("runtime.json", "install_state.json", "channels/demo.yaml"):
         assert name in res.settings
     assert "secrets.dpapi" not in res.settings  # keys are never copied
+    assert "schedule.json" not in res.settings  # the record of the Windows task: a rollback leaves it
 
 
 def test_the_snapshot_is_taken_before_the_new_program_runs_and_lives_next_to_the_program_backup(
@@ -177,8 +173,8 @@ def test_the_snapshot_is_taken_before_the_new_program_runs_and_lives_next_to_the
     res = update.update_app(make_zip(tmp_path), app, Spy(paths).env(), paths=paths)
     assert snapshot_file(app).parent == (tmp_path / "NightShift.prev").parent
     assert seen == {n: b for n, b in before.items() if n in seen}  # the files as they were
-    assert {"runtime.json", "install_state.json", "channels/demo.yaml", "schedule.json"} <= set(seen)
-    assert "secrets.dpapi" not in seen and "ui_prefs.json" not in seen
+    assert {"runtime.json", "install_state.json", "channels/demo.yaml"} <= set(seen)
+    assert "secrets.dpapi" not in seen and "ui_prefs.json" not in seen and "schedule.json" not in seen
     assert any("rollback" in n and "runtime.json" in n for n in res.notes)
 
 
@@ -1143,7 +1139,8 @@ def test_the_snapshot_covers_what_the_older_models_are_strict_about() -> None:
     assert {"runtime.json", "install_state.json", "answers.json", "wizard_flags.json"} <= set(
         config_snapshot.FILES
     )
-    assert {"schedule.json", "dashboard.json"} <= set(config_snapshot.FILES)  # the update's own re-register
+    assert "dashboard.json" in config_snapshot.FILES
+    assert "schedule.json" in config_snapshot.LEFT_ALONE  # what Windows has: never put back from a copy
     assert set(config_snapshot.TREES) == {"channels", "formats"}
     assert "secrets.dpapi" in config_snapshot.LEFT_ALONE  # keys are never duplicated
 

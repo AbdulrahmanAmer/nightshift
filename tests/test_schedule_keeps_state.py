@@ -1,10 +1,11 @@
 """D-28: re-registering the 'Nightshift Daily' task must not undo what the owner did in Task Scheduler.
 
 `ns update` (Settings, CLI), the Settings run-time change, `ns schedule install` and the setup step all
-re-register the task. The task in Windows is the truth for its state (enabled or not) and its run time; they
-are read BEFORE the task is replaced and restored after, and `schedule.json` is rewritten to match. A fresh
-install (no task yet) registers an enabled task as before. The Windows Task Scheduler is a fake here: no real
-task is created or changed.
+look at the task first. The task in Windows is the truth for its state (enabled or not) and its run time: an
+enabled task keeps its time, and one the owner disabled is left exactly as it is and read as "Automatic runs
+off" (no `schedule.json`; tests/test_nightly_optional.py has the switch itself). `ns schedule install` with no
+task registers an enabled one as before. The Windows Task Scheduler is a fake here: no real task is created
+or changed.
 """
 
 from __future__ import annotations
@@ -102,12 +103,10 @@ def update_log_lines(paths: Paths) -> list[dict[str, Any]]:
 @pytest.mark.parametrize(
     ("before", "after", "mode"),
     [
-        (("Disabled", "04:15"), ("Disabled", "04:15"), "switched_off"),  # D-28: the owner switched it off
         (("Ready", "03:00"), ("Ready", "03:00"), "registered"),
         (("Ready", "05:45"), ("Ready", "05:45"), "registered"),  # the owner moved it in Task Scheduler
-        (("Disabled", "02:30"), ("Disabled", "02:30"), "switched_off"),
     ],
-    ids=["disabled-0415", "ready-0300", "ready-moved-0545", "disabled-0230"],
+    ids=["ready-0300", "ready-moved-0545"],
 )
 def test_ns_update_keeps_the_state_and_time_of_the_task(
     tmp_path: Path,
@@ -160,35 +159,10 @@ def test_a_start_boundary_with_a_zone_is_turned_into_this_pcs_clock_time(
     assert got == schedule.TaskState(enabled=False, run_time=clock)
 
 
-def test_no_task_before_registers_an_enabled_task_from_the_saved_time(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """The task was deleted (or never made) but schedule.json has a schedule: as before the fix, enabled."""
-    paths = Paths(tmp_path / "ns")
-    write_run_time(paths, "03:30", "registered")
-    fake = install_fake(monkeypatch, None)
-    notes = cli._reregister(paths, tmp_path)
-    assert fake.after == ("Ready", "03:30") and read_schedule_mode(paths) == "registered"
-    assert notes and notes[0].startswith("scheduled task re-registered") and "switched off" not in notes[0]
-    events = [r["event"] for r in update_log_lines(paths)]
-    assert "schedule_state_no_task" in events and "schedule_state_kept" not in events
-
-
 def test_nothing_is_touched_without_a_schedule(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     paths = Paths(tmp_path / "ns")
     fake = install_fake(monkeypatch, ("Ready", "03:00"))  # a task nobody registered through the product
     assert cli._reregister(paths, tmp_path) == [] and fake.scripts == []
-
-
-def test_a_disabled_record_whose_task_is_gone_comes_back_disabled_at_the_recorded_time(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    paths = Paths(tmp_path / "ns")
-    write_run_time(paths, "04:15", "switched_off")  # an earlier update kept it off
-    fake = install_fake(monkeypatch, None)
-    cli._reregister(paths, tmp_path)
-    assert fake.after == ("Disabled", "04:15") and read_schedule_mode(paths) == "switched_off"
-    assert schedule_json(paths)["run_time"] == "04:15"
 
 
 def test_a_task_the_owner_switched_back_on_is_registered_enabled_again(
@@ -220,8 +194,8 @@ def test_a_disabled_interactive_task_stays_disabled_and_is_not_claimed_to_run(
     write_run_time(paths, "03:00", "interactive_only")
     fake = install_fake(monkeypatch, ("Disabled", "03:00"), refuse_s4u=True)
     cli._reregister(paths, tmp_path)
-    assert fake.after == ("Disabled", "03:00")
-    assert read_schedule_mode(paths) == "switched_off" and read_run_time(paths) is None  # no run is coming
+    assert fake.after == ("Disabled", "03:00") and fake.registered == 0  # left exactly as it is
+    assert read_schedule_mode(paths) == "none" and read_run_time(paths) is None  # no run is coming
 
 
 def test_a_dev_install_is_left_alone_by_the_update_and_stays_disabled_when_registered(
@@ -269,7 +243,7 @@ def test_without_keep_state_install_replaces_the_task_enabled_as_before(
     paths = Paths(tmp_path / "ns")
     fake = install_fake(monkeypatch, ("Disabled", "04:15"))
     schedule.install(paths, "03:00", tmp_path)
-    assert fake.after == ("Ready", "03:00") and len(fake.scripts) == 1  # no read, no surprise
+    assert fake.after == ("Ready", "03:00") and "Register-ScheduledTask" in fake.scripts[0]  # no read first
 
 
 def test_ns_schedule_install_keeps_a_task_the_owner_switched_off(
@@ -283,7 +257,10 @@ def test_ns_schedule_install_keeps_a_task_the_owner_switched_off(
     assert fake.after == ("Disabled", "04:15") and schedule.KEPT_OFF_MARK in res.output
     res = runner.invoke(cli.app, ["schedule", "install", "--time", "06:00"])  # the owner asks for a new time
     assert res.exit_code == 0, res.output
-    assert fake.after == ("Disabled", "06:00") and schedule_json(paths)["run_time"] == "06:00"
+    assert fake.after == ("Disabled", "04:15") and fake.registered == 0  # the task is left as it is
+    assert not schedule_file(paths).exists()  # off: no record
+    kept = json.loads((paths.config / "dashboard.json").read_text(encoding="utf-8"))
+    assert kept["run_time"] == "06:00"  # the time waits for --enable or the Settings switch
 
 
 def test_the_settings_page_run_time_change_keeps_a_task_the_owner_switched_off(
@@ -294,8 +271,8 @@ def test_the_settings_page_run_time_change_keeps_a_task_the_owner_switched_off(
     paths = Paths.from_env()
     fake = install_fake(monkeypatch, ("Disabled", "04:15"))
     result = RealScheduleAdapter(paths).apply("05:00")
-    assert result["applied"] is True and schedule.KEPT_OFF_MARK in result["note"]
-    assert fake.after == ("Disabled", "05:00") and read_schedule_mode(paths) == "switched_off"
+    assert result["applied"] is True and "Automatic runs are off" in result["note"]
+    assert fake.after == ("Disabled", "04:15") and read_schedule_mode(paths) == "none"
     fake2 = install_fake(monkeypatch, ("Ready", "04:15"))
     RealScheduleAdapter(paths).apply("05:00")
     assert fake2.after == ("Ready", "05:00") and read_schedule_mode(paths) == "registered"
@@ -439,13 +416,16 @@ def test_enable_does_not_switch_a_dev_installs_task_on(tmp_path: Path, monkeypat
 
 # -------------------------------------------- break-it round: what the dashboard says about a task kept off
 def _off_task_dashboard(tmp_home: Path, monkeypatch: pytest.MonkeyPatch, task: tuple[str, str]):
+    from ns_dashboard.adapters import RealScheduleAdapter
     from ns_dashboard.fakes import seed_channel
     from tests.test_dashboard_handlers import make
 
     paths = Paths.from_env()
     write_run_time(paths, "04:15", "switched_off")
     fake = install_fake(monkeypatch, task)
+    monkeypatch.setattr("ns_dashboard.state.SYNC_INLINE", True)  # the look runs in the call
     dash, state = make(tmp_home)
+    state.adapters.schedule = RealScheduleAdapter(state.paths)  # the adapter that looks at the (fake) task
     seed_channel(state.db, state.paths, "after-dark")  # an active channel: a night run would be due
     state.paths.config.mkdir(parents=True, exist_ok=True)
     (state.paths.config / "dashboard.json").write_text('{"run_time": "03:00"}', encoding="utf-8")
@@ -455,14 +435,14 @@ def _off_task_dashboard(tmp_home: Path, monkeypatch: pytest.MonkeyPatch, task: t
 def test_a_task_kept_off_shows_the_tasks_own_time_no_coming_run_and_no_windows_refused_claim(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Before: schedule_registered False (the page said Windows refused it) and 03:00 (not the task's)."""
+    """A task disabled in Task Scheduler is Automatic runs off; its own time is the one kept."""
     dash, state, _ = _off_task_dashboard(tmp_home, monkeypatch, ("Disabled", "04:15"))
     settings = dash.settings.get_settings()
-    assert settings["schedule_registered"] is True  # a task exists: no "No nightly task" row
+    assert settings["schedule_registered"] is False  # off, said as a state and not as a refusal
     assert settings["schedule_time"] == "04:15"  # the task's time, not dashboard.json's 03:00
     assert settings["next_run"] is None  # switched off: no run is coming
     status = dash.engine.status()
-    assert status["schedule_registered"] is True and status["schedule_time"] == "04:15"
+    assert status["schedule_registered"] is False and status["schedule_time"] == "04:15"
     assert status["next_run"] is None and status["schedule_mode"] == "none"
 
 
@@ -494,12 +474,14 @@ def test_the_record_follows_a_time_moved_while_the_task_is_off(
     paths = Paths(tmp_path / "ns")
     write_run_time(paths, "04:15", "switched_off")
     install_fake(monkeypatch, ("Disabled", "06:00"))
-    assert schedule.sync_record(paths) is True
-    assert read_schedule_mode(paths) == "switched_off" and schedule_json(paths)["run_time"] == "06:00"
+    assert schedule.sync_record(paths) is True  # the older `switched_off` record becomes "no record"
+    assert read_schedule_mode(paths) == "none" and not schedule_file(paths).exists()
+    kept = json.loads((paths.config / "dashboard.json").read_text(encoding="utf-8"))
+    assert kept["run_time"] == "06:00"  # the task's own time is the one kept
     assert schedule.sync_record(paths) is False  # nothing more to learn
 
 
-def test_the_record_is_left_alone_when_the_task_cannot_be_read_or_is_not_switched_off(
+def test_the_record_is_left_alone_when_the_task_cannot_be_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     paths = Paths(tmp_path / "ns")
@@ -507,8 +489,7 @@ def test_the_record_is_left_alone_when_the_task_cannot_be_read_or_is_not_switche
     monkeypatch.setattr(pwsh, "run_powershell", lambda s, **kw: done(code=1, err="Access is denied"))
     assert schedule.sync_record(paths) is False and read_schedule_mode(paths) == "switched_off"
     write_run_time(paths, "03:00", "registered")
-    fake = install_fake(monkeypatch, ("Disabled", "03:00"))
-    assert schedule.sync_record(paths) is False and fake.scripts == []  # only `switched_off` is checked
+    assert schedule.sync_record(paths) is False and read_run_time(paths) == "03:00"
 
 
 # ------------------------------------------------- D-28 round 2: a read error is not "there is no task"
@@ -615,21 +596,6 @@ def test_the_read_script_run_in_powershell_reads_state_and_time_of_a_task_that_e
 
 
 # ------------------------------------------ D-28 round 2: a kept-off task is registered disabled in one step
-def test_a_kept_off_task_is_registered_disabled_in_one_call_never_enabled_first(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    paths = Paths(tmp_path / "ns")
-    write_run_time(paths, "03:00", "registered")
-    fake = install_fake(monkeypatch, ("Disabled", "04:15"))
-    cli._reregister(paths, tmp_path)
-    registers = [s for s in fake.scripts if "Register-ScheduledTask" in s]
-    assert len(registers) == 1 and fake.after == ("Disabled", "04:15")
-    assert not any("Disable-ScheduledTask" in s for s in fake.scripts)  # no second call that turns it off
-    settings = next(ln for ln in registers[0].splitlines() if ln.startswith("$settings"))
-    assert settings.endswith("-Disable")  # born disabled, in the S4U and in the interactive attempt alike
-    assert registers[0].count("Register-ScheduledTask") == 2
-
-
 def test_an_enabled_task_is_registered_without_the_disable_switch(tmp_path: Path):
     paths = Paths(tmp_path / "ns")
     on = schedule.build_install_script(paths, "03:00", tmp_path)

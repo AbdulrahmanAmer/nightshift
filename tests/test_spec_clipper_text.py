@@ -59,11 +59,11 @@ def _box(box_id: str) -> str:
     line = next(ln for ln in STATUS.splitlines() if ln.startswith((f"- [ ] {box_id} ", f"- [x] {box_id} ")))
     assert line.startswith("- [ ] ") or " evidence: " in line, f"{box_id} is ticked without evidence"
     if box_id in STAYS_OPEN:
-        assert line.startswith("- [ ] "), f"{box_id} must stay open: the remove_fillers crash is on main"
+        assert line.startswith("- [ ] "), f"{box_id} must stay open: QA ticks it with evidence from a run"
     return line
 
 
-# Open until the remove_fillers crash is fixed (the strict xfail below; D-38).
+# Open until QA ticks them with evidence from a clip job run with the setting on (the D-38 crash is fixed).
 STAYS_OPEN = ("F-H95", "F-H127")
 
 
@@ -238,15 +238,6 @@ def _caption_words(tmp_home: Path, text: str, *, remove: bool) -> list[str]:
 SPOKEN = "So um this uh game is like really er good hmm and like it works"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ValueError,
-    reason=(
-        "defect found by P43: with the setting on and a hesitation in the clip, CaptionsStage builds the "
-        "speaker list from the unfiltered words (stages_clip.py speaker_plan call) and speaker_plan raises "
-        "'speaker_of must have one entry per word'; drop this marker when that is fixed"
-    ),
-)
 def test_remove_fillers_drops_the_hesitations_and_keeps_like_in_the_captions(tmp_home: Path):
     on = {w.lower() for w in _caption_words(tmp_home, SPOKEN, remove=True)}
     assert "like" in on  # kept on purpose: removing it would change the meaning
@@ -366,10 +357,10 @@ def test_audit_rows_follow_the_spec_text_and_the_boxes_stay_open():
         assert cells[0] == "built", start
         assert f"13 D{number}" in cells[2], start
         assert cells[4] == "", start  # nothing missing
-    # the text matches the code, but the setting crashes the stage on a hesitation (the xfail test above)
+    # the text matches the code and the setting captions a clip with a hesitation (D-38 is fixed)
     cells = _status_row("C6 optional hesitation removal")
-    assert cells[0] == "partial" and f"13 D{n_fill}" in cells[2]
-    assert "speaker_plan" in cells[4] and "stages_clip.py" in cells[3]
+    assert cells[0] == "built" and f"13 D{n_fill}" in cells[2]
+    assert cells[4] == "" and "stages_clip.py" in cells[3] and "test_clip_captions_fillers.py" in cells[5]
     for line in (_status_row("Captions 17.2: text source")[4], _box("F-H95")):
         assert "), (" not in line and "restor" in line and f"D{n_fill}" in line  # no dangling comma
     for box_id, number in (("F-H125", n_cam), ("F-H127", n_fill), ("F-H128", n_pol)):

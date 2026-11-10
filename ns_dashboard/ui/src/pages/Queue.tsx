@@ -62,7 +62,7 @@ export default function Queue() {
   const newest = items.reduce<string | null>((m, x) => (!m || x.created_at > m ? x.created_at : m), null);
   const pending = counts?.pending ?? (tab === "ready" ? items.length : 0);
   const owner = chans.find((c) => c.status === "active")?.display_name || chans[0]?.display_name;
-  // only a registered nightly task has a next run: the pill said "No nightly task" beside a 13 h countdown
+  // only an enabled nightly task has a next run (Automatic runs on); off shows no countdown and no time
   const scheduled = !!status?.next_run && !!status?.schedule_registered;
   const nextRun = scheduled ? new Date(status!.next_run!) : null;
 
@@ -71,7 +71,7 @@ export default function Queue() {
   const reviewDescription = (
     <>
       {owner && !ownerName ? `${partOfDay()}. ` : ""}{pending ? <>{pending === 1 ? "One video is" : `${pending} videos are`} ready to review{newest && tab === "ready" ? <>, the newest made at <span className="ds-num">{fmtClock(newest)}</span></> : null}.</> : "Nothing is waiting for review."}{" "}
-      {scheduled ? <>Tonight's run starts at <span className="ds-num">{fmtClock(status!.next_run!)}</span>.</> : "Automatic runs are off."}
+      {scheduled ? <>Tonight's run starts at <span className="ds-num">{fmtClock(status!.next_run!)}</span>.</> : status?.schedule_registered ? "No channel is active, so nothing runs tonight." : "Automatic runs are off."}
     </>
   );
 
@@ -83,8 +83,8 @@ export default function Queue() {
         <FeatureCard className={cx("self-stretch", SPAN["1/1"])} illustration={<StoryIllustration />} title="Write a story" description="An original story, narrated, with footage and captions" href="#/create?kind=story" />
         <FeatureCard className={cx("self-stretch", SPAN["1/1"])} illustration={<ClipsIllustration />} title="Cut clips" description="Vertical clips from your own stream or podcast" href="#/create?kind=clips" />
         <FeatureCard className={cx("self-stretch", SPAN["1/1"])} illustration={<SeriesIllustration />} title="Build a series" description="Plan the parts with the Assistant, then make them" onClick={series} />
-        <CountdownCard className={cx("self-stretch", SPAN["1/1"])} title="Next automatic run" target={nextRun} emptyText="Automatic runs are off. Set a time in Settings"
-          caption={status?.schedule_time ? `Every night at ${status.schedule_time}` : undefined} />
+        <CountdownCard className={cx("self-stretch", SPAN["1/1"])} title="Next automatic run" target={nextRun} emptyText={status?.schedule_registered ? "No channel is active, so nothing runs tonight" : "Automatic runs are off. Switch them on in Settings"}
+          caption={scheduled ? `Every night at ${status!.schedule_time}${status!.schedule_mode === "interactive_only" ? ", only while you are signed in" : ""}` : undefined} />
 
         {tab === "ready" && o && !list.loading ? (
           <Review key={o.output_id} o={o} items={items} tab={tab} onTab={pick} onPick={setCurrent} onChanged={async (next) => { await refresh(); list.reload(); setCurrent(next); }} channelName={channelName} />
@@ -373,7 +373,7 @@ function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; st
     try { const r = await api.post<{ note?: string }>("/engine/release_gpu", { owner }); toast(r?.note || "The graphics card is free", "ok"); refresh(); } catch (e: any) { toast(e.message, "bad"); }
   };
   const plan = chans.filter((c) => c.status === "active" && c.tonight !== false).slice(0, 2);
-  const at = fmtClock(status?.next_run) || status?.schedule_time || "";
+  const at = fmtClock(status?.next_run) || ""; // no time beside a plan that will not run by itself
   const voice = (c: ChannelSummary) => (typeof c.voice === "string" ? c.voice : c.voice?.name || c.voice?.speaker || "Built-in voice");
   return (
     <Card as="section" aria-labelledby="q-plan" className={cx("self-stretch", className)}>
@@ -434,10 +434,12 @@ function RenderJobs({ jobs, chans, channelName, className }: { jobs: Job[]; chan
   const rows = [...ordered, ...jobs.filter((j) => !live.includes(j))].slice(0, 4);
   const tasks: Task[] = rows.map((j) => {
     const running = j.status === "running" || j.status === "queued"; const failed = j.status === "failed"; const sched = held(j);
+    // held by its channel's pause (P47): the server's own words, with the videos the request still owes
+    const paused = j.status === "queued" && (j.message || "").startsWith("Paused: ");
     const title = jobTitle(j, channelName);
     return {
-      id: j.job_id, title, date: sched ? `Scheduled for ${fmtWhen(j.schedule_at)}` : running ? `Started ${fmtWhen(j.created_at)}` : fmtWhen(j.created_at),
-      metricLabel: sched ? "Starts" : "Stage", metric: sched ? fmtWhen(j.schedule_at) : j.status === "queued" ? "Waiting" : running ? stageWords(j.stage) : failed ? "Stopped" : j.status === "cancelled" ? "Cancelled" : "Done",
+      id: j.job_id, title, date: paused ? j.message.slice("Paused: ".length) : sched ? `Scheduled for ${fmtWhen(j.schedule_at)}` : running ? `Started ${fmtWhen(j.created_at)}` : fmtWhen(j.created_at),
+      metricLabel: sched && !paused ? "Starts" : "Stage", metric: paused ? "Paused" : sched ? fmtWhen(j.schedule_at) : j.status === "queued" ? "Waiting" : running ? stageWords(j.stage) : failed ? "Stopped" : j.status === "cancelled" ? "Cancelled" : "Done",
       progress: j.progress ?? (j.status === "done" ? 100 : 0), progressLabel: `${title} progress`, tone: failed ? "danger" : j.status === "done" ? "success" : "accent",
       meta: [{ icon: "clock", value: j.step && j.steps ? `${j.step}/${j.steps}` : "–", label: "steps" }, { icon: "film", value: MAKES_VIDEO.includes(j.kind) ? (j.result?.output_ids?.length ?? 0) : "–", label: "videos" }],
     };
@@ -500,6 +502,8 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
   const made = r.summary?.jobs?.length ?? 0; const failed = r.summary?.failures ?? []; const skipped = r.summary?.skipped ?? [];
   // jobs the night did not start because the drive had no room for them (nothing was made half way): the sentence is the server's own, "needs about N MB; D: has M MB free"
   const noRoom = r.summary?.no_room ?? []; const notStarted = noRoom.reduce((n, x) => n + x.jobs, 0);
+  // jobs the night did not start because their channel was paused (before or during the night, P47); a half-made one waits for the resume
+  const held = r.summary?.paused ?? []; const heldJobs = held.reduce((n, x) => n + x.jobs, 0);
   // A run that was killed (power cut, crash) has a finish time written by the recovery, but it did not finish: say so, and name the jobs it left half made.
   const interrupted = r.state === "interrupted"; const live = r.state === "running"; const unfinished = r.summary?.interrupted_jobs ?? [];
   const took = r.duration_s ? (r.duration_s >= 3600 ? `${Math.floor(r.duration_s / 3600)} h ${Math.round((r.duration_s % 3600) / 60)} min` : `${Math.max(1, Math.round(r.duration_s / 60))} min`) : null;
@@ -513,11 +517,13 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
         {failed.length ? ` ${plural(failed.length, "job")} stopped.` : ""}
         {skipped.length ? ` ${plural(skipped.reduce((n, x) => n + x.jobs, 0), "job")} skipped.` : ""}
         {notStarted ? ` ${plural(notStarted, "job")} not started, not enough disk space.` : ""}
+        {heldJobs ? ` ${plural(heldJobs, "job")} held, the channel${new Set(held.map((x) => x.channel)).size > 1 ? "s were" : " was"} paused.` : ""}
         {interrupted ? ` ${r.note || "Interrupted: it never finished."}` : ""}
       </p>
       {unfinished.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{unfinished.map((u) => <li key={u.job_id}>{channelName(u.channel)}: {interruptedWords(u)}</li>)}</ul>}
       {notes.data.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{notes.data.map((n, i) => <li key={i}>{n.message} <span className="text-ds-muted">({fmtClock(n.at)})</span></li>)}</ul>}
       {noRoom.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{noRoom.map((x, i) => <li key={i}>{channelName(x.channel)}: {plural(x.jobs, "job")} not started, not enough disk space ({x.short || x.message || "free some space"})</li>)}</ul>}
+      {held.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{held.map((x, i) => <li key={i}>{x.job_id ? `${channelName(x.channel)} is paused: its half-made job waits for the resume` : `${plural(x.jobs, "job")} not started: ${channelName(x.channel)} is paused`}</li>)}</ul>}
       {skipped.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{skipped.map((x) => <li key={x.channel}>{channelName(x.channel)}: {plural(x.jobs, "job")} skipped because an earlier one stopped</li>)}</ul>}
       {failed.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{failed.slice(0, 3).map((f) => <li key={f.job_id}>{channelName(f.channel)}: {f.code ? `${f.code}. ` : ""}{f.error || "stopped"}</li>)}</ul>}
     </Card>

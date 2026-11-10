@@ -33,7 +33,7 @@ from typing import IO, Any
 from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_dashboard.lazyimport import lazy
-from ns_dashboard.studio_job import CANCEL_ENV, PREFIX
+from ns_dashboard.studio_job import CANCEL_ENV, CARRIED, PREFIX
 from ns_dashboard.uploads import tmp_dir
 
 ENTRY = "ns_dashboard.studio_job"
@@ -90,7 +90,9 @@ def failure_error(event: Event) -> NsError:
     code = event.get("code")
     detail = str(event.get("detail") or "")
     hint = event.get("hint")
-    extra = {"hint": hint} if isinstance(hint, str) and hint else {}  # the job's own hint (D-25)
+    # the job's own hint (D-25) and what a stopped request still owes (P47)
+    extra: dict[str, Any] = {"hint": hint} if isinstance(hint, str) and hint else {}
+    extra.update({k: event[k] for k in CARRIED if isinstance(event.get(k), (int, str))})
     if isinstance(code, str):
         with contextlib.suppress(KeyError):
             return NsError(code, detail, **extra)

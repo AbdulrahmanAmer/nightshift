@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from ns_common.acquire import Acquirer
 from ns_common.db import Db
+from ns_common.errors import NsError
 from ns_common.logging import Level, NsLogger
 from ns_common.paths import Paths
 
@@ -89,6 +90,20 @@ def output_ids(db: Db, job_id: str) -> list[str]:
     return [str(r["output_id"]) for r in rows]
 
 
+PAUSED_CODE = "NS-E330"
+
+
+class ChannelPaused(NsError):
+    """The channel was paused before a story video started: nothing was made and the job stops (P47).
+
+    The dashboard's worker looks at the pause when it holds the GPU, so this only meets a pause that came in
+    the seconds after that look, while the studio process was starting. It is coded (NS-E330), so the studio
+    child reports it with its code and hint and the job card does not read NS-E327 ("unexpected problem")."""
+
+    def __init__(self, detail: str, **owed: Any) -> None:
+        super().__init__(PAUSED_CODE, detail, **owed)
+
+
 def run_story_jobs(
     channel: str,
     fmt: str,
@@ -114,42 +129,92 @@ def run_story_jobs(
     """
     from ns_studio import diskroom, jobs
     from ns_studio.channels.crud import get_channel
-    from ns_studio.orchestrator import plan_format, plan_job
+    from ns_studio.orchestrator import plan_job, stage_names
     from ns_studio.policy.regen import run_job_guarded
 
     env = open_env(fake, acquirer, paths=paths)
-    if resume_job_id:
+    n = 1 if script is not None else max(1, int(count or 1))
+    out: list[str] = []
+    start = 0
+    if resume_job_id:  # Retry (count 1), or a request held by a pause: its half-made video, then the rest
+        _require_not_paused(env, channel, left=n - 1, half_made=resume_job_id)
         ctx = jobs.load_job(env, resume_job_id)
         # NS-E104 before the job runs again, for the stages it has left (a drive that filled up meanwhile)
         diskroom.require_story_room(
             env.paths, env.log, ctx.channel, ctx.fmt, fake=fake, resume_dir=ctx.job_dir)
-        jobs.prepare_plan(ctx.fmt, None)
-        names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
+        names = stage_names(ctx.fmt, ctx.job_dir, ctx.policy)  # the job keeps the policy it was made with
         if seen is not None:
             seen.append(ctx.job_id)
-        run_job_guarded(watched(ctx, names, 0, 1, report), resume=True)
-        return output_ids(env.db, ctx.job_id)
+        with _owed_on_pause(ctx.job_id, n - 1):
+            run_job_guarded(watched(ctx, names, 0, n, report), resume=True)
+        out.extend(output_ids(env.db, ctx.job_id))
+        if n == 1:
+            return out
+        start = 1
     ch = get_channel(env.paths, channel)
-    jobs.prepare_plan(fmt, None)
-    names = [s.name for s in plan_job(fmt)]
-    n = max(1, int(count or 1))
-    if script is not None:
-        n = 1
+    policy = jobs.prepare_plan(fmt, None)
+    names = [s.name for s in plan_job(fmt, policy)]
     rng = random.Random()
-    out: list[str] = []
-    for i in range(n):
+    for i in range(start, n):
+        if paused_now(env, ch.slug):  # before EVERY video, the first too: a pause stops all new work (P47)
+            env.log.info("story_run_paused", channel=ch.slug, made=i, left=n - i)
+            # nothing a person asked for is lost: the videos still owed (`left`) wait for the resume
+            raise ChannelPaused(_paused_text(ch.display_name, i, n), left=n - i)
         # every job of a batch, a scheduled one too: the drive may have filled up since the request was made
         diskroom.require_story_room(env.paths, env.log, ch, fmt, fake=fake)
         if script is not None:
-            ctx = jobs.make_script_job(env, ch, fmt, script, script_title, rng=rng)
-            names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
+            ctx = jobs.make_script_job(env, ch, fmt, script, script_title, rng=rng, policy=policy)
+            names = stage_names(ctx.fmt, ctx.job_dir, ctx.policy)
         else:
-            ctx = jobs.make_job(env, ch, fmt, rng=rng)
+            ctx = jobs.make_job(env, ch, fmt, rng=rng, policy=policy)
         if seen is not None:
             seen.append(ctx.job_id)
-        run_job_guarded(watched(ctx, names, i, n, report))
+        with _owed_on_pause(ctx.job_id, n - i - 1):
+            run_job_guarded(watched(ctx, names, i, n, report))
         out.extend(output_ids(env.db, ctx.job_id))
     return out
+
+
+@contextmanager
+def _owed_on_pause(job_id: str, left: int) -> Iterator[None]:
+    """A pause that stops `job_id` between two stages (NS-E330 from `ns_studio.pause`) says which video is
+    half made and how many more the request still owes, so the dashboard keeps the whole request (P47)."""
+    try:
+        yield
+    except NsError as e:
+        if e.code == PAUSED_CODE:
+            e.data.setdefault("half_made", job_id)
+            e.data.setdefault("left", left)
+        raise
+
+
+def _paused_text(display_name: str, made: int = 0, of: int = 1) -> str:
+    if not made:
+        return (f"{display_name} was paused before the first video started; none was made. Resume it and run"
+                " again")
+    return f"{display_name} was paused after {made} of {of} videos; the other {of - made} wait for the resume"
+
+
+def _require_not_paused(env: Env, slug: str, **owed: Any) -> None:
+    """`ChannelPaused` when the channel's profile says paused right now (an unreadable profile is not);
+    `owed` (`left`, `half_made`) says what the request still has to make."""
+    if paused_now(env, slug):
+        env.log.info("story_run_paused", channel=slug, made=0, left=1)
+        raise ChannelPaused(_paused_text(slug), **owed)
+
+
+def paused_now(env: Env, slug: str) -> bool:
+    """True when the channel's profile says `paused` right now (read again between the videos of one run job;
+    a pause can come at any time). A profile that cannot be read (invalid, gone, or held open by another
+    program on Windows: OSError) is not a pause: a WARN `channel_profile_unreadable` and the run goes on."""
+    from ns_studio.channels.crud import get_channel
+    from ns_studio.errors import StudioError
+
+    try:
+        return get_channel(env.paths, slug).status == "paused"
+    except (StudioError, OSError) as e:
+        env.log.warn("channel_profile_unreadable", str(e), channel=slug, check="pause")
+        return False
 
 
 def with_acquirer(ctx: JobContext, acquirer: Acquirer | None) -> JobContext:
@@ -424,7 +489,8 @@ def run_series_part(
     env = open_env(fake, acquirer, paths=paths)
     job_id = str(params["job_id"])
     channel = get_channel(env.paths, str(params["channel"]))
-    jobs.prepare_plan("master_first", None)
+    _require_not_paused(env, channel.slug)  # before a combo is drawn or a job folder made (P47)
+    policy = jobs.prepare_plan("master_first", None)  # a new part's choice; a resumed one keeps its own
     job_dir = env.paths.job_dir(job_id)
     diskroom.require_series_part_room(env.paths, env.log, fake=fake, resume_dir=job_dir)
     if (job_dir / "job.json").exists():
@@ -449,6 +515,7 @@ def run_series_part(
             runtime=env.runtime,
             services=env.services,
             log=env.log,
+            policy=policy,
         )
         ctx.write_json(
             "job.json",
@@ -458,9 +525,10 @@ def run_series_part(
                 "fmt": "master_first",
                 "combo": combo.model_dump(mode="json"),
                 "created_at": now.isoformat(timespec="seconds"),
+                "policy": policy,
             },
         )
-    names = [s.name for s in plan_job("master_from_script")]
+    names = [s.name for s in plan_job("master_from_script", ctx.policy)]
     run_job_guarded(watched(ctx, names, 0, 1, report))
     return output_ids(env.db, job_id)
 

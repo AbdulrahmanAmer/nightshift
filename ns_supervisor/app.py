@@ -12,11 +12,11 @@ import contextlib
 import json
 import sys
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import FastAPI  # pyright: ignore[reportMissingImports]
 from fastapi.responses import JSONResponse, StreamingResponse  # pyright: ignore[reportMissingImports]
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictInt
 
 from ns_common import first_start
 from ns_common.atomic import sweep_stale_tmp
@@ -42,6 +42,9 @@ class AcquireBody(BaseModel):
     model_alias: str | None = None
     wait: bool = True
     timeout_s: float = 7200
+    # The caller's own process (F-H47): the GPU is freed once it is gone. A pid that is not a positive whole
+    # number (a string, 0, -5, 1.5, true) is refused with 422; missing means no check.
+    pid: Annotated[StrictInt, Field(gt=0, le=0xFFFFFFFF)] | None = None
 
 
 class ReleaseBody(BaseModel):
@@ -132,7 +135,7 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
     @app.post("/acquire")
     async def acquire(body: AcquireBody) -> dict[str, Any]:
         return await sup.acquire(
-            body.service, body.owner, body.model_alias, wait=body.wait, timeout_s=body.timeout_s
+            body.service, body.owner, body.model_alias, wait=body.wait, timeout_s=body.timeout_s, pid=body.pid
         )
 
     @app.post("/release")

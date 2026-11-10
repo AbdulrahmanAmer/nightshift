@@ -39,6 +39,9 @@ from typing import Any
 PREFIX = "NSJOB "
 KINDS = ("run", "clip", "rerun", "series", "download", "transcribe", "apply_voice")
 CANCEL_ENV = "NS_JOB_CANCEL_FILE"
+#: Fields of a coded error that cross to the dashboard besides code, detail and hint: the half-made studio job
+#: and how many videos the request still owes after it (`studio_bridge._owed_on_pause`).
+CARRIED = ("half_made", "left")
 
 
 class CancelRequested(Exception):
@@ -247,6 +250,8 @@ def error_event(e: BaseException) -> dict[str, Any]:
     hint = data.get("hint") if coded and isinstance(data, dict) else None
     if isinstance(hint, str) and hint:  # a check's hint for this very job (D-25) must reach the Queue card
         fields["hint"] = hint
+    if coded and isinstance(data, dict):  # what a stopped request still owes (P47): the dashboard keeps it
+        fields.update({k: data[k] for k in CARRIED if isinstance(data.get(k), (int, str))})
     return fields
 
 

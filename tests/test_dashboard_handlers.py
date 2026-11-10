@@ -18,6 +18,7 @@ from ns_dashboard.state import AppState
 from ns_dashboard.supervisor_link import SupervisorLink
 from ns_dashboard.svc_jobs import learn_response
 from ns_dashboard.uploads import UploadManager
+from ns_supervisor.schedule_cfg import write_run_time
 
 NOON = datetime(2026, 11, 1, 12, 0)
 
@@ -57,6 +58,10 @@ def test_status_channels_schedule_and_outbox(tmp_home: Path):
     seed_output(state.db, state.paths, channel="after-dark")
     seed_output(state.db, state.paths, channel="after-dark", status="approved", k=2)
     st = dash.engine.status()
+    assert st["next_run"] is None and st["next_run_in_s"] is None  # Automatic runs are off: no run is coming
+    assert "off" in {c["slug"]: c for c in st["channels"]}["after-dark"]["tonight"]
+    write_run_time(state.paths, "03:00")  # switched on: Windows has an enabled task
+    st = dash.engine.status()
     assert st["next_run"] == "2026-11-02T03:00" and st["next_run_in_s"] == 15 * 3600
     assert st["outbox"]["pending"] == 1 and st["outbox"]["approved"] == 1
     cards = {c["slug"]: c for c in st["channels"]}
@@ -65,7 +70,7 @@ def test_status_channels_schedule_and_outbox(tmp_home: Path):
     }
     assert cards["after-dark"]["masters_per_week"] == 2 and cards["after-dark"]["pending"] == 1
     assert cards["paused-one"]["tonight"].startswith("Paused")
-    dash.settings.put_settings({"schedule_time": "13:30"})
+    write_run_time(state.paths, "13:30")  # the task was moved (the real adapter records what Windows has)
     assert dash.engine.status()["next_run"] == "2026-11-01T13:30"
 
 

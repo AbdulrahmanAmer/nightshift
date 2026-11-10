@@ -118,7 +118,10 @@ def _set_schedule(c: ToolContext, a: dict[str, Any]) -> Any:
     if not body:
         raise ApiError(422, "invalid_options", "Give a schedule_time (HH:MM) or notifications (true/false).")
     s = c.dash.settings.put_settings(body)
-    return {k: s[k] for k in ("schedule_time", "notifications", "next_run", "schedule_result") if k in s}
+    out = {k: s[k] for k in ("schedule_time", "notifications", "next_run", "schedule_result") if k in s}
+    if "schedule_time" in body:  # a time alone starts nothing while the switch is off: say which it is
+        out["automatic_runs"] = composite.automatic_runs(c)
+    return out
 
 
 def _import_analytics(c: ToolContext, a: dict[str, Any]) -> Any:
@@ -282,7 +285,8 @@ def _tools() -> list[ToolDef]:
         _t("resume_job", "create", "Continue a story job that stopped with an error from the stage where it stopped (same story).",
            lambda c, a: c.dash.jobs.create_resume(a["job_id"]), route=("POST", "/api/jobs/{job_id}/resume"),
            props={"job_id": _s("id of the job that stopped")}, required=["job_id"], side=True, dry_run=dryrun.check_resume,
-           confirm="Continue job {job_id} from the stage where it stopped. This uses the GPU for a while."),
+           confirm="Continue job {job_id} from the stage where it stopped, and make the videos of its request that "
+                   "had not started. This uses the GPU for a while."),
         _t("cancel_job", "create", "Cancel a queued or running job (a running one stops after its current stage).",
            lambda c, a: c.dash.jobs.cancel(a["job_id"]), route=("POST", "/api/jobs/{job_id}/cancel"),
            props={"job_id": _s("job id")}, required=["job_id"], side=True, dry_run=dryrun.check_cancel, confirm="Cancel job {job_id}."),
@@ -299,7 +303,7 @@ def _tools() -> list[ToolDef]:
         # ------------------------------------------------ settings / diagnostics
         _t("get_settings", "settings", "Run time, notifications, engine profile and flags, which keys are set (never the keys).",
            lambda c, a: c.dash.settings.get_settings(), route=("GET", "/api/settings")),
-        _t("set_schedule", "settings", "Change the nightly run time (HH:MM) or turn notifications on or off.",
+        _t("set_schedule", "settings", "Change the nightly run time (HH:MM) or turn notifications on or off. It cannot switch automatic runs on or off: the owner does that in Settings.",
            _set_schedule, route=("PUT", "/api/settings"),
            props={"schedule_time": _s("24-hour time", pattern=r"^([01]\d|2[0-3]):[0-5]\d$"),
                   "notifications": _b("show Windows notifications")}, side=True, dry_run=dryrun.check_schedule,

@@ -42,7 +42,7 @@ def test_the_story_model_is_the_pinned_gguf_in_models_llm(tmp_path: Path) -> Non
 def test_nothing_to_get_on_a_profile_without_it_is_a_coded_error(tmp_path: Path) -> None:
     with pytest.raises(NsError) as ei:
         models_get.plan_items("story_llm", manifest(), "cpu-dev", Paths(tmp_path))
-    assert ei.value.code == "NS-E109"
+    assert ei.value.code == "NS-E122"  # not NS-E109: that one is a failed checksum
     with pytest.raises(ValueError):
         models_get.plan_items("nope", manifest(), "gpu", Paths(tmp_path))
 

@@ -72,6 +72,11 @@ def test_install_gates_places_stages_and_is_idempotent(monkeypatch: pytest.Monke
     assert {"policy_text", "policy_final"} <= set(REGISTRY)
 
 
+def test_the_orchestrator_leaves_out_the_same_gates_the_gate_module_installs():
+    """`orchestrator.POLICY_STAGES` (what a job with its policy off leaves out) names the two gate stages."""
+    assert orch.POLICY_STAGES == (gate.TEXT_STAGE, gate.FINAL_STAGE)
+
+
 def test_install_gates_fallbacks(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(orch.FORMAT_STAGES, "pg", ["a", "voice", "render", "qc"])
     gate.install_gates("pg")
