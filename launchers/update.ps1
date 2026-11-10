@@ -22,7 +22,8 @@ Set-NsHomeLocation
 # python.exe behind it) would stay open inside venvs\supervisor for the whole update, and Windows would then
 # refuse to replace it while uv re-installs Nightshift into that venv. `--detach` returns at once, so no
 # program from venvs\supervisor is running while the worker works; the worker itself runs from a copy.
-$started = @(& $py -m ns_supervisor.cli update $dlg.FileName --detach)
+# --watched: this window follows the run to its end, so the worker opens no window of its own for a result.
+$started = @(& $py -m ns_supervisor.cli update $dlg.FileName --detach --watched)
 $startCode = $LASTEXITCODE
 if ($startCode -ne 0) {
     Exit-NsWithPause ('The update could not start (exit code ' + $startCode + '): the lines above say why. Nothing was changed.') $startCode
@@ -37,6 +38,7 @@ Write-Host 'The update runs in the background. This window shows its progress.'
 $statusFile = [string]$info.status
 $logFile = [string]$info.log
 $seen = 0
+$silent = 0
 $final = $null
 $waited = 0
 while ($null -eq $final -and $waited -lt 14400) {
@@ -52,6 +54,14 @@ while ($null -eq $final -and $waited -lt 14400) {
     $mine = $false
     if ($null -ne $state -and $state.PSObject.Properties['state'] -and $state.PSObject.Properties['log']) {
         $mine = ([string]$state.log -eq $logFile)
+    }
+    if (-not $mine -and $info.PSObject.Properties['pid'] -and [int]$info.pid -gt 0) {
+        # No word from the worker yet: one that is gone already (another update holds the lock, or it died
+        # before its first line) will never write one.
+        if (Get-Process -Id ([int]$info.pid) -ErrorAction SilentlyContinue) { $silent = 0 } else { $silent++ }
+        if ($silent -ge 5) {
+            Exit-NsWithPause ('The update process ended without reporting a result. Its log: ' + $logFile) 1
+        }
     }
     if ($mine) {
         if ($state.state -eq 'done' -or $state.state -eq 'failed') {

@@ -292,6 +292,15 @@ def cmd_update(
         bool,
         typer.Option("--detach", help="Start the update in the background and return at once."),
     ] = False,
+    wait: Annotated[
+        bool,
+        typer.Option(
+            "--wait",
+            help="Follow the update and exit with its result (0 done, 1 otherwise). Only for a program "
+            "that does not run from Nightshift's own Python environments; `ns` itself cannot wait.",
+        ),
+    ] = False,
+    watched: Annotated[bool, typer.Option("--watched", hidden=True)] = False,
     worker: Annotated[bool, typer.Option("--worker", hidden=True)] = False,
     log: Annotated[Path | None, typer.Option("--log", hidden=True)] = None,
     home: Annotated[Path | None, typer.Option("--home", hidden=True)] = None,
@@ -312,9 +321,22 @@ def cmd_update(
         raise _die("--channel must be one of: " + ", ".join(update.CHANNELS), 2)
     if channel != "stable" and not git:
         raise _die("--channel main works with --git only", 2)
+    if wait and detach:
+        raise _die("--wait and --detach cannot be used together", 2)
     if home is not None:
         os.environ["NIGHTSHIFT_HOME"] = str(home)
     paths = Paths.from_env()
+    if wait and not worker and update_job.runs_from_venvs(paths):
+        # (refused before anything is started: a --wait that returned early would report a result it
+        # does not know, and one that stayed would hold the files the update replaces: D-39)
+        raise _die(
+            "--wait cannot be used with Nightshift's own ns: this command runs from the Python environments "
+            "the update replaces, so it has to end before the update goes on. Nothing was started. In a "
+            "script, run the same command with --detach instead; its JSON line names 'follow', a script "
+            "to run with: powershell -NoProfile -ExecutionPolicy Bypass -File <follow>. That prints the "
+            "progress and exits 0 when the update is done, 1 otherwise.",
+            2,
+        )
     if check:
         _update_check(update.current_version(control.app_path(paths)))
         return
@@ -329,6 +351,7 @@ def cmd_update(
             old_version=update.current_version(control.app_path(paths)),
             relaunch=relaunch.default_relaunch(paths),
             cleanup=discard_copy,
+            watched=watched,
         )
         raise typer.Exit(code)
     forwarded: list[str] = []
@@ -354,14 +377,25 @@ def cmd_update(
     running = update_job.busy(paths)                     # one update, rollback or repair at a time
     if running is not None:
         raise _die(NsError("NS-E705", running))
+    background = detach or update_job.under_engine()
+    if watched or wait or not background:               # somebody shows this run's result as it ends
+        forwarded.append("--watched")
     try:
-        pid, log_file = update_job.launch(paths, forwarded, wait_pid=os.getpid())
+        # (--wait: this process is outside the venvs and stays, so the worker has nobody to wait for)
+        pid, log_file = update_job.launch(paths, forwarded, wait_pid=None if wait else os.getpid())
     except NsError as e:
         raise _die(e) from e
-    if detach or update_job.under_engine():
+    if wait:
+        raise typer.Exit(update_job.follow(paths, pid, log_file, typer.echo))
+    if background:
         typer.echo(f"The update runs in the background; Nightshift will close. Progress: {log_file}")
-        status = str(update_job.status_file(paths))
-        typer.echo(json.dumps({"started": True, "log": str(log_file), "status": status}))
+        started: dict[str, object] = {
+            "started": True, "log": str(log_file), "status": str(update_job.status_file(paths)), "pid": pid,
+        }
+        script = update_job.write_wait_script(paths, pid, log_file)
+        if script is not None:
+            started["follow"] = str(script)
+        typer.echo(json.dumps(started))
         return
     window = update_job.start_follower(paths, pid, log_file)
     typer.echo(update_job.handover_sentence(what, log_file, window=window))

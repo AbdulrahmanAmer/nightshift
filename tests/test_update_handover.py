@@ -74,10 +74,29 @@ def point_home_at(paths: Paths, app: Path) -> None:
     save_install_state(paths, InstallState(version="0.2.0", app_path=str(app)))
 
 
-def updated(tmp_path: Path) -> tuple[Path, Paths]:
-    """An install on 0.2.0 whose `<app>.prev` is 0.1.0."""
-    app, paths = make_app(tmp_path), Paths(tmp_path / "ns")
-    update.update_app(make_zip(tmp_path), app, Env().env(), paths=paths)
+#: The `ns update` of a program from 0.1.14 to 0.1.15-rc3, as its `ns_supervisor/cli.py` has it: `--detach`
+#: exists, and without it the command follows its worker from the venv (D-39's broken route).
+OLD_CLI = (
+    'typer.Option("--detach", help="Start the update in the background and return at once."),\n'
+    "background = detach or update_job.under_engine()\n"
+    "raise typer.Exit(update_job.follow(paths, pid, log_file, typer.echo))\n"
+)
+
+
+def program(tmp_path: Path, cli_text: str | None = OLD_CLI) -> Path:
+    """`make_app`, with the `ns` of that program (None: a program too old to have `--detach`)."""
+    app = make_app(tmp_path)
+    if cli_text is not None:
+        (app / "ns_supervisor").mkdir()
+        (app / "ns_supervisor" / "cli.py").write_text(cli_text, encoding="utf-8")
+    return app
+
+
+def updated(tmp_path: Path, cli_text: str | None = OLD_CLI) -> tuple[Path, Paths]:
+    """An install on 0.2.0 whose `<app>.prev` is 0.1.0; both programs have the `ns` of `cli_text`."""
+    app, paths = program(tmp_path, cli_text), Paths(tmp_path / "ns")
+    extra = {} if cli_text is None else {"ns_supervisor/cli.py": cli_text}
+    update.update_app(make_zip(tmp_path, extra=extra), app, Env().env(), paths=paths)
     point_home_at(paths, app)
     return app, paths
 
@@ -356,7 +375,10 @@ def test_a_file_held_open_during_the_sync_never_says_rolled_back(tmp_path: Path)
     assert uv.tries.count("supervisor") == getattr(update, "SYNC_TRIES", 0) == 3  # waited, tried again
     assert st.get("venvs_left") == ["supervisor"] and msg.split(": ", 1)[1] in said
     # failed, then retried: the way out the message names, with the file free again
-    assert "run 'ns update --rollback' twice" in msg
+    assert "run 'ns update --rollback --detach'" in msg and "When it says 'Now on 0.2.0'" in msg
+    from ns_supervisor import notify
+
+    assert [n["message"] for n in notify.read_notes(paths)] == [msg]     # nothing runs: a note waits
     for _ in range(2):
         assert update_job.run_worker(paths, body, log=log, relaunch=relaunch) == 0
     assert holds(paths, "studio") == holds(paths, "supervisor") == "nightshift-0.1.0.dist-info"
@@ -364,7 +386,7 @@ def test_a_file_held_open_during_the_sync_never_says_rolled_back(tmp_path: Path)
 
 
 def test_an_update_whose_restore_resync_fails_says_which_environment_is_left(tmp_path: Path) -> None:
-    app, paths = make_app(tmp_path), Paths(tmp_path / "ns")
+    app, paths = program(tmp_path), Paths(tmp_path / "ns")
     for name in ("studio", "supervisor"):
         fill(paths, name, "0.1.0")
     uv, relaunch = Uv(paths), Recorder()
@@ -384,7 +406,7 @@ def test_an_update_whose_restore_resync_fails_says_which_environment_is_left(tmp
     assert "The update to 0.2.0 failed at the refresh of the Python environments" in msg
     assert "0.1.0's program is back, but the Python environment 'supervisor' could not be refreshed" in msg
     assert "Nightshift was not started" in msg and "restart" not in relaunch.calls
-    assert "run the update again" in msg
+    assert "run the update again with the 'Nightshift - Update' shortcut or 'ns update <zip> --detach'" in msg
     # the other end: the restore's re-sync works, and the words say the whole of 0.1.0 is back
     fill(paths, "supervisor", "0.1.0")
     err = raised(lambda: update.update_app(z, app, env_of(Env(verify_ok=False), sync=uv.sync), paths=paths))

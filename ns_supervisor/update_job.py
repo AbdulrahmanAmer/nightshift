@@ -413,6 +413,95 @@ def launch(
     return pid, log
 
 
+# --------------------------------------------------------------------- waiting for the result (--wait)
+def runs_from_venvs(paths: Paths) -> bool:
+    """True when this process, or the chain that started it, runs from this install's Python environments
+    (`ns.exe`, a venv's `python.exe`): it then holds files the re-sync replaces and must end before the
+    worker goes on, so it cannot be the one that waits for the result."""
+    root = os.path.normcase(os.path.abspath(paths.venvs)) + os.sep
+    try:
+        me = psutil.Process()
+        chain = [me, *me.parents()[:3]]
+    except psutil.Error:
+        chain = []
+    texts = [sys.executable, *sys.argv[:1]]
+    for proc in chain:
+        try:
+            texts += [proc.exe(), *proc.cmdline()[:2]]
+        except (psutil.Error, OSError):
+            continue
+    return any(t and os.path.normcase(os.path.abspath(t)).startswith(root) for t in texts)
+
+
+def follow(
+    paths: Paths,
+    pid: int,
+    log: Path,
+    echo: Callable[[str], None],
+    *,
+    alive: Callable[[int], bool] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    max_s: float = 4 * 3600,
+) -> int:
+    """`ns update --wait` from a program outside the venvs: echo the worker's log, then its result;
+    returns 0 when it is `done`, else 1 (failed, died: the `if_stopped_here` it left, or still running
+    after `max_s`). Only a state that names this run's log is believed."""
+    alive = alive or pid_alive
+    offset, waited, quiet = 0, 0.0, 0
+    while True:
+        offset = _echo_new(log, offset, echo)
+        raw = read_status(paths)
+        mine = raw.get("log") == str(log)
+        if mine and raw.get("state") in DONE_STATES:
+            _echo_new(log, offset, echo)
+            echo("Result: " + str(raw.get("message", "")))
+            return 0 if raw.get("state") == "done" else 1
+        worker = raw.get("pid") if mine and isinstance(raw.get("pid"), int) else pid
+        quiet = quiet + 1 if not alive(int(worker)) else 0
+        if quiet >= 3:                  # its last write can land a moment after the process is gone
+            _echo_new(log, offset, echo)
+            left = raw.get("if_stopped_here") if mine else None
+            echo("Result: " + str(left or f"The update process ended without reporting a result. See {log}"))
+            return 1
+        if waited >= max_s:
+            echo(f"The update is still running. Progress: {log}")
+            return 1
+        sleep(0.5)
+        waited += 0.5
+
+
+def _echo_new(log: Path, offset: int, echo: Callable[[str], None]) -> int:
+    try:
+        with log.open("rb") as fh:
+            fh.seek(offset)
+            chunk = fh.read()
+    except OSError:
+        return offset
+    for line in chunk.decode("utf-8", errors="replace").splitlines():
+        echo(line)
+    return offset + len(chunk)
+
+
+WAIT_PREFIX = "update-wait-"
+
+
+def write_wait_script(paths: Paths, pid: int, log: Path) -> Path | None:
+    """`run\\update-wait-<stamp>.ps1`: the follower as a file, for a script that needs the result of an
+    update it started with `--detach` from the install's own `ns` (which cannot wait itself):
+    `powershell -NoProfile -ExecutionPolicy Bypass -File <it>` prints the log and the result and exits 0
+    (done) or 1. Scripts of earlier runs are removed. None when it could not be written."""
+    folder = paths.home / "run"
+    target = folder / (WAIT_PREFIX + log.stem.replace("update-", "") + ".ps1")
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        for old in folder.glob(WAIT_PREFIX + "*.ps1"):
+            old.unlink(missing_ok=True)
+        write_text_atomic(target, follower_script(status_file(paths), log, pid, wait=False) + "\n")
+    except OSError:
+        return None
+    return target
+
+
 # ----------------------------------------------------------------- the progress window (a terminal's route)
 def _ps(text: object) -> str:
     return "'" + str(text).replace("'", "''") + "'"
@@ -522,11 +611,14 @@ def handover_sentence(what: str, log: Path, *, window: bool) -> str:
     if window:
         return (
             f"{what} runs in its own window, '{WINDOW_TITLE}', which shows each step and the result. This "
-            f"terminal is free: closing it, or that window, does not stop {noun}. Log: {log}"
+            f"terminal is free: closing it, or that window, does not stop {noun}. This command ends now, "
+            f"before the result is known: the result is the last line of that window and of the log. "
+            f"Log: {log}"
         )
     return (
         f"{what} runs in the background (the progress window could not be opened): Settings > Updates and "
         f"the log show each step and the result. This terminal is free: closing it does not stop {noun}. "
+        f"This command ends now, before the result is known: the result is the last line of the log. "
         f"Log: {log}"
     )
 
@@ -572,6 +664,22 @@ def _take(lock: FileLock, sleep: Callable[[float], None]) -> AlreadyRunning | No
     return refusal
 
 
+def _tell(paths: Paths, log: Path | None, watched: bool, message: str) -> None:
+    """The run ends with Nightshift NOT running (an environment left unfinished, or the engine did not come
+    back): no page can show the result. So it is left as a morning note (the Queue page shows it at the
+    next start, whoever starts it) and, unless a window already follows this run (`watched`: a terminal's
+    progress window, the Update shortcut), the progress window is opened now; it shows the final line."""
+
+    def note() -> None:
+        from ns_supervisor import notify
+
+        notify.leave_note(paths, "The last update or rollback did not complete", message)
+
+    _guarded(note)
+    if not watched and log is not None:
+        _guarded(lambda: start_follower(paths, os.getpid(), log))
+
+
 def run_worker(
     paths: Paths,
     body: Callable[[], Outcome],
@@ -583,6 +691,7 @@ def run_worker(
     relaunch: Relauncher | None = None,
     cleanup: Callable[[], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    watched: bool = True,
 ) -> int:
     """Run the update in this (detached) process; returns the exit code.
 
@@ -602,7 +711,9 @@ def run_worker(
     does not come back the state is `failed` with `restart_failed` set (and `updated` true when the new
     version is in place), so the page can say what happened instead of waiting for ever. A failure that
     left a Python environment unfinished (`NsError.data["venvs_left"]`) starts nothing: the state then
-    carries `venvs_left`, and its message says so.
+    carries `venvs_left`, and its message says so. Whenever the run ends with Nightshift not running, the
+    result is also left as a morning note, and with `watched` false (no window follows this run: the
+    Settings page, `--detach` from a script) the progress window is opened for it (`_tell`).
 
     `cleanup` runs once the engine is back (the update applied, or was put back and the old version is up):
     the worker cannot delete the private venv copy it runs from, so this starts a detached helper that does
@@ -628,7 +739,7 @@ def run_worker(
         if refused is not None:
             sys.stderr.write(f"{BUSY} ({_started(refused.owner)}). This one did nothing.\n")
             return LOCKED_EXIT
-        return _work(paths, body, log, wait_pid, wait, old_version, relaunch, cleanup)
+        return _work(paths, body, log, wait_pid, wait, old_version, relaunch, cleanup, watched)
     finally:
         lock.release()
         if sink is not None:
@@ -646,6 +757,7 @@ def _work(
     old_version: str,
     relaunch: Relauncher | None,
     cleanup: Callable[[], None] | None,
+    watched: bool = True,
 ) -> int:
     """`run_worker` under the lock."""
     base: dict[str, Any] = {"log": str(log) if log else "", "pid": os.getpid(), "old": old_version}
@@ -677,6 +789,7 @@ def _work(
             **base,
         )
         if _restart(relaunch):
+            _tell(paths, log, watched, f"{out.message} {RESTART_HINT}")
             _final(paths, "failed", f"{out.message} {RESTART_HINT}", exit_code=1,
                    restart_failed=True, **versions)
             return 1
@@ -685,6 +798,7 @@ def _work(
             _guarded(cleanup)
         return 0
     if left:    # an environment is half-filled: nothing is started on it (the message says what to do)
+        _tell(paths, log, watched, message)
         _final(paths, "failed", message, exit_code=1, venvs_left=left, relaunched=False, **base)
         return 1
     # put back (or never started): the old version comes back up
@@ -694,6 +808,7 @@ def _work(
         **base,
     )
     if _restart(relaunch):
+        _tell(paths, log, watched, f"{message} {RESTART_HINT}")
         _final(paths, "failed", f"{message} {RESTART_HINT}", exit_code=1, restart_failed=True, **base)
     else:
         _final(paths, "failed", message, exit_code=1, **base)
