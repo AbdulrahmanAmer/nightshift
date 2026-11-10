@@ -705,9 +705,8 @@ def test_studio_run_is_refused_before_it_writes_anything(
 ) -> None:
     from typer.testing import CliRunner
 
-    from ns_studio import cli as studio_cli
-
     from ns_common.config import save_runtime
+    from ns_studio import cli as studio_cli
 
     app, paths = _unfinished_install(tmp_path)
     save_runtime(paths, update.Runtime.default("gpu"))      # an install with models (dev mode fakes them all)

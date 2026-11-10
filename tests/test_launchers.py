@@ -1589,8 +1589,9 @@ def test_after_a_failed_repair_the_diagnostics_and_outbox_shortcuts_still_open(t
 def test_a_replayed_record_held_open_at_its_delete_is_marked_finished_and_nightshift_starts(
     tmp_path: Path,
 ) -> None:
-    from installer.stage2.web import venvrepair
-    from tests.test_venv_repair import _hold, _stop
+    from tests.test_venv_repair import _hold, _stop, venvrepair
+
+    vr = venvrepair()           # (None before D-39b: the assertions below then fail, not the import)
 
     home, launcher = _program_home(tmp_path)
     record = _record(home, _uv(tmp_path), id="0123456789abcdef")
@@ -1601,7 +1602,7 @@ def test_a_replayed_record_held_open_at_its_delete_is_marked_finished_and_nights
         assert proc.returncode == 0 and _starts(launcher) == 1, proc.stdout + proc.stderr
         assert record.exists()
         assert json.loads(done.read_text(encoding="utf-8-sig"))["id"] == "0123456789abcdef"
-        assert venvrepair.read(home) is None and venvrepair.start_refusal(home, home / "app") is None
+        assert vr is not None and vr.read(home) is None and vr.start_refusal(home, home / "app") is None
         assert "venv_record_marked_finished" in [x["event"] for x in _lines(home)]
         # the next start: finished, so no replay; the two files go once nothing holds them
         proc = _stub(home, "-Launcher", launcher, "-ClearWaitSeconds", 1)
