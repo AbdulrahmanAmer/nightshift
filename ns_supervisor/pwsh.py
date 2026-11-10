@@ -7,6 +7,7 @@ import shutil
 import subprocess
 
 from ns_supervisor.childenv import child_env
+from ns_supervisor.testguard import refuse_task_scheduler
 
 
 class PowerShellMissing(RuntimeError):
@@ -26,7 +27,12 @@ def encode(script: str) -> str:
 def run_powershell(
     script: str, *, env_extra: dict[str, str] | None = None, timeout_s: float = 60
 ) -> subprocess.CompletedProcess[str]:
-    """Run `script` in a fresh non-interactive PowerShell; raises `PowerShellMissing` if there is none."""
+    """Run `script` in a fresh non-interactive PowerShell; raises `PowerShellMissing` if there is none.
+
+    This is the one place the supervisor starts PowerShell, so it is where a test run is refused the real
+    Task Scheduler (`testguard.RealMachineUnderTest`), before anything is started.
+    """
+    refuse_task_scheduler(script)
     exe = find_powershell()
     if exe is None:
         raise PowerShellMissing("powershell was not found on PATH")

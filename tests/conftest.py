@@ -1,6 +1,14 @@
+import os
 from pathlib import Path
 
 import pytest
+
+# No test may reach the machine's real Task Scheduler or keyring, whatever it does with its fakes. The product
+# refuses at the lowest call points when it runs under a test (ns_supervisor/testguard.py). In this process
+# that is known from pytest being imported; this variable carries it to every child process a test starts
+# (`ns schedule install` as a child, the wizard, uninstall.ps1). Set at import, for the whole session, outside
+# any fixture: no `monkeypatch.undo()` takes it away, and there is no opt-out.
+os.environ["NS_UNDER_TEST"] = "1"
 
 
 @pytest.fixture

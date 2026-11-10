@@ -31,6 +31,15 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:IsDry = [bool]$DryRun
+
+# A test run must never change this PC: the real nightly task, the Desktop shortcuts, the notification
+# registration, the user PATH and the stored keys are all removed below unless -SkipSystem (or -DryRun) is given.
+# The test session sets NS_UNDER_TEST (tests/conftest.py); pytest itself sets PYTEST_CURRENT_TEST. No switch
+# turns this off.
+if (($env:NS_UNDER_TEST -or $env:PYTEST_CURRENT_TEST) -and -not $SkipSystem -and -not $DryRun) {
+    Write-Host 'uninstall.ps1: refused. A test run may only call it with -SkipSystem or -DryRun (it would change this PC).'
+    exit 3
+}
 $TaskName = 'Nightshift Daily'
 
 function Show-Action {

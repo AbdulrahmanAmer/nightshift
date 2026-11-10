@@ -17,6 +17,7 @@ from ns_common.secret_file import (  # restrict_to_user lives with the file it p
     store_secret,
 )
 from ns_common.secrets_names import KEY_NAMES, KEYRING_SERVICE, PEXELS_KEY, PIXABAY_KEY
+from ns_supervisor.testguard import refuse_real_keyring
 
 # One definition for the studio, the installer and Settings: ``ns_common.secrets_names``.
 SERVICE = KEYRING_SERVICE
@@ -51,18 +52,21 @@ class KeyringStore:
         """Read ``Nightshift/<name>``."""
         import keyring
 
+        refuse_real_keyring(keyring)
         return keyring.get_password(SERVICE, name)
 
     def set(self, name: str, value: str) -> None:
         """Write ``Nightshift/<name>``."""
         import keyring
 
+        refuse_real_keyring(keyring)
         keyring.set_password(SERVICE, name, value)
 
     def delete(self, name: str) -> None:
         """Remove ``Nightshift/<name>`` (quietly when absent)."""
         import keyring
 
+        refuse_real_keyring(keyring)
         try:
             keyring.delete_password(SERVICE, name)
         except keyring.errors.PasswordDeleteError:
