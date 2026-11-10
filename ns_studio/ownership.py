@@ -107,6 +107,9 @@ UNPROBED_UNOWNED_CODE = "NS-W118"
 #: Record times are written in whole seconds, after the process started: a process that started up to this
 #: long after the record's time is still its writer.
 PID_START_SLACK_S = 2.0
+#: What Windows said about who has a lock file open (`_pid_holds`, a call that can take seconds) is kept
+#: this long per owner, so a status page that asks every few seconds does not repeat it.
+PID_HOLDS_KEEP_S = 60.0
 #: `recover` waits this long for another process that is closing the same things (the engine and the nightly
 #: start together after a power cut), then scans again: the nightly must not plan before the job is closed.
 RECOVER_WAIT_S = 20.0
@@ -247,7 +250,9 @@ def _acquire(lock: FileLock, waits: Sequence[float] | None = None) -> None:
 
 
 #: Per owner (home + id): [failed probes in a row, the codes the owner was told, when the first of them
-#: failed, the live pid that keeps it held (None when none does)]. A good probe removes the entry.
+#: failed, the live pid that keeps it held (None when none does), the kept answer of `_pid_holds` as
+#: (pid, answer, when), and for a live pid that could not be proven the owner the name of its program].
+#: A good probe removes the entry.
 _UNPROBED: dict[tuple[str, str], list[Any]] = {}
 
 
@@ -326,15 +331,37 @@ def _pid_holds(pid: int, lock: Path) -> bool | None:
         return None
 
 
+def _pid_name(pid: int) -> str | None:
+    """The program name of the process with this pid (`python.exe`), None when it cannot be read."""
+    try:
+        from ns_supervisor.control import image_name
+
+        return image_name(pid)
+    except Exception:  # noqa: BLE001 - not known
+        return None
+
+
 def unprobed_message(owner_id: str, pid: int | None = None) -> str:
     """The sentence the owner reads (morning note, `studio status`) while `owner_id` is held only because its
     lock cannot be probed: the code's message and hint, and which work it is.
 
     NS-W117 when a live process is known to own it (`pid`, or the one `_unprobed` found), with how to clear
-    it; NS-W118 when none is, which says the hold ends by itself within the hour.
+    it; NS-W118 when none is, which says the hold ends by itself within the hour. When the live process could
+    not be proven to be the owner (its start time cannot be read) the note says so, names its program and
+    does not tell the owner to end it: it may be another program that was given the same number.
     """
-    if pid is None:
-        pid = next((st[3] for (_, o), st in _UNPROBED.items() if o == owner_id and st[3]), None)
+    entry = next((st for (_, o), st in _UNPROBED.items() if o == owner_id and st[3]), None)
+    if pid is None and entry is not None:
+        pid = entry[3]
+    if pid and entry is not None and entry[3] == pid and entry[5]:
+        d = describe(UNPROBED_CODE)
+        return (
+            f"{UNPROBED_CODE}: {d.message} {owner_id} (process {pid}, {entry[5]}, has the number this work "
+            "recorded and is running, but Nightshift cannot read when it started, so it may be another "
+            f"program). {d.hint} Do not end process {pid} unless you know it is Nightshift's: restarting the "
+            "PC clears this safely either way. Release in the Queue does not clear it (it frees the graphics "
+            "card only)."
+        )
     if pid:
         d = describe(UNPROBED_CODE)
         return (
@@ -363,12 +390,14 @@ def _unprobed(paths: Paths, owner_id: str, handed: Mapping[str, Any] | None = No
       `announced_at`) plus `PID_START_SLACK_S`: held, with no bound, and the owner is told once per process
       with NS-W117 (which process, and that ending it or restarting the PC clears it). Live work is never
       released here;
-    * its pid is alive and its start time cannot be read: held the same way. An unreadable start time never
-      shortens the life of work that may be running;
+    * its pid is alive and its start time cannot be read: held the same way when its program is Python
+      (every owner is) or has no readable name; the note then says it may be another program and does not
+      tell the owner to end it. An unreadable start time never shortens the life of work that may be
+      running. A program with another name is not Nightshift's: a reused pid, gone;
     * its pid is alive but started later than that: before it is called a reused pid, Windows is asked
-      whether that process has the lock file open (`_pid_holds`). It has: held as above, whatever the
-      clocks say (a clock set back after the process started must not close live work). It has not, or
-      Windows will not say: the pid was given to another program, gone;
+      whether that process has the lock file open (`_pid_holds`; the answer is kept `PID_HOLDS_KEEP_S`).
+      It has: held as above, whatever the clocks say (a clock set back after the process started must not
+      close live work). It has not, or Windows will not say: the pid was given to another program, gone;
     * its pid is gone, or reused as above: dead after `UNPROBED_LIMIT` failed probes in a row in this
       process, or at the time bound, whichever is first;
     * no pid, a pid nothing can be asked about, a live pid with no time in the record to compare with, no
@@ -385,7 +414,7 @@ def _unprobed(paths: Paths, owner_id: str, handed: Mapping[str, Any] | None = No
     """
     key = (str(paths.home), owner_id)
     now = _now()
-    state = _UNPROBED.setdefault(key, [0, set(), now, None])
+    state = _UNPROBED.setdefault(key, [0, set(), now, None, None, None])
     state[0] += 1
     rec = read_record(paths, owner_id) or handed or {}
     pid = rec.get("pid")
@@ -393,6 +422,7 @@ def _unprobed(paths: Paths, owner_id: str, handed: Mapping[str, Any] | None = No
     times = [t for t in (_parse(rec.get(k)) for k in ("started_at", "announced_at")) if t is not None]
     known = max(times) if times else None
     alive: bool | None = None  # True: provably its owner; False: gone or reused; None: cannot tell
+    unsure: str | None = None  # the program of a live pid that is held without proof that it is the owner
     if pid == os.getpid():
         with _HELD_GUARD:
             alive = (str(owners_dir(paths)), owner_id) in _HELD
@@ -402,12 +432,18 @@ def _unprobed(paths: Paths, owner_id: str, handed: Mapping[str, Any] | None = No
         if exists is False:
             alive = False
         elif exists and started is None:
-            alive = True  # a process is there and nothing says it is another one: never cut short
+            name = _pid_name(pid)  # a process is there: never cut short, unless it is plainly not ours
+            alive = name is None or "python" in name.lower()
+            unsure = name or "a program whose name cannot be read"
         elif started is not None and known is not None:
             alive = (started - known).total_seconds() <= PID_START_SLACK_S
             if not alive:  # looks reused: the lock file it holds open outranks the comparison of clocks
-                alive = _pid_holds(pid, lock_path(paths, owner_id)) is True
+                kept = state[4]
+                if kept is None or kept[0] != pid or abs((now - kept[2]).total_seconds()) > PID_HOLDS_KEEP_S:
+                    kept = state[4] = (pid, _pid_holds(pid, lock_path(paths, owner_id)), now)
+                alive = kept[1] is True
     state[3] = pid if alive else None
+    state[5] = unsure if alive else None
 
     def tell(code: str) -> None:
         if code not in state[1]:

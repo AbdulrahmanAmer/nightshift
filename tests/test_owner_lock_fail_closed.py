@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -66,6 +68,8 @@ class Pids:
 
 #: The product's own pid check, kept for the tests that need it (the fixture below replaces it).
 REAL_PID_ALIVE = ownership._pid_alive  # noqa: SLF001
+#: The product's own question to the Windows Restart Manager, for the one test that asks it for real.
+REAL_PID_HOLDS = getattr(ownership, "_pid_holds", lambda pid, lock: None)
 #: When the fake live processes started: long before any record of these tests, so they are its owners.
 LONG_AGO = datetime(2026, 11, 1, tzinfo=UTC)
 
@@ -80,6 +84,7 @@ def pids(monkeypatch: pytest.MonkeyPatch) -> Pids:
     )
     # Windows will not say who has a lock file open, so the times decide unless a test says otherwise
     monkeypatch.setattr(ownership, "_pid_holds", lambda pid, lock: None, raising=False)
+    monkeypatch.setattr(ownership, "_pid_name", lambda pid: "python.exe", raising=False)
     ownership._UNPROBED.clear()  # noqa: SLF001 - per-process state of the bound
     return fake
 
@@ -560,4 +565,86 @@ def test_a_live_process_whose_start_time_cannot_be_read_is_never_cut_short(
     assert ownership.liveness(paths, "j-1") == "live"
     assert ownership.recover(paths, NoRows(), note=False).any is False
     [note] = notes(paths)
-    assert note.startswith("NS-W117:") and "process 4242 is still running" in note, note
+    assert note.startswith("NS-W117:") and "process 4242, python.exe, has the number" in note, note
+    assert "it may be another program" in note and "Do not end process 4242 unless" in note, note
+    assert "Ending process 4242" not in note and "restarting the PC clears this safely" in note, note
+    [held] = [ln for ln in ownership.status_lines(paths, NoRows(), "c1") if ln.startswith("  held:")]
+    assert held == f"  held: {note}"
+
+
+def test_an_unreadable_start_time_does_not_hold_work_for_a_program_that_is_not_nightshifts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pid went to another program (its name says so): never named to the owner, never held for it."""
+    paths = Paths(tmp_path / "home")
+    job(paths, "j-1", pid=4242, started_at=datetime.now(UTC).isoformat())
+    job(paths, "j-2", pid=4242, started_at=datetime.now(UTC).isoformat())
+    unopenable(monkeypatch)
+    monkeypatch.setattr(ownership, "_pid_started", lambda pid: None, raising=False)
+    monkeypatch.setattr(ownership, "_pid_name", lambda pid: "chrome.exe", raising=False)
+    limit = ownership.UNPROBED_LIMIT
+    assert [ownership.lock_held(paths, "j-1") for _ in range(limit)] == [True] * (limit - 1) + [False]
+    assert notes(paths) == []
+    monkeypatch.setattr(ownership, "_pid_name", lambda pid: None, raising=False)
+    assert [ownership.lock_held(paths, "j-2") for _ in range(limit * 2)] == [True] * (limit * 2)
+    [note] = notes(paths)
+    assert "process 4242, a program whose name cannot be read, has the number" in note, note
+
+
+def test_windows_is_asked_who_has_the_lock_file_open_once_a_minute_not_on_every_look(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = Paths(tmp_path / "home")
+    clock = Clock(monkeypatch)
+    job(paths, "j-1", pid=4242, started_at=clock.start.isoformat())
+    unopenable(monkeypatch)
+    asked: list[int] = []
+    monkeypatch.setattr(ownership, "_pid_holds", lambda pid, lock: asked.append(pid) or True, raising=False)
+    monkeypatch.setattr(
+        ownership, "_pid_started", lambda pid: clock.start + timedelta(hours=2), raising=False
+    )
+    keep = ownership.PID_HOLDS_KEEP_S
+    for seconds, calls in ((0, 1), (5, 1), (keep - 1, 1), (keep + 1, 2), (keep + 30, 2), (2 * keep + 2, 3)):
+        clock.at(seconds)
+        assert ownership.lock_held(paths, "j-1") is True
+        assert len(asked) == calls, (seconds, asked)
+
+
+HOLDER = (
+    "import os, sys; from pathlib import Path; from ns_common.singleton import FileLock; "
+    "lock = FileLock(Path(sys.argv[1])); lock.acquire(); print(os.getpid(), flush=True); sys.stdin.readline()"
+)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Restart Manager is a Windows service")
+def test_the_real_restart_manager_names_the_process_that_holds_a_lock_file(tmp_path: Path) -> None:
+    """No stand-in: `_pid_holds` itself, against a child that holds a real `FileLock`."""
+    lock = tmp_path / "owners" / "j-1.lock"
+    other = tmp_path / "owners" / "j-2.lock"
+    lock.parent.mkdir()
+    other.write_text("", encoding="utf-8")
+    repo = Path(__file__).resolve().parents[1]
+    child = subprocess.Popen(
+        [sys.executable, "-c", HOLDER, str(lock)],
+        cwd=repo, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )  # fmt: skip
+    pid = 0
+    try:
+        assert child.stdout is not None and child.stdin is not None
+        pid = int(child.stdout.readline())  # the interpreter's own pid (a venv launcher has another one)
+        assert REAL_PID_HOLDS(pid, lock) is True
+        assert REAL_PID_HOLDS(os.getpid(), lock) is False, "this process does not have it open"
+        assert REAL_PID_HOLDS(pid, other) is False, "the holder does not have the other file open"
+        child.stdin.write("\n")  # the holder ends by itself; nothing is killed
+        child.stdin.flush()
+        child.wait(30)
+        assert REAL_PID_HOLDS(pid, lock) is False, "after it ended nobody has the file open"
+    finally:
+        if child.poll() is None and child.stdin is not None:
+            child.stdin.close()  # its readline returns and it ends
+            try:
+                child.wait(30)
+            except subprocess.TimeoutExpired:
+                if pid:  # the interpreter, by the pid it reported
+                    subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, check=False)
+                child.kill()
