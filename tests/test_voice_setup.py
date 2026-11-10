@@ -223,17 +223,17 @@ def test_a_real_run_creates_the_queued_voice_first_and_only_warns_on_failure(
 
     env = jobs.open_env(frozenset({"llm"}), light=False)
     queue(tmp_home, mode="design", name="c-voice", description="soft")
-    monkeypatch.setattr(voice_setup, "apply_pending", lambda e: "c-voice")
+    monkeypatch.setattr(voice_setup, "apply_pending_report", lambda e, **kw: voice_setup.Applied("c-voice"))
     env.fake = frozenset()  # as in a real run
     cli._setup_voice(env)  # creates it (patched) without raising
 
-    def broken(e: Any) -> str | None:
+    def broken(e: Any, **kw: Any) -> str | None:
         raise NsError("NS-E310", "no service")
 
-    monkeypatch.setattr(voice_setup, "apply_pending", broken)
+    monkeypatch.setattr(voice_setup, "apply_pending_report", broken)
     cli._setup_voice(env)  # a failure is a warning, the run goes on
     env.fake = frozenset({"llm"})
-    monkeypatch.setattr(voice_setup, "apply_pending", lambda e: pytest.fail("fake runs skip it"))
+    monkeypatch.setattr(voice_setup, "apply_pending_report", lambda e, **kw: pytest.fail("fake runs skip it"))
     cli._setup_voice(env)
 
 

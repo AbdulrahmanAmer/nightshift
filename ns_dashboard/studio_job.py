@@ -223,7 +223,12 @@ def do_apply_voice(args: dict[str, Any]) -> dict[str, Any]:
     """Create the voice that setup queued (`config/pending_voice.json`); `name` is None if none was queued."""
     from ns_dashboard import studio_bridge
 
-    return {"name": studio_bridge.apply_pending_voice(**_common(args))}
+    made = studio_bridge.apply_pending_voice_report(**_common(args))
+    if made is None:
+        return {"name": None}
+    # `message` is the sentence for the owner when it is not the plain "created": a changed name, or why
+    # the request was dropped without making a voice (`name` None)
+    return {"name": made.name, "renamed_from": made.renamed_from, "message": made.said()}
 
 
 HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
