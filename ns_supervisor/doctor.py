@@ -32,10 +32,12 @@ from ns_common import (
     testguard,
 )
 from ns_common.atomic import read_text_retry, retry_busy, write_zip_atomic
-from ns_common.config import load_install_state, load_runtime
+from ns_common.config import load_install_state
 from ns_common.devmode import is_dev
 from ns_common.errors import NsError
+from ns_common.models import InstallState, Runtime
 from ns_common.paths import Paths, repo_root
+from ns_common.runtime_read import read_runtime
 from ns_common.uv import find_uv
 from ns_supervisor import launch_reach, procs
 from ns_supervisor.childenv import child_env, window_flags
@@ -232,18 +234,11 @@ def diagnose(
     """Quick health table for plain `ns doctor`: (check, ok, detail-or-fix-hint). The last row runs the
     start check (`program_folders`); `on_wait` is called once if it has to wait for another program."""
     rows: list[tuple[str, bool, str]] = []
-    profile: str | None = None      # None: runtime.json could not be read, so the install's kind is unknown
-    try:
-        rt = load_runtime(paths)
-        profile = rt.profile
-        rows.append(("runtime.json", True, str(paths.runtime_file)))
-        for label, model in (("llm model", rt.llama.model_path), ("embed model", rt.embed.model_path)):
-            ok = bool(model) and Path(model).is_file()
-            rows.append((label, ok, model or "not configured; run the installer or 'ns tune'"))
-    except NsError as e:
-        rows.append(("runtime.json", False, f"{e} | Hint: {e.definition.hint}"))
-    st = load_install_state(paths)
-    rows.append(("install_state", bool(st.app_path), st.app_path or "installer has not recorded app_path"))
+    rt, runtime_rows = runtime_rows_of(paths)
+    rows += runtime_rows
+    profile = rt.profile if rt is not None else None    # None: the install's kind is unknown
+    st, state_row = install_state_row(paths)
+    rows.append(state_row)
     for venv in ("studio", "supervisor"):
         py = paths.venvs / venv / "Scripts" / "python.exe"
         rows.append((f"venv {venv}", py.exists(), str(py)))
@@ -267,6 +262,53 @@ def diagnose(
     rows.append(program_folders(paths, app, on_wait))
     rows.append(python_environments(paths, app))
     return rows
+
+
+def runtime_rows_of(paths: Paths) -> tuple[Runtime | None, list[tuple[str, bool, str]]]:
+    """(the settings or None, the rows "runtime.json", "llm model" and "embed model"). A file that cannot be
+    used is ONE failed row with NS-E125 naming the file and what is wrong (`read_runtime`, the classifier
+    setup uses), and its hint, the way out: never a traceback."""
+    try:
+        rt = read_runtime(paths)
+    except NsError as e:
+        return None, [("runtime.json", False, f"{e} | Hint: {e.definition.hint}")]
+    rows = [("runtime.json", True, str(paths.runtime_file))]
+    for label, model in (("llm model", rt.llama.model_path), ("embed model", rt.embed.model_path)):
+        ok = bool(model) and Path(model).is_file()
+        rows.append((label, ok, model or "not configured; run the installer or 'ns tune'"))
+    return rt, rows
+
+
+#: The way out of an install_state.json that does not name the program folder.
+STATE_WAY_OUT = "run Nightshift setup again (INSTALL.cmd) and choose this install's folder"
+
+
+def install_state_row(paths: Paths) -> tuple[InstallState, tuple[str, bool, str]]:
+    """(the state, the row "install_state"). `load_install_state` already takes the last good copy of a
+    damaged file and keeps the damaged one as `.bad`; a file that cannot be opened (another program holds it,
+    a folder of that name) is a failed row naming it, not a traceback."""
+    f = paths.install_state_file
+    try:
+        st = load_install_state(paths)
+    except OSError as e:
+        why = f"{type(e).__name__}: {e}"
+        return InstallState(), ("install_state", False, f"{f} could not be read ({why}); if another program "
+                                                        f"holds it, close that program, else {STATE_WAY_OUT}")
+    if st.app_path:
+        return st, ("install_state", True, st.app_path)
+    if not f.exists() and not f.with_name(f.name + ".bad").exists():
+        return st, ("install_state", False, f"{f} does not exist: {STATE_WAY_OUT}")
+    kept = f.with_name(f.name + ".bad")
+    damaged = f" (a damaged copy was kept as {kept.name})" if kept.exists() else ""
+    return st, ("install_state", False, f"{f} does not name the program folder{damaged}: {STATE_WAY_OUT}")
+
+
+def bundle_notes(paths: Paths) -> list[str]:
+    """What `ns doctor --bundle` says after the zip: the rows of the two files every check starts from that
+    failed (runtime.json, install_state.json), so the owner reads the way out and not only the zip's name."""
+    _, rows = runtime_rows_of(paths)
+    rows = [r for r in rows if r[0] == "runtime.json"] + [install_state_row(paths)[1]]
+    return [f"[FAIL] {name}: {detail}" for name, ok, detail in rows if not ok]
 
 
 ENV_ROW = "python environments"

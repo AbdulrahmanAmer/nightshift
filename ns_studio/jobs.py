@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import random
+import sqlite3
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,6 +17,7 @@ from ns_common.db import Db, claim_dir, claim_job_id
 from ns_common.logging import NsLogger
 from ns_common.models import Channel, Combo, Runtime
 from ns_common.paths import Paths
+from ns_common.runtime_read import read_runtime
 from ns_common.secrets_names import KEYRING_SERVICE, SHORT_NAMES
 from ns_studio import ownership
 from ns_studio.channels.crud import (
@@ -161,20 +163,46 @@ class Env:
     policy: bool | None = None
 
 
+#: What `studio status` says when it found no database, or an empty file, and so made a new empty one.
+NEW_DB_NOTE = (
+    "note: {db} did not exist or was empty, so a new, empty one was made. A new install starts this way; if "
+    "this install made videos before, their records are in its last backup (ns restore <the backup zip>)."
+)
+
+
+def db_is_new(paths: Paths) -> bool:
+    """True when the database file is not there or holds zero bytes (opening it makes a new, empty one)."""
+    try:
+        return not paths.db_path.is_file() or paths.db_path.stat().st_size == 0
+    except OSError:
+        return False
+
+
 def open_env(fake: frozenset[str] = frozenset(), *, light: bool = False) -> Env:
     """Open the studio environment from `NIGHTSHIFT_HOME`; real services are built but not contacted.
 
     `light=True` is for commands that never call a service (channel, review, status, learn): a missing
     `runtime.json` is tolerated and every service is a fake. So is a dev install (`runtime.json` says
-    `dev_mode`, docs/DEV_MODE.md).
+    `dev_mode`, docs/DEV_MODE.md). A runtime.json that is there but cannot be used is NS-E125 naming it
+    (`ns_common.runtime_read`, the reading setup and `ns doctor` share), and a database that cannot be opened
+    is NS-E327 naming it: a line and exit 1 through the CLI's `guarded`, never a traceback.
     """
     paths = Paths.from_env()
     paths.ensure()
     db = Db(paths.db_path)
-    db.migrate()
+    try:
+        db.migrate()
+    except (sqlite3.Error, OSError) as e:   # a folder of that name, a file another program holds, a bad file
+        db.close()
+        raise StudioError(
+            "NS-E327", f"{paths.db_path} could not be opened ({type(e).__name__}: {e}); if another program "
+            "holds it, close that program and run this again",
+        ) from e
     if light:
         fake = FAKEABLE
-    if paths.runtime_file.exists() or not fake:
+    if light and paths.runtime_file.exists():
+        runtime = read_runtime(paths)   # NS-E125 names the file and the way out, as `ns doctor` does
+    elif paths.runtime_file.exists() or not fake:
         runtime = load_runtime(paths)
     else:
         runtime = Runtime.default("cpu-dev")

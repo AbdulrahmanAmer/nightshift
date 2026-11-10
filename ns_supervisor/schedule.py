@@ -34,6 +34,7 @@ from ns_supervisor.schedule_cfg import (
     clear_run_time,
     read_run_time,
     read_schedule_mode,
+    record_note,
     remember_run_time,
     remembered_run_time,
     schedule_file,
@@ -1216,4 +1217,5 @@ def show(paths: Paths) -> str:
     """Human-readable task status."""
     saved = read_run_time(paths)
     out = _run(build_show_script())
-    return out + (f"\nconfigured time: {saved}" if saved else "")
+    note = record_note(paths)
+    return out + (f"\nconfigured time: {saved}" if saved else "") + (f"\n{note}" if note else "")

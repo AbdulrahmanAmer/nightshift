@@ -4,7 +4,9 @@
 TTS fallback, otherwise s06) and s07 only completes and validates it, never overwrites tuned flags.
 
 One mechanism for an existing file (setup-torn-runtime). ``inspect_runtime`` is the ONE place that decides
-what the file is, and ``Found.runtime`` is the ONE meaning of "the settings setup keeps from it"; every step
+what the file is (it lives in ``ns_common.runtime_read``, where the product's commands read the file with
+the same answers: ``ns doctor``, ``ns verify``, ``ns tune``, ``studio status``), and ``Found.runtime`` is
+the ONE meaning of "the settings setup keeps from it"; every step
 gets the file through ``existing_runtime`` (s01's comparison, s03) or ``ensure_baseline`` (every step that
 needs a file that loads), and a step's ``check`` through ``runtime_is_usable`` / ``runtime_settled``.
 
@@ -33,22 +35,20 @@ no route past s01 can make an answer be ignored.
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import ValidationError
-
 from installer.stage2.context import StepContext
 from installer.stage2.devmode import OTHER_FLAG
-from ns_common import first_start
+from ns_common import first_start, runtime_read
 from ns_common.atomic import read_bytes_retry
 from ns_common.config import load_runtime, save_runtime
 from ns_common.errors import NsError
 from ns_common.models import HfFile, Runtime, WhisperCfg
 from ns_common.paths import Paths
+from ns_common.runtime_read import Found
 
 #: Where a runtime.json that cannot be read is kept: ``runtime.json.bad``, then ``.bad.1``, ``.bad.2`` ...
 BAD_NAME = ".bad"
@@ -113,119 +113,10 @@ def build_runtime(ctx: StepContext) -> Runtime:
     return rt
 
 
-@dataclass(frozen=True)
-class Found:
-    """What runtime.json is (``inspect_runtime``).
-
-    ``ok``: it loads (``runtime`` is it). ``missing``. ``damaged``: not JSON, or a field this version knows
-    has a wrong type or value (``why`` says which). ``newer``: the ONLY complaints are fields this version
-    does not know, so a newer Nightshift wrote it: ``runtime`` is the file without exactly those fields and
-    ``removed`` names them (dotted: ``llama.flags.x``). Both kinds of complaint together are ``damaged``.
-    ``recode``: it reads fine but is not plain UTF-8 (a byte order mark, or UTF-16): every setting is kept and
-    the file is written again as plain UTF-8, which is all the rest of Nightshift reads; ``why`` says which.
-    ``unreadable``: it is there and cannot be read right now (another program holds it, no permission, a
-    folder of that name): ``error`` is what the system said. Nothing is known about its settings.
-
-    ``runtime`` is the one meaning of "the settings setup keeps from the existing file": set for ``ok``,
-    ``recode`` and ``newer``, None for every other state. No step tests the state to decide that.
-    """
-
-    state: str
-    runtime: Runtime | None = None
-    why: str = ""
-    removed: tuple[str, ...] = ()
-    error: OSError | None = None
-
-
-def _where(loc: tuple[int | str, ...]) -> str:
-    return ".".join(str(p) for p in loc) or "(the file)"
-
-
-def _classify(text: str) -> Found:
-    try:
-        return Found("ok", Runtime.model_validate_json(text))
-    except ValidationError as e:
-        errors = e.errors()
-    except ValueError as e:     # not decodable
-        return Found("damaged", why=(str(e).splitlines() or [type(e).__name__])[0])
-    if any(err["type"] == "json_invalid" for err in errors):
-        return Found("damaged", why="not valid JSON: " + str(errors[0]["msg"]))
-    unknown = [err for err in errors if err["type"] == "extra_forbidden"]
-    wrong = [err for err in errors if err["type"] != "extra_forbidden"]
-    wrong_text = "; ".join(f"{_where(err['loc'])}: {err['msg']}" for err in wrong)[:300]
-    names = tuple(_where(err["loc"]) for err in unknown)
-    if unknown and wrong:
-        return Found(
-            "damaged", removed=names,
-            why=f"it has fields this version does not know ({', '.join(names)}) and values it cannot accept "
-                f"({wrong_text})",
-        )
-    if wrong:
-        return Found("damaged", why=wrong_text)
-    try:
-        data = json.loads(text)
-        for err in unknown:
-            node = data
-            for step in err["loc"][:-1]:
-                node = node[step]
-            del node[err["loc"][-1]]
-        return Found("newer", Runtime.model_validate(data), removed=names)
-    except (ValueError, KeyError, IndexError, TypeError, RecursionError) as e:
-        return Found("damaged", why=f"fields this version does not know ({', '.join(names)}) could not be "
-                                    f"taken out: {type(e).__name__}")
-
-
-#: A real runtime.json is a few kilobytes. A file over this is not one (garbage, a wrong file): not read.
-MAX_BYTES = 1_000_000
-
-
-def _decode(data: bytes) -> tuple[str, str]:
-    """(text, how) of the file's bytes; how is empty for plain UTF-8. A UTF-8 byte order mark and UTF-16 with
-    a byte order mark (what some Windows editors save) are unambiguous text: read, and the file is written as
-    plain UTF-8 (``recode``), nothing lost. Any other bytes raise ``UnicodeDecodeError``."""
-    if data.startswith(b"\xef\xbb\xbf"):
-        return data[3:].decode("utf-8"), "UTF-8 with a byte order mark"
-    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return data.decode("utf-16"), "UTF-16"
-    return data.decode("utf-8"), ""
-
-
 def inspect_runtime(paths: Paths) -> Found:
-    """What runtime.json is (see ``Found``). Every way reading it can go is one deliberate answer:
-
-    - not there, or gone between two looks: ``missing``
-    - plain UTF-8, UTF-8 with a byte order mark, UTF-16 with one: read (the last two are ``recode``)
-    - other bytes, empty or whitespace only, not JSON, JSON that is not an object, over ``MAX_BYTES``, a known
-      field with a bad value: ``damaged``
-    - only unknown fields: ``newer``
-    - a folder of that name, or a file that cannot be opened (another program holds it, no permission):
-      ``unreadable``, which ``existing_runtime`` turns into NS-E125; nothing is moved or rewritten then.
-
-    It never raises for anything the file or the file system does.
-    """
-    path = paths.runtime_file
-    try:
-        if path.is_dir():
-            raise IsADirectoryError(21, "is a folder")
-        size = path.stat().st_size
-        if size > MAX_BYTES:
-            return Found("damaged", why=f"it is {size} bytes, far too large for a settings file")
-        data = read_bytes_retry(path)
-    except FileNotFoundError:
-        return Found("missing")
-    except OSError as e:
-        return Found("unreadable", why=f"{type(e).__name__}: {e}", error=e)
-    if len(data) > MAX_BYTES:
-        return Found("damaged", why=f"it is {len(data)} bytes, far too large for a settings file")
-    try:
-        text, how = _decode(data)
-    except UnicodeDecodeError:
-        return Found("damaged", why="it is not text this version can read (not UTF-8, and not UTF-16 with a "
-                                    "byte order mark)")
-    found = _classify(text)
-    if found.state == "ok" and how:
-        return Found("recode", found.runtime, why=how)
-    return found
+    """What runtime.json is: `ns_common.runtime_read.inspect_runtime` (the one classifier, shared with the
+    product's commands), reading through this module's `read_bytes_retry` (a seam for the tests)."""
+    return runtime_read.inspect_runtime(paths, read=lambda p: read_bytes_retry(p))
 
 
 def existing_runtime(ctx: StepContext) -> Found:

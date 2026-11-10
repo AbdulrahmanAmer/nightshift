@@ -11,10 +11,11 @@ from pathlib import Path
 import psutil
 
 from ns_common.atomic import read_text_retry
-from ns_common.config import load_install_state, load_runtime
+from ns_common.config import load_install_state
 from ns_common.errors import NsError
 from ns_common.models import Runtime
 from ns_common.paths import Paths, repo_root
+from ns_common.runtime_read import read_runtime as read_runtime  # the one reading for the commands
 from ns_supervisor import procs
 from ns_supervisor.childenv import child_env, window_flags
 from ns_supervisor.client import SupervisorClient
@@ -27,9 +28,12 @@ def app_path(paths: Paths) -> Path:
 
 
 def runtime_or_default(paths: Paths) -> Runtime:
-    """`runtime.json`, or the gpu defaults when it does not exist yet."""
+    """`runtime.json`, or the gpu defaults when it cannot be used (missing, damaged, newer, re-encoded or
+    unreadable: `read_runtime`). Only the engine's address is taken from it, so a command that must still
+    answer (`ns doctor`, `ns stop`) finds an engine on the default port instead of stopping on the file; a
+    command that needs the settings calls `read_runtime` and says NS-E125."""
     try:
-        return load_runtime(paths)
+        return read_runtime(paths)
     except NsError:
         return Runtime.default("gpu")
 

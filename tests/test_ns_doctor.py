@@ -125,7 +125,9 @@ def test_diagnose_reports_missing_pieces(tmp_path: Path) -> None:
     client = SupervisorClient("http://sup", client=httpx.Client(transport=httpx.MockTransport(refuse)))
     rows = doctor.diagnose(Paths(tmp_path / "ns"), client)
     by = {name: (ok, detail) for name, ok, detail in rows}
-    assert by["runtime.json"][0] is False and "NS-E203" in by["runtime.json"][1]
+    # NS-E125 naming the missing file and its way out, not NS-E203 "health check timed out" (FN-5/D-44 small3)
+    assert by["runtime.json"][0] is False and "NS-E125" in by["runtime.json"][1]
+    assert "does not exist" in by["runtime.json"][1] and "NS-E203" not in by["runtime.json"][1]
     assert by["supervisor"][0] is False
     assert by["venv studio"][0] is False
 

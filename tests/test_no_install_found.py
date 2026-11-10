@@ -354,7 +354,7 @@ def test_an_unreadable_runtime_json_stops_models_get_with_its_own_error(
     assert r.exit_code == 1, r.output
     assert "NS-E125" in r.output and str(bad) in r.output and "could not be read" in r.output
     assert "NS-E203" not in r.output and "health check" not in r.output
-    assert "Traceback" not in r.output and "validation error for Runtime" in r.output   # the reason, one line
+    assert "Traceback" not in r.output and "not valid JSON" in r.output   # the reason, in setup's words
     assert plans.calls == []                             # nothing planned
     assert bad.read_text(encoding="utf-8") == "{"       # the file is still there, untouched: never dropped
     assert sorted(p.name for p in bad.parent.iterdir()) == ["runtime.json"]
