@@ -151,8 +151,9 @@ def test_detach_starts_a_worker_and_returns_at_once(tmp_path: Path, monkeypatch:
     assert cwd == home                                   # never the app folder
     assert str(z.resolve()) in argv and "--worker" in argv and "--wait-pid" in argv
     assert argv[argv.index("--home") + 1] == str(home)
-    st = update_job.read_status(Paths(home))
-    assert st["state"] == "running" and update_job.status_file(Paths(home)).name == "update_state.json"
+    # D-39: the caller writes no state; only the worker that holds run/update.lock does
+    assert update_job.read_status(Paths(home)) == {}
+    assert update_job.status_file(Paths(home)).name == "update_state.json"
 
 
 def test_below_the_engine_the_update_detaches_without_being_asked(
@@ -166,35 +167,6 @@ def test_below_the_engine_the_update_detaches_without_being_asked(
     r = invoke(home, "update", "--github", env={procs.UNDER_ENGINE_ENV: "1"})
     assert r.exit_code == 0 and '"started": true' in r.output
     assert "--github" in started[0] and "--wait-pid" in started[0]
-
-
-def test_from_a_shortcut_the_caller_waits_and_relays_the_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    paths = Paths(home)
-    argvs: list[list[str]] = []
-
-    def spawn(argv: list[str], cwd: Path) -> int:
-        argvs.append(argv)
-        log = Path(argv[argv.index("--log") + 1])
-        log.write_text("Now on 0.2.0 (was 0.1.0).\n", encoding="utf-8")
-        update_job.write_status(paths, "done", "Now on 0.2.0 (was 0.1.0).", exit_code=0)
-        return 55
-
-    monkeypatch.setattr(update_job, "spawn_detached", spawn)
-    monkeypatch.setattr(update_job, "pid_alive", lambda pid: False)
-    r = invoke(home, "update", "--github")
-    assert r.exit_code == 0 and "Now on 0.2.0" in r.output
-    assert "--wait-pid" not in argvs[0]  # it must not wait for a caller that waits for it
-
-    def failing(argv: list[str], cwd: Path) -> int:
-        update_job.write_status(paths, "failed", "NS-E702: x", exit_code=1)
-        return 56
-
-    monkeypatch.setattr(update_job, "spawn_detached", failing)
-    assert invoke(home, "update", "--github").exit_code == 1
 
 
 def test_the_worker_logs_reports_and_waits_for_the_caller(tmp_path: Path) -> None:

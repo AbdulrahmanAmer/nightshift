@@ -210,7 +210,7 @@ def _stop_engine(paths: Paths) -> None:
 
 
 def _sync(paths: Paths, app_dir: Path) -> None:
-    update.resync_venvs(app_dir, paths)
+    update.resync_venvs(app_dir, paths, say=typer.echo)     # (a wait for a file in use is shown)
 
 
 def _reregister(paths: Paths, app_dir: Path) -> list[str]:
@@ -292,6 +292,15 @@ def cmd_update(
         bool,
         typer.Option("--detach", help="Start the update in the background and return at once."),
     ] = False,
+    wait: Annotated[
+        bool,
+        typer.Option(
+            "--wait",
+            help="Follow the update and exit with its result (0 done, 1 otherwise). Only for a program "
+            "that does not run from Nightshift's own Python environments; `ns` itself cannot wait.",
+        ),
+    ] = False,
+    watched: Annotated[bool, typer.Option("--watched", hidden=True)] = False,
     worker: Annotated[bool, typer.Option("--worker", hidden=True)] = False,
     log: Annotated[Path | None, typer.Option("--log", hidden=True)] = None,
     home: Annotated[Path | None, typer.Option("--home", hidden=True)] = None,
@@ -300,7 +309,11 @@ def cmd_update(
     """Apply a release zip (verified, with automatic rollback), go back one version, or use GitHub.
 
     The update runs in a detached worker process, so stopping the engine (or closing the dashboard that
-    started it) cannot kill it half way through the swap.
+    started it) cannot kill it half way through the swap. This command never waits for it (D-39): it runs
+    from the supervisor venv and holds `Scripts\\ns.exe` open for as long as it lives, which the worker's
+    re-sync has to replace. It checks what can be checked without changing anything, starts the worker
+    with its own pid to wait for, opens the progress window (a terminal; `--detach` and the dashboard get
+    none) and returns.
     """
     if sum([zip_path is not None, rollback, check, github, git]) != 1:
         raise _die("give exactly one of: a zip file, --rollback, --check, --github, --git", 2)
@@ -308,9 +321,22 @@ def cmd_update(
         raise _die("--channel must be one of: " + ", ".join(update.CHANNELS), 2)
     if channel != "stable" and not git:
         raise _die("--channel main works with --git only", 2)
+    if wait and detach:
+        raise _die("--wait and --detach cannot be used together", 2)
     if home is not None:
         os.environ.update(home_env(home))   # named on the command line: for this process and its children
     paths = Paths.from_env()
+    if wait and not worker and update_job.runs_from_venvs(paths):
+        # (refused before anything is started: a --wait that returned early would report a result it
+        # does not know, and one that stayed would hold the files the update replaces: D-39)
+        raise _die(
+            "--wait cannot be used with Nightshift's own ns: this command runs from the Python environments "
+            "the update replaces, so it has to end before the update goes on. Nothing was started. In a "
+            "script, run the same command with --detach instead; its JSON line names 'follow', a script "
+            "to run with: powershell -NoProfile -ExecutionPolicy Bypass -File <follow>. That prints the "
+            "progress and exits 0 when the update is done, 1 otherwise.",
+            2,
+        )
     if check:
         _update_check(update.current_version(control.app_path(paths)))
         return
@@ -325,32 +351,54 @@ def cmd_update(
             old_version=update.current_version(control.app_path(paths)),
             relaunch=relaunch.default_relaunch(paths),
             cleanup=discard_copy,
+            watched=watched,
         )
         raise typer.Exit(code)
     forwarded: list[str] = []
+    what = "The update"
     if zip_path is not None:
         try:
-            update.verify_package(zip_path.resolve())     # a bad zip is reported here, nothing is started
+            new_version, _prefix = update.verify_package(zip_path.resolve())    # a bad zip: nothing started
         except NsError as e:
             raise _die(e) from e
+        what = f"The update to {new_version}"
         forwarded.append(str(zip_path.resolve()))        # the worker starts in another folder
     if rollback:
+        app_dir = control.app_path(paths)
+        nothing = update.rollback_refusal(app_dir)       # read-only, like the zip check: nothing is started
+        if nothing is not None:
+            raise _die(NsError("NS-E702", f"{nothing} {update.where_now(paths, app_dir)}"))
+        what = "The rollback"
         forwarded.append("--rollback")
     if github:
         forwarded.append("--github")
     if git:
         forwarded += ["--git", "--channel", channel]
+    running = update_job.busy(paths)                     # one update, rollback or repair at a time
+    if running is not None:
+        raise _die(NsError("NS-E705", running))
     background = detach or update_job.under_engine()
+    if watched or wait or not background:               # somebody shows this run's result as it ends
+        forwarded.append("--watched")
     try:
-        pid, log_file = update_job.launch(paths, forwarded, wait_pid=os.getpid() if background else None)
+        # (--wait: this process is outside the venvs and stays, so the worker has nobody to wait for)
+        pid, log_file = update_job.launch(paths, forwarded, wait_pid=None if wait else os.getpid())
     except NsError as e:
         raise _die(e) from e
+    if wait:
+        raise typer.Exit(update_job.follow(paths, pid, log_file, typer.echo))
     if background:
         typer.echo(f"The update runs in the background; Nightshift will close. Progress: {log_file}")
-        status = str(update_job.status_file(paths))
-        typer.echo(json.dumps({"started": True, "log": str(log_file), "status": status}))
+        started: dict[str, object] = {
+            "started": True, "log": str(log_file), "status": str(update_job.status_file(paths)), "pid": pid,
+        }
+        script = update_job.write_wait_script(paths, pid, log_file)
+        if script is not None:
+            started["follow"] = str(script)
+        typer.echo(json.dumps(started))
         return
-    raise typer.Exit(update_job.follow(paths, pid, log_file, typer.echo))
+    window = update_job.start_follower(paths, pid, log_file)
+    typer.echo(update_job.handover_sentence(what, log_file, window=window))
 
 
 def _update_check(current: str) -> None:

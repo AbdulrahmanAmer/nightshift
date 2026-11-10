@@ -1598,6 +1598,7 @@ def test_the_writers_that_learn_the_file_name_at_run_time_are_guarded_or_part_of
     appcopy_src = (ROOT / "installer" / "stage2" / "web" / "appcopy.py").read_text(encoding="utf-8")
     assert 'rollback_intent.recover(dest, Path(home) / "config", may_undo=False)' in appcopy_src
     source = (ROOT / "ns_supervisor" / "update.py").read_text(encoding="utf-8")
-    for entry in ("def update_app", "def rollback_app", "def git_update"):
+    # (D-39: the public names only add the closing sentence; the bodies are the underscore ones)
+    for entry in ("def _update_app", "def _rollback_app", "def _git_update"):
         body = source.split(entry, 1)[1].split("\ndef ", 1)[0]
         assert "first_start.settled(paths.config)" in body, entry
