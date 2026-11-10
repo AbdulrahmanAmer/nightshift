@@ -76,7 +76,7 @@ class SmiSource:
     def query(self, args: Sequence[str], timeout_s: float = QUERY_TIMEOUT_S) -> str | None:
         try:
             r = self.runner(list(args), timeout_s)
-        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):  # (a name the code page cannot read)
+        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):  # (a name it cannot decode)
             return None
         return r.stdout if r.returncode == 0 else None
 

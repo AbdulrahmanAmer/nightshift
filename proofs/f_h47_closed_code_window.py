@@ -79,8 +79,8 @@ def run(ctx):
         covers="POST /acquire llama owner opencode with the holder's pid, the holder ended by that pid, "
         "GET /status gpu_owner, the next owner's grant without waiting",
         not_covered="box F-H47: closing the real Nightshift Code window with X (the launcher, its console "
-        "and OpenCode are not run; the /acquire body is pinned by tests/test_launchers.py), a real graphics card "
-        "(docs/DEV_MODE.md: what fake_gpu does not prove)",
+        "and OpenCode are not run; the /acquire body is pinned by tests/test_launchers.py), a real graphics "
+        "card (docs/DEV_MODE.md: what fake_gpu does not prove)",
     )
     cfg = ctx.read_json(Path(ctx.home) / "config" / "runtime.json")
     if not (isinstance(cfg, dict) and cfg.get("fake_gpu") is True):
