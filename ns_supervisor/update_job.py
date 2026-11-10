@@ -456,8 +456,9 @@ def follow(
             _echo_new(log, offset, echo)
             echo("Result: " + str(raw.get("message", "")))
             return 0 if raw.get("state") == "done" else 1
-        worker = raw.get("pid") if mine and isinstance(raw.get("pid"), int) else pid
-        quiet = quiet + 1 if not alive(int(worker)) else 0
+        told = raw.get("pid")
+        worker = told if mine and isinstance(told, int) else pid
+        quiet = quiet + 1 if not alive(worker) else 0
         if quiet >= 3:                  # its last write can land a moment after the process is gone
             _echo_new(log, offset, echo)
             left = raw.get("if_stopped_here") if mine else None
@@ -675,9 +676,12 @@ def _tell(paths: Paths, log: Path | None, watched: bool, message: str) -> None:
 
         notify.leave_note(paths, "The last update or rollback did not complete", message)
 
+    def window() -> None:
+        if not watched and log is not None:
+            start_follower(paths, os.getpid(), log)
+
     _guarded(note)
-    if not watched and log is not None:
-        _guarded(lambda: start_follower(paths, os.getpid(), log))
+    _guarded(window)
 
 
 def run_worker(

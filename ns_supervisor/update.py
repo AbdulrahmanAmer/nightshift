@@ -1151,19 +1151,16 @@ def takes_detach(program: Path) -> bool:
     return '"--detach"' in text
 
 
-def _setup_from(paths: Paths, first: str, second: str) -> str:
-    """`run INSTALL.cmd from the Nightshift <v> zip ...`, for when no `ns` command can be used. `<v>` is
-    `first` unless setup's environment step last ran for that very version: `S04Venvs.check` compares the
-    flag `venvs_version` with the zip's version and fills the environments again only when they differ."""
-    try:
-        flags = json.loads(read_text_retry(paths.config / "wizard_flags.json"))
-        done = str(flags.get("venvs_version") or "") if isinstance(flags, dict) else ""
-    except (OSError, ValueError):
-        done = ""
-    version = second if done and deplock.version_key(done) == deplock.version_key(first) else first
+def _setup_from(first: str, second: str) -> str:
+    """`run INSTALL.cmd from the Nightshift <first> zip ...`, for when no `ns` command can be used, and the
+    `<second>` zip as the next thing to try. Setup's environment step fills the environments again only for
+    a version other than the one it last ran for (`S04Venvs.check`: the flag `venvs_version` against the
+    zip's version); which one that was is setup's own record (no `ns_*` module reads its flags file), and
+    of two different versions at least one is another one."""
     return (
-        f"run INSTALL.cmd from the Nightshift {version} zip and choose this folder (setup puts {version} in "
-        "place and fills the Python environments again)"
+        f"run INSTALL.cmd from the Nightshift {first} zip and choose this folder; if Nightshift still does "
+        f"not start after that, do the same with the Nightshift {second} zip (setup fills the Python "
+        "environments again only for a version other than the one it last filled them for)"
     )
 
 
@@ -1171,7 +1168,7 @@ def rollback_way_out(paths: Paths, app: Path, here: str, other: str) -> str:
     """How to finish when `here`'s program is in `app` on environments that were not refreshed: go to
     `other` and come back, each run refreshing every environment. The first command is typed into `here`'s
     program and the second into `other`'s (`<app>.prev`), so both must have `--detach`."""
-    setup = _setup_from(paths, other, here)
+    setup = _setup_from(other, here)
     if not (takes_detach(app) and takes_detach(_sibling(app, ".prev"))):
         return f"{setup}."
     return (
@@ -1184,7 +1181,7 @@ def rollback_way_out(paths: Paths, app: Path, here: str, other: str) -> str:
 def update_way_out(paths: Paths, app: Path, here: str, other: str, command: str = "ns update <zip>") -> str:
     """How to fill the environments when `here`'s program is in `app` after an update to or from `other`
     broke off: run the update again, by a route the program in place has."""
-    setup = _setup_from(paths, other, here)
+    setup = _setup_from(other, here)
     if not takes_detach(app):
         return f"{setup}."
     return (

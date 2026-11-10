@@ -145,14 +145,10 @@ def test_a_program_without_detach_is_sent_to_install_cmd_and_setup_runs_its_envi
     message, paths = unfinished_rollback(tmp_path, None)         # a program older than 0.1.14: no --detach
     assert commands(message) == [], message
     assert "then run INSTALL.cmd from the Nightshift 0.2.0 zip and choose this folder" in message
-    # setup fills the environments again only for a version other than the one its step last ran for
-    (paths.config / "wizard_flags.json").write_text(json.dumps({"venvs_version": "0.2.0"}), encoding="utf-8")
+    # setup fills the environments again only for a version other than the one its step last ran for,
+    # and that is setup's own record: both zips are named, the other version's first
+    assert "do the same with the Nightshift 0.1.0 zip" in message
     app = tmp_path / "NightShift"
-    assert "from the Nightshift 0.1.0 zip" in update.rollback_way_out(paths, app, "0.1.0", "0.2.0")
-    assert "from the Nightshift 0.1.0 zip" in update.rollback_way_out(paths, app, "0.2.0", "0.1.0")
-    flags = paths.config / "wizard_flags.json"
-    flags.write_text(json.dumps({"venvs_version": "0.1.0"}), encoding="utf-8")
-    assert "from the Nightshift 0.2.0 zip" in update.rollback_way_out(paths, app, "0.2.0", "0.1.0")
     # the two programs of a rollback pair must BOTH have --detach for the command pair to be named
     (app / "ns_supervisor").mkdir(exist_ok=True)
     (app / "ns_supervisor" / "cli.py").write_text(OLD_CLI, encoding="utf-8")
