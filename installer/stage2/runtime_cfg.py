@@ -6,12 +6,22 @@ TTS fallback, otherwise s06) and s07 only completes and validates it, never over
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
 from installer.stage2.context import StepContext
+from ns_common.atomic import read_text_retry
 from ns_common.config import load_runtime, save_runtime
+from ns_common.errors import NsError
 from ns_common.models import HfFile, Runtime, WhisperCfg
+from ns_common.paths import Paths
+
+#: Where a runtime.json that cannot be read is kept: ``runtime.json.bad``, then ``.bad.1``, ``.bad.2`` ...
+BAD_NAME = ".bad"
+#: The most set-aside copies one folder is asked to hold before setup stops instead of counting on.
+MAX_ASIDE = 1000
+_rename = os.rename     # a seam for the tests: on Windows it refuses to replace a file that is already there
 
 
 def llm_file(ctx: StepContext) -> HfFile:
@@ -66,10 +76,86 @@ def build_runtime(ctx: StepContext) -> Runtime:
     return rt
 
 
+def inspect_runtime(paths: Paths) -> tuple[Runtime | None, str | None]:
+    """What runtime.json is: ``(runtime, None)`` when it loads, ``(None, None)`` when it is missing and
+    ``(None, reason)`` when it is there but is not JSON or fails the model (the reason is one line).
+
+    A file that exists but cannot be opened (another program holds it) raises ``OSError``: it is neither
+    missing nor known to be damaged, so nothing may be moved or rewritten on that evidence.
+    """
+    try:
+        text = read_text_retry(paths.runtime_file)
+    except FileNotFoundError:
+        return None, None
+    try:
+        return Runtime.model_validate_json(text), None
+    except ValueError as e:      # not JSON, or JSON that fails the model (pydantic's errors are ValueErrors)
+        first = (str(e).splitlines() or [type(e).__name__])[0]
+        return None, first
+
+
+def runtime_is_usable(ctx: StepContext) -> bool:
+    """True when runtime.json is there and loads. False for missing and damaged, and when it cannot be read
+    right now: the step's work (``ensure_baseline``) then decides, and refuses by name when it must."""
+    try:
+        return inspect_runtime(ctx.paths)[0] is not None
+    except OSError:
+        return False
+
+
+def aside_sentence(kept_as: str) -> str:
+    """What the owner is told when setup set a damaged runtime.json aside (step row, report and console)."""
+    return (
+        f"Your runtime.json could not be read; it was kept as {kept_as} and a new one was written from your "
+        "answers; settings that were only in the old file are not carried over."
+    )
+
+
+def _set_aside(path: Path, why: str) -> Path:
+    """Rename a damaged ``path`` to ``<name>.bad``, or ``.bad.1``, ``.bad.2`` ... when that name is taken.
+
+    Nothing is overwritten and nothing is deleted. A rename the system refuses (a program holds the file, the
+    folder is not writable) is NS-E125 naming the file and what to close; the file is then as it was.
+    """
+    for n in range(MAX_ASIDE):
+        target = path.with_name(path.name + BAD_NAME + (f".{n}" if n else ""))
+        if target.exists():
+            continue
+        try:
+            _rename(path, target)
+        except FileExistsError:     # taken between the check and the rename: next name
+            continue
+        except OSError as e:
+            raise NsError(
+                "NS-E125",
+                f"{path} is damaged ({why}) and could not be set aside as {target.name}: "
+                f"{type(e).__name__}: {e}. Close any program that has runtime.json open (an editor, a backup "
+                "tool, a Nightshift window) and make sure the config folder can be written to, then choose "
+                "Retry. The file has not been changed.",
+            ) from e
+        return target
+    raise NsError(
+        "NS-E125",
+        f"{path} is damaged ({why}) and {MAX_ASIDE} earlier copies of it are already kept next to it, so "
+        "setup will not set another aside. Move the runtime.json.bad files out of the config folder, then "
+        "choose Retry. The file has not been changed.",
+    )
+
+
 def ensure_baseline(ctx: StepContext) -> Runtime:
-    """Load runtime.json, writing the baseline first when it does not exist."""
-    if not ctx.paths.runtime_file.exists():
-        save_runtime(ctx.paths, build_runtime(ctx))
+    """Load runtime.json. A missing one is written from the answers. One that cannot be read (not JSON, or
+    failing the model) is first set aside as ``runtime.json.bad`` (never overwritten, never deleted) and the
+    owner is told, on the step's row, in the report and in the log; then the baseline is written."""
+    found, why = inspect_runtime(ctx.paths)
+    if found is not None:
+        return found
+    if why is not None:
+        kept = _set_aside(ctx.paths.runtime_file, why)
+        sentence = aside_sentence(kept.name)
+        ctx.log.warn("runtime_set_aside", f"{ctx.paths.runtime_file}: {why}; kept as {kept}")
+        ctx.ui.say(sentence, "yellow")
+        ctx.note_step(sentence)
+    save_runtime(ctx.paths, build_runtime(ctx))
     return load_runtime(ctx.paths)
 
 

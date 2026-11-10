@@ -9,7 +9,7 @@ from __future__ import annotations
 from installer.stage2 import reinstall
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
-from installer.stage2.runtime_cfg import ensure_baseline
+from installer.stage2.runtime_cfg import ensure_baseline, runtime_is_usable
 from ns_common.config import load_runtime
 
 
@@ -22,11 +22,12 @@ class S06Tune(Step):
     clears_on_run = ("tuned", "smoke", "smoke_version")
 
     def check(self, ctx: StepContext) -> bool:
-        """True once tuning ran (or fell back to defaults) on an earlier run, and no change that the answers
-        asked of runtime.json (a new model, the engine test) is still owed (D-14)."""
+        """True once tuning ran (or fell back to defaults) on an earlier run, runtime.json is there AND loads
+        (a damaged one is not "done": ``run`` sets it aside and writes a new one), and no change that the
+        answers asked of runtime.json (a new model, the engine test) is still owed (D-14)."""
         return (
             ctx.flag("tuned") in ("tuned", "defaults")
-            and ctx.paths.runtime_file.exists()
+            and runtime_is_usable(ctx)
             and not ctx.flag(reinstall.PENDING_FLAG)
         )
 

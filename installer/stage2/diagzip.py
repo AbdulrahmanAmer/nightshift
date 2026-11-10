@@ -42,6 +42,18 @@ def _voice_warnings(paths: Paths) -> list[str]:
     return [str(w) for w in found] if isinstance(found, list) else []
 
 
+def _step_row(st: object) -> dict[str, object]:
+    """One step of the report. A step that finished carries no error: what it kept in ``error`` is a note
+    (a damaged file setup set aside), and says so under ``note``."""
+    row = st if isinstance(st, dict) else {}
+    done, text = row.get("status") == "done", row.get("error")
+    out: dict[str, object] = {"status": row.get("status"), "finished_at": row.get("finished_at"),
+                              "error": None if done else text}
+    if done and text:
+        out["note"] = text
+    return out
+
+
 def write_console_install_report(
     paths: Paths, *, outcome: str, version: str, last_error: dict[str, object] | None = None,
     when: dt.datetime | None = None,
@@ -77,8 +89,7 @@ def write_console_install_report(
         "app_path": state.get("app_path"),
         "started_at": state.get("started_at"),
         "completed_at": state.get("completed_at"),
-        "steps": {sid: {"status": (st or {}).get("status"), "finished_at": (st or {}).get("finished_at"),
-                        "error": (st or {}).get("error")} for sid, st in steps.items()},
+        "steps": {sid: _step_row(st) for sid, st in steps.items()},
         "last_error": last_error,
         # designed or cloned voices that did not speak in the setup test (s08): the voice, why, the way out
         "voice_warnings": _voice_warnings(paths),

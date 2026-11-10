@@ -37,7 +37,7 @@ from typing import Any
 
 from installer.stage2.answers import AnswersError, InstallerAnswers, load_raw, slugify
 from installer.stage2.context import StepContext
-from installer.stage2.runtime_cfg import build_runtime
+from installer.stage2.runtime_cfg import build_runtime, inspect_runtime
 from installer.stage2.secrets import KEY_NAMES
 from installer.stage2.web.answers_view import KEPT_NAME
 from ns_common.atomic import write_text_atomic
@@ -272,9 +272,13 @@ def _runtime(ctx: StepContext, keys: set[str], compared: bool) -> list[str]:
     starts llama-server on a missing file is a broken install: runtime.json keeps naming the model it has
     until s03 has verified the new one. The old file stays in models\\llm either way.
     """
-    if not ctx.paths.runtime_file.exists():
-        return []
-    rt, fresh = load_runtime(ctx.paths), build_runtime(ctx)
+    try:
+        rt = inspect_runtime(ctx.paths)[0]
+    except OSError:
+        rt = None   # held by another program: s06 (ensure_baseline) refuses by name when it gets there
+    if rt is None:
+        return []   # missing or damaged: s06 writes the baseline from the answers (and sets it aside)
+    fresh = build_runtime(ctx)
     owed: dict[str, bool] = dict(ctx.flag(PENDING_FLAG) or {})
     lines: list[str] = []
     was, now = Path(rt.llama.model_path).name, Path(fresh.llama.model_path).name
