@@ -55,6 +55,17 @@ class StudioGroup(TyperGroup):
         """Normalise the optional-value flag, then parse as usual."""
         return super().parse_args(ctx, normalize_fake_flag(list(args)))
 
+    def resolve_command(self, ctx: Any, args: list[str]) -> Any:
+        """Resolve as usual, and keep the subcommand's words for the install check (D-35, `_root`).
+
+        `ns_supervisor` is imported inside the function: the studio reaches it lazily only (`acquirer.py`).
+        """
+        from ns_supervisor import homecheck
+
+        name, command, rest = super().resolve_command(ctx, args)
+        homecheck.remember(ctx, name, command, rest)
+        return name, command, rest
+
 
 app = typer.Typer(help="Nightshift Studio", no_args_is_help=False, cls=StudioGroup)
 channel_app = typer.Typer(help="Manage channel profiles", no_args_is_help=True)
@@ -136,6 +147,11 @@ def fake_set(value: str | None) -> frozenset[str]:
 def _root(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
         typer.echo(f"studio {__version__}")
+        return
+    from ns_supervisor import homecheck
+
+    with guarded():     # D-35: no install named or found: NS-E123 before any command opens or writes a home
+        homecheck.check_root(ctx)
 
 
 # ---------------------------------------------------------------- run

@@ -9,6 +9,13 @@ the command definitions in `ns_studio/cli.py`, `ns_studio/clipper/cli.py`, `ns_s
 everything; `=llm,tts,whisper,embed,clips` picks some. In `studio series` and `studio ask` the flag is a plain
 on/off switch.
 
+Where they work: both commands use the folder named by `NIGHTSHIFT_HOME`. When the variable is not set (an old
+window, a PC where setup has not run) they use `%LOCALAPPDATA%/Nightshift` only if an install is already there
+(`config/runtime.json` or `config/install_state.json`); otherwise every subcommand stops with NS-E123, names the
+folder it looked in and, when this program belongs to an install, the line to type
+(`$env:NIGHTSHIFT_HOME = '<that folder>'`), and writes nothing. `--help` and the bare command still answer. A
+variable that names an empty folder is never refused, and `ns update --home <folder>` names its own.
+
 ## studio
 
 | Command | What it does |

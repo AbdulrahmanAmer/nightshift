@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from ns_common.config import load_manifest, load_runtime, save_runtime
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
-from ns_common.models import Manifest
+from ns_common.models import Manifest, Runtime
 from ns_common.paths import Paths
 
 if TYPE_CHECKING:
@@ -160,6 +160,22 @@ class EchoReporter:
         self._echo(f"{name}: {outcome}")
 
 
+def _read_runtime(paths: Paths) -> Runtime:
+    """`runtime.json`, or the error that says why it cannot be used (NS-E203, naming the file).
+
+    A file that is missing is `load_runtime`'s own NsError. One that exists but cannot be read or parsed
+    (torn JSON, a bad key, a locked file) is turned into the same code with the file named, instead of an
+    uncoded pydantic traceback. The file is not touched either way.
+    """
+    try:
+        return load_runtime(paths)
+    except NsError:
+        raise
+    except (ValueError, OSError) as e:
+        first = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
+        raise NsError("NS-E203", f"{paths.runtime_file} could not be read: {first}") from e
+
+
 def get_model(
     kind: str,
     paths: Paths,
@@ -175,11 +191,8 @@ def get_model(
     from installer.stage2 import downloader
 
     man = manifest or load_manifest(app / "manifest.json")
-    try:
-        rt = load_runtime(paths)
-        profile, engine = rt.profile, rt.tts.engine
-    except NsError:
-        profile, engine = "gpu", "qwentts"
+    rt = _read_runtime(paths)   # D-35: a missing or unreadable runtime.json stops here; never "assume gpu"
+    profile, engine = rt.profile, rt.tts.engine
     items = plan_items(kind, man, profile, paths, engine=engine, everything=everything, tree=tree)
     todo = [i for i in items if not downloader.is_done(i)]
     if todo:
