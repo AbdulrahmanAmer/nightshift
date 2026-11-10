@@ -86,7 +86,7 @@ export default function Results() {
           {!s.summary?.length && <p className="text-ds-sm text-ds-muted">Nothing yet</p>}
         </Card>
         <Card as="section" aria-labelledby="r-change" className={cx("self-stretch", SPAN["3/4"])}>
-          <CardHeader id="r-change" title="What changes next" actions={<span className="mr-2 text-ds-2xs text-ds-muted">Applied from tonight's run</span>} />
+          <CardHeader id="r-change" title="What changes next" actions={<span className="mr-2 text-ds-2xs text-ds-muted">Applied to the next video made</span>} />
           <ul className="flex flex-col">{(s.changes || []).map((c) => (
             <li key={c.pool + c.option} className="flex items-center justify-between gap-3 border-b border-ds-border-subtle py-3 last:border-0">
               <div className="min-w-0"><p className="truncate text-ds-sm font-semibold">{optionLabel(c.pool, c.option)}</p><p className="text-ds-2xs text-ds-muted">{poolLabel(c.pool)}</p></div>

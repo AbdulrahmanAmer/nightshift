@@ -85,7 +85,9 @@ RESUME_WITHIN_DAYS = 3
 # Since Automatic runs became a switch (Settings), a nightly run comes only while it is on. A card's words are
 # fixed when it is written, so every sentence that promises "the next nightly run" carries this condition.
 WHILE_NIGHTLY_ON = "A nightly run comes only while Automatic runs are on in Settings."
-IF_NIGHTLY_ON = " (while Automatic runs are on in Settings)"  # the same condition inside a sentence
+#: The same condition as a clause of a sentence ("... continues it while Automatic runs are on in Settings").
+WHILE_NIGHTLY_ON_CLAUSE = "while Automatic runs are on in Settings"
+IF_NIGHTLY_ON = f" ({WHILE_NIGHTLY_ON_CLAUSE})"  # the same condition inside a sentence
 #: Records of runs and jobs that ended cleanly are kept this long (they only explain `studio status`).
 KEEP_ENDED_DAYS = 30
 #: A lock another process really holds is retried this often before `hold` gives up (a liveness probe takes

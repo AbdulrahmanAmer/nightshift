@@ -264,7 +264,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 
 - **Supervisor** (§15.3) handles start/stop, health checks, crash restart (max 3 in 10 min, then `error`), the **GPU lock**, and idle unload after 10 min. `embed` is CPU-only, started on demand, never locked.
 - **Shortcuts** run launchers that acquire the needed service, wait for health, then open (§15.8).
-- **Scheduled task** runs `studio run --daily`. If the GPU is held by `opencode`, it waits up to 2 h, then logs `NS-E201` and retries next cycle. If the home's drive has less room than a job writes (`ns_common/diskneed.py`, a Short about 100 MB), the nightly starts no job and writes nothing for it: the report lists the jobs as `no_room`, the morning note and the dashboard's Last night card say "not enough disk space" with the amounts, and the task exits 1 when nothing at all could be made for that reason (a night that made some videos exits 0).
+- **Scheduled task** runs `studio run --daily`. If the GPU is held by `opencode`, it waits up to 2 h, then logs `NS-E201` and retries the next night while Automatic runs are on. If the home's drive has less room than a job writes (`ns_common/diskneed.py`, a Short about 100 MB), the nightly starts no job and writes nothing for it: the report lists the jobs as `no_room`, the morning note and the dashboard's Last night card say "not enough disk space" with the amounts, and the task exits 1 when nothing at all could be made for that reason (a night that made some videos exits 0).
 - **Before the supervisor exists** (M1 development on a GPU machine) `dev\run_services_dev.ps1` starts `llama`, `embed` and `tts` in visible windows with the tuned flags. `ns_common` clients talk to fixed ports either way.
 
 ### 6.1 Process model (how models are loaded and unloaded)
@@ -1126,7 +1126,7 @@ Each step names the component that serves it, so coverage can be checked against
 ### J7 — Something goes wrong
 - **A run failed**: Overview shows a red card with the error code and plain message; Runs & Logs shows the stage; one click downloads the diagnostics zip to send to the developer. **C2 C9**
 - **YouTube sends a warning/strike**: owner presses **Pause** on the channel with a note; nothing is produced until Resume; README/Operator doc lists the review checklist (§18.11). **C7 C9**
-- **GPU busy** (owner coding with Nightshift Code at 03:00): the nightly run waits up to 2 h, then skips with `NS-E201` and retries the next night; Overview explains. **C2**
+- **GPU busy** (owner coding with Nightshift Code at 03:00): the nightly run waits up to 2 h, then skips with `NS-E201` and retries the next night while Automatic runs are on; Overview explains. **C2**
 - **PC was off**: the task runs as soon as the PC is on (`StartWhenAvailable`); the governor never doubles up to "catch up". **C2 C7**
 
 ### J8 — Updates and uninstall

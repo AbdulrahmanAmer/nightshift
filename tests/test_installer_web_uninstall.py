@@ -86,7 +86,7 @@ def test_removing_runs_the_script_logs_its_output_and_reports_what_stayed(tmp_pa
     assert deferred == [home]                                    # bin is left for the detached PowerShell
     # the closing screen is honest: what an uninstall never touches is listed, not "nothing else was changed"
     stays = " ".join(result["stays"])
-    assert "Credential Manager" in stays and "Visual C++ runtime" in stays and "download cache" in stays
+    assert "Visual C++ runtime" in stays and "download cache" in stays
     assert str(home / "config") in stays and str(home / "logs") in stays
     assert any(r.startswith("Programs and Python environments (the last files go") for r in result["removed"])
     assert logged == ["  removing D:\\ns\\venvs", "  removed shortcut Nightshift Dashboard.lnk"]
@@ -245,3 +245,35 @@ def test_the_deferred_script_also_removes_the_run_folder_after_the_windows_are_g
     script = uninstall.deferred_script(tmp_path / "ns", [1])
     assert str(tmp_path / "ns" / "run").replace("'", "''") in script
     assert str(tmp_path / "ns" / "bin").replace("'", "''") in script
+
+
+def test_the_closing_screen_says_what_happened_to_the_keys(tmp_path: Path):
+    """The uninstall program forgets the stock-footage keys (or leaves them for another Nightshift folder):
+    the closing screen shows its own lines about them, and no longer lists the keys under what stays."""
+    home = make_home(tmp_path)
+    file_line = f"removed {home}\\config\\secrets.dpapi (the copy of the Pixabay key for nightly runs)"
+    said = "\n".join([
+        "Left the notification registration: the Nightshift at D:\\Other uses it.",
+        "  forgot the Pixabay key in Credential Manager",
+        "  " + file_line,
+        "  removed user environment variable NIGHTSHIFT_HOME",
+        "",
+    ])
+    app = uninstall.UninstallApp(
+        APP, home, popen=lambda argv, **kw: FakeProc(said), deferred=lambda h: True, env_var=lambda n: None)
+    result = finished(app)
+    assert not any("stock footage keys" in s or "Credential Manager" in s for s in result["stays"])
+    assert result.get("keys") == ["forgot the Pixabay key in Credential Manager", file_line]
+    # another Nightshift folder uses them: the program's "Left" line is the key line, shown once
+    left = "Left the stock-footage keys in Credential Manager: the Nightshift at D:\\Other uses them."
+    other = uninstall.UninstallApp(
+        APP, make_home(tmp_path / "b"), popen=lambda argv, **kw: FakeProc(left + "\n"),
+        deferred=lambda h: True, env_var=lambda n: None)
+    result = finished(other)
+    assert result.get("keys") == [left]
+    assert left not in [k["label"] for k in result["kept"]]
+    # a program that said nothing about the keys (it stopped early): nothing is claimed
+    silent = uninstall.UninstallApp(
+        APP, make_home(tmp_path / "c"), popen=lambda argv, **kw: FakeProc(""), deferred=lambda h: True,
+        env_var=lambda n: None)
+    assert finished(silent).get("keys") == []

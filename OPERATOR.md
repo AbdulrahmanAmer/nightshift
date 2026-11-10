@@ -324,7 +324,7 @@ it on. Do not use Nightshift Code while a night run is due: the graphics card ca
 Closing the Nightshift Code window any way (its X, Task Manager, signing out) gives the graphics card back within a few seconds.
 Nightshift Code needs a context of at least 16384 tokens. Its OpenCode setup is trimmed (the to-do, web fetch, task and skill tools are off and a short Nightshift prompt replaces OpenCode's long one; the read, edit and write tools stay on, because without them it cannot change a file) so that a one-line question is meant to use at most half of that context, which leaves the rest for files and the answer. With less context it does not start: it says "Nightshift Code needs 16384 tokens of context; this install has N" before it takes the graphics card. The number that counts is the one the running engine uses, because the engine reads `llama.flags.ctx` in `config/runtime.json` only when it starts. If you raise it in the file, run **Nightshift - Stop All** and start Nightshift Code again; if the engine is still running with the old number, the message says so and tells you to restart. That context is also the one the nightly run uses (there is one model server), so a bigger context needs more memory for every job. Every start brings `config/opencode.json` up to this setup and sets the model's context and name from what the engine runs and the installed model; keys you added yourself stay. To make Nightshift Code read-only, set `"edit": false` under `"tools"` in that file: every start then says that it cannot change a file and names the key. A `"patch": false` on its own is removed at the start with a note, because an earlier build wrote it and in this OpenCode it switches the edit and write tools off.
 If the graphics card is busy at that time, the run waits up to 2 hours and then skips the night (code `NS-E201`);
-it tries again the next night.
+it tries again the next night while Automatic runs are on.
 
 When the run ends you get a Windows notification ("1 master + 5 Shorts ready for review", or "run failed
 (NS-E203), open Dashboard"). Switch it off in **Settings -> Notifications**. Right after the run Nightshift shuts
@@ -336,7 +336,8 @@ which it is: "Next run ...", "Runs at ... only while you are signed in", or "Aut
 what Windows has, not what you clicked: if you delete or disable the task in Task Scheduler, Nightshift reads that
 as off within a minute, tells you once (`NS-W207`) and leaves the task as you set it; switch Automatic runs on in
 Settings to get the nightly run back. An update and a rollback never switch it on or off. A backup restore leaves
-them as they are. If Windows refuses the change, the switch stays where it was and the message says so (`NS-E204`).
+them as they are. If Windows refuses the change, the switch stays where it was and the message says so (`NS-E204` when switching on or
+moving the time; `NS-E206` when switching off, with the way to disable the task in Task Scheduler yourself).
 
 **Setup asks once, and the answer is off unless you say yes.** On a first install the setup window has the switch
 **Run Nightshift by itself every night** (the console setup asks the same question; an answers file says
@@ -679,9 +680,12 @@ separately whether to delete the AI models (15 GB) and your videos and history. 
 last ones are removed by a small hidden task as soon as the window closes; the list says so.
 
 Uninstall does **not** change everything on the PC. These stay, and the closing screen lists them: your settings and
-logs (`config` and `logs` in the install folder, so the folder itself stays), your stock footage keys (Windows
-Credential Manager), the Visual C++ runtime, FFmpeg and Windows Terminal (other programs use them), and the Python
-that setup fetched together with its download cache (several GB, in your user folders).
+logs (`config` and `logs` in the install folder, so the folder itself stays), the Visual C++ runtime, FFmpeg and
+Windows Terminal (other programs use them), and the Python that setup fetched together with its download cache
+(several GB, in your user folders). Your stock footage keys are removed from Windows Credential Manager and from
+`config\secrets.dpapi`, except that Credential Manager is left as it is while another Nightshift folder on this PC
+uses it; the closing screen has a line for each, saying what was removed, what was left and what could not be
+removed (with how to remove it by hand).
 
 ## Optional models
 

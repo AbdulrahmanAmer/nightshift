@@ -31,6 +31,9 @@ ALWAYS = (
 )
 #: How the uninstall program starts a line about something it left for another Nightshift folder.
 LEFT = "Left "
+#: The two places a stock-footage key is kept: every line the uninstall program prints about the keys
+#: (`installer.stage2.secrets.forget_stock_keys`, or the script's cmdkey lines) names one of them.
+KEY_PLACES = ("Credential Manager", "secrets.dpapi")
 DATA_DIRS = ("outbox", "rejected", "data", "imports", "cache")
 #: `launchers\\nightshift-host.ps1` holds this named mutex for as long as a dashboard window is open.
 HOST_MUTEX = "Global\\Nightshift.AppHost.dashboard"
@@ -43,13 +46,20 @@ REMOVE_TRIES = 120
 
 
 def stays_on_pc(home: Path) -> list[str]:
-    """What an uninstall never removes (see uninstall.ps1), in plain words, for the closing screen."""
+    """What an uninstall never removes (see uninstall.ps1), in plain words, for the closing screen. The
+    stock-footage keys are not here: the program forgets them, or leaves them for another Nightshift folder,
+    and says which (`is_key_line`); the closing screen shows its own lines about them (`keys`)."""
     return [
         f"Your settings and logs, in {home / 'config'} and {home / 'logs'}",
-        "Your stock footage keys, in Windows Credential Manager",
         "The Visual C++ runtime, FFmpeg and Windows Terminal, which other programs use",
         "The Python that setup fetched and its download cache (several GB), in your user folders",
     ]
+
+
+def is_key_line(line: str) -> bool:
+    """A line of the uninstall program about the stock-footage keys: what it forgot, removed, could not
+    remove or left for another Nightshift folder."""
+    return any(place in line for place in KEY_PLACES)
 
 
 def dir_bytes(path: Path, budget_s: float = SIZE_BUDGET_S) -> int:
@@ -245,6 +255,7 @@ class UninstallApp:
         self._result: dict[str, Any] | None = None
         self._had_updater_copy = False
         self._left: list[str] = []      # the program's own "Left ..." lines (another install uses it)
+        self._keys: list[str] = []      # the program's own lines about the stock-footage keys
         self._sizes = self._measure()
 
     def _measure(self) -> dict[str, Any]:
@@ -297,7 +308,9 @@ class UninstallApp:
             for line in proc.stdout:
                 if line.strip():
                     self._log(line.rstrip())
-                if line.startswith(LEFT) or line.startswith("Another Nightshift is still installed"):
+                if is_key_line(line):
+                    self._keys.append(line.strip())
+                elif line.startswith(LEFT) or line.startswith("Another Nightshift is still installed"):
                     self._left.append(line.strip())
             code = proc.wait()
             if code:
@@ -308,7 +321,9 @@ class UninstallApp:
             self._log(failure)
         removed, kept = self._outcome(home, delete_models, delete_data, failed=bool(failure))
         with self._lock:
-            self._result = {"removed": removed, "kept": kept, "stays": stays_on_pc(home)}
+            self._result = {
+                "removed": removed, "kept": kept, "stays": stays_on_pc(home), "keys": list(self._keys),
+            }
             self._running = False
 
     def _outcome(
@@ -343,7 +358,9 @@ class UninstallApp:
         if (home / "bin").exists():
             # The window itself holds bin\webview2 DLLs: hand the last deletion to a detached PowerShell.
             # only a line that names another Nightshift folder means the program kept setup's shared files
-            shared = self._deferred is spawn_deferred and any("the Nightshift at " in ln for ln in self._left)
+            shared = self._deferred is spawn_deferred and any(
+                "the Nightshift at " in ln for ln in [*self._left, *self._keys]
+            )
             if spawn_deferred(home, keep_local=True) if shared else self._deferred(home):
                 removed.append(
                     f"{programs} (the last files go as soon as every Nightshift window is closed; "

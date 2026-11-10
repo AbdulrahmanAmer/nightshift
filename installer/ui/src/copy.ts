@@ -441,6 +441,7 @@ export const uninstall = {
   doneSalutation: "Nightshift is removed",
   doneDescription: "Nightshift is removed from your programs. A few things stay on this PC on purpose; they are listed below.",
   staysTitle: "Also left on this PC",
+  keysTitle: "Stock footage keys",
   keptTitle: "Kept",
   keptNone: "Nothing was kept. The install folder is gone",
   reveal: "Show folder",

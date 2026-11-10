@@ -179,6 +179,17 @@ class EventRelay:
             self._stop.wait(self.retry_s)
 
 
+def _detail(r: httpx.Response) -> str:
+    """The `detail` of an engine error answer (`{code, message, detail}`), else its first 200 characters."""
+    try:
+        data = r.json()
+    except ValueError:
+        return r.text[:200]
+    if isinstance(data, dict) and data.get("detail"):
+        return str(data["detail"])
+    return r.text[:200]
+
+
 class HttpAcquirer:
     """`ns_common.acquire.Acquirer` over the supervisor HTTP API (used when SupervisorClient is absent)."""
 
@@ -195,6 +206,9 @@ class HttpAcquirer:
             body["model_alias"] = model_alias
         try:
             r = self._client.post(f"{self.base_url}/acquire", json=body, timeout=timeout_s + 30)
+            if r.status_code == 409:
+                # the engine's NS-E201 (the graphics card is held by another task): not a crashed service
+                raise NsError("NS-E201", f"acquire {service}: {_detail(r)}")
             r.raise_for_status()
             data = r.json()
         except httpx.TimeoutException as e:

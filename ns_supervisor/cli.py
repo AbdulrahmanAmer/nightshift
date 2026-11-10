@@ -471,7 +471,9 @@ def _schedule_call(
         # Windows has the task and Nightshift's record does not: not "nothing changed" (NS-E204)
         raise _die(NsError("NS-W208", f"schedule {fn_name}: {e}")) from e
     except schedule.ScheduleError as e:
-        raise _die(NsError("NS-E204", f"schedule {fn_name}: {e}")) from e
+        # registering failed (NS-E204: register it), or removing or reading it (NS-E206: Task Scheduler)
+        code = schedule.REGISTER_FAILED if fn_name == "install" else schedule.SWITCH_OFF_FAILED
+        raise _die(NsError(code, f"schedule {fn_name}: {e}")) from e
     typer.echo(msg)
 
 
