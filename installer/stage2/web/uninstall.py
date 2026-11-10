@@ -18,6 +18,7 @@ from typing import Any
 
 from installer.stage2.web.bootstrap import HOME_VAR, get_user_variable
 from ns_common.atomic import read_text_retry
+from ns_common.psquote import ps_literal
 
 SIZE_BUDGET_S = 5.0
 NOTE_LABEL = "Windows' note of where Nightshift is installed"      # the NIGHTSHIFT_HOME variable
@@ -100,11 +101,6 @@ def uninstall_argv(app_path: Path, home: Path, delete_models: bool, delete_data:
     return argv
 
 
-def ps_quote(value: str) -> str:
-    """Escape a value for a single-quoted PowerShell string."""
-    return value.replace("'", "''")
-
-
 def leftovers_path() -> Path:
     """Where the deferred script lists what it could not remove."""
     return Path(tempfile.gettempdir()) / LEFTOVERS_FILE
@@ -140,12 +136,12 @@ def deferred_script(home: Path, wait_pids: list[int], local_root: Path | None = 
     targets += sorted(home.glob("app.rollback-settings-*.zip"))
     if local_root is not None:
         targets += [local_root / "browser", local_root / "webview2"]
-    listed = ", ".join(f"'{ps_quote(str(t))}'" for t in targets)
-    home_dir = ps_quote(str(home))
+    listed = ", ".join(ps_literal(str(t)) for t in targets)
+    home_dir = ps_literal(str(home))
     lines = [
         "$ErrorActionPreference = 'SilentlyContinue'",
         f"foreach ($id in @({ids})) {{ if ($id -gt 0) {{ Wait-Process -Id $id -Timeout {SETUP_WAIT_S} }} }}",
-        f"$mutexName = '{HOST_MUTEX}'",
+        f"$mutexName = {ps_literal(HOST_MUTEX)}",
         f"$until = (Get-Date).AddMinutes({HOST_WAIT_MIN})",
         "while ((Get-Date) -lt $until) {",
         "    $m = $null",
@@ -165,21 +161,21 @@ def deferred_script(home: Path, wait_pids: list[int], local_root: Path | None = 
         "}",
     ]
     if local_root is not None:
-        root = ps_quote(str(local_root))
+        root = ps_literal(str(local_root))
         lines += [
-            f"$localRoot = '{root}'",
+            f"$localRoot = {root}",
             "if ((Test-Path -LiteralPath $localRoot) -and "
             "-not (Get-ChildItem -LiteralPath $localRoot -Force)) {",
             "    Remove-Item -LiteralPath $localRoot -Force",
             "}",
         ]
     lines += [
-        f"$home_ = '{home_dir}'",
+        f"$home_ = {home_dir}",
         "if ((Test-Path -LiteralPath $home_) -and -not (Get-ChildItem -LiteralPath $home_ -Force)) {",
         "    Remove-Item -LiteralPath $home_ -Force",
         "}",
         "$left = @($targets | Where-Object { Test-Path -LiteralPath $_ })",
-        f"$report = Join-Path $env:TEMP '{LEFTOVERS_FILE}'",
+        f"$report = Join-Path $env:TEMP {ps_literal(LEFTOVERS_FILE)}",
         "if ($left.Count -gt 0) {",
         "    $text = @('Nightshift could not remove these folders because a Nightshift window or program was "
         "still using them. Close it and delete them by hand:') + $left",

@@ -118,7 +118,6 @@ def test_winenv_scripts_are_quoted_and_encoded(tmp_path: Path):
     assert winenv.create_shortcut(runner, lnk, "powershell.exe", "-File a.ps1", tmp_path, "d")
     assert lnk.exists()
     assert winenv.desktop_dir(runner) == tmp_path / "desk"
-    assert winenv.ps_quote("a'b") == "a''b"
     argv = runner.calls[0].argv
     assert argv[:4] == ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand"]
 

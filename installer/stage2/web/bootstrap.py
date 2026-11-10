@@ -32,6 +32,7 @@ import ns_common.vcruntime as vcruntime
 from installer.stage2.web import appcopy, deplock, filesdir, pathcheck, venvrepair
 from ns_common.atomic import copy_atomic, write_stream_atomic
 from ns_common.avblock import is_blocked_error, looks_blocked
+from ns_common.psquote import ps_literal
 from ns_common.uv import looks_full, uv_env, venv_args
 
 HOME_VAR = "NIGHTSHIFT_HOME"
@@ -179,10 +180,9 @@ def run_elevated_exe(exe: Path, args: Sequence[str], timeout: float = ELEVATED_W
     ``Start-Process -Verb RunAs`` is the only way for a normal process to start an installer that demands
     elevation (CreateProcess answers error 740). A declined or closed prompt comes back as exit 1223.
     """
-    quoted = ",".join("'" + a.replace("'", "''") + "'" for a in args)
-    target = str(exe).replace("'", "''")
+    quoted = ",".join(ps_literal(a) for a in args)
     script = (
-        "try { $p = Start-Process -FilePath '" + target + "' -ArgumentList " + quoted
+        "try { $p = Start-Process -FilePath " + ps_literal(str(exe)) + " -ArgumentList " + quoted
         + " -Verb RunAs -Wait -PassThru -ErrorAction Stop; exit $p.ExitCode } "
         + "catch { [Console]::Error.WriteLine($_.Exception.Message); exit " + str(ERROR_CANCELLED) + " }"
     )

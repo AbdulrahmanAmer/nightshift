@@ -223,7 +223,7 @@ function Format-NsCommands {
             elseif (($file -notmatch '[$`]') -and ($file -match '^[A-Za-z]:\\')) {
                 $form = $file.Substring(0, 2) + '"' + $file.Substring(2) + '"'
             }
-            else { $form = "& '" + $file.Replace("'", "''") + "'" }
+            else { $form = "& '" + [regex]::Replace($file, '[\u0027\u2018\u2019\u201A\u201B]', '$0$0') + "'" }
             $pattern = '(?<![\w.\\/:%-])' + $tool[0] + ' (?=(?:' + $tool[3] + ')(?![\w-]))'
             $out = [regex]::Replace($out, $pattern, $form.Replace('$', '$$') + ' ')
         }

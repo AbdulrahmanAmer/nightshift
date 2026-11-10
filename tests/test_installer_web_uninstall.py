@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from installer.stage2.web import uninstall
+from ns_common.psquote import ps_literal
 
 APP = Path("D:/ns-app")
 
@@ -146,12 +147,12 @@ def test_the_deferred_script_waits_for_the_window_then_deletes_bin_with_retries(
     home = tmp_path / "José's ns"
     script = uninstall.deferred_script(home, [111, 222])
     assert "@(111,222)" in script and "Wait-Process" in script
-    assert str(home / "bin").replace("'", "''") in script
+    assert ps_literal(str(home / "bin")) in script
     assert f"for ($i = 0; $i -lt {uninstall.REMOVE_TRIES}" in script
     left = home / "app.swap-left-20261110-0312"  # (card 206-carried: a folder a start set aside)
     left.mkdir(parents=True)
     again = uninstall.deferred_script(home, [111])
-    assert str(left).replace("'", "''") in again and "nightshift-launch.ps1" in again
+    assert ps_literal(str(left)) in again and "nightshift-launch.ps1" in again
     assert uninstall.REMOVE_TRIES >= 120                                      # at least two minutes
     started: list[dict] = []
     ok = uninstall.spawn_deferred(home, popen=lambda argv, **kw: started.append({"argv": argv, **kw}))
@@ -243,8 +244,8 @@ def test_no_update_ever_made_means_no_update_files_line(tmp_path: Path):
 
 def test_the_deferred_script_also_removes_the_run_folder_after_the_windows_are_gone(tmp_path: Path):
     script = uninstall.deferred_script(tmp_path / "ns", [1])
-    assert str(tmp_path / "ns" / "run").replace("'", "''") in script
-    assert str(tmp_path / "ns" / "bin").replace("'", "''") in script
+    assert ps_literal(str(tmp_path / "ns" / "run")) in script
+    assert ps_literal(str(tmp_path / "ns" / "bin")) in script
 
 
 def test_the_closing_screen_says_what_happened_to_the_keys(tmp_path: Path):

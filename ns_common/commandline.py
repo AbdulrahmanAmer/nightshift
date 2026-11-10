@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import ns_common.testguard as testguard
+from ns_common.psquote import ps_literal
 
 
 def runtime_is_dev(runtime_file: Path) -> bool:
@@ -280,7 +281,7 @@ def command_form(path: str) -> str:
         return path
     if "$" not in path and "`" not in path and _DRIVE.match(path):
         return f'{path[:2]}"{path[2:]}"'
-    return "& '" + path.replace("'", "''") + "'"
+    return "& " + ps_literal(path)
 
 
 def by_full_path(home: Path | str, words: str) -> str:
@@ -363,7 +364,7 @@ def ps_formatter() -> str:
     full path, in `command_form`'s form (right whatever the PATH holds, while the install stays where it
     is). Never throws: on any error the text as it is."""
     tools = ", ".join(
-        f"@('{name}', '{venv}', '{exe}', '{'|'.join(sorted(COMMANDS[name]))}')"
+        "@(" + ", ".join(ps_literal(v) for v in (name, venv, exe, "|".join(sorted(COMMANDS[name])))) + ")"
         for name, venv, exe in PROGRAMS
     )
     body = r'''function Format-NsCommands {
@@ -382,7 +383,7 @@ def ps_formatter() -> str:
             elseif (($file -notmatch '[$`]') -and ($file -match '^[A-Za-z]:\\')) {
                 $form = $file.Substring(0, 2) + '"' + $file.Substring(2) + '"'
             }
-            else { $form = "& '" + $file.Replace("'", "''") + "'" }
+            else { $form = "& '" + [regex]::Replace($file, '[\u0027\u2018\u2019\u201A\u201B]', '$0$0') + "'" }
             $pattern = '(?<![\w.\\/:%-])' + $tool[0] + ' (?=(?:' + $tool[3] + ')(?![\w-]))'
             $out = [regex]::Replace($out, $pattern, $form.Replace('$', '$$') + ' ')
         }

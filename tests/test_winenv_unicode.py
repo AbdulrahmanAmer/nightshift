@@ -14,6 +14,7 @@ import pytest
 from installer.stage2 import winenv
 from installer.stage2.runner import SubprocessRunner
 from installer.stage2.simulate import ps_b64
+from ns_common.psquote import ps_literal
 
 PS = shutil.which("powershell")
 real_ps = pytest.mark.skipif(sys.platform != "win32" or PS is None, reason="needs Windows PowerShell")
@@ -28,7 +29,7 @@ def test_decode_round_trip_and_garbage() -> None:
 
 @real_ps
 def test_a_non_ascii_value_comes_back_exactly_from_real_powershell() -> None:
-    value = winenv.eval_ps_text(SubprocessRunner(), f"'{winenv.ps_quote(NON_ASCII)}'", tag="ps:test")
+    value = winenv.eval_ps_text(SubprocessRunner(), ps_literal(NON_ASCII), tag="ps:test")
     assert value == NON_ASCII
 
 
@@ -41,6 +42,6 @@ def test_user_env_and_shortcut_in_a_non_ascii_folder(tmp_path: Path) -> None:
     assert winenv.create_shortcut(runner, lnk, "powershell.exe", "-NoProfile", desktop, "Nightshift")
     assert lnk.is_file()
     # the path read back through PowerShell is the same string (what s10 does to find the diagnostics zip)
-    back = winenv.eval_ps_text(runner, f"(Get-Item -LiteralPath '{winenv.ps_quote(str(lnk))}').FullName",
+    back = winenv.eval_ps_text(runner, f"(Get-Item -LiteralPath {ps_literal(str(lnk))}).FullName",
                                tag="ps:test")
     assert back == str(lnk)

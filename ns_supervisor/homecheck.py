@@ -31,6 +31,7 @@ import typer
 from typer.core import TyperGroup
 
 from ns_common.errors import NsError
+from ns_common.psquote import ps_literal
 
 #: Under `<home>\config`: either file means "an install is here" (setup writes `install_state.json` first).
 MARKERS = ("runtime.json", "install_state.json")
@@ -69,11 +70,6 @@ def default_home(env: Mapping[str, str]) -> Path:
     return Path(local) / "Nightshift"
 
 
-def _powershell_quote(text: str) -> str:
-    """`text` inside PowerShell single quotes (a quote in it is doubled)."""
-    return text.replace("'", "''")
-
-
 def _program_home() -> Path | None:
     """The install this program belongs to (`<home>` when it runs from `<home>/app`), or None (a checkout)."""
     from ns_common import first_start
@@ -99,7 +95,7 @@ def require_install(env: Mapping[str, str] | None = None, *, named_by_option: bo
     if own is not None:
         detail += (
             f" This program belongs to the install in {own}: run "
-            f"$env:NIGHTSHIFT_HOME = '{_powershell_quote(str(own))}' in this window, "
+            f"$env:NIGHTSHIFT_HOME = {ps_literal(str(own))} in this window, "
             "or use the Nightshift shortcuts."
         )
     raise NsError(CODE, detail)

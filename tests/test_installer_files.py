@@ -115,6 +115,7 @@ def test_operator_copy_covers_every_code_the_installer_can_raise():
 STDLIB_ONLY_NS_COMMON = {
     "ns_common.atomic", "ns_common.avblock", "ns_common.devmode", "ns_common.errors", "ns_common.paths",
     "ns_common.pathrules",
+    "ns_common.psquote",      # FN-5: the one way a value becomes a PowerShell string literal
     "ns_common.testguard",    # the refusals of a test run: every runner and ns_common.paths import it
     "ns_common.uv", "ns_common.vcruntime", "ns_common.secret_file", "ns_common.secrets_names",
     "ns_common.singleton",

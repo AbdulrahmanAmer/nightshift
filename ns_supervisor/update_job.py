@@ -42,6 +42,7 @@ from ns_common.atomic import REPLACE_WAIT_S, read_text_retry, write_text_atomic
 from ns_common.commandline import ps_formatter
 from ns_common.errors import NsError
 from ns_common.paths import Paths
+from ns_common.psquote import ps_literal
 from ns_common.singleton import AlreadyRunning, FileLock
 from ns_supervisor import pwsh, updater_copy
 from ns_supervisor.childenv import child_env
@@ -516,10 +517,6 @@ def write_wait_script(paths: Paths, pid: int, log: Path) -> Path | None:
 
 
 # ----------------------------------------------------------------- the progress window (a terminal's route)
-def _ps(text: object) -> str:
-    return "'" + str(text).replace("'", "''") + "'"
-
-
 def follower_script(status: Path, log: Path, pid: int, *, wait: bool = True, home: Path | None = None) -> str:
     """PowerShell 5.1 (pure ASCII) that shows the worker's log, then its result, and returns 0 or 1.
 
@@ -531,11 +528,11 @@ def follower_script(status: Path, log: Path, pid: int, *, wait: bool = True, hom
     the install `home` (`commandline.ps_formatter`: the files hold the plain words, FN-3)."""
     return "\n".join([
         *ps_formatter().splitlines(),
-        f"$nsHome = {_ps(home or '')}",
+        f"$nsHome = {ps_literal(str(home or ''))}",
         "$ErrorActionPreference = 'Continue'",
-        f"try {{ $Host.UI.RawUI.WindowTitle = {_ps(WINDOW_TITLE)} }} catch {{ }}",
-        f"$statusFile = {_ps(status)}",
-        f"$logFile = {_ps(log)}",
+        f"try {{ $Host.UI.RawUI.WindowTitle = {ps_literal(WINDOW_TITLE)} }} catch {{ }}",
+        f"$statusFile = {ps_literal(str(status))}",
+        f"$logFile = {ps_literal(str(log))}",
         f"$startPid = {int(pid)}",
         "$seen = 0; $code = -1; $quiet = 0; $ticks = 0",
         "function Show-NewLines {",
