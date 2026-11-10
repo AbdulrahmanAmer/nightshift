@@ -481,13 +481,19 @@ function MachineMeters({ className }: { className?: string }) {
     caption={gpuLine ? [gpuLine, diskLine].filter(Boolean).join(". ") : diskLine ? `${diskLine}. GPU load appears once the engine reports it` : "Readings appear once the engine answers"} />;
 }
 
-/** One line about a job the night left half made. The state is decided where the summary is served (`interrupted_jobs[].state`), so the words are true for every case: still open, rescued, stopped again, waiting. A waiting job is continued by the next night only while one is coming (`nightComes`); otherwise the line says why none is and the way that works now: its card's Retry, or `studio run --resume` for a job without a card. */
+/** One line about a job the night left half made. The state is decided where the summary is served (`interrupted_jobs[].state`), so the words are true for every case: still open, rescued, stopped again, waiting. A waiting job is continued by the next night only while one is coming (`nightComes`); otherwise the line says why none is and the way that works now: the Studio shortcut's `run --resume <id>` for every job, and its card's Retry for a job that has one. */
 function interruptedWords(u: InterruptedJob, status: ReturnType<typeof useApp>["status"]): string {
   const at = u.stage ? ` at ${stageWords(u.stage).toLowerCase()}` : "";
   switch (u.state ?? (u.resumed ? "resumed" : "open")) {
     case "resumed": return `interrupted${at}, then continued and finished`;
     case "failed_again": return `interrupted${at}, continued but stopped again`;
-    case "waiting": return nightComes(status) ? `interrupted${at}, waiting for the GPU: the next night continues it` : `interrupted${at}, waiting for the GPU: ${status?.schedule_registered ? "no channel is active, so no nightly run is coming" : "Automatic runs are off"}, so once the GPU is free ${u.has_card === false ? `continue it with studio run --resume ${u.job_id} in the Nightshift Studio window` : "press Retry from where it stopped on its card in Create, under Earlier"}`;
+    case "waiting": {
+      if (nightComes(status)) return `interrupted${at}, waiting for the GPU: the next night continues it`;
+      // No night is coming, or the status is not known yet (then no cause is named). The Studio shortcut puts `studio` in front of what is typed.
+      const way = `once the GPU is free, open the Nightshift Studio shortcut and type run --resume ${u.job_id}${u.has_card === false ? "" : ", or press Retry from where it stopped on its card in Create, under Earlier, while it is listed there"}`;
+      if (!status) return `interrupted${at}, waiting for the GPU: ${way}`;
+      return `interrupted${at}, waiting for the GPU: ${status.schedule_registered ? "no channel is active, so no nightly run is coming" : "Automatic runs are off"}, so ${way}`;
+    }
     case "open": return `interrupted${at}, not finished`;
     default: return `interrupted${at}, not finished`;
   }

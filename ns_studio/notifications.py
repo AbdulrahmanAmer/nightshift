@@ -17,7 +17,7 @@ from ns_common.config import notifications_enabled
 from ns_common.db import Db
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
-from ns_studio.ownership import IF_NIGHTLY_ON
+from ns_studio.ownership import WHILE_NIGHTLY_ON_CLAUSE
 
 Notifier = Callable[[str, str], object]
 TITLE = "Nightshift"
@@ -109,8 +109,8 @@ def _interrupted_parts(items: Sequence[dict[str, Any]]) -> list[str]:
         ("resumed", "an interrupted night was resumed (it had stopped at {at})"),
         (
             "waiting",
-            "an interrupted night waits for the GPU, the next night continues it"
-            + IF_NIGHTLY_ON
+            "an interrupted night waits for the GPU; the next night continues it "
+            + WHILE_NIGHTLY_ON_CLAUSE
             + " (it stopped at {at})",
         ),
         ("retry", "an interrupted night needs Retry in the Queue (it stopped at {at})"),

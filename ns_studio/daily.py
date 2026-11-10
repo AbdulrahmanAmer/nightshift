@@ -582,9 +582,9 @@ def _tonight(
 
 
 PAUSED_TONIGHT = (
-    "its channel was paused during the night; resume it and the next night continues"
-    f"{ownership.IF_NIGHTLY_ON} (a half-made job that started more than {ownership.RESUME_WITHIN_DAYS} days "
-    "before that night needs Retry in the Queue)"
+    "its channel was paused during the night; resume it and the next night continues "
+    f"{ownership.WHILE_NIGHTLY_ON_CLAUSE} (a half-made job that started more than "
+    f"{ownership.RESUME_WITHIN_DAYS} days before that night needs Retry in the Queue)"
 )
 
 
