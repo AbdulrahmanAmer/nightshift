@@ -64,6 +64,13 @@ NEW_FIELDS: tuple[NewField, ...] = (
         "nightly-optional b: the state of Automatic runs the setup window showed when the owner answered.",
         None,
     ),
+    NewField(
+        "InstallerAnswers",
+        "shortcuts_here",
+        "0.1.15",
+        "second-install-takeover: the owner's yes to moving the Desktop shortcuts of another install here.",
+        None,
+    ),
 )
 
 #: The model class names whose top-level fields a settings file holds, for writers of plain dicts (a test

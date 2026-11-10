@@ -24,6 +24,7 @@ from installer.stage2.web.samples import (
     write_sine_wav,
 )
 from installer.stage2.winenv import HOME_VAR
+from ns_common.paths import home_env
 
 SAMPLE_DIR = ("cache", "setup-test")
 
@@ -87,7 +88,10 @@ class V01Samples(Step):
         seed_scratch_home(ctx.paths.home, scratch, slugify(ans.channel.display_name))
         res = ctx.runner.run(
             ctx.tool_argv("studio", ["run", "--fake-services", "--format", "shorts_only", "--count", "1"]),
-            cwd=ctx.app_path, env={"PYTHONUTF8": "1", HOME_VAR: str(scratch)}, timeout=900,
+            # `home_env`: the scratch home is vouched for, because `studio` is a program of the install
+            # (`<home>/venvs/studio`) and would otherwise work on the install it is in: the owner's own
+            # database and outbox (ns_common.paths.Paths.from_env)
+            cwd=ctx.app_path, env={"PYTHONUTF8": "1", **home_env(scratch)}, timeout=900,
             tag="studio run test render", meta={"home": str(scratch)},
         )
         made = newest_file(scratch / "outbox", "*.mp4") if res.ok else None

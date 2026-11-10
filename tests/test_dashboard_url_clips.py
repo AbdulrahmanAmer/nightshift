@@ -237,6 +237,7 @@ HAS_MULTIPART = bool(importlib.util.find_spec("python_multipart") or importlib.u
 @pytest.mark.skipif(not HAS_MULTIPART, reason="python-multipart not installed")
 def test_form_url_over_http(tmp_home: Path):
     client, _state = client_for(tmp_home)
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     form = {"channel": "after-dark", "url": URL, "template": "auto", "max_clips": "3", "rights_confirmed": "true"}
     # multipart needs at least one file part for httpx to choose that encoding; an empty filename is ignored
     r = client.post("/api/jobs/clip", data=form, files={"note": (None, "x")})
@@ -249,6 +250,7 @@ def test_form_url_over_http(tmp_home: Path):
 @pytest.mark.skipif(not HAS_MULTIPART, reason="python-multipart not installed")
 def test_urlencoded_form_url_over_http(tmp_home: Path):
     client, _state = client_for(tmp_home)
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     form = {"channel": "after-dark", "url": URL, "rights_confirmed": "on"}
     r = client.post("/api/jobs/clip", data=form)
     assert r.status_code == 201, r.text

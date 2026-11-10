@@ -136,7 +136,11 @@ class Ctx:
         self.pids: list[dict[str, Any]] = []
         self.left_on_screen = "none"
         self._env = dict(os.environ if env is None else env)
+        # NIGHTSHIFT_HOME and the marker that vouches for it (ns_common.paths.EXPLICIT_ENV, spelled out:
+        # this file imports nothing of the product): a helper a proof starts with the runner's own Python
+        # works on the home under proof, also when that Python belongs to another install
         self._env["NIGHTSHIFT_HOME"] = str(self.home)
+        self._env["NS_HOME_EXPLICIT"] = str(self.home)
         self._clock = clock
         self._sleep = sleep
         self._deadline = clock() + timeout_s

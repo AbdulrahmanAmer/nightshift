@@ -619,9 +619,53 @@ time and what Nightshift has learned (never models or videos). On the new PC, in
 and pick that zip. What it replaces is kept first in `data/backup/pre-restore-...`. The same can be done from a command
 prompt with `ns backup` and `ns restore <zip>`.
 
+## Two Nightshift installs on one PC
+
+A PC has one Desktop, one nightly task (`Nightshift Daily`), one notification registration and one `NIGHTSHIFT_HOME`
+variable. It can hold more than one Nightshift folder. A second install takes none of these from the first
+without your yes:
+
+- **Desktop shortcuts.** When they open another Nightshift folder, setup leaves them as they are and says so on its
+  last lines and on the Done screen (`NS-W119`, with the folder). Every install also has its own full set in the
+  folder `Shortcuts` inside its install folder: open them from there, or pin them. To make the Desktop shortcuts
+  open this install, run INSTALL.cmd again, choose this folder and switch **Make the Desktop shortcuts open this
+  install** on (the console setup asks; an answers file says `"shortcuts_here": true`). The yes is used once: a
+  later repair of either install does not move them again. Shortcuts of a Nightshift folder that was deleted are
+  taken without a question, and setup says which folder they opened. A file under one of those names that
+  Nightshift did not make is left alone.
+- **NIGHTSHIFT_HOME.** The value Windows keeps for your account is only the PC's default, for a command typed in
+  a terminal that belongs to no install. The shortcuts, the nightly task, and INSTALL.cmd and UNINSTALL.cmd
+  started from an install's `app` folder always work on the install they are in. `ns` or `studio` started from
+  an install's own `venvs` folder works on that install too when the variable is only that default, and says so
+  in one line ("Nightshift: using the install in ..."). To work on another install from the same terminal, set
+  the variable in that window first (`$env:NIGHTSHIFT_HOME = 'D:/Other'`): a value that differs from the PC's
+  default was set on purpose and is followed, again with one line ("Nightshift: using D:/Other: ..."). A value
+  equal to the PC's default cannot be told from the default: start the other install's own programs or
+  shortcuts instead. The variable follows the same yes as the shortcuts, and
+  the switch (or the console question) is offered while either the shortcuts or the variable are another
+  install's; its line says what it moves. After it moved, open a new terminal: programs that are already open
+  keep the old value.
+- **The nightly task.** As described under "Every night": it runs one install, and switching Automatic runs on in
+  another install's Settings moves it there. A dev install never takes another install's task.
+- **Notifications.** Both installs share the one registration; the second leaves it as it is unless you said yes.
+
+Uninstalling one of them removes only what is its own: the task when it runs that install, the Desktop shortcuts
+that open it, `NIGHTSHIFT_HOME` when it names it, and its own `Shortcuts` folder. What the other install uses is
+left, and each line that starts with "Left" says what and for which folder; the notification registration and the
+stored stock footage keys stay while another install is found. A shortcut or a task that does not say which
+Nightshift it belongs to is left too, and named. UNINSTALL.cmd started from an install's own program folder
+(`app` inside the install folder) removes that install, whatever `NIGHTSHIFT_HOME` names. Started from anywhere
+else (a repository, an extracted zip) it follows the variable only to an install that runs that copy of the
+program; otherwise it changes nothing and tells you to run the install's own UNINSTALL.cmd or to pass `-HomeDir`.
+When the other install held none of the shared things (you never said yes for it), the uninstall still knows it
+from the list setup keeps (`installs.txt` in `%LOCALAPPDATA%\Nightshift`): it keeps the notification
+registration and the stored keys, and its last lines say "Another Nightshift is still installed at ..." with what
+to run there (its INSTALL.cmd, Repair) so that `NIGHTSHIFT_HOME`, the Desktop shortcuts and the notification icon
+become its own. An install made by a version before this one is not in that list until its setup runs once.
+
 ## Uninstall
 
-Double-click **UNINSTALL.cmd** (Settings, About, Uninstall copies its full path). A window shows what goes and lets you tick the two things to delete. It removes the nightly task, shortcuts, the notification registration, programs and environments. It asks
+Double-click **UNINSTALL.cmd** (Settings, About, Uninstall copies its full path). A window shows what goes and lets you tick the two things to delete. It removes the nightly task, the shortcuts and the notification registration (each only when it is this install's: see "Two Nightshift installs on one PC"), programs and environments. It asks
 separately whether to delete the AI models (15 GB) and your videos and history. The default answer to both is
 **No**. At the end it tells you what it kept and where. The window itself still uses a few program files, so the very
 last ones are removed by a small hidden task as soon as the window closes; the list says so.

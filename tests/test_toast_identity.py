@@ -77,7 +77,9 @@ def test_s09_without_the_ico_registers_the_name_only(tmp_path: Path) -> None:
     ctx, icon = step_ctx(tmp_path, runner)
     icon.unlink()
     S09ShortcutsScheduler().run(ctx)
-    assert "IconUri" not in script_of(runner.called("ps:aumid-register")[0])
+    script = script_of(runner.called("ps:aumid-register")[0])
+    assert "-Name 'IconUri' -Value" not in script     # no icon is written
+    assert "-Name 'DisplayName' -Value" in script
 
 
 def test_s09_keeps_the_registry_key_when_the_property_store_fails(tmp_path: Path) -> None:
@@ -160,7 +162,7 @@ def test_uninstall_dry_run_announces_the_registration_removal() -> None:
     import winreg
 
     text = UNINSTALL.read_text(encoding="ascii")
-    block = text[text.index("$aumidKey = "):text.index("# The FFmpeg fallback")]
+    block = text[text.index("$aumidKey = "):text.index("# (the stored stock-footage keys follow")]
     product = BS.join(["AppUserModelId", "Nightshift'"])
     assert block.count(product) == 1 and "Show-Action" in block and "Remove-Item" in block
     aumid = "NightshiftTest" + uuid.uuid4().hex[:8]
@@ -168,6 +170,8 @@ def test_uninstall_dry_run_announces_the_registration_removal() -> None:
     script = "\n".join([
         "$ErrorActionPreference = 'Stop'",
         "$script:IsDry = $true",
+        "$machine = $null",                                               # no described PC: the real key
+        "$others = New-Object System.Collections.Generic.List[string]",  # no other Nightshift folder found
         "function Show-Action { param([string]$Text) Write-Host ('[dry-run] ' + $Text) }",
         block.replace(product, BS.join(["AppUserModelId", aumid + "'"])),
     ])
@@ -179,6 +183,11 @@ def test_uninstall_dry_run_announces_the_registration_removal() -> None:
         assert dry.ok, dry.text
         assert "[dry-run] remove toast registration" in dry.stdout
         winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path).Close()      # a dry run leaves it
+        shared = wet.replace("List[string]", "List[string]; $others.Add('D:/Other')", 1)   # another install
+        left = winenv.run_ps(runner, shared, tag="test")
+        assert left.ok, left.text
+        assert "Left the notification registration: the Nightshift at D:/Other uses it." in left.stdout
+        winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path).Close()      # so a real run leaves it too
         real = winenv.run_ps(runner, wet, tag="test")
         assert real.ok and "removed the notification registration" in real.stdout, real.text
         with pytest.raises(FileNotFoundError):

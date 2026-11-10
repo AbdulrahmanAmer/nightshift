@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import struct
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -23,6 +24,18 @@ from installer.stage2.errors import make_error
 from installer.stage2.runner import RunResult
 from ns_common.logging import NsLogger
 from ns_supervisor import check_names as names
+
+
+def simulated_lnk(arguments: str, workdir: str = "", icon: str = "") -> bytes:
+    """A minimal shell link (MS-SHLLINK: the header and Unicode StringData, no target list) that
+    ``shortcut_owner.read_lnk`` reads: setup decides whose a Desktop shortcut is from its arguments, so a
+    simulated one has to say them too."""
+    flags = 0x80 | 0x20 | (0x10 if workdir else 0) | (0x40 if icon else 0)
+    head = struct.pack("<I16sI", 0x4C, bytes.fromhex("0114020000000000c000000000000046"), flags) + bytes(52)
+    body = b"".join(
+        struct.pack("<H", len(text)) + text.encode("utf-16-le") for text in (workdir, arguments, icon) if text
+    )
+    return head + body + bytes(4)
 
 
 def ps_b64(text: str) -> str:
@@ -130,7 +143,7 @@ class FakeRunner:
         if tag == "ps:shortcut":
             lnk = Path(call.meta["lnk"])
             lnk.parent.mkdir(parents=True, exist_ok=True)
-            lnk.write_bytes(b"simulated shortcut")
+            lnk.write_bytes(simulated_lnk(call.meta.get("arguments", ""), "", call.meta.get("icon", "")))
             return RunResult(0)
         if tag.startswith("uv venv"):
             py = Path(call.meta["path"]) / "Scripts" / "python.exe"

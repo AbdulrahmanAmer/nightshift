@@ -12,7 +12,7 @@ from ns_common import __version__
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
-from ns_common.paths import Paths
+from ns_common.paths import Paths, home_env
 from ns_supervisor import (
     backup,
     control,
@@ -324,7 +324,7 @@ def cmd_update(
     if wait and detach:
         raise _die("--wait and --detach cannot be used together", 2)
     if home is not None:
-        os.environ["NIGHTSHIFT_HOME"] = str(home)
+        os.environ.update(home_env(home))   # named on the command line: for this process and its children
     paths = Paths.from_env()
     if wait and not worker and update_job.runs_from_venvs(paths):
         # (refused before anything is started: a --wait that returned early would report a result it

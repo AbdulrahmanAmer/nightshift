@@ -1,4 +1,5 @@
-"""Shared helpers for the proof scripts in proofs/ (QA). Standard library only; nothing from the product.
+"""Shared helpers for the proof scripts in proofs/ (QA). Standard library only, except `ffmpeg_path`, which
+asks the product (`ns_common.ffmpeg`) where it finds FFmpeg, so a proof cannot look somewhere narrower.
 
 The runner (dev/prove.py) skips this folder when it discovers proofs. Every helper takes the proof's `ctx` and
 records what it observed through `ctx.step` / `ctx.check`, so the evidence carries it.
@@ -8,10 +9,12 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import re
 import shutil
 import subprocess  # noqa: TID251  (proof helpers measure files with FFmpeg, like the tests and dev/ do)
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -20,6 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+_lookup_lock = threading.Lock()
 FINAL = ("done", "failed", "cancelled")
 # The voice every proof channel speaks with: a preset of the voice engine (ns_tts/voices.py PRESETS).
 PRESET_VOICE = {"mode": "preset", "speaker": "Ryan", "description": None, "name": None, "speed": 1.0}
@@ -299,16 +303,30 @@ class DesktopGuard:
         return False
 
 
-def ffmpeg_path() -> str | None:
-    return shutil.which("ffmpeg")
+def ffmpeg_path(home: Path) -> str | None:
+    """The FFmpeg the product would use on this install: `ns_common.ffmpeg`'s own lookup (the `NS_FFMPEG`
+    override, then PATH, then `<home>/bin/ffmpeg`), with `home` as the install. The proof used `shutil.which`
+    alone, which does not see an FFmpeg the product finds (D-43: the repo test venv's PATH has no FFmpeg)."""
+    from ns_common import ffmpeg as product
+
+    with _lookup_lock:  # the product reads the install from NIGHTSHIFT_HOME: set it for the lookup only
+        before = os.environ.get("NIGHTSHIFT_HOME")
+        os.environ["NIGHTSHIFT_HOME"] = str(home)
+        try:
+            return product._find("ffmpeg", "NS_FFMPEG")
+        finally:
+            if before is None:
+                os.environ.pop("NIGHTSHIFT_HOME", None)
+            else:
+                os.environ["NIGHTSHIFT_HOME"] = before
 
 
 def ebur128(ctx: Any, path: Path) -> dict[str, float | None]:
     """Integrated loudness, true peak and LRA of `path`, measured by FFmpeg's ebur128 filter (independent of
     the product's own report)."""
-    exe = ffmpeg_path()
+    exe = ffmpeg_path(ctx.home)
     if not exe:
-        ctx.skip("FFmpeg is not on PATH (hold the laptop lock, or install it)")
+        ctx.skip("FFmpeg not found (not on PATH, not named by NS_FFMPEG, not under <home>/bin/ffmpeg)")
     proc = subprocess.run(
         [
             str(exe),

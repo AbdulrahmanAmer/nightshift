@@ -17,6 +17,7 @@ from typing import Any
 
 import ns_common.diskneed as diskneed
 import ns_common.first_start as first_start
+from installer.stage2.web import nightly_view, shortcuts_view
 from installer.stage2.web.model import PRESET_VOICES, TIERS
 from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_message
 from installer.stage2.web.nightly_view import valid_seen
@@ -234,6 +235,26 @@ def draft_to_answers(
         # page without the switch sends neither, which changes nothing on an install and is off on a new one.
         "nightly": draft["nightly"] if isinstance(draft.get("nightly"), bool) else None,
         "nightly_seen": valid_seen(draft.get("nightlySeen")),
+        # The switch "Make the Desktop shortcuts open this install": only a yes is written; the scheduler
+        # step uses it once and removes it. Off, or a page without the switch, keeps another install's.
+        "shortcuts_here": True if draft.get("shortcutsHere") is True else None,
+    }
+
+
+#: What `answers_to_view` shows when nothing was read: the shortcuts are, or will be, this install's.
+NO_OTHER_INSTALL: dict[str, Any] = {"state": "mine", "path": None, "line": None}
+
+
+def folder_now(
+    home: Path, app_path: Path | None, desktop: Path | None, home_var: str | None = None
+) -> dict[str, Any]:
+    """What the window shows for the install folder `home`: Automatic runs there (``nightlySeen``) and whose
+    the Desktop shortcuts are seen from there (``shortcutsNow``). Both belong to the FOLDER, so the window
+    reads them again for every folder the owner picks (the folder check carries them), not once at load."""
+    return {
+        "nightlySeen": nightly_view.current_choice(Path(home)),
+        # (`home_var`: what the user variable NIGHTSHIFT_HOME holds; the same yes moves it)
+        "shortcutsNow": shortcuts_view.for_window(Path(home), app_path, desktop, home_var),
     }
 
 
@@ -247,7 +268,7 @@ def _wants_voicedesign(raw: dict[str, Any]) -> bool:
 
 def answers_to_view(
     raw: dict[str, Any], *, pexels_set: bool = False, pixabay_set: bool = False, default_tier: str = "small",
-    nightly_now: str = "new",
+    nightly_now: str = "new", shortcuts_now: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """AnswersView (camelCase) from an answers.json dict; ``default_tier`` fills a missing ``llm_tier``.
 
@@ -256,7 +277,12 @@ def answers_to_view(
     is the window's own earlier one (it carries ``nightly_seen``; a resumed setup shows what was chosen) or
     the folder holds no install (a prefilled answers file may ask for it there); over an install an answers
     file never turns the switch.
+
+    ``shortcuts_now`` is whose the Desktop shortcuts are, seen from the install folder
+    (``shortcuts_view.for_window``; `folder_now` reads both for a folder). The switch "Make the Desktop
+    shortcuts open this install" exists only while another install holds them, and is on only for a yes.
     """
+    theirs = shortcuts_now if shortcuts_now and shortcuts_now.get("state") in shortcuts_view.KEPT else None
     seen = valid_seen(raw.get("nightly_seen")) or (valid_seen(nightly_now) or "new")
     answered = isinstance(raw.get("nightly"), bool) and (valid_seen(raw.get("nightly_seen")) or seen == "new")
     nightly = bool(raw["nightly"]) if answered else seen.startswith("on@")
@@ -282,6 +308,8 @@ def answers_to_view(
         "theme": raw.get("ui_theme", "dark"),
         "nightly": nightly,
         "nightlySeen": seen,
+        "shortcutsHere": theirs is not None and raw.get("shortcuts_here") is True,
+        "shortcutsNow": dict(theirs) if theirs is not None else dict(NO_OTHER_INSTALL),
         "pexelsKeySet": pexels_set or bool(raw.get("pexels_api_key")),
         "pixabayKeySet": pixabay_set or bool(raw.get("pixabay_api_key")),
     }

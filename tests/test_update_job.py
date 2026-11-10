@@ -14,7 +14,9 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from ns_common.config import save_runtime
 from ns_common.errors import NsError
+from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_supervisor import cli, procs, update, update_job
 from ns_supervisor.services import ServiceDef
@@ -113,6 +115,17 @@ def make_zip(tmp_path: Path) -> Path:
 
 def invoke(home: Path, *args: str, env: dict[str, str] | None = None) -> Any:
     return runner.invoke(cli.app, list(args), env={"NIGHTSHIFT_HOME": str(home), **(env or {})})
+
+
+def engine_down(home: Path, port: int) -> Path:
+    """`home` with a runtime.json whose supervisor port is `port` (the `closed_port` fixture): an update
+    worker, `ns restore` and the like ask the engine at that port, never the real one on the default 8099."""
+    paths = Paths(home)
+    paths.ensure()
+    rt = Runtime.default("gpu")
+    rt.supervisor_port = port
+    save_runtime(paths, rt)
+    return home
 
 
 def forbid_in_process_update(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -257,11 +270,11 @@ def test_state_says_running_before_the_engine_is_stopped(tmp_path: Path) -> None
 
 
 def test_a_github_update_ends_with_a_json_result_line(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, closed_port: int
 ) -> None:
     from tests.test_ns_update_github import pin_latest
 
-    home = tmp_path / "home"
+    home = engine_down(tmp_path / "home", closed_port)
     pin_latest(monkeypatch, "99.0.0")
     monkeypatch.setattr(
         cli.releases, "download", lambda rel, dest, client=None: dest / rel.zip_name

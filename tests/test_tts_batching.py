@@ -150,7 +150,7 @@ def _client(tmp_path: Path, engine: QwenttsEngine):
 
     from ns_tts.server import create_app
 
-    return TestClient(create_app(engine, VoiceLibrary(tmp_path / "voices")))
+    return TestClient(create_app(engine, VoiceLibrary(tmp_path / "voices")), base_url="http://127.0.0.1:18099")
 
 
 def test_a_batch_request_of_several_items_starts_one_process(tmp_path: Path, eng: QwenttsEngine, calls: Path):

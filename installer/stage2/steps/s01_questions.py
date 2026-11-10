@@ -31,6 +31,7 @@ from installer.stage2.diskplan import ctx_need, free_bytes_of
 from installer.stage2.downloader import human_bytes
 from installer.stage2.errors import make_error
 from installer.stage2.secrets import KEY_NAMES, PEXELS_KEY, PIXABAY_KEY, any_key_stored
+from installer.stage2.steps.s09_shortcuts_scheduler import desktop, home_var_now
 from installer.stage2.sysinfo import (
     choose_default_home,
     drive_type,
@@ -38,8 +39,9 @@ from installer.stage2.sysinfo import (
     local_drives,
     recommended_tier,
 )
+from installer.stage2.web import shortcuts_view
 from installer.stage2.web.pathcheck import FOLDER_FOREIGN, folder_kind, foreign_warning, layout_problem
-from installer.stage2.winenv import HOME_VAR, get_user_env, run_ps, set_user_env
+from installer.stage2.winenv import HOME_VAR, run_ps, set_user_env
 from ns_common import diskneed
 from ns_common.errors import NsError
 from ns_common.pathrules import ascii_problem
@@ -70,6 +72,18 @@ def _look_at_task(ctx: StepContext) -> schedule.TaskState | None:
     if not res.ok or not res.stdout.strip():
         raise schedule.ScheduleError(res.text[-200:] or "PowerShell gave no answer")
     return schedule.parse_task_state(res.stdout)
+
+
+def desktop_of_another(ctx: StepContext) -> list[str]:
+    """The other Nightshift folders the Desktop shortcuts open now, seen from this install's home (card
+    second-install-takeover); empty when they are this install's, nobody's, or the Desktop cannot be found
+    (the scheduler step says that)."""
+    try:
+        folder = desktop(ctx)
+    except NsError:
+        return []
+    seen = shortcuts_view.look(folder, ctx.paths.home, ctx.app_path)
+    return list(seen["paths"]) if seen["state"] in shortcuts_view.KEPT else []
 
 
 def first_install(ctx: StepContext) -> bool:
@@ -200,6 +214,12 @@ class S01Questions(Step):
         if reinstall.new_keys(ctx):
             return False  # a key the key store does not hold: run() checks and stores it (D-14)
         reinstall.forget_kept(ctx)  # nothing differs: the window's copy of the earlier answers is used up
+        if ctx.raw_answers.get("shortcuts_here") is True:
+            # The answers handed to THIS run say yes to moving the Desktop shortcuts here (a file next to
+            # INSTALL.cmd, `--answers`): it is this run's to act on, though nothing else changed. The saved
+            # answers never keep it (the scheduler step removes it), so only a file the owner hands in again
+            # says it again.
+            ans = ans.model_copy(update={"shortcuts_here": True})
         ctx.answers = ctx.constrain(ans)
         return True
 
@@ -425,7 +445,12 @@ class S01Questions(Step):
         first = first_install(ctx)  # after the home is final: the record and the flags are that home's
         if drive_type(ctx.preflight, home) == "HDD":
             ctx.warn("NS-W106", str(home))
-        if not set_user_env(ctx.runner, HOME_VAR, str(home)):
+        # NIGHTSHIFT_HOME that names another Nightshift folder (one that exists, or whose drive is not there
+        # now) is that install's: it is not set here. The scheduler step decides it with the Desktop
+        # shortcuts and says so; one yes moves both. When Windows does not say what it holds, it is left too.
+        var_state, var_name = home_var_now(ctx)
+        var_theirs = var_state in ("unread", *shortcuts_view.KEPT)
+        if not var_theirs and not set_user_env(ctx.runner, HOME_VAR, str(home)):
             raise make_error("NS-E121", "could not set the NIGHTSHIFT_HOME user variable")
         merged["home_path"] = str(home)
 
@@ -467,6 +492,15 @@ class S01Questions(Step):
         asks = first and raw.get("nightly") is None and ctx.ui.interactive and not ctx.ui.bridge
         if asks and not ctx.dev_mode and ctx.ui.confirm(NIGHTLY_QUESTION, False):
             merged["nightly"] = True
+        # A second Nightshift on this PC: the Desktop shortcuts of another install are kept unless the owner
+        # says yes here (Enter is no), in the window (its switch) or in the answers file (`shortcuts_here`).
+        # A no is not written down. Asked whenever the questions run and another install holds the Desktop.
+        # The same yes moves NIGHTSHIFT_HOME, so the question is asked when either is another install's.
+        if raw.get("shortcuts_here") is None and ctx.ui.interactive and not ctx.ui.bridge:
+            theirs = desktop_of_another(ctx)
+            var_named = var_name if var_state in shortcuts_view.KEPT else None
+            if (theirs or var_named) and ctx.ui.confirm(shortcuts_view.question(theirs, var_named), False):
+                merged["shortcuts_here"] = True
 
         if "install_code" in raw and raw["install_code"] is not None:
             merged["install_code"] = bool(raw["install_code"])
@@ -538,8 +572,13 @@ class S01Questions(Step):
             raise AnswersError("config/answers.json was not written")
         if not ctx.paths.config.is_dir():
             raise make_error("NS-E121", f"{ctx.paths.home} was not created")
-        current = get_user_env(ctx.runner, HOME_VAR)
-        if current != str(ctx.paths.home):
+        # The variable names this install, or another Nightshift folder (one that exists, or whose drive is
+        # not there now): that install's, left until the owner's yes (the scheduler step says so), or it
+        # could not be read. A variable that is unset or names a deleted folder is nobody's: it is set here
+        # (a Repair after the other install was uninstalled comes this way without `run`), and only a
+        # refused write is a failed step.
+        var_state, current = home_var_now(ctx)
+        if var_state in ("none", "gone") and not set_user_env(ctx.runner, HOME_VAR, str(ctx.paths.home)):
             raise make_error("NS-E121", f"NIGHTSHIFT_HOME is {current!r}, expected {str(ctx.paths.home)!r}")
         ctx.log.info("answers_verified", tier=ans.llm_tier, stock_key=any_key_stored(ctx.store))
         if not self._ran:

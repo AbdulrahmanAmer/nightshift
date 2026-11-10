@@ -7,6 +7,22 @@ home:
     python dev/prove.py --home D:\NightShift\installs\dev --list
     python dev/prove.py --home D:\NightShift\installs\dev --box F-B7
     python dev/prove.py --home D:\NightShift\installs\dev --all
+    python dev/prove.py --home D:\NightShift\installs\dev --all --strict    # the release rule
+
+`--strict`: a skipped proof is not a passed one. The run exits 3 when none failed but any selected proof
+skipped, and the summary names each skipped proof and why. Without it a skip leaves the exit code at 0.
+
+### What install the release rule runs on
+
+`--all --strict` is run on a dev install with fake services and its engine up, where every proof can run:
+
+- FFmpeg is findable the way the product finds it (`NS_FFMPEG`, PATH, `<home>/bin/ffmpeg`), and `openssl` (beside
+  Git for Windows) or the `cryptography` package is importable: without them F-B13/F-B14 skip.
+- **No real stock-footage key (Pexels or Pixabay) is stored in that install.** F-B13/F-B14 skip by design over a
+  real key ("the proof never replaces a real key"), and a skip is exit 3 under `--strict`. An install where
+  keys were stored for other checks therefore fails the rule every time: clear the keys in Settings first, or
+  run the rule on a fresh dev install (a "proof home") that never had one.
+- The Python is one with the repository's dependencies (the repository test venv).
 
 It writes one evidence file per box, `<runs>/proofs/<version>/<box>.json`. A tick cites the proof id and that
 evidence. The scripts are owned by QA and the runner by Builders.
@@ -64,3 +80,30 @@ skipped, which is never a pass.
 - Nothing is written to C:. Downloads, renders and scratch go to `ctx.scratch` or the install's home.
 - No secret is written to the evidence. Fake keys are fake (`GOODKEY`-style), and a real token never appears.
 - No private key or certificate is committed: the fake endpoints make theirs in `ctx.scratch` at run time.
+
+## Every proof has a test (D-43)
+
+A proof script that has never run reaches a release candidate with its own bugs (F-B7 looked for the job id in
+a path that carries the title; F-B13/F-B14 indexed a tuple like a dict). So the rule is:
+
+> Every proof script has a test in `tests/test_proof_scripts.py` that runs it to its end against `proof_home`,
+> and a proof without one fails CI (`test_every_proof_script_has_a_fake_home_test`).
+
+`proof_home` (`tests/proofhome.py`) is a fake-services home made by the product's own code, with the real
+dashboard app over it on its own port; the proof runs through the real runner (`dev.prove.Runner`). To add
+a proof:
+
+1. Write `proofs/<slug>.py` as above.
+2. Add `def test_<slug>_passes_on_the_fake_services_home(proof_home)` to `tests/test_proof_scripts.py`:
+   `result = proof_home.run("<slug>")`, then `assert_passed(result)`. The test runs the proof's own code
+   (`proof_home.run` does); never replace what the proof checks with a stand-in.
+3. Add its row to `COVERED` there: `{"passes": <test name>, "fails": [<test names>]}`. The `fails` tests put one
+   fault the proof exists to catch into the home (patch the product, as the existing ones do) and call
+   `assert_fails_at(result, "<text of the check that must fail>")`; a proof without one fails CI. If a proof
+   cannot be made to fail for its fault, strengthen the proof (F-C1 once compared only the version).
+4. A proof that starts a helper needs `proof_home.allow_spawn = True` in its test; `HomeCtx.spawn` in
+   `tests/proofhome.py` says which helpers it answers. A proof that needs FFmpeg runs its real FFmpeg in CI
+   (CI installs it).
+
+A proof that looks for FFmpeg uses `proofs._lib.ffmpeg_path(ctx.home)` (the product's own lookup), never
+`shutil.which`.

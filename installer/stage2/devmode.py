@@ -133,10 +133,39 @@ def remove_stubs(root: Path) -> list[Path]:
     return removed
 
 
+#: Wizard flag: the name the old mode's runtime.json was set aside under at a mode switch. The tuning step
+#: tells the owner on its row and clears it (``runtime_cfg.ensure_baseline``).
+OTHER_FLAG = "runtime_other"
+
+
+def _set_runtime_aside(path: Path) -> str | None:
+    """The runtime.json of the other mode is not deleted: it is renamed to ``runtime.json.other`` (or
+    ``.other.1`` ... when that name is taken, never over a file), as the tuning step keeps one it builds again
+    (``runtime_cfg.OTHER_NAME``). A file that cannot be renamed (another program holds it), or a folder of
+    that name, stays: setup does not stop here with a traceback. The tuning step compares the kind of
+    install itself (``runtime_cfg.runtime_settled``): it builds the file again from the answers once it can
+    be read, and refuses by name (NS-E125) while it cannot. Returns the name the file now has, or None."""
+    if not path.is_file():
+        return None
+    for n in range(1000):
+        target = path.with_name(path.name + ".other" + (f".{n}" if n else ""))
+        if target.exists():
+            continue
+        try:
+            os.rename(path, target)     # on Windows it refuses to replace a file that is already there
+        except FileExistsError:
+            continue
+        except OSError:
+            return None
+        return target.name
+    return None
+
+
 def reset_for_mode_switch(home: Path, dev_mode: bool) -> bool:
     """An install that was started in the other mode (real vs ``--dev``) runs its later steps again.
 
-    Steps after the questions go back to pending and ``wizard_flags.json`` and ``runtime.json`` are dropped,
+    Steps after the questions go back to pending, ``wizard_flags.json`` is dropped and ``runtime.json`` is
+    set aside as ``runtime.json.other`` (the new mode writes its own; the old one is kept, never deleted),
     so the programs, the environments, the tuning, the smoke test and the shortcuts are redone for the new
     mode (a finished step would otherwise be skipped). The answers and the files on disk are kept.
     Returns True when something was reset. Uninstalling first is still the clean way to switch.
@@ -161,6 +190,12 @@ def reset_for_mode_switch(home: Path, dev_mode: bool) -> bool:
     data["completed_at"] = None
     first_start.guard(state_file)
     write_text_atomic(state_file, json.dumps(data, indent=2) + "\n", keep_backup=True)
-    for name in ("wizard_flags.json", "runtime.json"):
-        (home / "config" / name).unlink(missing_ok=True)
+    flags = home / "config" / "wizard_flags.json"
+    flags.unlink(missing_ok=True)
+    kept_as = _set_runtime_aside(home / "config" / "runtime.json")
+    if kept_as is not None:
+        # the only flag of the new mode so far, stamped with this install (``state.INSTALL_KEY``): the tuning
+        # step reads it, names the file on its row and clears it
+        note = {"_install": data.get("started_at"), OTHER_FLAG: kept_as}
+        write_text_atomic(flags, json.dumps(note, indent=2, sort_keys=True) + "\n")
     return True

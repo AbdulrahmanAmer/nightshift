@@ -192,9 +192,9 @@ def test_the_voice_stage_treats_the_windows_speaking_fake_like_real_engine_outpu
 
     engine = FakeEngine(speech="sapi", sapi=StandInSapi())
     engine.load()
-    service = TestClient(create_app(engine, VoiceLibrary(tmp_home / "voices")))
+    service = TestClient(create_app(engine, VoiceLibrary(tmp_home / "voices")), base_url="http://127.0.0.1:18099")
     ctx = engine_test_ctx(tmp_home)
-    ctx.services.tts = TtsClient("http://testserver", client=service)
+    ctx.services.tts = TtsClient("http://127.0.0.1:18099", client=service)
     monkeypatch.setattr(
         "ns_studio.media.voice.note_voice_engine",
         lambda c: note_voice_engine(c, lambda url: service.get("/health").json()),

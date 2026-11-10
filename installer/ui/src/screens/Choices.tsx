@@ -6,7 +6,7 @@ import { cx } from "@dash/ui/kit";
 import { choices as t } from "../copy";
 import { gbNum, homePathProblem, parseRunTime } from "../format";
 import { useLiveState } from "../api/useSetup";
-import type { ChoicesDraft, ChoicesField, DiskCheck, PresetVoice } from "../api/types";
+import type { ChoicesDraft, ChoicesField, DiskCheck, PresetVoice, ShortcutsNow } from "../api/types";
 import { openExternal } from "../host";
 import { Area, Screen } from "../parts/Screen";
 import { ChoiceRow } from "../parts/ChoiceRow";
@@ -37,11 +37,14 @@ export function Choices() {
     const a = state.answers;
     const theme = (document.documentElement.dataset.theme === "light" ? "light" : "dark") as "dark" | "light";
     return a
-      ? { ownerName: a.ownerName, channel: a.channel, homePath: a.homePath, llmTier: a.llmTier, llmCustom: a.llmCustom, voice: a.voice, modelsSource: a.modelsSource, runTime: a.runTime, nightly: a.nightly ?? false, nightlySeen: a.nightlySeen ?? "new", mastersPerWeek: a.mastersPerWeek, installCode: a.installCode, includeVoicedesign: a.includeVoicedesign ?? false, theme: a.theme ?? theme, pexelsKey: null, pixabayKey: null }
-      : { ownerName: null, channel: { displayName: "", niche: "", language: "en" }, homePath: state.machine.meters.disk.path, llmTier: state.plan.recommendedTier, llmCustom: null, voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", nightly: false, nightlySeen: "new", mastersPerWeek: 1, installCode: true, includeVoicedesign: false, theme, pexelsKey: null, pixabayKey: null };
+      ? { ownerName: a.ownerName, channel: a.channel, homePath: a.homePath, llmTier: a.llmTier, llmCustom: a.llmCustom, voice: a.voice, modelsSource: a.modelsSource, runTime: a.runTime, nightly: a.nightly ?? false, nightlySeen: a.nightlySeen ?? "new", shortcutsHere: a.shortcutsHere ?? false, mastersPerWeek: a.mastersPerWeek, installCode: a.installCode, includeVoicedesign: a.includeVoicedesign ?? false, theme: a.theme ?? theme, pexelsKey: null, pixabayKey: null }
+      : { ownerName: null, channel: { displayName: "", niche: "", language: "en" }, homePath: state.machine.meters.disk.path, llmTier: state.plan.recommendedTier, llmCustom: null, voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", nightly: false, nightlySeen: "new", shortcutsHere: false, mastersPerWeek: 1, installCode: true, includeVoicedesign: false, theme, pexelsKey: null, pixabayKey: null };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [d, setD] = useState<ChoicesDraft>(initial);
+  // Whose the Desktop shortcuts are and what Automatic runs are belong to the install FOLDER: every folder check brings both for the folder it checked, so they follow a folder picked after the page loaded.
+  const [shortcutsNow, setShortcutsNow] = useState<ShortcutsNow | null>(state.answers?.shortcutsNow ?? null);
+  const nightlyTouched = useRef(false);
   // The Other card: the two typed fields, whether it is the selected card, and what the server said about the file.
   const [other, setOther] = useState({ selected: !!initial.llmCustom, repo: initial.llmCustom?.repo ?? "", file: initial.llmCustom?.file ?? "" });
   const [lookup, setLookup] = useState<ModelLookup>(() => (initial.llmCustom ? { status: "ok", size: initial.llmCustom.size, key: `${initial.llmCustom.repo}|${initial.llmCustom.file}` } : { status: "idle" }));
@@ -68,12 +71,19 @@ export function Choices() {
 
   // What the window picked besides the folder and the tier goes with every folder check (the model file, Nightshift Code, the voice design model, the models folder): Install checks the draft, so the server answers with the same number.
   const diskDraft = useMemo(() => ({ llmCustom: d.llmCustom, installCode: d.installCode, includeVoicedesign: d.includeVoicedesign, modelsSource: d.modelsSource }), [d.llmCustom, d.installCode, d.includeVoicedesign, d.modelsSource]);
+  const applyFolder = (r: DiskCheck) => {
+    if (state.answersLocked || r.nightlySeen === undefined) return;
+    setShortcutsNow(r.shortcutsNow ?? null);
+    const theirs = r.shortcutsNow?.state === "other" || r.shortcutsNow?.state === "unreachable";
+    // the nightly switch follows the folder's own state until the owner touched it; a yes for the shortcuts is for the folder it was given in
+    setD((p) => ({ ...p, nightlySeen: r.nightlySeen ?? p.nightlySeen, nightly: r.nightlySeen !== p.nightlySeen && !nightlyTouched.current ? (r.nightlySeen ?? "").startsWith("on@") : p.nightly, shortcutsHere: theirs ? p.shortcutsHere : false }));
+  };
   // The install folder: checked 400 ms after the last keystroke.
   useEffect(() => {
     setDiskBusy(true);
     let live = true;
     // a check that fails leaves no answer on screen: the previous choice's number would not belong to this one
-    const id = window.setTimeout(() => { api.disk(d.homePath, d.llmTier, false, diskDraft).then((r) => { if (live) { setDisk(r); setDiskBusy(false); } }).catch(() => { if (live) { setDisk(null); setDiskBusy(false); } }); }, 400);
+    const id = window.setTimeout(() => { api.disk(d.homePath, d.llmTier, false, diskDraft).then((r) => { if (live) { setDisk(r); setDiskBusy(false); applyFolder(r); } }).catch(() => { if (live) { setDisk(null); setDiskBusy(false); } }); }, 400);
     return () => { live = false; window.clearTimeout(id); };
   }, [api, d.homePath, d.llmTier, diskDraft]);
   // The models folder (folder or Drive zip).
@@ -280,8 +290,17 @@ export function Choices() {
               <p className="text-ds-sm font-medium">{t.run.nightly}</p>
               <p className="mt-1 text-ds-xs leading-ds-normal text-ds-muted">{t.run.nightlyHint}{d.nightlySeen !== "new" ? ` ${t.run.now(d.nightlySeen)}` : ""}</p>
             </div>
-            <Switch checked={d.nightly} onChange={(v) => set("nightly", v)} label={t.run.nightly} disabled={locked} />
+            <Switch checked={d.nightly} onChange={(v) => { nightlyTouched.current = true; set("nightly", v); }} label={t.run.nightly} disabled={locked} />
           </div>
+          {(shortcutsNow?.state === "other" || shortcutsNow?.state === "unreachable") && (
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-ds-sm font-medium">{t.run.shortcutsHere}</p>
+                <p className="mt-1 text-ds-xs leading-ds-normal text-ds-muted">{shortcutsNow.line}. {t.run.shortcutsHint}</p>
+              </div>
+              <Switch checked={d.shortcutsHere} onChange={(v) => set("shortcutsHere", v)} label={t.run.shortcutsHere} disabled={locked} />
+            </div>
+          )}
           <p className="flex gap-3" aria-label={`${d.runTime}`}>
             <TimeChip value={hh ?? "--"} unit={t.run.hours} /><TimeChip value={mm ?? "--"} unit={t.run.minutes} />
           </p>

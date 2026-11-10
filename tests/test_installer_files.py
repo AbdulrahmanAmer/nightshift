@@ -80,7 +80,9 @@ def test_answers_example_matches_exported_schema():
     jsonschema.validate({k: v for k, v in example.items() if k in known}, schema)
     # Keys the published schema does not know yet are the ones filed in CR-C1-2.
     pending = set(example) - known
-    assert pending <= {"home_path", "models_source", "llm_tier", "restore_from", "include_voicedesign"}
+    assert pending <= {
+        "home_path", "models_source", "llm_tier", "restore_from", "include_voicedesign", "shortcuts_here",
+    }
 
 
 def test_installer_ui_build_is_committed():
@@ -123,6 +125,9 @@ STDLIB_ONLY_NS_COMMON = {
     "ns_common.config_snapshot",
     "ns_common.first_start",
     "ns_common.logging",
+    # FN-1: the Host and Origin check of the engine, the voice service and the dashboard (it reads the error
+    # table for the refusal's words)
+    "ns_common.loopback",
     # F-10c: the record of a rollback in progress, finished or undone by the first-start check; and the table
     # of settings fields added since 0.1.14, whose plain-dict rule the setup window's answers writer uses.
     "ns_common.rollback_intent",
