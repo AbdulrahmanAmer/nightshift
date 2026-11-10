@@ -17,7 +17,7 @@ from ns_common.secret_file import (  # restrict_to_user lives with the file it p
     store_secret,
 )
 from ns_common.secrets_names import KEY_NAMES, KEYRING_SERVICE, PEXELS_KEY, PIXABAY_KEY
-from ns_supervisor.testguard import refuse_real_keyring
+from ns_common.testguard import refuse_real_keyring
 
 # One definition for the studio, the installer and Settings: ``ns_common.secrets_names``.
 SERVICE = KEYRING_SERVICE

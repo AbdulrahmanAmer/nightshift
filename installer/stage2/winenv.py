@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
+import ns_common.testguard as testguard
 from installer.stage2.runner import Runner, RunResult
 
 HOME_VAR = "NIGHTSHIFT_HOME"
@@ -159,6 +160,7 @@ def create_shortcut(
 
     Unicode-safe through IShellLinkW; falls back to WScript.Shell when the compiled helper is unavailable.
     """
+    testguard.refuse_real_shortcut(lnk)     # a test run writes no shortcut into a real Desktop or Start menu
     icon_arg = ps_quote(str(icon)) if icon is not None else ""
     icon_part = f"$s.IconLocation = '{ps_quote(str(icon))},0'; " if icon is not None else ""
     script = "\n".join([
@@ -349,6 +351,7 @@ def get_shortcut_aumid_script(lnk: Path) -> str:
 
 def set_shortcut_aumid(runner: Runner, lnk: Path, aumid: str) -> bool:
     """Stamp ``aumid`` on a shortcut. True on success; False leaves the shortcut as it was."""
+    testguard.refuse_real_shortcut(lnk)
     res = run_ps(
         runner, set_shortcut_aumid_script(lnk, aumid), tag="ps:aumid-shortcut",
         meta={"lnk": str(lnk), "aumid": aumid}, timeout=120,

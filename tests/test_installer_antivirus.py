@@ -140,12 +140,12 @@ def test_a_zip_member_removed_right_after_unpacking_is_ns_e113_but_a_zip_without
         (target / "ggml.dll").write_bytes(b"x")                    # llama-server.exe was in the zip, now gone
         return ["llama-server.exe", "ggml.dll"]
 
-    monkeypatch.setattr(dl, "extract_zip", unpack_then_scan)
-    with pytest.raises(NsError) as ei:
-        dl.run_plan([zip_item(tmp_path, body)], client=make_client(body))
+    with monkeypatch.context() as m:
+        m.setattr(dl, "extract_zip", unpack_then_scan)
+        with pytest.raises(NsError) as ei:
+            dl.run_plan([zip_item(tmp_path, body)], client=make_client(body))
     assert ei.value.code == "NS-E113" and "llama-server.exe" in ei.value.detail
     assert "removed right after unpacking" in ei.value.detail
-    monkeypatch.undo()
     wrong = _zip_bytes({"other.txt": b"x"})                       # the archive itself lacks the program
     with pytest.raises(NsError) as ei2:
         dl.run_plan([zip_item(tmp_path / "b", wrong)], client=make_client(wrong))

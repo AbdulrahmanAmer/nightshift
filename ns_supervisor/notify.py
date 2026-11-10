@@ -17,6 +17,7 @@ from pathlib import Path
 
 from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.paths import Paths
+from ns_common.testguard import RealMachineUnderTest
 from ns_supervisor import pwsh
 
 #: AppUserModelID the toasts are sent from. Windows shows a toast only for an AUMID that is registered
@@ -42,12 +43,16 @@ TOAST_SCRIPT = "\n".join(
 
 
 def toast(title: str, message: str) -> bool:
-    """Show a toast; True if PowerShell accepted it. Never raises (no PowerShell, headless: no-op)."""
+    """Show a toast; True if PowerShell accepted it. Never raises (no PowerShell, headless: no-op).
+
+    In a test run the real `pwsh.run_powershell` refuses the toast script before it starts anything; that is
+    "unavailable" here, so the caller leaves its morning note in the test's home instead.
+    """
     try:
         r = pwsh.run_powershell(
             TOAST_SCRIPT, env_extra={"NS_TOAST_TITLE": title, "NS_TOAST_MESSAGE": message}, timeout_s=30
         )
-    except (pwsh.PowerShellMissing, OSError, subprocess.SubprocessError):
+    except (pwsh.PowerShellMissing, OSError, subprocess.SubprocessError, RealMachineUnderTest):
         return False
     return r.returncode == 0
 

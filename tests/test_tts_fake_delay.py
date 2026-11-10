@@ -49,15 +49,12 @@ TEXT = "The door was already open when I got home."
 
 def make_service(tmp_path: Path, delay: str | None) -> tuple[TestClient, FakeEngine, Path]:
     """The real service code around a fake engine that reads `delay` the way the voice service start does."""
-    mp = pytest.MonkeyPatch()
-    try:
+    with pytest.MonkeyPatch.context() as mp:
         if delay is None:
             mp.delenv(FAKE_DELAY_ENV, raising=False)
         else:
             mp.setenv(FAKE_DELAY_ENV, delay)
         engine = FakeEngine(log=NsLogger("tts", tmp_path / "logs"))
-    finally:
-        mp.undo()
     engine.load()
     voices = tmp_path / "voices"
     return (

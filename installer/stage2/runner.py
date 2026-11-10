@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Protocol
 
 from ns_common.avblock import blocked_hint, is_blocked_error
-from ns_supervisor.testguard import refuse_task_scheduler
+from ns_common.testguard import refuse_machine_writes, refuse_task_scheduler
 
 
 @dataclass(frozen=True)
@@ -85,7 +85,8 @@ class SubprocessRunner:
             if not capture:
                 extra["stdout"] = sys.stderr
                 extra["stderr"] = sys.stderr
-        refuse_task_scheduler(list(argv))   # a test run never reaches the real Task Scheduler
+        refuse_task_scheduler(list(argv))   # a test run never reaches the real Task Scheduler,
+        refuse_machine_writes(list(argv))   # nor the registry, the user's environment, a UAC prompt
         try:
             proc = subprocess.run(
                 list(argv),
