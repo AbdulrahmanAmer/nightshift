@@ -86,7 +86,8 @@ def _runtime_data(paths: Paths) -> object:
 def install_kind(paths: Paths) -> Literal["test", "normal", "unreadable"]:
     """`test` for a dev install and for an engine-test install (`test_settings`). `unreadable` when
     `runtime.json` is missing, cannot be read or is not a JSON object (it is not taken for a test install).
-    `normal` for every other install. The one rule `NS_RELEASE_SOURCE` and `fake_gpu` follow."""
+    `normal` for every other install. The one rule `NS_RELEASE_SOURCE`, `fake_gpu` and `NS_TEST_NIGHT_LIMIT_S`
+    follow."""
     data = _runtime_data(paths)
     if not isinstance(data, dict):
         return "unreadable"

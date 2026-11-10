@@ -26,7 +26,7 @@ from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.psquote import ps_literal
 from ns_common.singleton import AlreadyRunning, FileLock
-from ns_supervisor import notify, pwsh
+from ns_supervisor import notify, pwsh, schedule_cfg
 from ns_supervisor.schedule_cfg import (
     MODE_DISABLED,
     ON_MODES,
@@ -157,7 +157,8 @@ def build_install_script(
             f"$trigger = New-ScheduledTaskTrigger -Daily -At ([datetime]{ps_literal(run_time)})",
             "$settings = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable "
             "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
-            "-ExecutionTimeLimit (New-TimeSpan -Hours 6)" + (" -Disable" if disabled else ""),
+            f"-ExecutionTimeLimit (New-TimeSpan -Seconds {int(schedule_cfg.TASK_TIME_LIMIT_S)})"
+            + (" -Disable" if disabled else ""),
             "$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name",
             "$mode = 's4u'",
             "try {",
@@ -275,6 +276,8 @@ class TaskState:
     home: str | None = None
     stub: bool = False
     logon: str | None = None
+    #: `ExecutionTimeLimit` in seconds: how long Windows lets the task run (0: no limit; None: not said).
+    limit_s: int | None = None
 
 
 #: `2026-11-09T04:15:00`; `Z` or `+02:00` follows the seconds when the trigger synchronizes across time zones.
@@ -309,6 +312,8 @@ def build_read_script(task_name: str = TASK_NAME) -> str:
             "$g = @($t.Triggers) | Select-Object -First 1",
             "if ($g -and $g.StartBoundary) { Write-Output ('start: ' + $g.StartBoundary) }",
             "if ($t.Principal) { Write-Output ('logon: ' + $t.Principal.LogonType) }",
+            "if ($t.Settings -and $t.Settings.ExecutionTimeLimit) { Write-Output ('limit: ' + "
+            "$t.Settings.ExecutionTimeLimit) }",
             "$a = @($t.Actions) | Select-Object -First 1",
             "if ($a -and $a.Arguments) { Write-Output ('args64: ' + [Convert]::ToBase64String("
             "[Text.Encoding]::UTF8.GetBytes([string]$a.Arguments))) }",
@@ -349,6 +354,7 @@ def parse_task_state(out: str, local_tz: tzinfo | None = None) -> TaskState | No
     home: str | None = None
     stub = False
     logon: str | None = None
+    limit_s: int | None = None
     for line in out.splitlines():
         key, _, value = line.partition(":")
         if key.strip() == "error":
@@ -357,6 +363,8 @@ def parse_task_state(out: str, local_tz: tzinfo | None = None) -> TaskState | No
             state = value.strip()
         elif key.strip() == "start":
             run_time = _local_clock(value, local_tz)
+        elif key.strip() == "limit":
+            limit_s = duration_s(value)
         elif key.strip() == "logon" and value.strip():
             logon = value.strip()
             interactive = logon.lower() in SIGNED_IN_ONLY_LOGONS
@@ -371,7 +379,20 @@ def parse_task_state(out: str, local_tz: tzinfo | None = None) -> TaskState | No
             stub = is_stub_action(value)
     if not state:
         return None
-    return TaskState(state.lower() != "disabled", run_time, interactive, home or None, stub, logon)
+    return TaskState(state.lower() != "disabled", run_time, interactive, home or None, stub, logon, limit_s)
+
+
+#: An ISO 8601 duration as Task Scheduler writes `ExecutionTimeLimit` (`PT6H`, `PT21600S`, `P3D`, `PT0S`).
+_DURATION = re.compile(r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$")
+
+
+def duration_s(text: str) -> int | None:
+    """Seconds of an ISO 8601 duration such as `PT6H` (0 for `PT0S`: no limit); None when it is not one."""
+    m = _DURATION.match(text.strip().upper())
+    if m is None or not any(m.groups()):
+        return None
+    days, hours, minutes, seconds = (int(g or 0) for g in m.groups())
+    return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
 
 
 #: The install folder inside the action `build_install_script` writes (0.1.14 wrote it the same way).

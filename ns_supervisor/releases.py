@@ -115,8 +115,9 @@ def _origin(url: str | httpx.URL) -> tuple[str, str, int] | None:
 
 
 def _install_kind(paths: Paths) -> Literal["test", "normal", "unreadable"]:
-    """`devmode.install_kind`: the one rule for "an install made for testing" (`fake_gpu` follows it too).
-    `unreadable` is not taken for a test install, and the refusal says that this is why."""
+    """`devmode.install_kind`: the one rule for "an install made for testing" (`fake_gpu` and the night's test
+    limit follow it too). `unreadable` is not taken for a test install, and the refusal says that this is
+    why."""
     return devmode.install_kind(paths)
 
 

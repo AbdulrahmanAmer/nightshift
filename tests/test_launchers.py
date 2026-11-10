@@ -1527,6 +1527,45 @@ def test_the_nightly_task_during_an_update_waits_then_runs(tmp_path: Path) -> No
 
 
 @needs_powershell
+def test_the_nightly_stub_hands_the_task_start_to_the_night(tmp_path: Path) -> None:
+    """Card night-fits: `NS_NIGHT_STARTED` is the stub's own start, set before D-39b's wait for an update, so
+    the night counts that wait against Windows' limit for the task; a value left in the environment is
+    replaced. A shortcut's start sets nothing."""
+    from datetime import UTC, datetime
+
+    home, launcher = _program_home(tmp_path)
+    studio = tmp_path / "studio.cmd"   # a stand-in that writes the variable it was given
+    line = 'if "%~1 %~2"=="run --daily" echo %NS_NIGHT_STARTED%>"%~dp0started.txt"'
+    studio.write_bytes(f"@echo off\r\n{line}\r\nexit /b 5\r\n".encode("ascii"))
+    sleeper = _sleeper(8)                # an update of an older release that ends inside the bound
+    try:
+        _running(home, sleeper.pid)
+        called = datetime.now(UTC).replace(microsecond=0)
+        env_before = os.environ.get("NS_NIGHT_STARTED")
+        os.environ["NS_NIGHT_STARTED"] = "2001-01-01T00:00:00Z"      # an old value inherited from somewhere
+        try:
+            proc = _stub(home, "-Nightly", "-Studio", studio, "-UpdateWaitSeconds", 60)
+        finally:
+            if env_before is None:
+                os.environ.pop("NS_NIGHT_STARTED", None)
+            else:
+                os.environ["NS_NIGHT_STARTED"] = env_before
+        ended = datetime.now(UTC)
+    finally:
+        if sleeper.poll() is None:
+            sleeper.kill()
+        sleeper.wait(timeout=30)
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    seen = tmp_path / "started.txt"
+    raw = seen.read_text(encoding="ascii").strip() if seen.exists() else ""
+    assert raw.startswith("20") and raw != "2001-01-01T00:00:00Z", f"no start for the night: {raw!r}"
+    started = datetime.fromisoformat(raw)
+    assert started.tzinfo is not None and started.utcoffset() == timedelta(0), raw
+    assert (ended - called).total_seconds() >= 7, "the stub waited for the update first"
+    assert called - timedelta(seconds=2) <= started <= called + timedelta(seconds=5), (called, raw, ended)
+
+
+@needs_powershell
 def test_a_dead_update_is_told_once_at_the_next_start(tmp_path: Path) -> None:
     home, launcher = _program_home(tmp_path)
     gone = _sleeper(0)

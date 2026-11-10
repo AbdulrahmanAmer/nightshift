@@ -12,6 +12,9 @@ from ns_common.errors import NsError, describe
 UNEXPECTED = "NS-E327"
 #: The channel is paused: no story video of it starts (`studio run --channel`, `--resume`, dashboard; P47).
 PAUSED = "NS-E330"
+#: The nightly run stopped a job between two stages, or did not start one, to end inside Windows' time limit
+#: for the nightly task (`ns_studio.nightclock`); the next night continues what was left.
+OUT_OF_TIME = "NS-W211"
 
 
 def hint_of(e: NsError) -> str:

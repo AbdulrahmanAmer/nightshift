@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import sqlite3
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, ExitStack
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from functools import partial
@@ -18,15 +19,16 @@ from ns_common.db import claim_job_id
 from ns_common.errors import NsError, describe
 from ns_common.keepawake import keep_awake
 from ns_common.models import Channel
-from ns_studio import jobs, notifications, ownership
+from ns_studio import jobs, nightclock, nightfit, notifications, ownership
 from ns_studio.channels import cadence
 from ns_studio.channels.crud import broken_channels, get_channel
 from ns_studio.context import JobContext
 from ns_studio.diskroom import require_story_room
-from ns_studio.errors import PAUSED, UNEXPECTED, StudioError, describe_unexpected
+from ns_studio.errors import OUT_OF_TIME, PAUSED, UNEXPECTED, StudioError, describe_unexpected
 from ns_studio.footage_keys import require_footage_key
 from ns_studio.media.outbox import retime_sheet
 from ns_studio.policy.regen import run_job_guarded
+from ns_studio.stages import StageState
 
 RunFn = Callable[[JobContext], list[str]]
 
@@ -202,15 +204,50 @@ def run_daily(
     run_fn: RunFn | None = None,
     notifier: notifications.Notifier | None = None,
     awake: Callable[[], AbstractContextManager[None]] = keep_awake,
+    clock: nightclock.Clock | None = None,
+    environ: Mapping[str, str] | None = None,
+    process: Any = None,
 ) -> dict:
     """The nightly run (see `_run_daily`), with the PC held awake for as long as it lasts.
 
     The 03:00 task wakes the PC, but with nobody at the keyboard Windows puts it back to sleep after a couple
     of minutes, GPU load or not. `awake()` (`ES_CONTINUOUS | ES_SYSTEM_REQUIRED`, per thread) is held on this
     thread from the first plan to the report and released in `finally`, also when the night breaks.
+
+    `clock` is the night's time (`nightclock.SystemClock` by default; every timing decision reads it),
+    `environ` where the launch script's `NS_NIGHT_STARTED` is read (this process's environment by default)
+    and `process` the process whose parents name the task (`psutil.Process()` by default).
     """
     with awake():
-        return _run_daily(env, now=now, rng=rng, run_fn=run_fn, notifier=notifier)
+        return _run_daily(
+            env, now=now, rng=rng, run_fn=run_fn, notifier=notifier, clock=clock, environ=environ,
+            process=process,
+        )
+
+
+def _open_night(
+    env: jobs.Env, run_id: str, clock: nightclock.Clock, environ: Mapping[str, str], process: Any
+) -> nightclock.Night:
+    """The night's clock (S0, S1). One that cannot be worked out runs with no deadline, and says so: a
+    night is never refused for time on a guess."""
+    try:
+        return nightclock.open_night(env.paths, run_id, clock, environ, process=process, log=env.log)
+    except Exception as e:  # noqa: BLE001 - never stops the night
+        env.log.warn("night_clock_failed", str(e))
+        start = nightclock.TaskStart(clock.now(), nightclock.START_PROCESS, (f"no deadline: {e}",))
+        return nightclock.Night(env.paths, run_id, clock, start, None, env.log)
+
+
+def _close_night(env: jobs.Env, night: nightclock.Night, report: dict) -> dict[str, Any]:
+    """S9: the `night_end` line and the report's `timing`, also for a night that broke."""
+    try:
+        return night.close(
+            jobs=len(report.get("jobs") or []), out_of_time=len(report.get("out_of_time") or []),
+            failed=report.get("failed"),
+        )
+    except Exception as e:  # noqa: BLE001 - the report is written whatever the ledger does
+        env.log.warn("night_close_failed", str(e))
+        return {}
 
 
 def _run_daily(
@@ -220,6 +257,9 @@ def _run_daily(
     rng: random.Random | None = None,
     run_fn: RunFn | None = None,
     notifier: notifications.Notifier | None = None,
+    clock: nightclock.Clock | None = None,
+    environ: Mapping[str, str] | None = None,
+    process: Any = None,
 ) -> dict:
     """Plan with the governor, run every due job, back up the database and write the nightly report.
 
@@ -228,8 +268,13 @@ def _run_daily(
     ideas. One failing job never stops the others; failures are listed in the report. When a `notifier` is
     given the night ends with a toast (spec J10: videos ready, or the failure code, and a word about an
     interrupted night), unless Settings turned notifications off. Returns the report dict.
+
+    A night the task started never begins a job or a stage that would end after its deadline
+    (`nightclock`); what it left is in the report's `out_of_time`, its time in `timing`, and the owner reads
+    both in a morning note (NS-W211). Every second of it is in the ledger (`ledger.py`).
     """
-    now = now or datetime.now(UTC)
+    clock = clock or nightclock.SystemClock()
+    now = now or clock.now()
     rng = rng or random.Random()
     run = run_fn or _default_run
     run_id = claim_job_id("daily", partial(_claim_run_id, env), now)
@@ -251,20 +296,23 @@ def _run_daily(
             "insert into runs(run_id, started_at, mode) values (?,?,?)",
             (run_id, now.isoformat(timespec="seconds"), "daily"),
         )
+        night = _open_night(env, run_id, clock, os.environ if environ is None else environ, process)
         try:
-            _tonight(env, run, rng, now, run_id, report, recovered)
+            _tonight(env, run, rng, now, run_id, report, recovered, night)
             done = [j["job_id"] for j in report["jobs"]]
             report["publish_times_set"] = apply_publish_times(env, done, rng, now)
             backup = env.db.backup(env.paths.backup_dir, today=now.date())
             report["backup"] = str(backup)
         except BaseException as e:  # the night itself broke: close its row, so it never looks unfinished
             report["failed"] = getattr(e, "code", UNEXPECTED)
+            report["timing"] = _close_night(env, night, report)
             env.db.execute(
                 "update runs set finished_at=?, summary_json=? where run_id=?",
-                (datetime.now(UTC).isoformat(timespec="seconds"), json.dumps(report), run_id),
+                (clock.now().isoformat(timespec="seconds"), json.dumps(report), run_id),
             )
             raise
-        finished = datetime.now(UTC)
+        report["timing"] = _close_night(env, night, report)
+        finished = clock.now()
         report["finished_at"] = finished.isoformat(timespec="seconds")
         env.db.execute(
             "update runs set finished_at=?, summary_json=? where run_id=?",
@@ -275,6 +323,7 @@ def _run_daily(
     write_text_atomic(nightly, json.dumps(report, indent=2) + "\n")
     env.log.info("daily_done", run_id=run_id, jobs=len(done), failures=len(report["failures"]))
     masters, shorts = notifications.output_counts(env.db, done)
+    _leave_time_note(env, report, clock, now)
     notifications.send(env.paths, env.log, notifier, notifications.nightly_message(report, masters, shorts))
     finish = getattr(env.services.acquirer, "run_finished", None)
     if finish is not None:  # gap 25: the engine this run needed leaves once nobody else uses it
@@ -392,11 +441,13 @@ def _attempt(
     *,
     run_id: str,
     resumed: bool = False,
+    night: nightclock.Night | None = None,
 ) -> str | None:
     """Make (or reopen) one job and run it, owned for as long as it runs. Returns the error code on failure
     (`BUSY` when another process is already running that job: not a failure, nothing is reported).
 
-    A failure (coded or not) ends this job and is listed in the report, never the night.
+    A failure (coded or not) ends this job and is listed in the report, never the night. A job the night
+    stopped before a stage for lack of time (`OUT_OF_TIME`) is not a failure either: `_left_for_time`.
     """
     job_id = "(not created)"
     try:
@@ -404,6 +455,8 @@ def _attempt(
         require_footage_key(env.services)
         ctx = make()
         job_id = ctx.job_id
+        if night is not None:  # the night's clock, deadline and run id for every stage and wait of the job
+            ctx.clock, ctx.deadline, ctx.run_id = night.clock, night, night.run_id
         ownership.note_run_job(env.paths, run_id, job_id, slug)
         with ownership.hold_job(env.paths, job_id, run_id=run_id, channel=slug, fmt=str(ctx.fmt)):
             ran = run(ctx)
@@ -422,6 +475,10 @@ def _attempt(
         if code == PAUSED and job_id != "(not created)":  # stopped between two stages by a pause (P47)
             _paused_mid_job(env, report, job_id, slug, resumed=resumed)
             return PAUSED
+        decision = _decision_of(e)
+        if decision is not None and night is not None and job_id != "(not created)":
+            _left_for_time(env, report, night, job_id, slug, decision, resumed=resumed)
+            return OUT_OF_TIME
     except Exception as e:  # an uncoded bug or corrupt file ends this job, never the night
         code, detail = UNEXPECTED, f"{UNEXPECTED}: {describe_unexpected(e)}"
         env.log.error("daily_job_crashed", job_id=job_id, traceback=traceback.format_exc())
@@ -450,6 +507,201 @@ def _paused_mid_job(env: jobs.Env, report: dict, job_id: str, slug: str, *, resu
     _hold_for_pause(env, report, None, slug, 1, job_id=job_id)
 
 
+def _decision_of(e: NsError | StudioError) -> nightfit.Decision | None:
+    """The night's time decision that stopped the job (S6 before a stage, S7 before a wait for the graphics
+    card: `nightclock.OutOfTime`), or None for any other error."""
+    return e.decision if isinstance(e, nightclock.OutOfTime) else None
+
+
+def _seconds(value: Any) -> int | None:
+    return None if value is None else round(float(value))
+
+
+def _left_entry(
+    report: dict,
+    night: nightclock.Night,
+    d: nightfit.Decision,
+    *,
+    channel: str,
+    plan: str,
+    fmt: str,
+    jobs: int = 1,
+    job_id: str | None = None,
+    resumed: bool = False,
+) -> dict[str, Any]:
+    """The report's `out_of_time` entry of a decision that was not BEGIN: its answer, reason, numbers and the
+    ONE sentence of that reason (`nightfit.say`), which the morning note, the toast's count, the Last night
+    card and the job's card all show. A new job a stage of which cannot fit a night is told in the morning
+    note once per piece of evidence (`told`); the card shows it every night."""
+    entry: dict[str, Any] = {
+        "channel": channel, "fmt": fmt, "jobs": jobs, "stage": d.stage, "need_s": _seconds(d.need_s),
+        "left_s": _seconds(d.left_s), "basis": d.basis, "answer": d.answer, "reason": d.reason,
+        "said": nightclock.marked(night.card, nightfit.say(d, channel=channel, plan=plan, jobs=jobs)),
+    }
+    if job_id is not None:
+        entry["job_id"] = job_id
+    if resumed:
+        entry["resumed"] = True
+    if d.reason == nightfit.CANNOT_FIT_NEW:
+        key = {"plan": plan, "stage": d.stage, "passes": d.passes, "over": d.over,
+               "longest": _seconds(d.longest)}
+        told = [x for x in night.lines if x.get("kind") == "too_long_told"
+                and all(x.get(k) == v for k, v in key.items())]
+        entry["told"] = not told
+        if not told:
+            night.write("too_long_told", **key)
+    report.setdefault("out_of_time", []).append(entry)
+    return entry
+
+
+def _keep(env: jobs.Env, night: nightclock.Night, job_id: str, d: nightfit.Decision) -> None:
+    """What the job's record keeps of tonight's decision: the nights it was left (`cuts`), the fresh misses,
+    whether this night finished a stage of it (its age restarts only then: `progressed_at`; a stage that
+    finishes after `kept_at`, on a night killed later, counts too: `Night.job_facts`) and whether it asks
+    for the next night's first place. A decision that gives it up leaves its sentence as the reason the
+    nightly no longer continues it (`ownership.resume_problem`) and on its card."""
+    fields: dict[str, Any] = {"cuts": d.cuts, "misses": d.misses, "last_progressed": d.refresh_age,
+                              "first_next": d.first_next,
+                              "kept_at": night.clock.now().isoformat(timespec="seconds")}
+    if d.refresh_age:
+        fields["progressed_at"] = night.clock.now().isoformat(timespec="seconds")
+    ownership.write_record(env.paths, job_id, **fields)
+
+
+def _give_up(env: jobs.Env, job_id: str, said: str) -> None:
+    """CANNOT_FIT for a made job: the nightly no longer continues it; its card says why and offers Retry
+    (a run the owner starts has no time limit, and its pass is the newest measurement of that stage)."""
+    ownership.write_record(env.paths, job_id, cannot_fit=said, resume_problem=said)
+    try:
+        ownership.settle_needs_retry(env.db, job_id, said)
+    except Exception as e:  # noqa: BLE001 - the record holds it; the card keeps its older words
+        env.log.warn("given_up_card_failed", str(e), job_id=job_id)
+
+
+def _left_for_time(
+    env: jobs.Env,
+    report: dict,
+    night: nightclock.Night,
+    job_id: str,
+    slug: str,
+    d: nightfit.Decision,
+    *,
+    resumed: bool,
+) -> dict[str, Any]:
+    """S6/S7: the night's decision before a stage (or the wait for the card ahead of it) was STOP or
+    CANNOT_FIT. Not a failure: the job is closed as interrupted (reason `out_of_time`, its finished stages
+    kept) at the stage it reached; STOP: the next nightly run continues it; CANNOT_FIT: it is given up
+    with its card. The report lists it under `out_of_time` with the decision's sentence."""
+    rec = ownership.read_record(env.paths, job_id) or {}
+    fmt = str(rec.get("fmt") or "")
+    plan = nightclock.plan_of(fmt, env.paths.job_dir(job_id))
+    entry = _left_entry(report, night, d, channel=slug, plan=plan, fmt=fmt, job_id=job_id, resumed=resumed)
+    env.log.info("daily_job_left_for_time", job_id=job_id, channel=slug, stage=d.stage, reason=d.reason)
+    limit = night.limit_s
+    now = night.clock.now()
+    if resumed:  # its card stands already: it now says why it waits
+        ownership.write_record(
+            env.paths, job_id, state="interrupted", owner=ownership.OUT_OF_TIME_OWNER,
+            interrupted_at_stage=ownership.reached_stage(env.paths, job_id, fmt),
+            reason=ownership.OUT_OF_TIME_REASON, limit_s=limit, closed_at=now.isoformat(timespec="seconds"),
+        )
+        if d.answer == nightfit.STOP:
+            try:
+                ownership.settle_left_for_time(env.db, job_id, d.stage, limit)
+            except Exception as e:  # noqa: BLE001 - the record is right; the card keeps its older words
+                env.log.warn("left_job_card_failed", str(e), job_id=job_id)
+    else:
+        try:  # the same closing as for a killed or paused job: the card first, then the record
+            ownership._close_job(env.paths, env.db, {**rec, "id": job_id, "limit_s": limit}, now,
+                                 ownership.OUT_OF_TIME_OWNER)
+        except Exception as e:  # noqa: BLE001 - the record says failed; Retry and `studio run --resume` remain
+            env.log.warn("left_job_not_closed", str(e), job_id=job_id)
+            return entry
+        ownership.write_record(env.paths, job_id, reason=ownership.OUT_OF_TIME_REASON, limit_s=limit)
+    _keep(env, night, job_id, d)
+    if d.answer == nightfit.CANNOT_FIT:
+        _give_up(env, job_id, entry["said"])
+    return entry
+
+
+def _ask_new(night: nightclock.Night, fmt: str) -> nightfit.Decision:
+    """S5: the decision for one new job of `fmt` (its whole plan, gates included: an estimate errs long)."""
+    from ns_studio.orchestrator import plan_names
+
+    return night.ask(nightfit.NEW, fmt, plan_names(fmt, True))
+
+
+def _ask_resume(
+    env: jobs.Env, night: nightclock.Night, rec: Mapping[str, Any]
+) -> tuple[nightfit.Decision, str]:
+    """S3: the decision for a half-made job, from the stages it has not finished, and its plan. A job whose
+    stages cannot be read is asked with none (BEGIN): `_attempt` then meets the same trouble and reports
+    it."""
+    from ns_studio.orchestrator import stage_names
+
+    job_id = str(rec["id"])
+    job_dir = env.paths.job_dir(job_id)
+    try:
+        fmt = str(rec.get("fmt") or ownership.job_info(env.paths, job_id).get("fmt") or "")
+        done = {n for n, e in StageState.load(job_dir).entries.items() if e.get("status") == "done"}
+        rest = [n for n in stage_names(fmt, job_dir) if n not in done]
+        plan = nightclock.plan_of(fmt, job_dir)
+    except Exception as e:  # noqa: BLE001
+        env.log.warn("resume_estimate_failed", str(e), job_id=job_id)
+        return night.ask(nightfit.RESUME, "", [], job_id), ""
+    return night.ask(nightfit.RESUME, plan, rest, job_id), plan
+
+
+def _resume_order(env: jobs.Env, pending: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The half-made jobs in the order the night takes them up (`nightfit.resume_key`): those that asked for a
+    night's first place, then the one no night moved on for longest."""
+    def key(rec: dict[str, Any]) -> tuple[bool, str]:
+        try:
+            anchor = ownership.age_anchor(env.paths, rec)
+        except Exception:  # noqa: BLE001 - unknown age: last
+            anchor = None
+        return nightfit.resume_key(bool(rec.get("first_next")), anchor.isoformat() if anchor else "~")
+
+    return sorted(pending, key=key)
+
+
+def _left_last_night(env: jobs.Env, run_id: str) -> set[str]:
+    """S4: the channels the previous nightly run left work of for time (they go first tonight)."""
+    try:
+        row = env.db.one(
+            "select summary_json from runs where mode='daily' and run_id<>? and finished_at is not null"
+            " order by started_at desc limit 1",
+            (run_id,),
+        )
+        summary = json.loads(row["summary_json"] or "{}") if row is not None else {}
+        return {str(e.get("channel")) for e in summary.get("out_of_time") or [] if isinstance(e, dict)}
+    except Exception as e:  # noqa: BLE001 - the order is a courtesy
+        env.log.warn("last_night_unreadable", str(e))
+        return set()
+
+
+def _leave_time_note(env: jobs.Env, report: dict, clock: nightclock.Clock, started: datetime) -> None:
+    """S10: the morning note of a night that left work for time, once per night (the same words already
+    waiting from this night are not added again), through the notes' one owner (`ns_supervisor.notify`).
+    Settings > Notifications off leaves none, as for every morning note of the studio; the Queue's Last
+    night card still says it."""
+    message = notifications.time_note(report)
+    if not message or not notifications.notifications_enabled(env.paths):
+        return
+    since = started.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+
+    def said(notes: list[Any]) -> bool:
+        return any(n["message"] == message and str(n["at"]) >= since for n in notes)
+
+    try:
+        from ns_supervisor import notify
+
+        notify.leave_note(env.paths, notifications.TITLE, message, once=said,
+                          now=clock.now().astimezone().replace(tzinfo=None))
+    except Exception as e:  # noqa: BLE001 - a note never stops a night; the report and the card say it
+        env.log.warn("morning_note_failed", str(e))
+
+
 Outcomes = dict[str, tuple[str, str | None]]
 #: What `_attempt` returns for a job another process is running (a Retry from the Queue): not an error code.
 BUSY = "busy"
@@ -458,18 +710,27 @@ NIGHT_NOT_STARTED = "(night did not start)"
 
 
 def _resume_interrupted(
-    env: jobs.Env, run: RunFn, now: datetime, run_id: str, report: dict, outcomes: Outcomes
+    env: jobs.Env,
+    run: RunFn,
+    now: datetime,
+    run_id: str,
+    report: dict,
+    outcomes: Outcomes,
+    night: nightclock.Night,
+    left_channels: dict[str, str],
 ) -> tuple[bool, set[str]]:
     """Continue the jobs an earlier night left half made: the same job from its stage, not a new idea.
 
     Returns `(gpu_busy, failed_channels)`: True when the GPU stayed busy (the rest of the night waits, as for
     any job), and the channels whose continued job failed again tonight (they get no second job from ideas
     tonight: a failure at a late stage would only cost another full run). `outcomes` receives what became of
-    each job, for the morning note.
+    each job, for the morning note. The night's time decision (`nightfit`, S3) is asked for each job first:
+    not BEGIN, it is not continued tonight (or given up with its card), and its channel goes into
+    `left_channels` with the decision's sentence (no new job of it starts tonight either).
     """
     failed_channels: set[str] = set()
     try:
-        pending = ownership.pending_resumes(env.paths, env.db, now)
+        pending = _resume_order(env, ownership.pending_resumes(env.paths, env.db, now))
     except Exception as e:  # noqa: BLE001 - see _close_dead_work
         env.log.warn("resume_scan_failed", str(e))
         return False, failed_channels
@@ -480,18 +741,36 @@ def _resume_interrupted(
             _hold_for_pause(env, report, None, slug, 1, job_id=job_id)
             outcomes[job_id] = ("paused", None)
             continue
+        d, plan = _ask_resume(env, night, rec)
+        if d.answer != nightfit.BEGIN:  # S3: not continued tonight, or given up (the one decision says which)
+            entry = _left_entry(report, night, d, channel=slug, plan=plan, fmt=str(rec.get("fmt") or ""),
+                                job_id=job_id, resumed=True)
+            _keep(env, night, job_id, d)
+            if d.answer == nightfit.CANNOT_FIT:
+                _give_up(env, job_id, entry["said"])
+            env.log.info("daily_resume_left_for_time", job_id=job_id, channel=slug, reason=d.reason)
+            fate = "gave_up" if d.answer == nightfit.CANNOT_FIT else "out_of_time"
+            outcomes[job_id] = (fate, entry["said"])
+            left_channels[slug] = entry["said"]
+            continue
         env.log.info("daily_job_resume", job_id=job_id, channel=slug, stage=stage)
         if _no_room_to_resume(env, report, job_id, slug):
             ownership.write_record(env.paths, job_id, state="interrupted")
             continue
         reopen = partial(jobs.load_job, env, job_id)
-        code = _attempt(env, run, report, reopen, slug, run_id=run_id, resumed=True)
+        code = _attempt(env, run, report, reopen, slug, run_id=run_id, resumed=True, night=night)
         has_card = ownership.has_card(rec)
         if code == BUSY:  # a Retry runs it: leave the job, its card and the report alone
             outcomes[job_id] = ("busy", None)
             continue
         if code == PAUSED:  # paused while it was being continued: interrupted again, it waits for the resume
             outcomes[job_id] = ("paused", None)
+            continue
+        if code == OUT_OF_TIME:  # S6/S7 while it was being continued: left again, or given up
+            left = report["out_of_time"][-1]
+            gave_up = left.get("answer") == nightfit.CANNOT_FIT
+            outcomes[job_id] = ("gave_up" if gave_up else "out_of_time", str(left["said"]))
+            left_channels[slug] = str(left["said"])
             continue
         if code == "NS-E201":  # the GPU is busy: it stays interrupted, the next night tries again
             ownership.write_record(env.paths, job_id, state="interrupted")
@@ -506,9 +785,12 @@ def _resume_interrupted(
             outcomes[job_id] = ("waiting", None)
             return True, failed_channels
         fate = "resumed" if code is None else "failed_again"
-        report["interrupted_jobs"].append(
-            ownership.interrupted_entry(job_id, slug, stage, fate, has_card=has_card)
-        )
+        # A job the last night left for time was not interrupted by anything: when it finishes now, the
+        # morning says so through `jobs` (`resumed`), not as an interrupted night that was resumed.
+        if not (fate == "resumed" and rec.get("owner") == ownership.OUT_OF_TIME_OWNER):
+            report["interrupted_jobs"].append(
+                ownership.interrupted_entry(job_id, slug, stage, fate, has_card=has_card)
+            )
         if code is None:
             rows = env.db.query("select output_id from outputs where job_id=?", (job_id,))
             ownership.settle_resumed(env.db, job_id, [r["output_id"] for r in rows])
@@ -529,11 +811,21 @@ def _tonight(
     run_id: str,
     report: dict,
     recovered: ownership.Recovery | None = None,
+    night: nightclock.Night | None = None,
 ) -> None:
-    """Continue what was interrupted, tell the owner how that went, then make what is due."""
+    """Continue what was interrupted, tell the owner how that went, then make what is due.
+
+    Inside the night's deadline (`night`, S3 to S6): a job that would end after it is not started, a stage
+    that would is not begun, and the channels the previous night left work of go first."""
+    if night is None:  # a caller with no clock of its own: the night has no deadline
+        start = nightclock.TaskStart(now, nightclock.START_PROCESS)
+        night = nightclock.Night(env.paths, run_id, nightclock.SystemClock(), start, None, env.log)
     outcomes: Outcomes = {}
+    left_channels: dict[str, str] = {}
     try:
-        gpu_busy, failed_channels = _resume_interrupted(env, run, now, run_id, report, outcomes)
+        gpu_busy, failed_channels = _resume_interrupted(
+            env, run, now, run_id, report, outcomes, night, left_channels
+        )
     finally:
         if recovered is not None and recovered.any:
             ownership.leave_recovery_note(env.paths, env.log, recovered, outcomes)
@@ -544,7 +836,11 @@ def _tonight(
             why[dj.channel.slug] = (
                 "its interrupted job was continued tonight and stopped again; Retry it in the Queue"
             )
-    due = [dj for dj in due if dj.channel.slug not in failed_channels]
+        elif dj.channel.slug in left_channels:  # the night's time decision about its half-made video
+            why[dj.channel.slug] = f"it has a half-made video: {left_channels[dj.channel.slug]}"
+    due = [dj for dj in due if dj.channel.slug not in failed_channels | set(left_channels)]
+    first = _left_last_night(env, run_id)  # S4: what the last night left goes first tonight
+    due.sort(key=lambda dj: dj.channel.slug not in first)
     report["not_due"] = why
     for dj in due:
         if _paused_now(env, dj.channel.slug):  # paused after the plan was made: nothing of it starts
@@ -569,8 +865,26 @@ def _tonight(
             # would not fit either, and the morning note says why (not a failure one stage in).
             if _no_room(env, report, ch, dj.fmt, dj.count - n):
                 break
+            # S5: the night's time decision for one more job of this plan: not BEGIN, nothing is created,
+            # the channel stays due (the next night plans it again, first) and the entry says why
+            d = _ask_new(night, dj.fmt)
+            if d.answer != nightfit.BEGIN:
+                _left_entry(report, night, d, channel=ch.slug, plan=dj.fmt, fmt=dj.fmt, jobs=dj.count - n)
+                break
+            if d.reason in (nightfit.FIRST_WORK, nightfit.FIRST_WORK_LONG):  # made over several nights
+                report.setdefault("long_jobs", []).append(
+                    {"channel": ch.slug, "fmt": dj.fmt, "need_s": _seconds(d.need_s), "nights": d.nights,
+                     "reason": d.reason,
+                     "said": nightclock.marked(night.card, nightfit.say(d, channel=ch.slug, plan=dj.fmt))}
+                )
             make = partial(jobs.make_job, env, ch, dj.fmt, now=now, rng=rng, origin="daily", run_id=run_id)
-            code = _attempt(env, run, report, make, ch.slug, run_id=run_id)
+            code = _attempt(env, run, report, make, ch.slug, run_id=run_id, night=night)
+            if code == OUT_OF_TIME:  # S6/S7: left at a stage boundary; the rest of this channel waits too
+                rest = _ask_new(night, dj.fmt) if dj.count - n - 1 else None
+                if rest is not None and rest.answer != nightfit.BEGIN:
+                    _left_entry(report, night, rest, channel=ch.slug, plan=dj.fmt, fmt=dj.fmt,
+                                jobs=dj.count - n - 1)
+                break
             if code == PAUSED:  # paused while this job ran: it waits for the resume, the others do not start
                 if dj.count - n - 1:
                     _hold_for_pause(env, report, why, ch.slug, dj.count - n - 1)

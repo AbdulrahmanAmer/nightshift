@@ -18,6 +18,7 @@ from ns_common.models import Channel, Combo, Runtime
 from ns_common.paths import Paths, repo_root
 from ns_common.tts_client import FakeTts, Tts, TtsClient
 from ns_studio.acquirer import StudioAcquirer, wants_supervisor
+from ns_studio.nightclock import Clock, Night, SystemClock
 
 if TYPE_CHECKING:
     from ns_studio.media.clip_sources import ClipSource
@@ -135,6 +136,13 @@ class JobContext:
     #: built by hand (the clipper, the series workshop's prompts, a test) runs none: its plan never depends on
     #: what another job in the same process asked for.
     policy: bool = False
+    #: The clock every timing of this job reads (the ledger's seconds); the nightly passes its own.
+    clock: Clock = field(default_factory=SystemClock)
+    #: The night that runs this job (`nightclock.Night`: its deadline, checked before every stage and every
+    #: wait for the graphics card); None on every other route, which is never refused for time.
+    deadline: Night | None = None
+    #: The nightly run this job runs in (its ledger lines say so); None outside the nightly.
+    run_id: str | None = None
 
     def _saved_prompt_versions(self) -> dict[str, int]:
         f = self.job_dir / PROMPT_VERSIONS_FILE

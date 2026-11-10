@@ -398,6 +398,9 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
         echo(f"job {f['job_id']} FAILED {f['code']}: {f['error']}")
     for r in report.get("no_room", []):
         echo(f"{r['channel']}: {r['jobs']} x {r['format']} NOT STARTED, no room: {r['message']}")
+    left_for_time = notifications.time_note(report)  # NS-W211: what the night left inside the task's limit
+    if left_for_time:
+        echo(left_for_time)
     for bad_slug, problem in report.get("unreadable_profiles", []):
         echo(f"channel {bad_slug} NOT RUN, its profile cannot be read: {problem}")
     echo(f"backup: {report['backup']}")

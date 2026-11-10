@@ -638,7 +638,10 @@ def test_every_reader_of_the_card_marks_a_simulated_reading() -> None:
         if asks.search(text):
             readers[rel] = "simulated_mark(" in text or "source_probe(" in text
     assert readers, "no reader of the card found: the pattern is stale"
-    assert set(readers) >= {"ns_supervisor/core.py", "ns_supervisor/doctor.py", "ns_supervisor/verify.py"}
+    assert set(readers) >= {
+        "ns_supervisor/core.py", "ns_supervisor/doctor.py", "ns_supervisor/verify.py",
+        "ns_studio/nightclock.py",  # night-fits: the ledger's lines and the night's times (block E merge)
+    }
     unmarked = sorted(rel for rel, ok in readers.items() if not ok)
     assert not unmarked, f"these read the card but never ask gpu.simulated_mark: {unmarked}"
 
@@ -778,6 +781,7 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("tests/test_ns_doctor.py", "seam"):
         "the PC's own tool with or without a driver (D-44's rows; the row table asserts only REAL_SMI is asked)",
     ("tests/test_damaged_inputs.py", "seam"): "the tool-missing answer while the commands meet a damaged file",
+    ("tests/test_night_ledger.py", "dep"): "the zip's nvidia-smi.txt seam while the ledger goes into the zip",
     ("tests/test_ns_verify.py", "dep"): "ns verify's own probes of a real-card install (the gate's numbers)",
     ("tests/test_atomic_writes.py", "dep"): "the tool-missing answer while the zip is written atomically",
     ("tests/test_supervisor_child_env.py", "seam"): "the REAL runner's environment: which() only names it",

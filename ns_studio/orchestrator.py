@@ -10,10 +10,12 @@ from pathlib import Path
 
 from ns_common.atomic import read_text_retry
 from ns_common.errors import NsError
+from ns_studio.acquirer import WAIT_CAP_S
 from ns_studio.context import JobContext, owner_script_of
 from ns_studio.media.job_formats import prepare_job_formats
+from ns_studio.nightclock import job_line
 from ns_studio.pause import require_not_paused
-from ns_studio.stages import REGISTRY, Stage, Tenant, needs_embed, run_stage
+from ns_studio.stages import REGISTRY, Stage, StageState, Tenant, needs_embed, run_stage
 from ns_studio.text.story_profile import note_job
 
 # Canonical stage order per format. Stage modules only `register()` their stages; the order lives here so
@@ -287,28 +289,81 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
             ch = ctx.channel
             require_not_paused(ctx.paths, ctx.log, ch.slug, ch.display_name, ctx.job_id, stage)
 
-    for tenant, group in groupby(stages, key=_tenant_of):
-        group_list = list(group)
-        if tenant is not None:
-            # Before the graphics card is asked for: a job paused between two groups must not make the engine
-            # swap tenants and load a model it will not use (the check before every stage, below, stays: the
-            # wait for the card can take hours, and a pause may come during it).
-            not_paused(group_list[0].name)
-            ctx.services.acquirer.acquire(tenant, owner, model_alias="story" if tenant == "llama" else None)
-        try:
-            for st in group_list:
-                if needs_embed(st):
-                    not_paused(st.name)  # likewise before the embed service is started for this stage
-                with embed_lease(ctx, st, owner):
-                    # The check no route gets past: immediately before EVERY stage, after any wait for the GPU
-                    # or the embed lease (up to hours); a pause waits for the stage under way only. Raising
-                    # here releases the tenant in the `finally` below, so a held job keeps no lease.
-                    not_paused(st.name)
-                    run_stage(ctx, st, force=not resume)
-                ran.append(st.name)
-        finally:
-            if tenant == "whisper":  # free the weights before the lock goes to the next tenant (llama)
-                ctx.services.transcriber.unload()
+    with _job_timed(ctx):  # the job's `job_end` ledger line, whatever ends it
+        for tenant, group in groupby(stages, key=_tenant_of):
+            group_list = list(group)
             if tenant is not None:
-                ctx.services.acquirer.release(tenant, owner)
+                # Before the graphics card is asked for: a job paused between two groups must not make the
+                # engine swap tenants and load a model it will not use (the check before every stage, below,
+                # stays: the wait for the card can take hours, and a pause may come during it).
+                not_paused(group_list[0].name)
+                wait = _wait_cap(ctx, [s.name for s in stages], [s.name for s in group_list], tenant)
+                with _timed(ctx, tenant, group_list[0].name, wait):
+                    alias = "story" if tenant == "llama" else None
+                    ctx.services.acquirer.acquire(tenant, owner, model_alias=alias, **wait)  # type: ignore[arg-type]
+            try:
+                for st in group_list:
+                    if needs_embed(st):
+                        not_paused(st.name)  # likewise before the embed service is started for this stage
+                    with embed_lease(ctx, st, owner):
+                        # The check no route gets past: immediately before EVERY stage, after any wait for the
+                        # GPU or the embed lease (up to hours); a pause waits for the stage under way only.
+                        # Raising here releases the tenant in the `finally` below, so a held job keeps no
+                        # lease. (The night's time check is inside `run_stage`, once it knows the stage runs.)
+                        not_paused(st.name)
+                        run_stage(ctx, st, force=not resume)
+                    ran.append(st.name)
+            finally:
+                if tenant == "whisper":  # free the weights before the lock goes to the next tenant (llama)
+                    ctx.services.transcriber.unload()
+                if tenant is not None:
+                    ctx.services.acquirer.release(tenant, owner)
     return ran
+
+
+@contextmanager
+def _job_timed(ctx: JobContext) -> Iterator[None]:
+    """The `job_end` ledger line of one run of the job: its seconds and how it ended (`done` or the code)."""
+    t0, outcome = ctx.clock.monotonic(), "done"
+    try:
+        yield
+    except BaseException as e:
+        outcome = str(getattr(e, "code", None) or type(e).__name__)
+        raise
+    finally:
+        job_line(ctx, "job_end", plan=plan_format(ctx.fmt, ctx.job_dir), fmt=str(ctx.fmt),
+                 seconds=round(ctx.clock.monotonic() - t0, 3), outcome=outcome)
+
+
+def _wait_cap(ctx: JobContext, names: list[str], group: list[str], tenant: str) -> dict[str, int]:
+    """The `timeout_s` of the wait for the graphics card before the stages `group` ({} outside the nightly).
+    In the nightly the night's one time decision answers (`Night.before_wait`, S7, `nightfit` rule 6 with the
+    model load): BEGIN with at most the time left after the rest of the job (or, when the rest does not fit,
+    after its next stage), or `OutOfTime` (STOP or CANNOT_FIT) before any wait is begun, which
+    `daily._attempt` acts on. A group a resume skips (all its stages done) is never refused and never waits
+    long."""
+    if ctx.deadline is None:
+        return {}
+    done = {n for n, e in StageState.load(ctx.job_dir).entries.items() if e.get("status") == "done"}
+    rest = [n for n in names[names.index(group[0]):] if n not in done]
+    if not [n for n in group if n not in done]:
+        return {} if ctx.deadline.limit_s is None else {"timeout_s": 1}
+    timeout = ctx.deadline.before_wait(ctx, rest, tenant, WAIT_CAP_S)
+    return {} if timeout is None else {"timeout_s": timeout}
+
+
+@contextmanager
+def _timed(ctx: JobContext, tenant: str, first: str, wait: dict[str, int]) -> Iterator[None]:
+    """The `acquire` ledger line of the wait for `tenant`: its seconds, the wait and the load when the
+    acquirer tells them apart (`last_timing`), the `timeout_s` it was given and how it ended."""
+    t0, outcome = ctx.clock.monotonic(), "done"
+    try:
+        yield
+    except BaseException as e:
+        outcome = str(getattr(e, "code", None) or type(e).__name__)
+        raise
+    finally:
+        timing = getattr(ctx.services.acquirer, "last_timing", None)
+        wait_s, load_s = timing if isinstance(timing, tuple) and len(timing) == 2 else (None, None)
+        job_line(ctx, "acquire", service=tenant, stage=first, seconds=round(ctx.clock.monotonic() - t0, 3),
+                 wait_s=wait_s, load_s=load_s, timeout_s=wait.get("timeout_s"), outcome=outcome)

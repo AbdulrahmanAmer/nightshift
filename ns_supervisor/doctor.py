@@ -40,7 +40,7 @@ from ns_common.models import InstallState, Runtime
 from ns_common.paths import Paths, repo_root
 from ns_common.runtime_read import read_runtime
 from ns_common.uv import find_uv
-from ns_supervisor import launch_reach, procs
+from ns_supervisor import launch_reach, procs, schedule, schedule_cfg
 from ns_supervisor.childenv import child_env, window_flags
 from ns_supervisor.client import SupervisorClient
 from ns_supervisor.gpu import simulated_mark, smi_source
@@ -194,6 +194,10 @@ def build_bundle(
             for f in sorted(paths.logs.rglob("*")):
                 if f.is_file():
                     _add_file(z, f, "logs/" + f.relative_to(paths.logs).as_posix(), skipped)
+        ledger = paths.data / "ledger"  # the night ledger (ns_studio/ledger.py): every night's times
+        if ledger.is_dir():
+            for f in sorted(ledger.glob("ledger-*.jsonl")):
+                _add_file(z, f, f"ledger/{f.name}", skipped)
         for src, arc in (
             (paths.install_state_file, "install_state.json"),
             (paths.runtime_file, "runtime.json"),
@@ -276,6 +280,7 @@ def diagnose(
     have_ffmpeg = ffmpeg.available()
     rows.append(("ffmpeg", have_ffmpeg, "on PATH" if have_ffmpeg else "ffmpeg/ffprobe not found"))
     rows.append(launch_reach.doctor_row(paths))
+    rows.append(task_limit_row(paths))
     rows.append(commands_row(paths))
     app = Path(st.app_path) if st.app_path else repo_root()
     rows.append(program_folders(paths, app, on_wait))
@@ -413,6 +418,44 @@ def commands_row(
     if found.ok is False:
         return (row, True, f"{WARN}{found.why}: rename or remove it from your PATH")
     return (row, True, "'ns' and 'studio' open this install")
+
+
+LIMIT_ROW = "nightly task limit"
+
+
+def _hours(seconds: int) -> str:
+    return f"{seconds // 3600} h" if seconds % 3600 == 0 else f"{round(seconds / 60)} min"
+
+
+def task_limit_row(
+    paths: Paths, read: Callable[[], schedule.TaskState | None] | None = None
+) -> tuple[str, bool, str]:
+    """The row "nightly task limit" (card night-fits): how long Windows lets the nightly task run, read the
+    way `ns schedule` reads the task, against `schedule_cfg.TASK_TIME_LIMIT_S`, the time every night plans
+    inside. A task whose limit was changed in Task Scheduler is said with the way back (read only). A test run
+    that gave no reader does not ask Windows (`testguard`)."""
+    planned = int(schedule_cfg.TASK_TIME_LIMIT_S)
+    if read is None:
+        if testguard.under_test():
+            return (LIMIT_ROW, True, "not read: a test run does not ask Task Scheduler")
+        read = partial(schedule.read_task, timeout_s=schedule.READ_TIMEOUT_S)
+    try:
+        task = read()
+    except schedule.ScheduleError as e:
+        return (LIMIT_ROW, True, f"{WARN}Windows did not say ({e}); run ns doctor again")
+    if task is None or task.limit_s is None:
+        return (LIMIT_ROW, True, f"{_hours(planned)} when the nightly task is registered")
+    if task.limit_s == planned:
+        return (LIMIT_ROW, True, f"{_hours(planned)}, the time each night is planned inside")
+    way = (
+        "Switch Automatic runs off and on again in Settings > Schedule: Nightshift registers the task again "
+        f"with {_hours(planned)}"
+    )
+    if task.limit_s == 0 or task.limit_s > planned:     # longer than planned: a night ends before it
+        allows = "never stops it" if task.limit_s == 0 else f"lets it run {_hours(task.limit_s)}"
+        return (LIMIT_ROW, True, f"Windows {allows}; each night is still planned inside {_hours(planned)}")
+    return (LIMIT_ROW, True, f"{WARN}Windows stops the nightly task after {_hours(task.limit_s)}, but each "
+            f"night is planned inside {_hours(planned)}, so a long night can be stopped half way. {way}")
 
 
 #: The log events that say the start check, an update or a rollback changed something beside the program.

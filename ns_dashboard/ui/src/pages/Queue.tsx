@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
 import { dayInline, doneWords, MAKES_VIDEO, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, nightComes, plural, stageWords, stoppedAt, store } from "../lib/format";
-import type { ChannelSummary, InterruptedJob, Job, MorningNote, Output, OutputDetail, Run } from "../lib/types";
+import type { ChannelSummary, InterruptedJob, Job, LeftForTime, MorningNote, Output, OutputDetail, Run } from "../lib/types";
 import { cx } from "../ui/kit";
 import { JobError } from "../ui/JobError";
 import { Scene } from "../visuals/Scene";
@@ -499,6 +499,23 @@ function interruptedWords(u: InterruptedJob, status: ReturnType<typeof useApp>["
   }
 }
 
+/** A duration as the morning note says it: "5 h 40 min", "52 min", "40 s" (ns_studio/nightclock.py words). */
+const hm = (s?: number | null) => { const n = Math.max(0, Math.round(Number(s) || 0)); if (n < 60) return `${n} s`; const m = Math.floor(n / 60); const h = Math.floor(m / 60); return h && m % 60 ? `${h} h ${m % 60} min` : h ? `${h} h` : `${m} min`; };
+const FULL_PLANS = ["master_first", "master_from_script", "master_from_owner_script"];
+/** One thing the night left for time (NS-W211), in the morning note's words (ns_studio/notifications.py). */
+function leftWords(x: LeftForTime, channelName: (s?: string | null) => string, status: ReturnType<typeof useApp>["status"]): string {
+  if (x.said) return x.said.startsWith("simulated (") ? x.said : x.said.charAt(0).toUpperCase() + x.said.slice(1); // the decision's own sentence: the note and this card never disagree (a simulated card's mark stays as written)
+  const ch = channelName(x.channel); const was = x.left_s == null ? "" : `, ${hm(x.left_s)} ${x.left_s < 120 ? "was" : "were"} left`;
+  if (x.reason === "stage_too_long") return `${ch}: ${x.job_id ? "a half-made video waits" : "not started"}: its ${x.stage || "longest"} stage takes longer than a whole night on this PC (make it from Create, where a run has no time limit)`;
+  const way = (first: string) => nightComes(status) ? `the next nightly run continues it${first}` : "press Retry on its card to continue it";
+  if (x.job_id && !x.resumed) return `${ch}: stopped at ${x.stage || "a stage"}; ${way("")}`;
+  if (x.job_id) return `${ch}: its half-made video was not continued (${x.need_s == null ? "it needs more time" : `it needs about ${hm(x.need_s)} more`}${was}); ${way(" first")}`;
+  const what = plural(x.jobs, FULL_PLANS.includes(x.fmt || "") ? "full video" : "Short");
+  if (x.need_s == null) return `${ch}: ${what} not started`;
+  const took = x.basis === "default" ? `Nightshift plans ${hm(x.need_s)} for one until it has timed one on this PC` : `${x.jobs === 1 ? "it takes" : "each takes"} about ${hm(x.need_s)} here`;
+  return `${ch}: ${what} not started (${took}${was})`;
+}
+
 /** "Last night": what the newest nightly run made and what stopped, from GET /runs. Shown only after a run has happened. */
 function LastNight({ className, pending, onReview, channelName }: { className?: string; pending: number; onReview: () => void; channelName: (s?: string | null) => string }) {
   const { status } = useApp();
@@ -511,6 +528,9 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
   const noRoom = r.summary?.no_room ?? []; const notStarted = noRoom.reduce((n, x) => n + x.jobs, 0);
   // jobs the night did not start because their channel was paused (before or during the night, P47); a half-made one waits for the resume
   const held = r.summary?.paused ?? []; const heldJobs = held.reduce((n, x) => n + x.jobs, 0);
+  // work the night left for the next night to end inside Windows' limit for the task, and how long it took of it (card night-fits; an older report has neither)
+  const left = r.summary?.out_of_time ?? []; const leftJobs = left.filter((x) => x.reason !== "cannot_fit_new" && x.reason !== "stage_too_long").reduce((n, x) => n + x.jobs, 0); const t = r.summary?.timing;
+  const ofLimit = t && t.limit_s && t.used_s != null ? ` ${t.simulated_card ? `${t.simulated_card}: took` : "Took"} ${hm(t.used_s)} of ${hm(t.limit_s)}${t.gpu_s && t.gpu_s >= 60 ? `, ${hm(t.gpu_s)} of it getting the graphics card` : ""}.` : "";
   // A run that was killed (power cut, crash) has a finish time written by the recovery, but it did not finish: say so, and name the jobs it left half made.
   const interrupted = r.state === "interrupted"; const live = r.state === "running"; const unfinished = r.summary?.interrupted_jobs ?? [];
   const took = r.duration_s ? (r.duration_s >= 3600 ? `${Math.floor(r.duration_s / 3600)} h ${Math.round((r.duration_s % 3600) / 60)} min` : `${Math.max(1, Math.round(r.duration_s / 60))} min`) : null;
@@ -525,12 +545,15 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
         {skipped.length ? ` ${plural(skipped.reduce((n, x) => n + x.jobs, 0), "job")} skipped.` : ""}
         {notStarted ? ` ${plural(notStarted, "job")} not started, not enough disk space.` : ""}
         {heldJobs ? ` ${plural(heldJobs, "job")} held, the channel${new Set(held.map((x) => x.channel)).size > 1 ? "s were" : " was"} paused.` : ""}
+        {ofLimit}
+        {leftJobs ? ` Left for time: ${plural(leftJobs, "video")}, to end inside Windows' limit for the nightly task.` : ""}
         {interrupted ? ` ${r.note || "Interrupted: it never finished."}` : ""}
       </p>
       {unfinished.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{unfinished.map((u) => <li key={u.job_id}>{channelName(u.channel)}: {interruptedWords(u, status)}</li>)}</ul>}
       {notes.data.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{notes.data.map((n, i) => <li key={i}>{n.message} <span className="text-ds-muted">({fmtClock(n.at)})</span></li>)}</ul>}
       {noRoom.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{noRoom.map((x, i) => <li key={i}>{channelName(x.channel)}: {plural(x.jobs, "job")} not started, not enough disk space ({x.short || x.message || "free some space"})</li>)}</ul>}
       {held.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{held.map((x, i) => <li key={i}>{x.job_id ? `${channelName(x.channel)} is paused: its half-made job waits for the resume` : `${plural(x.jobs, "job")} not started: ${channelName(x.channel)} is paused`}</li>)}</ul>}
+      {left.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{left.map((x, i) => <li key={i}>{leftWords(x, channelName, status)}</li>)}</ul>}
       {skipped.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{skipped.map((x) => <li key={x.channel}>{channelName(x.channel)}: {plural(x.jobs, "job")} skipped because an earlier one stopped</li>)}</ul>}
       {failed.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{failed.slice(0, 3).map((f) => <li key={f.job_id}>{channelName(f.channel)}: {f.code ? `${f.code}. ` : ""}{f.error || "stopped"}</li>)}</ul>}
     </Card>
