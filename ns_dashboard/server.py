@@ -30,7 +30,7 @@ from starlette.staticfiles import NotModifiedResponse, StaticFiles
 from starlette.types import Scope
 
 from ns_common.errors import NsError
-from ns_common.loopback import LOOPBACK_PAGES, LoopbackGuard, media_type
+from ns_common.loopback import LOOPBACK_PAGES, Choose, LoopbackGuard, media_type
 from ns_common.paths import Paths
 from ns_dashboard import DEFAULT_PORT, media
 from ns_dashboard.adapters import Adapters
@@ -136,18 +136,16 @@ class SafeJSONResponse(JSONResponse):
         return json.dumps(content, ensure_ascii=False, default=str).encode("utf-8")
 
 
-def refusal_notes(paths: Paths) -> tuple[Callable[[str, datetime], None], Callable[[], list[dict[str, Any]]]]:
+def refusal_notes(paths: Paths) -> Callable[[Choose, datetime], str | None]:
     """How the loopback check tells the owner about a page that keeps trying: the morning notes of this
-    home (`run/morning_note.json`, which the bell and the Queue page read), and the notes that wait now."""
+    home (`run/morning_note.json`, which the bell and the Queue page read). The check's `choose` counts the
+    notes that wait and picks the note under the notes lock, so the count and the write are one step."""
     from ns_supervisor import notify
 
-    def tell(message: str, at: datetime) -> None:
-        notify.leave_note(paths, "Nightshift", message, now=at)
+    def tell(choose: Choose, at: datetime) -> str | None:
+        return notify.leave_chosen_note(paths, "Nightshift", choose, now=at)
 
-    def waiting() -> list[dict[str, Any]]:
-        return list(notify.read_notes(paths))
-
-    return tell, waiting
+    return tell
 
 
 class LoopbackMiddleware(LoopbackGuard):
@@ -159,8 +157,8 @@ class LoopbackMiddleware(LoopbackGuard):
     """
 
     def __init__(self, app: Any, log: Any = None, paths: Paths | None = None) -> None:
-        tell, waiting = refusal_notes(paths) if paths is not None else (None, None)
-        super().__init__(app, rule=LOOPBACK_PAGES, log=log, tell=tell, waiting=waiting)
+        tell = refusal_notes(paths) if paths is not None else None
+        super().__init__(app, rule=LOOPBACK_PAGES, log=log, tell=tell)
 
     async def answer(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         """A request that passed the check: the app, with the headers added to its answer."""
@@ -502,8 +500,8 @@ def create_app(
         return ok(await run_in_threadpool(dash.engine.notes))
 
     @app.post("/api/notes/clear")
-    async def notes_clear() -> SafeJSONResponse:
-        return ok(await run_in_threadpool(dash.engine.clear_notes))
+    async def notes_clear(request: Request) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.engine.dismiss_notes, await body_json(request)))
 
     @app.get("/api/runs")
     async def runs(request: Request) -> SafeJSONResponse:

@@ -34,25 +34,30 @@ def test_a_toast_that_fails_falls_back_to_the_note(tmp_path: Path) -> None:
     assert len(notify.read_notes(paths)) == 1
 
 
-def test_notes_pile_up_in_order_are_capped_and_can_be_cleared(tmp_path: Path) -> None:
+def test_notes_pile_up_in_order_none_is_dropped_and_shown_ones_are_dismissed(tmp_path: Path) -> None:
+    """FN-2: no waiting note is dropped to make room (0.1.14 kept the newest 20); a dismiss names notes."""
     paths = Paths(tmp_path)
     for i in range(25):
         notify.leave_note(paths, "Nightshift", f"note {i}", now=datetime(2026, 11, 3, 3, 0, i % 60))
     notes = notify.read_notes(paths)
-    assert len(notes) == notify.NOTE_KEEP
-    assert notes[0]["message"] == "note 5" and notes[-1]["message"] == "note 24"
-    notify.clear_notes(paths)
-    assert notify.read_notes(paths) == []
-    notify.clear_notes(paths)                                       # idempotent
+    assert [n["message"] for n in notes] == [f"note {i}" for i in range(25)]
+    assert notify.dismiss(paths, [n["id"] for n in notes[:24]]) == 24
+    assert [n["message"] for n in notify.read_notes(paths)] == ["note 24"]
+    assert notify.dismiss(paths, [n["id"] for n in notes]) == 1
+    assert notify.read_notes(paths) == [] and not notify.note_path(paths).exists()
+    assert notify.dismiss(paths, [n["id"] for n in notes]) == 0     # idempotent
 
 
-def test_a_damaged_note_file_reads_as_empty_and_is_replaced(tmp_path: Path) -> None:
+def test_a_damaged_note_file_is_kept_aside_and_said_and_the_next_note_follows(tmp_path: Path) -> None:
+    """FN-2: 0.1.14 read a torn file as "no notes" and the next writer replaced it, unseen."""
     paths = Paths(tmp_path)
     notify.note_path(paths).parent.mkdir(parents=True)
     notify.note_path(paths).write_text("{torn", encoding="utf-8")
-    assert notify.read_notes(paths) == []
     notify.leave_note(paths, "T", "after the crash")
-    assert [n["message"] for n in notify.read_notes(paths)] == ["after the crash"]
+    said, after = [n["message"] for n in notify.read_notes(paths)]
+    (kept,) = notify.note_path(paths).parent.glob("morning_note.json.bad-*")
+    assert said == notify.damaged_message(kept) and after == "after the crash"
+    assert kept.read_text(encoding="utf-8") == "{torn"
 
 
 def test_the_real_session_check_answers_without_raising() -> None:

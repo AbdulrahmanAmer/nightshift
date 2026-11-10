@@ -632,7 +632,8 @@ def test_a_refused_night_stays_on_screen_in_last_night_after_the_note_is_gone(
     dash = _dashboard(tmp_home)
     if notes == "cleared_with_mark_all_read":
         assert len(dash.engine.notes()) == 1
-        dash.engine.clear_notes()  # what Shell.tsx `markRead` posts to /notes/clear
+        shown = [n["id"] for n in dash.engine.notes()]
+        dash.engine.dismiss_notes({"ids": shown})  # what Shell.tsx `markRead` posts to /notes/clear
     assert dash.engine.notes() == [], "the morning note is gone from the screen"
 
     (last,) = dash.engine.runs(1)  # what the Queue page reads for its "Last night" card

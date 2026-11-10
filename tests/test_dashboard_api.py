@@ -592,3 +592,16 @@ def test_assistant_busy_engine_over_http(tmp_home: Path):
     events = sse_events(client.post("/api/assistant/chat", json={"message": "hello"}))
     assert [e["kind"] for e in events] == ["conversation", "busy", "done"]
     assert events[1]["payload"]["queued"] is True
+
+
+def test_notes_carry_ids_and_the_ui_type_has_them(env):
+    """FN-2: the bell dismisses by id, so the answer, the page's type and the page's call all carry it."""
+    from ns_supervisor import notify
+
+    client, state = env
+    notify.leave_note(state.paths, "Nightshift", "2 Shorts ready for review")
+    (note,) = client.get("/api/notes").json()
+    assert set(note) == {"id", "at", "title", "message"} and note["id"] == notify.read_notes(state.paths)[0].get("id")
+    ui = Path(__file__).resolve().parents[1] / "ns_dashboard" / "ui" / "src"
+    assert "export interface MorningNote { id: string; at: string; title: string; message: string }" in (ui / "lib" / "types.ts").read_text(encoding="utf-8")
+    assert 'api.post("/notes/clear", { ids: notes.data.map((n) => n.id) })' in (ui / "shell" / "Shell.tsx").read_text(encoding="utf-8")
