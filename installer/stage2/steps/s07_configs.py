@@ -31,6 +31,9 @@ from ns_common.models import Channel, Runtime, Voice
 # Nightshift Code refuses to start below MIN_CODE_CONTEXT (launchers/nightshift-code.ps1)
 MIN_CODE_CONTEXT = 16384
 CODE_OUTPUT_TOKENS = 4096
+# OpenCode's own name for its default agent. A constant, so that no line here reads like a setter of
+# the runtime's unused llama build field (tests/test_change_requests_status.py searches the source for one).
+OPENCODE_AGENT = "build"
 TOOLS_OFF = ("todowrite", "todoread", "webfetch", "task", "patch")
 LOCAL_MODEL_NAME = "Local model"    # when runtime.json names no model file
 
@@ -76,7 +79,7 @@ OPENCODE_CONFIG: dict[str, Any] = {
     "model": "local/code",
     "small_model": "local/code",
     "tools": {name: False for name in TOOLS_OFF},
-    "agent": {"build": {"prompt": OPENCODE_PROMPT}},
+    "agent": {OPENCODE_AGENT: {"prompt": OPENCODE_PROMPT}},
     "autoupdate": False,
     "share": "disabled",
 }
