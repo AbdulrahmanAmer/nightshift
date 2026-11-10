@@ -85,6 +85,7 @@ RESUME_WITHIN_DAYS = 3
 # Since Automatic runs became a switch (Settings), a nightly run comes only while it is on. A card's words are
 # fixed when it is written, so every sentence that promises "the next nightly run" carries this condition.
 WHILE_NIGHTLY_ON = "A nightly run comes only while Automatic runs are on in Settings."
+IF_NIGHTLY_ON = " (while Automatic runs are on in Settings)"  # the same condition inside a sentence
 #: Records of runs and jobs that ended cleanly are kept this long (they only explain `studio status`).
 KEEP_ENDED_DAYS = 30
 #: A lock another process really holds is retried this often before `hold` gives up (a liveness probe takes
@@ -1654,18 +1655,17 @@ def status_lines(paths: Paths, db: SqlDb, channel: str) -> list[str]:
             # start of Nightshift, `studio run` or nightly run; this command closes nothing). Until then the
             # Queue has no Retry for it and the one way that works now is the command. Only the nightly's
             # own jobs are continued by the nightly.
-            nightly = " (while Automatic runs are on in Settings)"
             if has_card(rec) and state == "interrupted":
                 way = "press Retry in the Queue"
                 if rec.get("origin") == NIGHTLY_ORIGIN:
-                    way += f" or the next nightly run continues it{nightly}"
+                    way += f" or the next nightly run continues it{IF_NIGHTLY_ON}"
             elif has_card(rec):
                 way = (
                     f"its process is gone; continue it now with studio run --resume {job_id}, or press Retry"
                     " in the Queue after the next start of Nightshift"
                 )
                 if rec.get("origin") == NIGHTLY_ORIGIN:
-                    way += f"; the next nightly run continues it too{nightly}"
+                    way += f"; the next nightly run continues it too{IF_NIGHTLY_ON}"
             else:
                 way = f"continue it with studio run --resume {job_id}"
             lines.append(f"  interrupted: job {job_id} stopped{at}; {way}")
