@@ -114,6 +114,9 @@ def deferred_script(home: Path, wait_pids: list[int], local_root: Path | None = 
     targets += [home / "app.prev-config.zip", home / "app.prev-config.zip.unrestored"]
     # (and the copy's lock file and the record of a rollback in progress: ns_common.rollback_intent)
     targets += [home / "app.prev-config.zip.lock", home / "app.rollback-pending.json", home / "app.swap"]
+    # (the folders a start set aside from an interrupted rollback, `rollback_intent.settle_swap`, and the
+    # script the shortcuts start, `s09_shortcuts_scheduler.STUB_NAME`)
+    targets += [*sorted(home.glob("app.swap-left-*")), home / "nightshift-launch.ps1"]
     if local_root is not None:
         targets += [local_root / "browser", local_root / "webview2"]
     listed = ", ".join(f"'{ps_quote(str(t))}'" for t in targets)

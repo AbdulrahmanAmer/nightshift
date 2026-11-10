@@ -71,14 +71,20 @@ def cmd_doctor(
     bundle: Annotated[bool, typer.Option("--bundle", help="Write the diagnostics zip.")] = False,
     out_dir: Annotated[Path | None, typer.Option("--out-dir", hidden=True)] = None,
 ) -> None:
-    """Check the install; with --bundle, collect logs and reports into a zip to send back."""
+    """Check the install; with --bundle, collect logs and reports into a zip to send back.
+
+    The check also runs what every start of Nightshift runs: it finishes or undoes an interrupted
+    `ns update --rollback` and says what it did in the row "program folders"."""
     paths = Paths.from_env()
     if bundle:
         out = doctor.build_bundle(paths, out_dir=out_dir, app=control.app_path(paths))
         typer.echo(f"Diagnostics written to {out}")
         return
     bad = 0
-    for name, ok, detail in doctor.diagnose(paths, _client(paths)):
+    def waiting() -> None:  # (the start check waits up to 60 s behind an update or a rollback)
+        typer.echo("Waiting for another Nightshift program (an update or a rollback) to finish, up to 60 s")
+
+    for name, ok, detail in doctor.diagnose(paths, _client(paths), on_wait=waiting):
         typer.echo(f"[{'ok' if ok else 'FAIL'}] {name}: {detail}")
         bad += 0 if ok else 1
     if bad:

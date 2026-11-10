@@ -47,9 +47,11 @@ Python calls it too.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -71,8 +73,15 @@ LOG_COMPONENT = "first_start"
 #: the newest one).
 SWAP_EVENT = "rollback_swap_folder"
 
+#: After this long behind another program's lock, a caller that asked to be told is told (`ensure(on_wait=)`).
+WAIT_NOTICE_S = 2.0
+
 _decided: set[str] = set()
 _lock = threading.RLock()
+#: For the one `ensure` call that runs the check (set and cleared under `_lock`): where every sentence of the
+#: check also goes as (event, sentence), and what is called once when the check has to wait for the lock.
+_told: list[tuple[str, str]] | None = None
+_on_wait: Callable[[], None] | None = None
 
 
 def program_dir() -> Path:
@@ -125,22 +134,50 @@ def _same(a: Path, b: Path) -> bool:
         return _key(a) == _key(b)
 
 
-def ensure(config: Path) -> None:
+def ensure(
+    config: Path,
+    *,
+    told: list[tuple[str, str]] | None = None,
+    on_wait: Callable[[], None] | None = None,
+) -> None:
     """The first-start check for the settings folder `config`, once per process (see the module text).
 
-    Never raises: whatever goes wrong is logged and the caller's write goes ahead.
+    Never raises: whatever goes wrong is logged and the caller's write goes ahead. A caller that shows the
+    owner what happened (`ns doctor`) passes `told`: every sentence this call logs is appended to it as
+    (event, sentence), nothing when the check already ran in this process; and `on_wait`, called once when
+    the check has waited `WAIT_NOTICE_S` for another program that holds the copy's lock (it then waits on,
+    `config_snapshot.LOCK_WAIT_S` in all).
     """
+    global _told, _on_wait
     key = _key(config)
     if key in _decided:
         return
     with _lock:
         if key in _decided:
             return
+        _told, _on_wait = told, on_wait
         try:
             _first_start(Path(config))
         except Exception as e:  # never stops a write: the product must keep working
             _say(Path(config), "WARN", "first_start_check_failed", f"the first-start check failed: {e!r}")
+        finally:
+            _told, _on_wait = None, None
         _decided.add(key)
+
+
+@contextlib.contextmanager
+def _copy_lock(zip_path: Path) -> Iterator[bool]:
+    """`config_snapshot.locked`, telling `_on_wait` once when another program keeps the lock."""
+    hook = _on_wait
+    if hook is not None:
+        with config_snapshot.locked(zip_path, wait_s=WAIT_NOTICE_S) as held:
+            if held:
+                yield True
+                return
+        hook()
+    wait = None if hook is None else max(config_snapshot.LOCK_WAIT_S - WAIT_NOTICE_S, 0.0)
+    with config_snapshot.locked(zip_path, wait_s=wait) as held:
+        yield held
 
 
 def settled(config: Path) -> None:
@@ -169,7 +206,7 @@ def _first_start(config: Path) -> None:
     if not pending and not swap and not backup_of(program).is_dir():
         return  # never updated, a git or dev install, or the update was undone
     zip_path = config_snapshot.path_for(program)
-    with config_snapshot.locked(zip_path) as held:
+    with _copy_lock(zip_path) as held:
         if not held:
             _say(
                 config,
@@ -377,6 +414,8 @@ def _failed_in_log(config: Path, backup: str, stamp: str) -> bool:
 
 
 def _say(config: Path, level: str, event: str, msg: str, **data: Any) -> None:
+    if _told is not None:
+        _told.append((event, msg))
     try:
         log = NsLogger(LOG_COMPONENT, config.parent / "logs")
         if level == "WARN":

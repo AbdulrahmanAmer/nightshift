@@ -80,7 +80,7 @@ Some actions exist in the Dashboard and for the Assistant (`studio ask`) but hav
 |---|---|
 | `ns` | Print the version. |
 | `ns stop` | Stop the engine and every model process (what "Nightshift - Stop All" runs). |
-| `ns doctor` | Check the install; `--bundle` collects logs and reports into a diagnostics zip. |
+| `ns doctor` | Check the install; `--bundle` collects logs and reports into a diagnostics zip. The check runs what every start runs: it finishes or undoes an interrupted `ns update --rollback` and says what it did in the row "program folders". |
 | `ns verify` | Check every service and benchmark them; writes `logs\verify-report.json` (`--quick` for health, one completion, one voice). |
 | `ns tune` | Find the fastest llama-server flags for this PC and save them to `runtime.json` (`--dry-run` prints the sweep matrix). |
 | `ns update ZIP` | Apply a release zip (verified, with automatic rollback); `ns update --rollback` goes back one version and puts back the settings files the update copied (it names them). |

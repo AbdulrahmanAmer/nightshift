@@ -140,6 +140,25 @@ def test_the_console_uninstall_removes_the_program_folder_and_the_update_swap_fo
     assert _present(home) == set(ALL_DIRS) - {"venvs", "bin", "run", "state", "tmp"}
 
 
+def test_the_console_uninstall_removes_what_an_interrupted_rollback_left_and_the_shortcut_script(
+    tmp_path: Path,
+):
+    """Card 206-carried: app.swap, every app.swap-left-<stamp> and <home>/nightshift-launch.ps1 go too."""
+    home = _make_home(tmp_path)
+    left = [home / "app.swap", home / "app.swap-left-20261110-0312", home / "app.swap-left-20261110-0312-2"]
+    for f in left:
+        (f / "ns_common").mkdir(parents=True)
+        (f / "VERSION").write_text("0.1.15", encoding="utf-8")
+    stub = home / "nightshift-launch.ps1"
+    stub.write_text("# stub", encoding="ascii")
+    dry = _run(home, "-SkipSystem", "-DryRun")
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert all(f"[dry-run] delete folder {f}" in dry.stdout for f in [*left, stub]) and stub.exists()
+    proc = _run(home, "-SkipSystem")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert not any(f.exists() for f in [*left, stub])
+
+
 def test_the_console_uninstall_removes_the_settings_copy_an_update_keeps_beside_app_prev(tmp_path: Path):
     """F-10a: app.prev-config.zip holds the owner's settings files; it goes with the program backup."""
     home = _make_home(tmp_path)

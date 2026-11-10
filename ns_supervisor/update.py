@@ -73,6 +73,11 @@ NOTHING_CHANGED = "Nothing was changed: the program and your settings are as the
 #: How a result names a program whose VERSION file is missing or empty (`config_snapshot.program_version`
 #: answers `-`): never the version of the code that happens to run the rollback.
 UNKNOWN_VERSION = "unknown version"
+#: The way out when there is no program folder: no Nightshift command can start then (every venv is an
+#: editable install of it), so this is only read by someone running the code from elsewhere.
+NO_APP_HINT = (
+    "Run INSTALL.cmd from the Nightshift zip (choose the same folder): it puts the program folder back."
+)
 SETTINGS_REFUSED = (
     f"{NOTHING_CHANGED} Close programs that use the "
     "Nightshift folder, make room on the disk if it is full, and run the update again."
@@ -266,6 +271,12 @@ def current_version(app: Path) -> str:
         return (app / "VERSION").read_text(encoding="utf-8").strip() or __version__
     except OSError:
         return __version__
+
+
+def _shown_version(folder: Path) -> str:
+    """How a result names the program in `folder`: its VERSION, `UNKNOWN_VERSION` when that is missing or
+    empty (never the version of the code that runs)."""
+    return UNKNOWN_VERSION if config_snapshot.program_version(folder) == "-" else current_version(folder)
 
 
 def leave_app(app: Path, paths: Paths) -> None:
@@ -807,10 +818,10 @@ def _settle_folders(app: Path, prev: Path, tmp: Path) -> None:
         pass
 
 
-def _settle_swap(app: Path, log: NsLogger) -> str:
+def _settle_swap(app: Path, log: NsLogger, *, for_update: bool = False) -> str:
     """Give a leftover `<app>.swap` its place (`rollback_intent.settle_swap`; the caller holds the copy's
     lock) and log what was said. Returns the sentence (empty: there was none)."""
-    said = rollback_intent.settle_swap(app)
+    said = rollback_intent.settle_swap(app, for_update=for_update)
     if said:
         log.warn(
             first_start.SWAP_EVENT,
@@ -844,7 +855,7 @@ def _recover_rollback(app: Path, paths: Paths, log: NsLogger) -> list[str]:
                     f"another Nightshift program is using the settings copy. Close Nightshift windows and "
                     f"try again. {NOTHING_CHANGED}",
                 )
-            settled = _settle_swap(app, log)
+            settled = _settle_swap(app, log, for_update=True)
             rec = rollback_intent.recover(app, paths.config)
         _refuse_if_pending(rec, log, settled)
         if rec.sentence:
@@ -878,9 +889,8 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
     if not app.is_dir():
         # (a leftover app.swap that could not be put back is named in `earlier`. Going on would delete the
         # program backup to make room and then fail: the last program folder would be gone.)
-        raise NsError(
-            "NS-E702", " ".join([*earlier, f"there is no program folder at {app}: the update did not start."])
-        )
+        why = f"there is no program folder at {app}: the update did not start. {NO_APP_HINT}"
+        raise NsError("NS-E702", " ".join([*earlier, why]))
     new_version, prefix = verify_package(zip_path)
     old_version = current_version(app)
     new, prev = _sibling(app, ".new"), _sibling(app, ".prev")
@@ -988,6 +998,7 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
                 f"windows and try again. {NOTHING_CHANGED}",
             )
         notes: list[str] = []
+        no_backup = not os.path.lexists(prev)
         settled = _settle_swap(app, log)  # a folder an interrupted rollback left gets its place first
         if settled:
             notes.append(settled)
@@ -1002,8 +1013,26 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
         if not prev.is_dir():
             raise NsError("NS-E702", " ".join([*notes, f"no previous version at {prev}"]))
         if not app.is_dir():  # (the first rename would fail after the settings were already prepared)
-            raise NsError("NS-E702", " ".join([*notes, f"no program folder at {app}"]))
+            raise NsError("NS-E702", " ".join([*notes, f"no program folder at {app}. {NO_APP_HINT}"]))
         notes += _left_notes(app, notes)
+        if earlier.outcome == "finished" or no_backup:
+            # This run completed an EARLIER rollback (its last rename, or its step 4): the program that
+            # rollback went to is in place. Swapping now would undo it in the same breath, so this run
+            # stops here and says so; the owner decides whether to go back. (The interrupted run never
+            # synced the venvs for the program now in place: that is done here, still under the lock.)
+            here, back = _shown_version(app), _shown_version(prev)
+            env.sync(app)
+            log.info("rollback_finished_only", now=here, backup=back)
+            return UpdateResult(
+                here,
+                here,
+                ["finished an interrupted rollback; no program was swapped", *notes],
+                settings=(
+                    f"An earlier ns update --rollback was interrupted after it had put {here} in place. "
+                    f"It was finished now, and nothing else was done: {here} is the program. Run ns update "
+                    f"--rollback again if you want to go to {back}."
+                ),
+            )
         old_version, restored_version = current_version(app), current_version(prev)
         # One rule for a version that cannot be read (VERSION missing, empty or not a number): it is older
         # than every release, so everything added since BASE_VERSION is taken out. (`current_version` would
@@ -1092,7 +1121,7 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
         )
     env.sync(app)
     # (the result line: a program whose VERSION is missing or empty is not named after the running code)
-    now = UNKNOWN_VERSION if config_snapshot.program_version(app) == "-" else current_version(app)
+    now = _shown_version(app)
     log.info("rollback_done", old=old_version, restored=now)
     return UpdateResult(old_version, now, ["rolled back", *notes], settings=prepared.sentence)
 

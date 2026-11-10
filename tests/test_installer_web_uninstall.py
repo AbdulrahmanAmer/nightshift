@@ -146,6 +146,10 @@ def test_the_deferred_script_waits_for_the_window_then_deletes_bin_with_retries(
     assert "@(111,222)" in script and "Wait-Process" in script
     assert str(home / "bin").replace("'", "''") in script
     assert f"for ($i = 0; $i -lt {uninstall.REMOVE_TRIES}" in script
+    left = home / "app.swap-left-20261110-0312"  # (card 206-carried: a folder a start set aside)
+    left.mkdir(parents=True)
+    again = uninstall.deferred_script(home, [111])
+    assert str(left).replace("'", "''") in again and "nightshift-launch.ps1" in again
     assert uninstall.REMOVE_TRIES >= 120                                      # at least two minutes
     started: list[dict] = []
     ok = uninstall.spawn_deferred(home, popen=lambda argv, **kw: started.append({"argv": argv, **kw}))
