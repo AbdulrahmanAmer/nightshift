@@ -62,7 +62,7 @@ export default function Queue() {
   const newest = items.reduce<string | null>((m, x) => (!m || x.created_at > m ? x.created_at : m), null);
   const pending = counts?.pending ?? (tab === "ready" ? items.length : 0);
   const owner = chans.find((c) => c.status === "active")?.display_name || chans[0]?.display_name;
-  // only a registered nightly task has a next run: the pill said "No nightly task" beside a 13 h countdown
+  // only an enabled nightly task has a next run (Automatic runs on); off shows no countdown and no time
   const scheduled = !!status?.next_run && !!status?.schedule_registered;
   const nextRun = scheduled ? new Date(status!.next_run!) : null;
 
@@ -71,7 +71,7 @@ export default function Queue() {
   const reviewDescription = (
     <>
       {owner && !ownerName ? `${partOfDay()}. ` : ""}{pending ? <>{pending === 1 ? "One video is" : `${pending} videos are`} ready to review{newest && tab === "ready" ? <>, the newest made at <span className="ds-num">{fmtClock(newest)}</span></> : null}.</> : "Nothing is waiting for review."}{" "}
-      {scheduled ? <>Tonight's run starts at <span className="ds-num">{fmtClock(status!.next_run!)}</span>.</> : "Automatic runs are off."}
+      {scheduled ? <>Tonight's run starts at <span className="ds-num">{fmtClock(status!.next_run!)}</span>.</> : status?.schedule_registered ? "No channel is active, so nothing runs tonight." : "Automatic runs are off."}
     </>
   );
 
@@ -83,8 +83,8 @@ export default function Queue() {
         <FeatureCard className={cx("self-stretch", SPAN["1/1"])} illustration={<StoryIllustration />} title="Write a story" description="An original story, narrated, with footage and captions" href="#/create?kind=story" />
         <FeatureCard className={cx("self-stretch", SPAN["1/1"])} illustration={<ClipsIllustration />} title="Cut clips" description="Vertical clips from your own stream or podcast" href="#/create?kind=clips" />
         <FeatureCard className={cx("self-stretch", SPAN["1/1"])} illustration={<SeriesIllustration />} title="Build a series" description="Plan the parts with the Assistant, then make them" onClick={series} />
-        <CountdownCard className={cx("self-stretch", SPAN["1/1"])} title="Next automatic run" target={nextRun} emptyText="Automatic runs are off. Set a time in Settings"
-          caption={status?.schedule_time ? `Every night at ${status.schedule_time}` : undefined} />
+        <CountdownCard className={cx("self-stretch", SPAN["1/1"])} title="Next automatic run" target={nextRun} emptyText={status?.schedule_registered ? "No channel is active, so nothing runs tonight" : "Automatic runs are off. Switch them on in Settings"}
+          caption={scheduled ? `Every night at ${status!.schedule_time}${status!.schedule_mode === "interactive_only" ? ", only while you are signed in" : ""}` : undefined} />
 
         {tab === "ready" && o && !list.loading ? (
           <Review key={o.output_id} o={o} items={items} tab={tab} onTab={pick} onPick={setCurrent} onChanged={async (next) => { await refresh(); list.reload(); setCurrent(next); }} channelName={channelName} />
@@ -373,7 +373,7 @@ function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; st
     try { const r = await api.post<{ note?: string }>("/engine/release_gpu", { owner }); toast(r?.note || "The graphics card is free", "ok"); refresh(); } catch (e: any) { toast(e.message, "bad"); }
   };
   const plan = chans.filter((c) => c.status === "active" && c.tonight !== false).slice(0, 2);
-  const at = fmtClock(status?.next_run) || status?.schedule_time || "";
+  const at = fmtClock(status?.next_run) || ""; // no time beside a plan that will not run by itself
   const voice = (c: ChannelSummary) => (typeof c.voice === "string" ? c.voice : c.voice?.name || c.voice?.speaker || "Built-in voice");
   return (
     <Card as="section" aria-labelledby="q-plan" className={cx("self-stretch", className)}>

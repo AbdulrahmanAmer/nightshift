@@ -256,8 +256,27 @@ def what_worked(c: ToolContext, a: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- tonight_plan
 
 
+def automatic_runs(c: ToolContext) -> dict[str, Any]:
+    """Whether the nightly run starts by itself, in the words the pages use, and where the owner changes it
+    (the Assistant has no switch of its own)."""
+    from ns_dashboard.state import load_dashboard_settings, schedule_is_registered, status_schedule_mode
+
+    paths = c.dash.state.paths
+    on, when = schedule_is_registered(paths), load_dashboard_settings(paths)["run_time"]
+    if not on:
+        state = f"off: nothing runs by itself (the kept time is {when})"
+    elif status_schedule_mode(paths) == "interactive_only":
+        state = f"on at {when}, only while you are signed in to Windows (NS-W205)"
+    else:
+        state = f"on at {when} every night"
+    return {"on": on, "time": when, "state": state, "where": "Settings > Schedule > Automatic runs (a switch)"}
+
+
 def tonight_plan(c: ToolContext, a: dict[str, Any]) -> dict[str, Any]:
-    """What the nightly run will make: channels, counts and the governor's reasons, run time, queued jobs."""
+    """What the nightly run will make: channels, counts and the governor's reasons, run time, queued jobs.
+
+    `automatic_runs` says whether that run starts by itself; when it is off, `plan` is what a run would make
+    if the owner started one."""
     from ns_studio.channels import cadence
 
     db = c.dash.state.db
@@ -269,6 +288,7 @@ def tonight_plan(c: ToolContext, a: dict[str, Any]) -> dict[str, Any]:
     queued = c.dash.state.store.list_jobs("queued", None, 10)
     return {
         "next_run": nxt.isoformat(timespec="minutes") if nxt else None,
+        "automatic_runs": automatic_runs(c),
         "plan": [
             {"channel": d.channel.slug, "format": d.fmt, "count": d.count, "stage": d.plan.stage,
              "masters_per_week": d.plan.masters_per_week, "shorts_per_day": d.plan.shorts_per_day,
@@ -410,8 +430,8 @@ def tools() -> list[ToolDef]:
              what_worked, {"channel": _s("channel slug"), "days": _i("only videos from the last N days", minimum=1, maximum=365)}, [],
              ("channel", "n", "confidence", "best_options", "top", "bottom")),
         _def("tonight_plan", "create",
-             "What the nightly run will make: channels, how many, why, the run time and queued jobs.",
-             tonight_plan, {}, [], ("next_run", "plan", "paused", "queued_jobs")),
+             "What the nightly run will make: channels, how many, why, whether automatic runs are on, the run time and queued jobs.",
+             tonight_plan, {}, [], ("next_run", "automatic_runs", "plan", "paused", "queued_jobs")),
         _def("video_stats", "results",
              "YouTube numbers imported for one video and its rank among the channel's videos of the same kind.",
              video_stats, out_id, ["output_id"], ("title", "latest", "rank", "n", "confidence")),

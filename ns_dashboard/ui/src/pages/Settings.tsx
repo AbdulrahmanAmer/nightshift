@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api, ApiError } from "../lib/api";
 import type { Job, LogLine, ModelsState, Settings as S, UpdateState } from "../lib/types";
-import { dayInline, interactiveOnly, NO_TASK, parseReleaseNotes, plural } from "../lib/format";
+import { dayInline, interactiveOnly, RUNS_OFF, parseReleaseNotes, plural } from "../lib/format";
 import { cx } from "../ui/kit";
 import { Lockup } from "../ui/Lockup";
 import { Badge, Button, Icon, Card, CardHeader, DashGrid, IconButton, Input, LinkButton, ProgressBar, SegmentedControl, Select, SettingRow, SPAN, StatusDot, Switch, type SegmentOption } from "../components/ref12";
@@ -18,6 +18,7 @@ export default function Settings() {
   const s = st.data;
   const [time, setTime] = useState("03:00");
   const [unlocked, setUnlocked] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const [flags, setFlags] = useState<Record<string, string>>({});
   const [level, setLevel] = useState("");
   const [component, setComponent] = useState("");
@@ -28,7 +29,7 @@ export default function Settings() {
   useEffect(() => { if (s) { setTime(s.schedule_time || "03:00"); setFlags(Object.fromEntries(Object.entries(s.flags || {}).map(([k, v]) => [k, String(v)]))); } }, [s]);
   useEffect(() => { const t = setInterval(() => document.visibilityState === "visible" && logs.reload(), 5000); return () => clearInterval(t); }, [level, component]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const put = async (body: Record<string, unknown>, ok: string) => { try { const r = await api.put("/settings", body); if (r && typeof r === "object") st.setData({ ...s, ...r }); if (r?.schedule_result && r.schedule_result.applied === false) { toast(r.schedule_result.note, "bad"); return false; } if (/only while you are logged on/i.test(r?.schedule_result?.note || "")) { toast(`${ok}. ${r.schedule_result.note}`, "warn"); return true; } toast(ok, "ok"); return true; } catch (e: any) { toast(e.message, "bad"); return false; } };
+  const put = async (body: Record<string, unknown>, ok: string) => { try { const r = await api.put("/settings", body); if (r && typeof r === "object") st.setData({ ...s, ...r }); if (r?.schedule_result && r.schedule_result.applied === false) { toast(r.schedule_result.note, "bad"); return false; } if (r?.schedule_result?.code === "NS-W205") { toast(r.schedule_result.note, "warn"); return true; } toast(ok, "ok"); return true; } catch (e: any) { toast(e.message, "bad"); return false; } };
   const setKey = async (name: string) => {
     const v = await confirm({ title: `${name[0]!.toUpperCase() + name.slice(1)} key`, body: "Paste the free key from your account page. It is stored in Windows Credential Manager, never in a file", ok: "Save key", input: { label: "Key", placeholder: "Paste the key" } });
     if (typeof v !== "string" || !v.trim()) return;
@@ -153,18 +154,17 @@ export default function Settings() {
         <div className={cx("flex flex-col gap-5", SPAN["3/4"])}>
           <Card as="section" aria-labelledby="s-sched">
             <CardHeader id="s-sched" title="Schedule" className="!mb-1" />
-            <SettingRow title="Automatic run time" sub="Nightshift wakes the PC at this time and works while you sleep">
-              <Input aria-label="Run time" type="time" className="!w-[132px] font-mono" value={time} onChange={(e) => setTime(e.target.value)} />
-              <Button disabled={time === s?.schedule_time} onClick={() => put({ schedule_time: time }, `Runs at ${time} from tonight`)}>Save</Button>
+            {/* The switch shows what Windows has (schedule_registered), never the click: put() takes the answer. */}
+            <SettingRow title="Automatic runs" sub={!s ? "" : s.dev_mode ? "Not available in a dev install: its nightly task is registered disabled and never runs (docs/DEV_MODE.md)" : s.schedule_registered ? `On. Nightshift wakes this PC every night at ${s.schedule_time} and makes the videos of your active channels` : `Off. ${RUNS_OFF}. Switching on adds the task 'Nightshift Daily' to Windows`}>
+              <Switch checked={!!s?.schedule_registered} disabled={!s || !!s.dev_mode || switching} onChange={async (v) => { setSwitching(true); await put({ automatic_runs: v, ...(v ? { schedule_time: time } : {}) }, v ? `Automatic runs are on: every night at ${time}` : "Automatic runs are off. Nothing runs by itself"); setSwitching(false); }} label="Automatic runs" />
             </SettingRow>
-            {s && s.schedule_registered === false && (
-              <SettingRow title="No nightly task" sub={<>{NO_TASK}. Windows did not accept the scheduled task, so {s.schedule_time} is only a preference</>}>
-                <Button variant="soft" leadingIcon="refresh" onClick={() => put({ schedule_time: s.schedule_time }, `Nightly task set for ${s.schedule_time}`)}>Try again</Button>
-              </SettingRow>
-            )}
+            <SettingRow title="Run time" sub={s?.schedule_registered ? "Nightshift wakes the PC at this time and works while you sleep" : "Kept for when you switch Automatic runs on"}>
+              <Input aria-label="Run time" type="time" className="!w-[132px] font-mono" value={time} onChange={(e) => setTime(e.target.value)} />
+              <Button disabled={time === s?.schedule_time} onClick={() => put({ schedule_time: time }, s?.schedule_registered ? `Runs at ${time} from tonight` : `${time} saved. Automatic runs are off`)}>Save</Button>
+            </SettingRow>
             {s && s.schedule_mode === "interactive_only" && (
-              <SettingRow title={interactiveOnly(s.schedule_time)} sub="Windows would not run the task while you are signed out. Lock the screen instead of signing out, or the night's run will not start">
-                <Button variant="soft" leadingIcon="refresh" onClick={() => put({ schedule_time: s.schedule_time }, `Nightly task set for ${s.schedule_time}`)}>Try again</Button>
+              <SettingRow title={interactiveOnly(s.schedule_time)} sub="Windows would not run the task while you are signed out (NS-W205). Lock the screen instead of signing out, or the night's run will not start. To lift it, run 'ns schedule install' once from an elevated PowerShell">
+                <Button variant="soft" leadingIcon="refresh" onClick={() => put({ automatic_runs: true, schedule_time: s.schedule_time }, `Automatic runs are on: every night at ${s.schedule_time}`)}>Try again</Button>
               </SettingRow>
             )}
             <SettingRow title="Notifications" sub="A Windows notification when a run finishes or stops">

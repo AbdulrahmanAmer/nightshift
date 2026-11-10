@@ -10,6 +10,7 @@ import pytest
 
 from ns_dashboard.assistant.registry import ToolContext
 from ns_dashboard.errors import ApiError
+from ns_supervisor.schedule_cfg import write_run_time
 from tests.assistant_eval import fixture_home
 
 
@@ -94,6 +95,10 @@ def test_what_worked_reports_n_and_says_when_it_is_too_few(home: fixture_home.Fi
 
 def test_tonight_plan_lists_every_active_channel_once(home: fixture_home.FixtureHome):
     out = run(home, "tonight_plan")
+    assert out["next_run"] is None and out["automatic_runs"]["on"] is False  # off: the plan is "if you start one"
+    write_run_time(home.state.paths, "03:00")  # Automatic runs on: Windows has an enabled task
+    out = run(home, "tonight_plan")
+    assert out["automatic_runs"]["on"] is True and "03:00" in out["automatic_runs"]["state"]
     planned = [p["channel"] for p in out["plan"]]
     assert sorted(planned + out["active_but_nothing_due"]) == ["after-dark", "wholesome-twist"]
     assert out["next_run"] and out["paused"] == [] and out["queued_jobs"] == []

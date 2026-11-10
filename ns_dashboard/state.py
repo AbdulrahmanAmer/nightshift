@@ -95,10 +95,11 @@ def settings_file(paths: Paths) -> Path:
 
 
 def scheduled_run_time(paths: Paths) -> str | None:
-    """The nightly time of the registered Windows task (`config/schedule.json`, written by `ns schedule`).
+    """The nightly time of the enabled Windows task (`config/schedule.json`, which only
+    `ns_supervisor.schedule` writes).
 
-    A task the owner switched off (mode `switched_off`) still has its time, and that is the one to show: the
-    page must not name another time than the task has (D-28). A dev install's `disabled` task has none.
+    None while Automatic runs are off (the time is then the one kept in `dashboard.json`). A `switched_off`
+    record of 0.1.15-rc2 that no look at Windows has converted yet still carries the task's own time.
     """
     try:
         from ns_supervisor.schedule_cfg import MODE_SWITCHED_OFF, read_run_time, read_schedule_mode
@@ -108,9 +109,9 @@ def scheduled_run_time(paths: Paths) -> str | None:
 
 
 def scheduled_mode(paths: Paths) -> str:
-    """`registered`, `interactive_only` (NS-W205: runs only while signed in), `disabled` (a dev install's
-    task that never fires), `switched_off` (the owner turned the task off in Task Scheduler; D-28) or `none`
-    (no nightly task)."""
+    """The record as it is: `registered` or `interactive_only` (Automatic runs on; the second runs only while
+    signed in, NS-W205), `disabled` (a dev install's task that never fires), `none` (off), or the
+    `switched_off` an older candidate wrote (off)."""
     try:
         from ns_supervisor.schedule_cfg import read_schedule_mode
     except ImportError:
@@ -119,55 +120,63 @@ def scheduled_mode(paths: Paths) -> str:
 
 
 def schedule_is_registered(paths: Paths) -> bool:
-    """True when Windows holds a 'Nightshift Daily' task the owner has: `registered`, `interactive_only` or
-    `switched_off`.
+    """True when Automatic runs are on: Windows held an enabled 'Nightshift Daily' task at the last look.
 
-    `schedule.json` existing is not enough: a dev install's `disabled` task never fires, so the page must
-    not say a task exists. An `interactive_only` task (NS-W205) does exist and runs whenever the owner is
-    signed in, so it stays registered here and `schedule_mode` carries the difference. A `switched_off` task
-    exists too, so the page must not say Windows refused it; `EngineService.next_run` says None for it, so the
-    page shows "Automatic runs off" instead of a coming run.
+    The one answer behind `schedule_registered`, `next_run`, the top bar, the Queue card and the Assistant's
+    plan. Off (no task, a task disabled in Task Scheduler, a dev install's disabled task) is False and is a
+    normal state, not a warning; `schedule_mode` tells the signed-in-only task (NS-W205) from the unattended.
     """
-    return scheduled_mode(paths) in ("registered", "interactive_only", "switched_off")
+    return status_schedule_mode(paths) != "none"
 
 
 def status_schedule_mode(paths: Paths) -> str:
-    """`scheduled_mode` as the Status contract spells it: only `registered` and `interactive_only`, the rest
-    (`disabled`, `switched_off`) read as `none`."""
+    """`scheduled_mode` as the Status contract spells it: `registered` or `interactive_only` when on, `none`
+    for everything that is off."""
     mode = scheduled_mode(paths)
     return mode if mode in ("registered", "interactive_only") else "none"
 
 
 _RECORD_CHECK_EVERY_S = 60.0
 _record_checked: dict[str, float] = {}
+#: True makes every look at Windows run inside the request that asked (tests); otherwise only the first look
+#: of this process does, and later ones run in a thread so a slow PowerShell never holds a page.
+SYNC_INLINE = False
 
 
 def refresh_schedule_record(paths: Paths, *, now: Callable[[], float] = time.monotonic) -> None:
-    """Let `schedule.json` follow a task the owner switched off once they change it in Task Scheduler.
+    """Let `schedule.json` follow the Windows task: at most one look a minute per home, never raising.
 
-    Only when the record says `switched_off`, at most once a minute (it asks PowerShell), and never raising:
-    without it the page would go on saying "Automatic runs off" after the owner switched the task back on.
+    Without it a task the owner deleted or disabled in Task Scheduler would go on reading "on", and one
+    switched on there would read "off". The first look of this process is done before the page is answered
+    (what is shown at start is what Windows has); later ones run in the background and show on the next
+    poll. A dev install has nothing to follow (`sync_record` returns at once).
     """
-    if scheduled_mode(paths) != "switched_off":
-        return
     key = str(paths.home)
     t = now()
-    if t - _record_checked.get(key, -_RECORD_CHECK_EVERY_S) < _RECORD_CHECK_EVERY_S:
+    first = key not in _record_checked
+    if not first and t - _record_checked[key] < _RECORD_CHECK_EVERY_S:
         return
     _record_checked[key] = t
-    try:
-        from ns_supervisor.schedule import sync_record
 
-        sync_record(paths)
-    except Exception:  # a task that cannot be read changes nothing
-        return
+    def look() -> None:
+        try:
+            from ns_supervisor.schedule import sync_record
+
+            sync_record(paths)
+        except Exception:  # a task that cannot be read changes nothing
+            return
+
+    if first or SYNC_INLINE:
+        look()
+    else:
+        threading.Thread(target=look, name="schedule-sync", daemon=True).start()
 
 
 def load_dashboard_settings(paths: Paths) -> dict[str, Any]:
     """Settings with defaults filled in; a missing or corrupt file yields the defaults.
 
-    `run_time` is the time of the registered nightly task when there is one, because that is when the engine
-    really starts; `dashboard.json` only remembers what the owner typed.
+    `run_time` is the time of the enabled nightly task when there is one, because that is when the engine
+    really starts; while Automatic runs are off it is the time kept in `dashboard.json`.
     """
     out = dict(DEFAULT_SETTINGS)
     f = settings_file(paths)

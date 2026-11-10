@@ -383,7 +383,9 @@ def test_a_disabled_task_is_no_schedule_for_the_supervisor_or_the_dashboard(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     paths = Paths(tmp_path / "ns")
-    monkeypatch.setattr(pwsh, "run_powershell", lambda script, **kw: done("registered:s4u\n"))
+    from tests.test_schedule_keeps_state import install_fake
+
+    install_fake(monkeypatch, None)
     msg = schedule.install(paths, "03:00", tmp_path, disabled=True)
     assert "DISABLED" in msg
     assert json.loads(schedule_file(paths).read_text(encoding="utf-8"))["mode"] == "disabled"

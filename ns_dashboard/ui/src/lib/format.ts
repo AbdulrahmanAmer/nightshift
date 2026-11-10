@@ -92,7 +92,7 @@ export const doneWords = (j: { kind: string; result?: { output_ids?: string[] } 
   return n ? `Done · ${plural(n, "video")}` : "Done · no videos";
 };
 
-/** What the top bar and Settings say when Windows has no 'Nightshift Daily' task (NS-W206). */
-export const NO_TASK = "No nightly task; videos are made only while Nightshift is open";
+/** What the top bar, the Queue and Settings say while Automatic runs are off (no enabled 'Nightshift Daily' task): a choice, not a fault. */
+export const RUNS_OFF = "Nothing runs by itself; videos are made only when you start them";
 /** NS-W205: Windows refused the unattended task, so it runs only while the owner is signed in. */
 export const interactiveOnly = (time?: string | null) => `Runs at ${time || "the set time"} only while you are signed in`;

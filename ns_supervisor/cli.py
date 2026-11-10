@@ -28,7 +28,7 @@ from ns_supervisor import (
     verify,
 )
 from ns_supervisor.client import SupervisorClient, ensure_running
-from ns_supervisor.schedule_cfg import MODE_DISABLED, MODE_SWITCHED_OFF, read_run_time, read_schedule_mode
+from ns_supervisor.schedule_cfg import read_run_time
 from ns_supervisor.services import venv_python
 
 app = typer.Typer(help="Nightshift runtime tools", add_completion=False)
@@ -118,6 +118,8 @@ def cmd_verify(
 
         raise typer.Exit(verify_downloads.run(paths, control.app_path(paths), typer.echo))
     rt = control.runtime_or_default(paths)
+    if quick:
+        _settle_schedule(paths)
     client = _client(paths)
     started_here = not client.is_up()
     try:
@@ -166,6 +168,24 @@ def cmd_tune(
     typer.echo("Saved to runtime.json.")
 
 
+def _settle_schedule(paths: Paths) -> None:
+    """Bring `schedule.json` in line with the task before an OLDER updater re-registers it (D-28).
+
+    The updaters of 0.1.14 and the 0.1.15 candidates run their own re-register step after this command, and
+    this command is the only code of the new version they run before it. 0.1.14's step registers the task
+    ENABLED whenever `schedule.json` has a time, so a task the owner disabled or deleted in Task Scheduler
+    must have no record by then; an enabled one keeps its record, at the task's own time. One bounded look
+    (`schedule.READ_TIMEOUT_S`); it never raises and never changes what `ns verify` answers. If the look
+    fails the record stays as it was, and a 0.1.14 updater then does what 0.1.14 always did.
+    """
+    try:
+        if read_run_time(paths) is None:    # what the older updater asks: no time, no re-registration
+            return
+        schedule.sync_record(paths, log=NsLogger("verify", paths.logs))
+    except Exception:  # a check of the engine must not fail on the task
+        return
+
+
 def _stop_engine(paths: Paths) -> None:
     control.stop(paths, _client(paths))
 
@@ -175,30 +195,16 @@ def _sync(paths: Paths, app_dir: Path) -> None:
 
 
 def _reregister(paths: Paths, app_dir: Path) -> list[str]:
-    """Point the nightly task at the updated program, keeping what the owner set (D-28).
+    """The update's last step: the task is registered again only while it is enabled (D-28).
 
-    The task's state (switched on or off) and run time are read before it is replaced and restored after; the
-    update log says what was kept. A task that `schedule.json` records as `disabled` (a dev install's task, or
-    one the owner registered with `ns schedule install --disabled`) is not touched by an update, as before
-    D-28. `ns schedule install` and the Settings run-time change DO register such a task enabled (setup's
-    `ns schedule install --time T` relies on it for a real install made over a dev one); `--disabled` again
-    keeps it off.
+    `schedule.reregister` decides: off (no record), a dev install and a task the owner disabled or deleted in
+    Task Scheduler are left exactly as they are; an enabled task keeps its state and its own run time.
     """
-    notes: list[str] = []
-    mode = read_schedule_mode(paths)
-    if mode in ("none", MODE_DISABLED):
-        return notes
     try:
-        schedule.install(paths, None, app_dir, keep_state=True, log=NsLogger("update", paths.logs))
+        note = schedule.reregister(paths, app_dir, log=NsLogger("update", paths.logs))
     except schedule.ScheduleError as e:
         return [f"scheduled task NOT re-registered: {e}"]
-    off = read_schedule_mode(paths) == MODE_SWITCHED_OFF
-    when = read_run_time(paths, include_disabled=True)
-    notes.append(
-        f"scheduled task re-registered (still switched off, daily at {when})" if off
-        else f"scheduled task re-registered (daily at {when})"
-    )
-    return notes
+    return [note] if note else []
 
 
 def _apply_update(
