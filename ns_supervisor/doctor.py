@@ -21,7 +21,15 @@ from pathlib import Path
 
 import installer.stage2.commands as commands
 import installer.stage2.shortcut_owner as so
-from ns_common import __version__, config_snapshot, ffmpeg, first_start, rollback_intent, testguard
+from ns_common import (
+    __version__,
+    commandline,
+    config_snapshot,
+    ffmpeg,
+    first_start,
+    rollback_intent,
+    testguard,
+)
 from ns_common.atomic import read_text_retry, retry_busy, write_zip_atomic
 from ns_common.config import load_install_state, load_runtime
 from ns_common.devmode import is_dev
@@ -287,11 +295,10 @@ def commands_row(
         return (row, True, WARN + kept.split(" This install")[0].removeprefix("Commands: "))
     if found.state != so.MINE:
         return (row, True, f"{WARN}not on your PATH ({commands.CODE}): run INSTALL.cmd and choose Repair")
-    directories = commands.split(read_machine()) + commands.split(now[0])
-    for name in ("ns", "studio"):
-        hit = commands.first_found(name, directories)
-        if hit is None or not so.same_folder(hit.parent, commands.folder(home)):
-            return (row, True, f"{WARN}'{name}' runs {hit} first: rename or remove it from your PATH")
+    # what a new window reaches (the one check setup and every message use: `ns_common.commandline.reach`)
+    found = commandline.reach(home, user_value=now[0], machine_value=read_machine())
+    if found.ok is False:
+        return (row, True, f"{WARN}{found.why}: rename or remove it from your PATH")
     return (row, True, "'ns' and 'studio' open this install")
 
 

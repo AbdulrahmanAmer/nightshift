@@ -162,6 +162,12 @@ def inst(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Inst:
     return Inst(home, paths, app, desktop, Shell(), windows, icon)
 
 
+def shortcut_notes(paths: Paths) -> list[Any]:
+    """The waiting notes, apart from FN-3's one note about the commands (this install's folder name has
+    Arabic letters, which a command file cannot hold: its own test is in tests/test_commands_on_path.py)."""
+    return [n for n in notify.read_notes(paths) if n["title"] != "Nightshift commands"]
+
+
 def launch_row(paths: Paths) -> tuple[bool, str]:
     """The "launch script" row of `ns doctor`."""
 
@@ -243,7 +249,7 @@ def test_a_shortcut_of_another_existing_install_is_never_touched(inst: Inst, tmp
     assert marker["failed"] == [] and marker["shortcuts"]["Other direct.lnk"] == "other"
     assert marker["shortcuts"]["Editor.lnk"] == marker["shortcuts"]["Torn.lnk"] == "foreign"
     assert all(inst.args(name) == through_stub(inst.home, script) for name, script in SIX)
-    assert notify.read_notes(inst.paths) == []
+    assert shortcut_notes(inst.paths) == []
 
 
 def test_a_shortcut_of_a_deleted_install_is_never_taken(inst: Inst, tmp_path: Path):
@@ -265,7 +271,7 @@ def test_a_shortcut_of_a_deleted_install_is_never_taken(inst: Inst, tmp_path: Pa
     states = marker["shortcuts"]
     assert {states[f"{name} (other).lnk"] for name, _ in SIX} == {"other"}
     assert {states[f"{name} (gone).lnk"] for name, _ in SIX} == {"gone"}
-    assert marker["failed"] == [] and notify.read_notes(inst.paths) == []
+    assert marker["failed"] == [] and shortcut_notes(inst.paths) == []
     assert sorted(p.name for p in inst.desktop.iterdir()) == sorted([*theirs, *(f"{name}.lnk" for name, _ in SIX)])
     # a shortcut of this home whose launcher this program no longer has is left too
     write_lnk(inst.desktop / "Code.lnk", direct(inst.home, "nightshift-code.ps1"), str(inst.home))
@@ -320,7 +326,7 @@ def test_a_shortcut_whose_drive_is_not_there_is_left(inst: Inst):
     before = (inst.desktop / "Away.lnk").read_bytes()
     marker = inst.run()
     assert (inst.desktop / "Away.lnk").read_bytes() == before and marker["shortcuts"]["Away.lnk"] == "unreachable"
-    assert marker["failed"] == [] and notify.read_notes(inst.paths) == []
+    assert marker["failed"] == [] and shortcut_notes(inst.paths) == []
 
 
 def test_the_desktop_folder_is_the_one_windows_names_also_when_onedrive_moved_it(

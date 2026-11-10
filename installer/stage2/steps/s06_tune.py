@@ -10,6 +10,7 @@ from installer.stage2 import reinstall
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.runtime_cfg import runtime_settled
+from ns_common.commandline import typed
 from ns_common.config import load_runtime
 
 
@@ -48,7 +49,7 @@ class S06Tune(Step):
         ctx.log.warn("tune_failed", f"exit {res.returncode}: {res.text[-300:]}")
         ctx.ui.say(
             "Tuning did not finish; Nightshift will use safe default settings. "
-            "You can run 'ns tune' again later.", "yellow",
+            f"You can run '{typed(ctx.paths.home, 'ns tune')}' again later.", "yellow",
         )
         ctx.set_flag("tuned", "defaults")
 

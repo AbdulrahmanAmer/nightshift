@@ -45,6 +45,7 @@ import yaml
 from installer.stage2.web import deplock
 from ns_common import __version__, config_compat, config_snapshot, first_start, rollback_intent
 from ns_common.atomic import read_text_retry, write_text_atomic
+from ns_common.commandline import typed
 from ns_common.devmode import is_dev
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
@@ -1172,7 +1173,8 @@ def rollback_way_out(paths: Paths, app: Path, here: str, other: str) -> str:
     if not (takes_detach(app) and takes_detach(_sibling(app, ".prev"))):
         return f"{setup}."
     return (
-        f"run 'ns update --rollback --detach'. {DETACH_RESULT} When it says 'Now on {other}', run the same "
+        f"run '{typed(paths.home, 'ns update --rollback --detach')}'. {DETACH_RESULT} When it says 'Now on "
+        f"{other}', run the same "
         f"command again: that run comes back to {here} and fills every environment. If 'ns' does not "
         f"start, {setup}."
     )
@@ -1185,7 +1187,8 @@ def update_way_out(paths: Paths, app: Path, here: str, other: str, command: str 
     if not takes_detach(app):
         return f"{setup}."
     return (
-        f"run the update again with the 'Nightshift - Update' shortcut or '{command} --detach'. "
+        f"run the update again with the 'Nightshift - Update' shortcut or "
+        f"'{typed(paths.home, command + ' --detach')}'. "
         f"{DETACH_RESULT} If 'ns' does not start, {setup}."
     )
 
@@ -1825,7 +1828,8 @@ def _git_update(
     update_job.step(
         paths, "Refreshing the Python environments.",
         "The update stopped after the newer program was checked out, while it was refreshing or checking "
-        "the Python environments. To fill every environment, run 'ns update --git --detach'. "
+        "the Python environments. To fill every environment, run "
+        f"'{typed(paths.home, 'ns update --git --detach')}'. "
         + DETACH_RESULT,
     )
     at = "the refresh of the Python environments"
@@ -1849,7 +1853,8 @@ def _git_update(
             raise _unfinished(
                 f"{failed}The previous commit ({old_version}) is checked out again, but ", e2,
                 target=old_version, other="the newer version",
-                way_out=f"run 'ns update --git --detach' again. {DETACH_RESULT}", paths=paths,
+                way_out=f"run '{typed(paths.home, 'ns update --git --detach')}' again. {DETACH_RESULT}",
+                paths=paths,
             ) from e
         back = f"The previous commit ({old_version}) is checked out again, with its Python environments."
         raise NsError("NS-E702", failed + back, where=back) from e

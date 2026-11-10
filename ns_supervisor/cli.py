@@ -4,11 +4,12 @@ import dataclasses
 import json
 import os
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
 from ns_common import __version__
+from ns_common.commandline import render
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
@@ -33,6 +34,16 @@ from ns_supervisor.client import SupervisorClient, ensure_running
 from ns_supervisor.schedule_cfg import read_run_time
 from ns_supervisor.services import venv_python
 
+
+def echo(message: object = "", **kw: Any) -> None:
+    """`typer.echo` for every line this CLI prints, with the `ns ...` and `studio ...` a sentence names
+    given as this install's owner types them (FN-3, `ns_common.commandline.render`). A JSON line is
+    printed as it is: the program that reads it renders what it shows."""
+    text = message if isinstance(message, str) else str(message)
+    if text[:1] not in ("{", "[") and not text.startswith("setup: "):
+        text = render(text)
+    typer.echo(text, **kw)
+
 app = typer.Typer(help="Nightshift runtime tools", add_completion=False, cls=homecheck.InstallGuardGroup)
 schedule_app = typer.Typer(help="The nightly scheduled task 'Nightshift Daily'", add_completion=False)
 app.add_typer(schedule_app, name="schedule")
@@ -43,10 +54,10 @@ app.add_typer(models_app, name="models")
 def _die(e: NsError | str, code: int = 1) -> typer.Exit:
     """Print an error (with its fix hint) and return the exit to raise."""
     if isinstance(e, NsError):
-        typer.echo(f"{e}", err=True)
-        typer.echo(f"Hint: {e.definition.hint}", err=True)
+        echo(f"{e}", err=True)
+        echo(f"Hint: {e.definition.hint}", err=True)
     else:
-        typer.echo(e, err=True)
+        echo(e, err=True)
     return typer.Exit(code)
 
 
@@ -57,7 +68,7 @@ def _client(paths: Paths) -> SupervisorClient:
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
-        typer.echo(f"ns {__version__}")
+        echo(f"ns {__version__}")
         return
     try:    # D-35: no install named or found: NS-E123 before any command opens or writes a home
         homecheck.check_root(ctx)
@@ -70,7 +81,7 @@ def cmd_stop() -> None:
     """Stop the engine and every model process (what 'Nightshift - Stop All' runs)."""
     paths = Paths.from_env()
     for line in control.stop(paths, _client(paths)):
-        typer.echo(line)
+        echo(line)
 
 
 @app.command("doctor")
@@ -85,16 +96,16 @@ def cmd_doctor(
     paths = Paths.from_env()
     if bundle:
         out = doctor.build_bundle(paths, out_dir=out_dir, app=control.app_path(paths))
-        typer.echo(f"Diagnostics written to {out}")
+        echo(f"Diagnostics written to {out}")
         return
     bad = 0
     def waiting() -> None:  # (the start check waits up to 60 s behind an update or a rollback)
-        typer.echo("Waiting for another Nightshift program (an update or a rollback) to finish, up to 60 s")
+        echo("Waiting for another Nightshift program (an update or a rollback) to finish, up to 60 s")
 
     for name, ok, detail in doctor.diagnose(paths, _client(paths), on_wait=waiting):
         warn = ok and detail.startswith(doctor.WARN)    # not a failure, but the owner has something to do
         mark = "WARN" if warn else ("ok" if ok else "FAIL")
-        typer.echo(f"[{mark}] {name}: {detail.removeprefix(doctor.WARN) if warn else detail}")
+        echo(f"[{mark}] {name}: {detail.removeprefix(doctor.WARN) if warn else detail}")
         bad += 0 if ok else 1
     if bad:
         raise typer.Exit(1)
@@ -110,9 +121,9 @@ def _stop_started_engine(client: SupervisorClient) -> None:
         if client.is_up():
             client.shutdown(30)
             if not control.wait_down(client, 45):
-                typer.echo("The verify engine is slow to exit.", err=True)
+                echo("The verify engine is slow to exit.", err=True)
     except NsError as e:
-        typer.echo(f"Could not stop the verify engine: {e}", err=True)
+        echo(f"Could not stop the verify engine: {e}", err=True)
 
 
 @app.command("verify")
@@ -142,7 +153,7 @@ def cmd_verify(
     try:
         ensure_running(client, paths, headless=True)
     except NsError as e:
-        typer.echo(f"Could not start the engine: {e}", err=True)
+        echo(f"Could not start the engine: {e}", err=True)
     try:
         report = verify.run_verify(paths, rt, client, quick=quick, progress=typer.echo)
     finally:
@@ -150,12 +161,12 @@ def cmd_verify(
             _stop_started_engine(client)
     f = verify.write_report(paths, report)
     for line in verify.format_lines(report):
-        typer.echo(line)
+        echo(line)
     try:   # a voice that did not speak: its sentence waits as a morning note, once (verify.leave_voice_notes)
         verify.leave_voice_notes(paths, report.checks)
     except Exception:  # the exit code and the report do not depend on it
         pass
-    typer.echo(f"Report: {f}")
+    echo(f"Report: {f}")
     if not report.passed:
         raise typer.Exit(1)
 
@@ -172,21 +183,21 @@ def cmd_tune(
         raise _die(e) from e
     if dry_run:
         for line in tune.matrix_lines(rt):
-            typer.echo(line)
+            echo(line)
         return
     if rt.dev_mode:
-        typer.echo("Dev mode: the language model is a fake, so there is nothing to tune.")
+        echo("Dev mode: the language model is a fake, so there is nothing to tune.")
         return
     if not rt.llama.model_path:
         raise _die("runtime.json has no llama model_path; run the installer first.")
     with tune.gpu_reservation(_client(paths)):
         outcome = tune.tune(paths, rt, tune.ProcessRunner(paths))
     for w in outcome.warnings:
-        typer.echo(f"warning: {w}")
+        echo(f"warning: {w}")
     if not outcome.ok or outcome.flags is None:
         raise _die("tune: no configuration loaded; runtime.json was left unchanged. See logs\\tune-*.json.")
-    typer.echo(f"Best: {outcome.tok_s:.1f} tok/s with {outcome.flags.model_dump_json()}")
-    typer.echo("Saved to runtime.json.")
+    echo(f"Best: {outcome.tok_s:.1f} tok/s with {outcome.flags.model_dump_json()}")
+    echo("Saved to runtime.json.")
 
 
 def _settle_schedule(paths: Paths) -> None:
@@ -254,10 +265,10 @@ def _apply_update(
         current = update.current_version(app_dir)
         if not releases.is_newer(rel.version, current):
             msg = f"Already on the newest version ({current})."
-            typer.echo(msg)
-            typer.echo(json.dumps({"updated": False, "old": current, "new": current}))
+            echo(msg)
+            echo(json.dumps({"updated": False, "old": current, "new": current}))
             return update_job.Outcome(msg, current, current, updated=False)
-        typer.echo(f"Downloading {rel.zip_name} ...")
+        echo(f"Downloading {rel.zip_name} ...")
         res = update.update_app(releases.download(rel, paths.data / "updates"), app_dir, env, paths=paths)
     else:
         assert zip_path is not None
@@ -265,13 +276,13 @@ def _apply_update(
     msg = f"Now on {res.new_version} (was {res.old_version})."
     if res.settings:        # a rollback says what became of the settings files (the dashboard shows it)
         msg += " " + res.settings
-    typer.echo(msg)
+    echo(msg)
     for n in res.notes:
-        typer.echo(f"  {n}")
+        echo(f"  {n}")
     result: dict[str, object] = {"updated": True, "old": res.old_version, "new": res.new_version}
     if res.release_notes:
         result["release_notes"] = res.release_notes
-    typer.echo(json.dumps(result))
+    echo(json.dumps(result))
     return update_job.Outcome(msg, res.old_version, res.new_version, updated=True,
                               release_notes=res.release_notes)
 
@@ -390,17 +401,17 @@ def cmd_update(
     if wait:
         raise typer.Exit(update_job.follow(paths, pid, log_file, typer.echo))
     if background:
-        typer.echo(f"The update runs in the background; Nightshift will close. Progress: {log_file}")
+        echo(f"The update runs in the background; Nightshift will close. Progress: {log_file}")
         started: dict[str, object] = {
             "started": True, "log": str(log_file), "status": str(update_job.status_file(paths)), "pid": pid,
         }
         script = update_job.write_wait_script(paths, pid, log_file)
         if script is not None:
             started["follow"] = str(script)
-        typer.echo(json.dumps(started))
+        echo(json.dumps(started))
         return
     window = update_job.start_follower(paths, pid, log_file)
-    typer.echo(update_job.handover_sentence(what, log_file, window=window))
+    echo(update_job.handover_sentence(what, log_file, window=window))
 
 
 def _update_check(current: str) -> None:
@@ -410,10 +421,10 @@ def _update_check(current: str) -> None:
     except NsError as e:
         raise _die(e) from e
     if result["update_available"]:
-        typer.echo(f"Version {result['latest']} is available (you have {current}). Run: ns update --github")
+        echo(f"Version {result['latest']} is available (you have {current}). Run: ns update --github")
     else:
-        typer.echo(f"Up to date ({current}).")
-    typer.echo(json.dumps(result))
+        echo(f"Up to date ({current}).")
+    echo(json.dumps(result))
 
 
 @app.command("backup")
@@ -428,9 +439,9 @@ def cmd_backup(
         raise _die(e) from e
     except OSError as e:  # a full disk, a folder that refuses files: a sentence, not a traceback
         raise _die(f"The backup could not be written: {e}") from e
-    typer.echo(f"Backup written to {f}")
+    echo(f"Backup written to {f}")
     for line in notes:
-        typer.echo(line)
+        echo(line)
 
 
 @app.command("restore")
@@ -453,7 +464,7 @@ def cmd_restore(
     except NsError as e:
         raise _die(e) from e
     for ln in lines:
-        typer.echo(ln)
+        echo(ln)
 
 
 def _schedule_call(
@@ -476,7 +487,7 @@ def _schedule_call(
         # registering failed (NS-E204: register it), or removing or reading it (NS-E206: Task Scheduler)
         code = schedule.REGISTER_FAILED if fn_name == "install" else schedule.SWITCH_OFF_FAILED
         raise _die(NsError(code, f"schedule {fn_name}: {e}")) from e
-    typer.echo(msg)
+    echo(msg)
 
 
 #: The line `ns schedule install --setup` ends with: `setup: ` and `schedule.SetupResult` as JSON. Setup's
@@ -504,7 +515,7 @@ def _schedule_setup(
         )
     except schedule.ScheduleError as e:
         raise _die(NsError("NS-E204", f"schedule install --setup: {e}")) from e
-    typer.echo(SETUP_PREFIX + json.dumps(dataclasses.asdict(res)))
+    echo(SETUP_PREFIX + json.dumps(dataclasses.asdict(res)))
 
 
 @schedule_app.command("install")
@@ -580,7 +591,7 @@ def models_get_cmd(
         result = models_get.get_model(what, paths, control.app_path(paths), typer.echo, everything=everything)
     except NsError as e:
         raise _die(e) from e
-    typer.echo(json.dumps(result))
+    echo(json.dumps(result))
 
 
 def main() -> None:

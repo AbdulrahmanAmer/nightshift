@@ -1980,7 +1980,7 @@ class SetupController:
         shortcuts = shortcuts_view.summary(self.home, self.run_app_path, self.fx.desktop(), flags)
         var_line = flags.get("home_var_line")
         commands_line = flags.get("commands_line")
-        sizes ={g["id"]: g for g in state["plan"]["groups"]}
+        sizes = {g["id"]: g for g in state["plan"]["groups"]}
         models = {i["label"]: i for i in sizes["models"]["items"]}
         llm = next((i for i in sizes["models"]["items"] if i["label"].startswith("Story model")), None)
 

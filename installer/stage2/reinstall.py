@@ -52,6 +52,7 @@ from installer.stage2.runtime_cfg import (
 from installer.stage2.secrets import KEY_NAMES
 from installer.stage2.web.answers_view import KEPT_NAME
 from ns_common.atomic import write_text_atomic
+from ns_common.commandline import typed
 from ns_common.config import load_channel, save_channel
 from ns_common.models import Voice
 
@@ -418,7 +419,7 @@ def _voice(ctx: StepContext, ans: InstallerAnswers, channel: Any) -> list[str]:
     if s07.queue_voice(ctx, ans, channel):
         return [
             f"Your {voice.mode} voice '{voice.name}' is created the first time Nightshift runs. "
-            "To make it now: studio voice apply-pending."
+            f"To make it now: {typed(ctx.paths.home, 'studio voice apply-pending')}."
         ]
     return [
         f"A voice named '{voice.name}' already exists in models\\tts\\voices, so it is used as it is. "

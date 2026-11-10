@@ -32,6 +32,7 @@ from ns_common.atomic import (
     write_bytes_atomic,
     write_text_atomic,
 )
+from ns_common.commandline import render
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.singleton import AlreadyRunning, FileLock
@@ -66,6 +67,7 @@ def toast(title: str, message: str) -> bool:
     In a test run the real `pwsh.run_powershell` refuses the toast script before it starts anything; that is
     "unavailable" here, so the caller leaves its morning note in the test's home instead.
     """
+    message = render(message)               # (FN-3: `ns_common.commandline.render`, this process's home)
     try:
         r = pwsh.run_powershell(
             TOAST_SCRIPT, env_extra={"NS_TOAST_TITLE": title, "NS_TOAST_MESSAGE": message}, timeout_s=30
@@ -506,6 +508,8 @@ def _leave(
         entries = _waiting(paths)
         entries, taken = _drain(paths, entries)
         message = decide([_as_note(n) for n in entries])
+        if message is not None:   # the commands it names, as this install's owner types them (FN-3)
+            message = render(message, paths.home)
         if message is None:
             if taken:
                 try:
@@ -558,7 +562,7 @@ def leave_note(
     try:
         _, added = _leave(paths, title, decide, at, NOTES_WAIT_S if wait_s is None else wait_s)
     except OSError as e:
-        entry: dict[str, Any] = {"at": at, "title": title, "message": message}
+        entry: dict[str, Any] = {"at": at, "title": title, "message": render(message, paths.home)}
         if is_routine(message):
             entry["routine"] = True
         return _not_written(paths, entry, once is not None, spool, e)

@@ -35,8 +35,18 @@ from pathlib import Path
 from typing import Protocol
 
 import installer.stage2.shortcut_owner as so
-import ns_common.testguard as testguard
 from ns_common.atomic import write_bytes_atomic
+from ns_common.commandline import (
+    TEST_MACHINE_PATH_ENV,
+    TEST_USER_PATH_ENV,
+    expanded,
+    first_found,
+    named_home,
+    reach,
+    registry_machine_path,
+    registry_user_path,
+    split,
+)
 
 FOLDER = "cmd"
 #: (command file, venv, program in its Scripts folder, package the program folder holds)
@@ -55,11 +65,13 @@ MAX_USER_PATH = 2047
 MAX_ENV = 32767
 #: The exit code of a command file whose program is missing (cmd.exe's own "not recognized").
 MISSING_EXIT = 9009
-#: Under a test run the registry is never read: these stand for the user and the machine PATH.
-TEST_USER_PATH_ENV = "NS_TEST_USER_PATH"
-TEST_MACHINE_PATH_ENV = "NS_TEST_MACHINE_PATH"
+#: (The registry readers, `first_found` and `named_home` live in `ns_common.commandline`, shared with the
+#: messages that name a command; they are re-exported here.)
+__all__ = [
+    "TEST_MACHINE_PATH_ENV", "TEST_USER_PATH_ENV", "first_found", "named_home", "registry_machine_path",
+    "registry_user_path", "split",
+]
 
-_SET_LINE = re.compile(r'^set "NIGHTSHIFT_HOME=([^"\r\n]+)"\r?$', re.MULTILINE | re.IGNORECASE)
 _CARET = re.compile(r"([\^&|<>()])")
 
 
@@ -115,6 +127,17 @@ def failed_line(home: Path | str, why: str) -> str:
     return (
         f"Commands: 'ns' and 'studio' could not be put on your PATH ({why}) ({CODE}). Type {_full(home)} "
         "instead, or run INSTALL.cmd again and choose Repair."
+    )
+
+
+def unfit_line(home: Path | str, why: str) -> str:
+    """NS-W120 for a folder whose path a command file cannot hold (a hand-set home; setup refuses such a
+    name): no command file exists, and no Repair changes that. The program by its full path still works."""
+    exe = Path(home) / "venvs" / "supervisor" / "Scripts" / "ns.exe"
+    return (
+        f"Commands: 'ns' and 'studio' cannot be made for this install ({why}) ({CODE}). Start Nightshift "
+        f"from its shortcuts; a command can be typed with its program's full path, for example & \"{exe}\" "
+        "doctor."
     )
 
 
@@ -188,14 +211,18 @@ def shim_text(home: Path | str, venv: str, exe: str, program: Path | str, packag
         f'set "NIGHTSHIFT_HOME={home}"',
         f'if not exist "{target}" goto missing',
         f'if not exist "{Path(program) / package / "__init__.py"}" goto noprogram',
-        # one line: the program runs, then the file is left without reading another line of it
-        f'"{target}" %* & call exit /b %%ERRORLEVEL%%',
+        "goto run",
         ":missing",
         _echo(missing_line(home)),
         f"exit /b {MISSING_EXIT}",
         ":noprogram",
         _echo(no_program_line(home)),
         f"exit /b {MISSING_EXIT}",
+        ":run",
+        # the LAST line: the program runs, then the file is left without reading another line of it; an
+        # argument with an odd number of double quotes takes the '& call exit' part into itself, and the file
+        # then simply ends (nothing after this line runs), with the program's exit code
+        f'"{target}" %* & call exit /b %%ERRORLEVEL%%',
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -231,30 +258,11 @@ def shims_current(home: Path | str, program: Path | str) -> bool:
         return False
 
 
-def named_home(shim: Path) -> str | None:
-    """The folder a command file names in its ``set "NIGHTSHIFT_HOME=..."`` line; None when it is not one."""
-    try:
-        text = shim.read_text(encoding="ascii", errors="replace")
-    except OSError:
-        return None
-    m = _SET_LINE.search(text)
-    return m.group(1).strip() if m else None
-
-
 # ------------------------------------------------------------------------------------------ the PATH
-def split(value: str) -> list[str]:
-    """The entries of a PATH value, empty ones included (so a join gives back every byte)."""
-    return value.split(";") if value else []
-
-
-def _expanded(entry: str) -> str:
-    return os.path.expandvars(entry.strip().strip('"').strip())
-
-
 def entry_owner(entry: str, home: Path | str, known: Iterable[str] = ()) -> tuple[str, str | None]:
     """Whose PATH entry, seen from the install `home`: (`mine` | `other` | `unreachable` | `gone`, the
     Nightshift folder it belongs to), or (`none`, None) when it is not Nightshift's."""
-    text = _expanded(entry)
+    text = expanded(entry)
     if not text or os.path.basename(text.rstrip("\\/")).lower() != FOLDER:
         return "none", None
     if so.same_folder(text.rstrip("\\/"), folder(home)):
@@ -369,7 +377,7 @@ def put_on_path(
             return "refused", failed_line(home, f"your PATH is stored as {now.kind}, not as text")
         found = plan(now.value, home, yes, known, now.machine)
         if found.state == so.MINE:
-            return so.MINE, took_line(taking) if yes and taking else mine_line(home)
+            return _reached(home, now.value, took_line(taking) if yes and taking else mine_line(home))
         if found.refusal is not None:
             return "refused", failed_line(home, found.refusal)
         if found.new_value is None:         # another install's, kept without a yes
@@ -379,13 +387,44 @@ def put_on_path(
         res = write(now, found.new_value)
         if res.returncode == CHANGED_EXIT:
             continue
+        late = ""
         if not res.ok:
-            lines = [ln.strip() for ln in res.text.splitlines() if ln.strip()]
-            why = (lines[-1] if lines else f"exit code {res.returncode}")[:200]
-            return "failed", failed_line(home, f"Windows refused the change: {why}")
+            # the script writes, then tells running programs; a failure or a timeout after the write leaves
+            # the PATH written: read it again before saying anything
+            after = read()
+            if after is None or after.value != found.new_value:
+                lines = [ln.strip() for ln in res.text.splitlines() if ln.strip()]
+                why = (lines[-1] if lines else f"exit code {res.returncode}")[:200]
+                return "failed", failed_line(home, f"Windows refused the change: {why}")
+            late = NOT_TOLD
         took = found.taking or (taking if yes else None)
-        return so.MINE, took_line(took) if took else mine_line(home)
+        return _reached(home, found.new_value, (took_line(took) if took else mine_line(home)) + late)
     return "failed", failed_line(home, CHANGED)
+
+
+#: Said after L1 when the PATH was written but running programs could not be told (the broadcast failed).
+NOT_TOLD = (
+    " The change was written, but Windows did not pass it on to the programs that are running: if a new "
+    "window does not know 'ns', sign out and in again."
+)
+
+
+def shadowed_line(home: Path | str, why: str) -> str:
+    """NS-W120: this install's folder is on the PATH, but a plain `ns` or `studio` reaches something else."""
+    return (
+        f"Commands: {why}, not this install ({CODE}). This install's are {_full(home)}: type the full path, "
+        "or rename or remove that file from your PATH and open a new window."
+    )
+
+
+def _reached(home: Path | str, user_value: str, line: str) -> tuple[str, str]:
+    """`mine` with `line` when a new window's plain `ns` and `studio` reach this install's files (the user
+    folder, the machine PATH, then the user PATH `user_value`, searched as Windows does); else `shadowed`
+    with what they reach instead."""
+    found = reach(home, user_value=user_value)
+    if found.ok is False:
+        return "shadowed", shadowed_line(home, found.why)
+    return so.MINE, line
 
 
 def others_commands(value: str | None, home: Path | str, known: Iterable[str] = ()) -> str | None:
@@ -395,56 +434,3 @@ def others_commands(value: str | None, home: Path | str, known: Iterable[str] = 
         return None
     found = plan(value, home, False, known)
     return found.other if found.state in (so.OTHER, so.UNREACHABLE) else None
-
-
-def registry_user_path() -> tuple[str, str] | None:
-    """(the user PATH as stored, unexpanded; its kind) read from HKCU, read only; ("", "none") when there is
-    none; None when Windows did not say. A test run never reads the registry: `NS_TEST_USER_PATH` stands
-    for it (unset: no PATH)."""
-    if testguard.under_test():
-        return os.environ.get(TEST_USER_PATH_ENV, ""), "REG_EXPAND_SZ"
-    try:
-        import winreg
-
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
-            value, kind = winreg.QueryValueEx(key, "Path")
-    except FileNotFoundError:
-        return "", "none"
-    except (ImportError, OSError, ValueError):
-        return None
-    if not isinstance(value, str):
-        return None
-    return value, "REG_SZ" if kind == 1 else "REG_EXPAND_SZ"
-
-
-def registry_machine_path() -> str:
-    """The machine PATH, expanded ("" when it cannot be read). A test run reads `NS_TEST_MACHINE_PATH`."""
-    if testguard.under_test():
-        return os.environ.get(TEST_MACHINE_PATH_ENV, "")
-    try:
-        import winreg
-
-        key_path = r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
-            value, _ = winreg.QueryValueEx(key, "Path")
-    except (ImportError, OSError, ValueError):
-        return ""
-    return os.path.expandvars(str(value))
-
-
-def first_found(name: str, directories: Iterable[str], pathext: str | None = None) -> Path | None:
-    """The file a new terminal runs for the bare command `name`: the first PATH folder, in order, that holds
-    `name` with one of the PATHEXT endings (cmd.exe's and PowerShell's search for an external command)."""
-    endings = [e for e in (pathext or os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(";") if e]
-    for directory in directories:
-        d = _expanded(directory)
-        if not d:
-            continue
-        for ending in endings:
-            candidate = Path(d) / f"{name}{ending.lower()}"
-            try:
-                if candidate.is_file():
-                    return candidate
-            except OSError:
-                continue
-    return None

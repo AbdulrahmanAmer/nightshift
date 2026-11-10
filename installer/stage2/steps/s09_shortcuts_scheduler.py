@@ -91,6 +91,7 @@ from installer.stage2.winenv import (
     set_user_env,
     user_path,
 )
+from ns_common.commandline import render
 from ns_supervisor import schedule
 from ns_supervisor.notify import AUMID
 from ns_supervisor.schedule_cfg import remember_run_time
@@ -336,8 +337,11 @@ class S09ShortcutsScheduler(Step):
         `commands_taking`, so a rerun after a kill still says it); then the flag `commands_owner`. Never
         raises: the Desktop shortcuts start everything without the commands. The sentence to say (L1-L4)."""
         home = ctx.paths.home
-        problem = commands.write_shims(home, ctx.app_path)
-        if ctx.dev_mode and problem is None:
+        unfit = commands.shim_problem(home, ctx.app_path)
+        problem = unfit or commands.write_shims(home, ctx.app_path)
+        if unfit is not None:
+            owner, line = "unfit", commands.unfit_line(home, unfit)
+        elif ctx.dev_mode and problem is None:
             owner, line = "dev", commands.dev_line(home)
         elif problem is not None:
             owner, line = "failed", commands.failed_line(home, problem)
@@ -352,7 +356,8 @@ class S09ShortcutsScheduler(Step):
         level = ctx.log.info if owner in (shortcut_owner.MINE, "dev") else ctx.log.warn
         level("commands", line, owner=owner, yes=yes)
         if owner not in (shortcut_owner.MINE, "dev"):
-            ctx.warn(commands.CODE, owner[6:] if owner.startswith("other:") else "not on your PATH")
+            detail = {"shadowed": "another program's command comes first"}.get(owner, "not on your PATH")
+            ctx.warn(commands.CODE, owner[6:] if owner.startswith("other:") else detail)
         ctx.ui.say(line)
         return line
 
@@ -540,6 +545,7 @@ class S09ShortcutsScheduler(Step):
                 ctx.warn("NS-W206", str(out.get("reason") or "")[:200])
             elif only and case in ("first", "applied"):
                 ctx.warn("NS-W205", f"registered for {out.get('run_time')}")
+        line = render(line, ctx.paths.home)     # the command it names, as this owner types it (FN-3)
         ctx.set_flag("nightly_line", line)
         ctx.set_flag("nightly_state", nightly_view.state_word(ctx.paths.home))
         ctx.set_flag("nightly_time", (out or {}).get("run_time"))

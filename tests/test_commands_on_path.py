@@ -528,6 +528,10 @@ def test_a_home_a_command_file_cannot_name_is_said_and_never_put_on_the_path(ins
     assert commands is not None, NEW
     marker = inst.run()
     assert str(marker["commands"]).startswith("unfit: this folder's path has characters a command file cannot hold")
+    from ns_supervisor import notify
+
+    told = [n["message"] for n in notify.read_notes(inst.paths) if n["title"] == "Nightshift commands"]
+    assert len(told) == 1 and "cannot be made for this install" in told[0] and "Start Nightshift from its shortcuts" in told[0]
     assert not (inst.home / "cmd").exists() and not [c for c in inst.shell.calls if c[0].startswith("ps:userpath")]
     assert marker["failed"] == []
     file = inst.paths.home / "run" / "launch-reach.json"
@@ -707,4 +711,189 @@ def test_the_elevated_powershell_hints_say_the_same_thing_in_the_same_form():
         assert form in describe(code).hint, code
     assert "a plain ns is not found" not in describe("NS-E204").hint
     settings = (ROOT / "ns_dashboard" / "ui" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
-    assert "run 'ns schedule install' once from an elevated PowerShell" in settings
+    # the Settings row takes the command as this install's owner types it (the engine serves it, FN-3 review)
+    assert "run '${s.schedule_install_command ?? \"ns schedule install\"}' once from an elevated PowerShell" in settings
+    operator = (ROOT / "OPERATOR.md").read_text(encoding="utf-8")
+    assert "put it in quotes twice" in operator and "odd number of double quotes" in operator
+
+
+# ---------------------------------------------------------------------- FN-3 review: what a plain ns reaches
+def stand_alone(home: Path) -> Path:
+    """An install folder with both command files (and no venv: the files are what a window finds)."""
+    (home / "config").mkdir(parents=True)
+    (home / "config" / "runtime.json").write_text("{}", encoding="utf-8")
+    assert commands is not None, NEW
+    assert commands.write_shims(home, home / "app") is None
+    return home
+
+
+def two_installs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """A with its command files first on the user PATH; B, this process's install, with its own files but no
+    entry (its owner left the switch off): a plain `ns` in a new window runs A's."""
+    a = stand_alone(tmp_path / "A")
+    b = stand_alone(tmp_path / "B")
+    monkeypatch.setenv("NS_TEST_USER_PATH", rf"C:\Tools;{a}\cmd")
+    monkeypatch.setenv("NS_TEST_MACHINE_PATH", "")
+    monkeypatch.setenv("NIGHTSHIFT_HOME", str(b))
+    return a, b
+
+
+def test_an_update_way_out_names_this_installs_own_command_when_another_install_has_the_plain_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """B's failed update must not tell its owner to type a plain `ns update --rollback --detach`: with A's
+    commands first that rolls A back. Every route of a sentence names B's own file: the update's way out, an
+    error's hint and detail, a studio error and a morning note."""
+    from ns_common import commandline
+    from ns_common.errors import NsError
+    from ns_studio.errors import StudioError
+    from ns_supervisor import notify
+
+    a, b = two_installs(tmp_path, monkeypatch)
+    own = f"{b}\\cmd\\ns.cmd"
+    assert commandline.reach(b).ok is False and commandline.reach(b).other == str(a)
+    assert commandline.typed(b, "ns update --rollback --detach") == f"{own} update --rollback --detach"
+    monkeypatch.setattr(update, "takes_detach", lambda _app: True)
+    way = update.rollback_way_out(Paths(b), b / "app", "0.1.15", "0.1.14")
+    assert f"run '{own} update --rollback --detach'" in way and "'ns update" not in way
+    assert f"'{own} update <zip> --detach'" in update.update_way_out(Paths(b), b / "app", "0.1.15", "0.1.14")
+    assert f"Run '{own} doctor'" in describe("NS-E202").hint               # errors.json, as every reader gets it
+    assert f"run {own} update again" in describe("NS-E124").hint           # unquoted words too
+    assert f"{b}\\cmd\\studio.cmd channel edit" in describe("NS-E320").hint
+    err = NsError("NS-E702", "Run ns update --rollback again to go back.")
+    assert f"Run {own} update --rollback again" in err.detail
+    assert f"'{b}\\cmd\\studio.cmd calibrate'" in StudioError("NS-E324", "run 'studio calibrate' first").detail
+    paths = Paths(b)
+    notify.leave_note(paths, "Nightshift", "continue it with studio run --resume <id>")
+    assert any(f"{b}\\cmd\\studio.cmd run --resume <id>" in n["message"] for n in notify.read_notes(paths))
+    # B's commands reach B again (its entry first): every text keeps its plain words
+    monkeypatch.setenv("NS_TEST_USER_PATH", rf"{b}\cmd;{a}\cmd")
+    assert describe("NS-E202").hint == "Run 'ns doctor' and check logs\\supervisor-*.jsonl."
+    assert commandline.typed(b, "ns update --rollback --detach") == "ns update --rollback --detach"
+    # nothing known (no stand-in: as when Windows does not answer): unchanged, never a guess
+    monkeypatch.delenv("NS_TEST_USER_PATH")
+    assert commandline.render("Run 'ns doctor'.", b) == "Run 'ns doctor'."
+
+
+def test_a_folder_with_a_space_is_given_in_powershells_form_and_the_venv_program_without_command_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from ns_common import commandline
+
+    monkeypatch.setenv("NS_TEST_USER_PATH", "")
+    home = tmp_path / "Jo's Nightshift"
+    (home / "config").mkdir(parents=True)
+    (home / "config" / "runtime.json").write_text("{}", encoding="utf-8")
+    exe = home / "venvs" / "supervisor" / "Scripts" / "ns.exe"
+    assert commandline.typed(home, "ns doctor --bundle") == f'& "{exe}" doctor --bundle'   # no files yet
+    assert commandline.render("run 'ns doctor --bundle' and send it", home) == f"run '& \"{exe}\" doctor --bundle' and send it"
+    (home / "config" / "runtime.json").write_text('{"dev_mode": true}', encoding="utf-8")
+    assert commandline.reach(home).why == "a dev install does not put them on your PATH"
+
+
+def test_the_command_table_is_the_clis_own():
+    import click
+    import typer.main
+
+    from ns_common import commandline
+    from ns_studio.cli import app as studio_app
+    from ns_supervisor.cli import app as ns_app
+
+    for tool, app in (("ns", ns_app), ("studio", studio_app)):
+        group: Any = typer.main.get_command(app)
+        ctx = click.Context(group)
+        seen: dict[str, tuple[str, ...]] = {}
+        for name in group.list_commands(ctx):
+            cmd: Any = group.get_command(ctx, name)
+            seen[name] = tuple(sorted(cmd.list_commands(click.Context(cmd)))) if hasattr(cmd, "list_commands") else ()
+        assert seen == {k: tuple(sorted(v)) for k, v in commandline.COMMANDS[tool].items()}, tool
+
+
+def test_setup_says_when_another_programs_ns_comes_first(tmp_path: Path, windows: FakeWindows, monkeypatch: pytest.MonkeyPatch):
+    """NativeScript's `ns.cmd` in a folder of the machine PATH (searched before the user PATH): setup's entry
+    is written, and it says that a plain `ns` runs that program, with this install's files by full path."""
+    npm = tmp_path / "npm"
+    npm.mkdir()
+    (npm / "ns.cmd").write_text("@echo NativeScript\r\n", encoding="ascii")
+    monkeypatch.setenv("NS_TEST_MACHINE_PATH", str(npm))
+    ctx = second(tmp_path)
+    text = setup(ctx)
+    home = ctx.paths.home
+    line = said(text, "Commands:")
+    assert path_of(ctx) == f"{home}\\cmd"                                  # the entry is there all the same
+    assert line == (
+        f"Commands: 'ns' runs {npm / 'ns.cmd'} first, not this install (NS-W120). This install's are "
+        f"{home}\\cmd\\ns.cmd and {home}\\cmd\\studio.cmd: type the full path, or rename or remove that file "
+        "from your PATH and open a new window."
+    )
+    assert ("NS-W120", "another program's command comes first") in ctx.warnings
+    assert ctx.flag("commands_owner") == "shadowed"
+    # a Command Prompt also looks in the folder it starts in (the user folder) before the PATH
+    from ns_common import commandline
+
+    monkeypatch.setenv("NS_TEST_MACHINE_PATH", "")
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (profile / "studio.bat").write_text("@echo other\r\n", encoding="ascii")
+    monkeypatch.setenv("NS_TEST_PROFILE", str(profile))
+    assert commandline.reach(home, user_value=f"{home}\\cmd").why == (
+        f"'studio' runs {profile / 'studio.bat'} (the folder a new Command Prompt starts in) first"
+    )
+
+
+def test_a_broadcast_that_does_not_finish_after_the_write_is_not_called_a_refusal(tmp_path: Path, windows: FakeWindows):
+    ctx = second(tmp_path)
+
+    def written_then_timeout(call: Call) -> RunResult:
+        FakeRunner._default(ctx.runner, call)
+        return RunResult(124, "", "timed out after 60 s")
+
+    ctx.runner.results["ps:userpath-write"] = written_then_timeout
+    line = said(setup(ctx), "Commands:")
+    home = ctx.paths.home
+    assert line.startswith(mine_line(home)) and "Windows refused" not in line
+    assert line.endswith("if a new window does not know 'ns', sign out and in again.")
+    assert ctx.flag("commands_owner") == "mine"
+
+
+def test_an_update_that_brings_the_commands_leaves_one_note_per_outcome(plain_inst: Inst):
+    """No setup runs when the commands come by update: the engine's first start leaves the sentence as a
+    morning note, once per outcome (a later start with the same outcome adds nothing); `mine` adds none."""
+    from ns_supervisor import launch_reach, notify
+
+    inst = plain_inst
+    a = with_commands(inst.home.parent / "A")
+    inst.shell.user_path = rf"{a}\cmd"
+    marker = inst.run()
+    assert marker["commands"] == f"other:{a}"
+
+    def notes() -> list[Any]:
+        return [n for n in notify.read_notes(inst.paths) if n["title"] == launch_reach.COMMANDS_TITLE]
+
+    said_once = notes()
+    assert len(said_once) == 1
+    assert said_once[0]["message"].startswith(f"Commands: 'ns' and 'studio' open the Nightshift at {a} (NS-W120).")
+    inst.run()
+    assert len(notes()) == 1                                               # settled: no second note
+    # the outcome changes (the PATH is now too long): a second, different note, once
+    data = json.loads(launch_reach.marker_file(inst.paths).read_text(encoding="utf-8"))
+    data.pop("commands")
+    launch_reach.marker_file(inst.paths).write_text(json.dumps(data), encoding="utf-8")
+    inst.shell.user_path = "C:\\" + "y" * 2040
+    assert inst.run()["commands"] == "refused"
+    inst.run()                                                             # retried, the same sentence: no note
+    told = notes()
+    assert len(told) == 2 and "could not be put on your PATH (it would grow to" in told[1]["message"]
+
+
+@windows_only
+def test_an_argument_with_an_odd_number_of_quotes_runs_the_program_and_nothing_after_it(tmp_path: Path):
+    home = tmp_path / "home"
+    shim = stand_in_install(home)
+    show = tmp_path / "show.py"
+    show.write_text(SHOW, encoding="ascii")
+    env = {**os.environ, "NS_EXIT": "7"}
+    proc = run_cmd(f'"{shim}" "{show}" "a "b"', env)
+    assert proc.returncode == 7 and "Python environment is missing" not in proc.stdout, proc.stdout
+    assert PS is not None
+    env.update(NS_SHIM=str(shim), NS_SHOW=str(show))
+    ps = "& $env:NS_SHIM $env:NS_SHOW 'a \"b'; exit $LASTEXITCODE"
+    proc = subprocess.run([PS, "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=120, env=env)
+    assert proc.returncode == 7 and "Python environment is missing" not in proc.stdout, proc.stdout
+    assert proc.stdout.splitlines()[0] == str(home)

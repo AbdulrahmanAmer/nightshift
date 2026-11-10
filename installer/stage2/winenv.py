@@ -140,6 +140,7 @@ _WRITE_USER_PATH = "\n".join([
     "$type = 'ExpandString'",
     "if ($env:NS_PATH_KIND -eq 'String') { $type = 'String' }",
     "Set-ItemProperty -LiteralPath $p -Name 'Path' -Value ([string]$env:NS_PATH_NEW) -Type $type",
+    "Write-Output 'written'",               # before the broadcast: a timeout there leaves the PATH written
     "try {",
     "  $sig = '[DllImport(\"user32.dll\", CharSet = CharSet.Unicode)] public static extern IntPtr "
     "SendMessageTimeout(IntPtr h, uint m, UIntPtr w, string l, uint f, uint t, out UIntPtr r);'",
@@ -148,7 +149,6 @@ _WRITE_USER_PATH = "\n".join([
     "  $null = [NsEnv.Win]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, "
     "5000, [ref]$r)",
     "} catch { Write-Output ('not told: ' + $_.Exception.Message) }",
-    "Write-Output 'written'",
 ])
 CHANGED_EXIT = commands.CHANGED_EXIT
 

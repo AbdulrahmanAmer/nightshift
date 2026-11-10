@@ -39,6 +39,7 @@ import psutil
 
 from ns_common import testguard
 from ns_common.atomic import REPLACE_WAIT_S, read_text_retry, write_text_atomic
+from ns_common.commandline import render
 from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_common.singleton import AlreadyRunning, FileLock
@@ -163,7 +164,9 @@ def step(paths: Paths, message: str, if_stopped_here: str) -> None:
     if raw.get("state") != "running" or raw.get("pid") != os.getpid():
         return
     keep = {k: raw[k] for k in ("log", "pid", "old") if k in raw}
-    _progress(paths, "running", message, if_stopped_here=if_stopped_here, **keep)
+    # the commands a sentence names, as this install's owner types them (FN-3, `commandline.render`)
+    told = render(if_stopped_here, paths.home)
+    _progress(paths, "running", render(message, paths.home), if_stopped_here=told, **keep)
 
 
 def unchanged_sentence(old_version: str) -> str:

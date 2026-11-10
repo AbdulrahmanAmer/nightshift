@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from typer.core import TyperGroup
 
 from ns_common import __version__
+from ns_common.commandline import render
 from ns_common.errors import NsError
 from ns_common.keepawake import keep_awake
 from ns_common.models import Channel, JobRunRequest, Voice
@@ -67,6 +68,15 @@ class StudioGroup(TyperGroup):
         return name, command, rest
 
 
+def echo(message: object = "", **kw: Any) -> None:
+    """`typer.echo` for every line this CLI prints, with the `ns ...` and `studio ...` a sentence names
+    given as this install's owner types them (FN-3, `ns_common.commandline.render`). A JSON line is
+    printed as it is: the program that reads it renders what it shows."""
+    text = message if isinstance(message, str) else str(message)
+    if text[:1] not in ("{", "[") and not text.startswith("setup: "):
+        text = render(text)
+    typer.echo(text, **kw)
+
 app = typer.Typer(help="Nightshift Studio", no_args_is_help=False, cls=StudioGroup)
 channel_app = typer.Typer(help="Manage channel profiles", no_args_is_help=True)
 voice_app = typer.Typer(help="List, preview, design and clone voices", no_args_is_help=True)
@@ -78,7 +88,7 @@ app.add_typer(series_cli.app, name="series")  # CR-C11-3
 
 def _ask_unavailable(text: Annotated[str, typer.Argument(help="What to ask or tell Nightshift.")]) -> None:
     """Ask the Assistant (unavailable: the dashboard package or its dependencies are missing)."""
-    typer.echo(
+    echo(
         "The Assistant needs the dashboard package and its dependencies (fastapi), which are not "
         "installed here. Install the dashboard extra, then try again.",
         err=True,
@@ -122,16 +132,16 @@ def guarded() -> Iterator[None]:
         yield
     except (NsError, StudioError) as e:
         hint = hint_of(e) if isinstance(e, NsError) else e.hint
-        typer.echo(f"error {e}", err=True)
+        echo(f"error {e}", err=True)
         if hint:
-            typer.echo(f"hint: {hint}", err=True)
+            echo(f"hint: {hint}", err=True)
         raise typer.Exit(1) from e
     except Exception as e:  # an uncoded bug or corrupt file: coded, logged, no traceback wall
         if type(e).__module__.split(".")[0] in ("click", "typer"):
             raise  # usage errors and Exit keep their own message and exit code
         err = StudioError(UNEXPECTED, describe_unexpected(e))
-        typer.echo(f"error {err}", err=True)
-        typer.echo(f"hint: {err.hint}", err=True)
+        echo(f"error {err}", err=True)
+        echo(f"hint: {err.hint}", err=True)
         raise typer.Exit(1) from e
 
 
@@ -146,7 +156,7 @@ def fake_set(value: str | None) -> frozenset[str]:
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
-        typer.echo(f"studio {__version__}")
+        echo(f"studio {__version__}")
         return
     from ns_supervisor import homecheck
 
@@ -186,7 +196,7 @@ def run_cmd(
             if script_text:
                 plan_fmt = OWNER_SCRIPT_FORMATS[plan_fmt]
             names = [s.name for s in plan_job(plan_fmt, enabled)]
-            typer.echo("plan: " + " -> ".join(names))
+            echo("plan: " + " -> ".join(names))
             return
         env = jobs.open_env(fake)
         if not dry_run:
@@ -213,7 +223,7 @@ def _close_dead_work(env: jobs.Env) -> None:
     for j in recovered.jobs:
         if not j.dashboard_owned:
             way = "Retry it in the Queue or with" if j.has_card else "continue it with"
-            typer.echo(f"job {j.job_id} was interrupted{_at(j.stage)}: {way} studio run --resume {j.job_id}")
+            echo(f"job {j.job_id} was interrupted{_at(j.stage)}: {way} studio run --resume {j.job_id}")
 
 
 def _at(stage: str | None) -> str:
@@ -276,7 +286,7 @@ def _run_jobs(
         # reads the channel profile again (`get_channel`); the job's own policy unless a flag is given
         ctx = jobs.load_job(env, resume, policy=policy)
         if dry_run:
-            typer.echo("plan: " + " -> ".join(run_job(ctx, dry_run=True)))
+            echo("plan: " + " -> ".join(run_job(ctx, dry_run=True)))
             return
         if ctx.channel.status == "paused":  # as the Dashboard refuses Retry of a paused channel's job (P47)
             env.log.info("run_channel_paused", channel=ctx.channel.slug, job_id=ctx.job_id)
@@ -290,7 +300,7 @@ def _run_jobs(
         rows = env.db.query("select output_id from outputs where job_id=?", (ctx.job_id,))
         # the Queue card of an interrupted job is done now
         ownership.settle_resumed(env.db, ctx.job_id, [r["output_id"] for r in rows], by="hand")
-        typer.echo(f"job {ctx.job_id} resumed: {len(ran)} stages visited")
+        echo(f"job {ctx.job_id} resumed: {len(ran)} stages visited")
         return
     rng = random.Random()
     channels = jobs.resolve_channels(env, channel)
@@ -308,7 +318,7 @@ def _run_jobs(
                 if channel is not None:
                     made = f"{n} of {count} jobs were made" if n else "no job was made"
                     raise StudioError(PAUSED, f"{ch.display_name} ({ch.slug}): {made}")
-                typer.echo(f"channel {ch.slug} was paused: {count - n} job(s) not started")
+                echo(f"channel {ch.slug} was paused: {count - n} job(s) not started")
                 break
             require_footage_key(env.services)  # before any GPU work: `clips` would fail an hour in
             # and before the job exists: a drive with less room than the job needs writes nothing (D-33)
@@ -319,7 +329,7 @@ def _run_jobs(
                 ctx = jobs.make_job(env, ch, job_fmt, rng=rng, policy=job_policy)
             with _say_how_to_continue(ctx):
                 ran = run_job_guarded(ctx)
-            typer.echo(f"job {ctx.job_id} done: {len(ran)} stages ({ch.slug}, {ctx.fmt})")
+            echo(f"job {ctx.job_id} done: {len(ran)} stages ({ch.slug}, {ctx.fmt})")
 
 
 @contextmanager
@@ -330,7 +340,7 @@ def _say_how_to_continue(ctx: JobContext) -> Iterator[None]:
         yield
     except NsError as e:
         if e.code == PAUSED:
-            typer.echo(
+            echo(
                 f"job {ctx.job_id} stopped before its next stage because {ctx.channel.slug} was paused; after"
                 f" studio resume {ctx.channel.slug}, continue it with: studio run --resume {ctx.job_id}",
                 err=True,
@@ -345,9 +355,9 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
     if dry_run:
         due = cadence.plan_daily(env.paths, env.db, now)
         if not due:
-            typer.echo("nothing due today")
+            echo("nothing due today")
         for dj in due:
-            typer.echo(f"{dj.channel.slug}: {dj.count} x {dj.fmt} ({dj.plan.describe()})")
+            echo(f"{dj.channel.slug}: {dj.count} x {dj.fmt} ({dj.plan.describe()})")
         return
     notifier = notifications.nightly_notifier(env.paths, env.log)
     try:
@@ -356,21 +366,21 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
         notifications.send(env.paths, env.log, notifier, notifications.failure_message(e.code))
         raise
     for item in report.get("interrupted_jobs", []):
-        typer.echo(interrupted_line(item))
+        echo(interrupted_line(item))
     if not (report["channels"] or report["jobs"] or report["failures"]):
-        typer.echo(nothing_due_message(report))
+        echo(nothing_due_message(report))
     for c in report["channels"]:
-        typer.echo(f"{c['channel']}: {c['jobs']} job(s), {c['plan']}")
+        echo(f"{c['channel']}: {c['jobs']} job(s), {c['plan']}")
     for j in report["jobs"]:
         resumed = " (resumed)" if j.get("resumed") else ""
-        typer.echo(f"job {j['job_id']} done: {j['stages']} stages ({j['channel']}){resumed}")
+        echo(f"job {j['job_id']} done: {j['stages']} stages ({j['channel']}){resumed}")
     for f in report["failures"]:
-        typer.echo(f"job {f['job_id']} FAILED {f['code']}: {f['error']}")
+        echo(f"job {f['job_id']} FAILED {f['code']}: {f['error']}")
     for r in report.get("no_room", []):
-        typer.echo(f"{r['channel']}: {r['jobs']} x {r['format']} NOT STARTED, no room: {r['message']}")
+        echo(f"{r['channel']}: {r['jobs']} x {r['format']} NOT STARTED, no room: {r['message']}")
     for bad_slug, problem in report.get("unreadable_profiles", []):
-        typer.echo(f"channel {bad_slug} NOT RUN, its profile cannot be read: {problem}")
-    typer.echo(f"backup: {report['backup']}")
+        echo(f"channel {bad_slug} NOT RUN, its profile cannot be read: {problem}")
+    echo(f"backup: {report['backup']}")
     code = nightly_exit_code(report)
     if code:
         raise typer.Exit(code)
@@ -433,8 +443,8 @@ def channel_add(
                 raise StudioError("NS-E320", str(e).replace("\n", " ")) from e
         f = crud.add_channel(env.paths, env.db, ch)
         for w in crud.pool_warnings(ch.pools):
-            typer.echo(f"warning: {w}")
-        typer.echo(f"channel {ch.slug} added: {f}")
+            echo(f"warning: {w}")
+        echo(f"channel {ch.slug} added: {f}")
 
 
 @channel_app.command("list")
@@ -445,13 +455,13 @@ def channel_list() -> None:
         chans = crud.all_channels(env.paths)
         broken = crud.broken_channels(env.paths)
         if not chans and not broken:
-            typer.echo("no channels configured")
+            echo("no channels configured")
             return
         for c in chans:
             pairs = len(c.pools.hooks) * len(c.pools.structures)
-            typer.echo(f"{c.slug}\t{c.status}\t{c.format}\tpairs={pairs}\t{c.display_name}")
+            echo(f"{c.slug}\t{c.status}\t{c.format}\tpairs={pairs}\t{c.display_name}")
         for slug, problem in broken:
-            typer.echo(f"{slug}\tUNREADABLE\t{problem}")
+            echo(f"{slug}\tUNREADABLE\t{problem}")
 
 
 @channel_app.command("edit")
@@ -473,7 +483,7 @@ def channel_edit(
             raise typer.BadParameter("give at least one --set key=value")
         env = jobs.open_env(light=True)
         crud.edit_channel(env.paths, env.db, slug, updates)
-        typer.echo(f"channel {slug} updated ({', '.join(updates)})")
+        echo(f"channel {slug} updated ({', '.join(updates)})")
 
 
 @channel_app.command("validate")
@@ -486,16 +496,16 @@ def channel_validate(slug: Annotated[str | None, typer.Argument()] = None) -> No
         failed = False
         for broken_slug, problem in crud.broken_channels(env.paths):
             if slug is None or slug == broken_slug:  # a profile that cannot be read is a failed check
-                typer.echo(f"{broken_slug}: PROBLEM {problem}")
+                echo(f"{broken_slug}: PROBLEM {problem}")
                 failed = True
         for ch in targets:
             problems, warnings = crud.validate_channel(ch, [c for c in every if c.slug != ch.slug])
             for p in problems:
-                typer.echo(f"{ch.slug}: PROBLEM {p}")
+                echo(f"{ch.slug}: PROBLEM {p}")
             for w in warnings:
-                typer.echo(f"{ch.slug}: warning {w}")
+                echo(f"{ch.slug}: warning {w}")
             if not problems:
-                typer.echo(f"{ch.slug}: ok")
+                echo(f"{ch.slug}: ok")
             failed = failed or bool(problems)
         if failed:
             raise typer.Exit(1)
@@ -514,7 +524,7 @@ def voice_list(fake_services: FakeOpt = None) -> None:
         finally:
             env.services.acquirer.release("tts", owner)
         for v in voices:
-            typer.echo(f"{v.get('name', '?')}\t{v.get('mode', '?')}")
+            echo(f"{v.get('name', '?')}\t{v.get('mode', '?')}")
 
 
 @voice_app.command("preview")
@@ -536,7 +546,7 @@ def voice_preview(
             seconds = env.services.tts.speak(text, name, speed, target)
         finally:
             env.services.acquirer.release("tts", owner)
-        typer.echo(f"{target} ({seconds:.1f} s)")
+        echo(f"{target} ({seconds:.1f} s)")
 
 
 @voice_app.command("design")
@@ -550,7 +560,7 @@ def voice_design(
     with guarded():
         env = jobs.open_env(fake_set(fake_services))
         folder = voice_setup.design_voice(env, name, description, language=language)
-        typer.echo(f"voice {name} created: {folder}")
+        echo(f"voice {name} created: {folder}")
 
 
 @voice_app.command("clone")
@@ -570,7 +580,7 @@ def voice_clone(
         folder = voice_setup.clone_voice(
             env, name, audio, text, rights_confirmed=rights_confirmed, language=language
         )
-        typer.echo(f"voice {name} created: {folder}")
+        echo(f"voice {name} created: {folder}")
 
 
 @voice_app.command("apply-pending")
@@ -579,7 +589,7 @@ def voice_apply_pending(fake_services: FakeOpt = None) -> None:
     with guarded():
         env = jobs.open_env(fake_set(fake_services))
         made = voice_setup.apply_pending_report(env)
-        typer.echo(made.said() if made else "no voice is waiting to be created")
+        echo(made.said() if made else "no voice is waiting to be created")
 
 
 def _setup_voice(env: jobs.Env) -> None:
@@ -590,11 +600,11 @@ def _setup_voice(env: jobs.Env) -> None:
         return
     made, failed = voice_setup.apply_for_run(env)
     if failed is not None:
-        typer.echo(f"warning: {voice_setup.problem_said(failed)}", err=True)
+        echo(f"warning: {voice_setup.problem_said(failed)}", err=True)
     elif made is not None and made.renamed_from is None and made.name:
-        typer.echo(f"voice {made.name} created from your setup choice")
+        echo(f"voice {made.name} created from your setup choice")
     elif made is not None:
-        typer.echo(made.said())
+        echo(made.said())
 
 
 # ---------------------------------------------------------------- review, status, learn, pause
@@ -614,9 +624,9 @@ def review_list(
         env = jobs.open_env(light=True)
         rows = review.pending(env.db, channel)
         if not rows:
-            typer.echo("nothing pending")
+            echo("nothing pending")
         for r in rows:
-            typer.echo(f"{r['output_id']}\t{r['channel']}\t{r['kind']}\t{r['title']}")
+            echo(f"{r['output_id']}\t{r['channel']}\t{r['kind']}\t{r['title']}")
 
 
 @review_app.command("show")
@@ -628,9 +638,9 @@ def review_show(
     with guarded():
         env = jobs.open_env(light=True)
         for line in review.describe(env.paths, env.db, output_id):
-            typer.echo(line)
+            echo(line)
         if play and not review.open_in_player(Path(review.get_output(env.db, output_id)["path"])):
-            typer.echo("could not open a player for this file")
+            echo("could not open a player for this file")
 
 
 @review_app.command("approve")
@@ -642,7 +652,7 @@ def review_approve(
     with guarded():
         env = jobs.open_env(light=True)
         review.approve(env.db, output_id, note)
-        typer.echo(f"approved {output_id}")
+        echo(f"approved {output_id}")
 
 
 @review_app.command("reject")
@@ -654,7 +664,7 @@ def review_reject(
     with guarded():
         env = jobs.open_env(light=True)
         dest = review.reject(env.paths, env.db, output_id, reason)
-        typer.echo(f"rejected {output_id}: {dest}")
+        echo(f"rejected {output_id}: {dest}")
 
 
 @app.command("mark-uploaded")
@@ -667,7 +677,7 @@ def mark_uploaded_cmd(
     with guarded():
         env = jobs.open_env(light=True)
         out = review.mark_uploaded(env.db, job_id, item, url)
-        typer.echo(f"{out} marked uploaded")
+        echo(f"{out} marked uploaded")
 
 
 @app.command("pause")
@@ -679,7 +689,7 @@ def pause_cmd(
     with guarded():
         env = jobs.open_env(light=True)
         review.pause(env.paths, env.db, slug, reason)
-        typer.echo(f"channel {slug} paused; nightly runs skip it")
+        echo(f"channel {slug} paused; nightly runs skip it")
 
 
 @app.command("resume")
@@ -691,12 +701,12 @@ def resume_cmd(
     with guarded():
         env = jobs.open_env(light=True)
         for r in review.last_outputs(env.db, slug):
-            typer.echo(f"{r['output_id']}\t{r['status']}\t{r['title']}\t{r['review_note'] or ''}")
-        typer.echo("Check these against spec sections 18.2-18.4; raise critic_bar or trim pools if needed.")
+            echo(f"{r['output_id']}\t{r['status']}\t{r['title']}\t{r['review_note'] or ''}")
+        echo("Check these against spec sections 18.2-18.4; raise critic_bar or trim pools if needed.")
         if not yes and not typer.confirm(f"Resume {slug}?"):
             raise typer.Exit(1)
         review.resume(env.paths, env.db, slug)
-        typer.echo(f"channel {slug} resumed")
+        echo(f"channel {slug} resumed")
 
 
 @app.command("status")
@@ -709,7 +719,7 @@ def status_cmd(
         env = jobs.open_env(light=True)
         chans = [crud.get_channel(env.paths, channel)] if channel else crud.all_channels(env.paths)
         if not chans:
-            typer.echo("no channels configured")
+            echo("no channels configured")
         for ch in chans:
             if milestone:
                 lines = status.format_milestone(status.milestone(env.db, ch.slug))
@@ -718,7 +728,7 @@ def status_cmd(
                 lines = status.format_status(status.channel_status(env.db, env.paths, ch), plan.describe())
                 lines += ownership.status_lines(env.paths, env.db, ch.slug)
             for line in lines:
-                typer.echo(line)
+                echo(line)
 
 
 @app.command("dashboard")
@@ -740,9 +750,9 @@ def dashboard_command(
     """Start the engine if needed, make sure the dashboard is ready, and print its address."""
     with guarded():
         url = dashboard_cmd.ensure_dashboard(port)
-        typer.echo(url)
+        echo(url)
         if open_browser and not dashboard_cmd.open_in_browser(url):
-            typer.echo(f"Could not start a browser here. Open that address ({url}) in one yourself.")
+            echo(f"Could not start a browser here. Open that address ({url}) in one yourself.")
 
 
 @app.command("learn")
@@ -765,14 +775,14 @@ def learn_cmd(
         day = date or datetime.now(UTC).date().isoformat()
         rows = importer.read_csv(import_csv, overrides or None)
         result = importer.import_rows(env.db, rows, day)
-        typer.echo(f"matched {len(result.matched)} of {len(rows)} rows")
+        echo(f"matched {len(result.matched)} of {len(rows)} rows")
         for r in result.unmatched:
-            typer.echo(f"unmatched: {r.title or r.video_id or r.url}")
+            echo(f"unmatched: {r.title or r.video_id or r.url}")
         for slug in sorted(set(result.matched.values())):
             ch = crud.get_channel(env.paths, slug)
             changes = reweight.reweight(env.db, ch)
             reweight.save_snapshot(env.paths, slug, changes)
-            typer.echo(f"{slug}: {sum(len(c) for c in changes.values())} pool weights changed")
+            echo(f"{slug}: {sum(len(c) for c in changes.values())} pool weights changed")
 
 
 # ---------------------------------------------------------------- calibrate
@@ -796,25 +806,25 @@ def calibrate_cmd(
         env = jobs.open_env(light=True) if light else jobs.open_env(fake_set(fake_services))
         if score_csv is not None:
             rep = calibration.score(env.paths, env.db, channel, score_csv)
-            typer.echo(f"scored stories: {rep.rows}")
+            echo(f"scored stories: {rep.rows}")
             for item, rho in rep.per_item_spearman.items():
-                typer.echo(f"spearman {item}: {rho:+.3f}")
-            typer.echo(f"spearman overall: {rep.overall_spearman:+.3f}")
-            typer.echo(f"critic mean bias: {rep.mean_bias:+.2f}")
-            typer.echo(
+                echo(f"spearman {item}: {rho:+.3f}")
+            echo(f"spearman overall: {rep.overall_spearman:+.3f}")
+            echo(f"critic mean bias: {rep.mean_bias:+.2f}")
+            echo(
                 f"recommended critic_bar: {rep.recommended_bar:.1f} "
                 f"(good pass {rep.good_pass_rate:.0%}, bad pass {rep.bad_pass_rate:.0%}, "
                 f"{'meets' if rep.satisfied else 'does NOT meet'} the 80/20 target)"
             )
-            typer.echo(f"refusal rate: {rep.refusal_rate:.1%}")
+            echo(f"refusal rate: {rep.refusal_rate:.1%}")
             failed_line = calibration.failure_summary(rep.failed, rep.failed_codes)
             if failed_line:
-                typer.echo(failed_line)
+                echo(failed_line)
             if rep.two_model_recommended:
                 if env.runtime.llama.story_model_path:
-                    typer.echo("refusal rate is above 2 %: switch to two-model mode (spec decision D3)")
+                    echo("refusal rate is above 2 %: switch to two-model mode (spec decision D3)")
                 else:
-                    typer.echo(
+                    echo(
                         "refusal rate is above 2 %, but no story model is configured "
                         "(llama.story_model_path is empty): two-model mode is not available on this install"
                     )
@@ -834,10 +844,10 @@ def calibrate_cmd(
         finally:
             acq.release("llama", owner)
         out = calibration.write_generation(env.paths, env.db, channel, stories)
-        typer.echo(f"wrote {len(stories)} stories to {out}")
-        typer.echo(f"fill in {out / 'scores.csv'}, then: studio calibrate --channel {channel} --score FILE")
+        echo(f"wrote {len(stories)} stories to {out}")
+        echo(f"fill in {out / 'scores.csv'}, then: studio calibrate --channel {channel} --score FILE")
         for line in calibration.generation_report(stories):
-            typer.echo(line)
+            echo(line)
 
 
 def main() -> None:

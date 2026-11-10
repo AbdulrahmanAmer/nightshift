@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Literal
 
+from ns_common.commandline import render
 from ns_common.paths import contracts_dir
 
 
@@ -27,13 +28,17 @@ def load_errors() -> dict[str, ErrorDef]:
 
 
 def describe(code: str) -> ErrorDef:
-    return load_errors()[code]
+    """The code's message and hint, with every `ns ...` and `studio ...` they name given as THIS install's
+    owner must type it (`ns_common.commandline.render`: unchanged while a plain `ns` reaches this install;
+    its own command file by full path when another install's or another program's comes first, or none)."""
+    d = load_errors()[code]
+    return ErrorDef(code=d.code, message=render(d.message), hint=render(d.hint), kind=d.kind)
 
 
 class NsError(Exception):
     def __init__(self, code: str, detail: str = "", **data: Any) -> None:
         self.code = code
-        self.detail = detail
+        self.detail = render(detail)        # an update's way out names commands too (`commandline.render`)
         self.data = data
         self.definition = describe(code)
         super().__init__(str(self))

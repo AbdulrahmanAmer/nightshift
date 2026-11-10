@@ -634,7 +634,16 @@ them: open a new one. The commands always open the install whose `cmd` folder th
 `NIGHTSHIFT_HOME` says in the window. When the commands could not be put on your PATH, or another Nightshift
 install has them, setup says so (`NS-W120`) and gives this install's own files by their full path, for example
 `D:/Nightshift/cmd/ns.cmd doctor`; that works in any window. `ns doctor` says in its row "commands" which install
-they open now.
+they open now. Setup also says so when another program's `ns` or `studio` comes first on your PATH (the
+NativeScript `ns`, an Android Studio or JetBrains `studio`). While a plain `ns` does not reach this install, the
+messages, notes and pages of this install name its own command file by its full path instead of the plain
+word, so the command they give is always this install's; this guide keeps the plain words: put the full path
+in their place in that case.
+
+- **Quotes and special characters.** In Windows PowerShell 5.1, an argument that holds `&`, `|`, `<`, `>` or `^`
+  and no space reaches the command file without quotes, so cmd.exe splits it or drops the `^` before Nightshift
+  sees it: put it in quotes twice (`'"a&b"'`). An argument with an odd number of double quotes takes the rest
+  of the command file's line with it; avoid it.
 
 - **A PowerShell opened as administrator** has the commands when it runs as your own Windows account (the usual
   "Run as administrator"). Another administrator account has its own PATH: type the full path there.

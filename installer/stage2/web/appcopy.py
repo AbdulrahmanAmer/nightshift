@@ -41,6 +41,7 @@ from pathlib import Path
 import ns_common.config_snapshot as config_snapshot
 import ns_common.rollback_intent as rollback_intent
 from ns_common.avblock import is_blocked_error
+from ns_common.commandline import render
 
 APP_DIR = "app"
 MARKER = ".ns-app.done"
@@ -241,11 +242,11 @@ def _save_settings_copy(
         ) from e
     kept = slot.copy
     if action == config_snapshot.KEEP and kept is not None:
-        say(
+        say(render(
             f"The settings copy for {old_version} (made {kept.created.replace('T', ' ')}) is kept in "
             f"{zip_path} for ns update --rollback: the last rollback could not put it back, so the settings "
-            "files now may be a newer version's"
-        )
+            "files now may be a newer version's", home,
+        ))
         return False
     if action == config_snapshot.FOREIGN and kept is not None:
         say(config_snapshot.foreign_note(zip_path, kept, leaving=leaving, backup=backup))
@@ -292,9 +293,11 @@ def _finish_interrupted_rollback(
         back = f"{settled} Nightshift starts again now. " if settled else ""
         raise AppCopyError(
             "NS-E115",
-            f"{back}{rec.sentence} The program was not replaced. Start Nightshift once (it puts your "
-            "settings back as they were before the rollback) or run ns update --rollback again, then run "
-            "INSTALL.cmd again.",
+            render(
+                f"{back}{rec.sentence} The program was not replaced. Start Nightshift once (it puts your "
+                "settings back as they were before the rollback) or run ns update --rollback again, then run "
+                "INSTALL.cmd again.", home,
+            ),
         )
     if rec.sentence:
         say(rec.sentence)

@@ -19,6 +19,7 @@ from installer.stage2.errors import make_error
 from installer.stage2.runtime_cfg import runtime_is_usable, update_runtime
 from installer.stage2.secrets import KEY_NAMES
 from ns_common.atomic import write_text_atomic
+from ns_common.commandline import typed
 from ns_common.config import load_channel, load_runtime, save_channel
 from ns_common.models import Channel, Runtime, Voice
 
@@ -270,7 +271,7 @@ class S07Configs(Step):
         if queue_voice(ctx, ans, channel):
             ctx.ui.say(
                 f"Your {channel.voice.mode} voice '{channel.voice.name}' is created the first time "
-                "Nightshift runs. To make it now: studio voice apply-pending."
+                f"Nightshift runs. To make it now: {typed(ctx.paths.home, 'studio voice apply-pending')}."
             )
 
     @staticmethod

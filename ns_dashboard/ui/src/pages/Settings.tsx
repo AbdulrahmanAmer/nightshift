@@ -170,7 +170,7 @@ export default function Settings() {
               <Button disabled={time === s?.schedule_time} onClick={() => put({ schedule_time: time }, s?.schedule_registered ? `Runs at ${time} from tonight` : `${time} saved. Automatic runs are off`)}>Save</Button>
             </SettingRow>
             {s && s.schedule_mode === "interactive_only" && (
-              <SettingRow title={interactiveOnly(s.schedule_time)} sub="Windows would not run the task while you are signed out (NS-W205). Lock the screen instead of signing out, or the night's run will not start. Try again asks Windows once more; if it refuses again, run 'ns schedule install' once from an elevated PowerShell">
+              <SettingRow title={interactiveOnly(s.schedule_time)} sub={`Windows would not run the task while you are signed out (NS-W205). Lock the screen instead of signing out, or the night's run will not start. Try again asks Windows once more; if it refuses again, run '${s.schedule_install_command ?? "ns schedule install"}' once from an elevated PowerShell`}>
                 <Button variant="soft" leadingIcon="refresh" onClick={() => put({ automatic_runs: true, schedule_time: s.schedule_time }, `Windows accepted it: the run at ${s.schedule_time} now starts whether you are signed in or not`)}>Try again</Button>
               </SettingRow>
             )}

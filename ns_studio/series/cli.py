@@ -13,6 +13,7 @@ from typing import Annotated, Any
 import typer
 from pydantic import BaseModel
 
+from ns_common.commandline import render
 from ns_common.errors import NsError
 from ns_studio.context import FAKEABLE
 from ns_studio.errors import hint_of
@@ -44,7 +45,7 @@ def _run(fake: bool, action: Callable[[Workshop], Any]) -> None:
         typer.echo(f"hint: {hint_of(e)}", err=True)
         raise typer.Exit(1) from e
     except WorkshopError as e:
-        typer.echo(f"error: {e}", err=True)
+        typer.echo(f"error: {render(str(e))}", err=True)    # its command as this owner types it (FN-3)
         raise typer.Exit(1) from e
 
 

@@ -106,7 +106,7 @@ def run(
 
     settled = str(old.get("commands") or "")
     commands_done = (
-        (settled in (so.MINE, "dev") or settled.startswith("other:"))
+        (settled in (so.MINE, "dev", "shadowed") or settled.startswith("other:"))
         and commands.shims_current(paths.home, app)
     ) or (settled.startswith(UNFIT) and commands.shim_problem(paths.home, app) is not None)
     if done and commands_done:
@@ -120,10 +120,15 @@ def run(
         return old
     try:
         marker = dict(old) if done else _reach(paths, app, stamp, desktop, runner, so)
+        for key in ("commands", "commands_said"):        # what an earlier start found and said stays known
+            if key in old and key not in marker:
+                marker[key] = old[key]
         # step 4 (card FN-3): the `ns` and `studio` command files and this install's PATH entry, by the same
         # rule as setup but never with a yes: another install's commands are left. Not one of the failures
         # above (the "commands" row of `ns doctor` says it); a state that is not settled is tried each start.
-        marker["commands"] = settled if commands_done else _commands(paths, app, runner)
+        if not commands_done:
+            marker["commands"], line = _commands(paths, app, runner)
+            _tell_commands(paths, marker, line, log)
         write_text_atomic(marker_file(paths), json.dumps(marker, indent=2) + "\n")
     finally:
         with contextlib.suppress(OSError):
@@ -155,24 +160,48 @@ def _clear_missed(paths: Paths, app: Path, desktop: Path | None, runner: Any, so
     (log.info if res.ok and said == "cleared" else log.warn)("launch_missed_cleanup", said)
 
 
-def _commands(paths: Paths, app: Path, runner: Any) -> str:
+def _commands(paths: Paths, app: Path, runner: Any) -> tuple[str, str]:
     """Write the command files (each only when it differs) and put `<home>/cmd` on the user PATH when no
-    other existing install's commands come first there: `mine`, `other:<folder>`, `dev`, `unfit: why`,
-    `refused`, `unread` or `failed[: why]`. A dev install never changes the PATH."""
+    other existing install's commands come first there. (outcome, the sentence setup would say): `mine`,
+    `other:<folder>`, `shadowed` (another program's command comes first), `dev`, `unfit: why`, `refused`,
+    `unread` or `failed[: why]`. A dev install never changes the PATH."""
     from installer.stage2 import commands, winenv
     from installer.stage2 import shortcut_owner as so
 
     unfit = commands.shim_problem(paths.home, app)
     if unfit is not None:               # the folder's own name: no later start can change that
-        return UNFIT + unfit
+        return UNFIT + unfit, commands.unfit_line(paths.home, unfit)
     problem = commands.write_shims(paths.home, app)
     if problem is not None:
-        return FAILED + problem
+        return FAILED + problem, commands.failed_line(paths.home, problem)
     if is_dev(paths):
-        return "dev"
+        return "dev", commands.dev_line(paths.home)
     known = [] if under_test() else so.read_list(so.default_list())
-    owner, _line = winenv.put_commands_on_path(runner, paths.home, False, known)
-    return owner
+    return winenv.put_commands_on_path(runner, paths.home, False, known)
+
+
+#: The title of the morning note about the commands (no setup ran: an update brought them).
+COMMANDS_TITLE = "Nightshift commands"
+
+
+def _tell_commands(paths: Paths, marker: dict[str, Any], line: str, log: NsLogger) -> None:
+    """No setup ran when an update brought the commands, so nobody saw their sentence: for every outcome but
+    `mine` and `dev`, ONE morning note with it, once per distinct sentence (`commands_said` in the marker,
+    and the note is not added while the same one waits). A later start with the same outcome says nothing."""
+    outcome = str(marker.get("commands") or "")
+    if outcome in ("mine", "dev") or not line or marker.get("commands_said") == line:
+        return
+    from ns_supervisor import notify
+
+    try:
+        notify.leave_note(
+            paths, COMMANDS_TITLE, line,
+            once=lambda waiting: any(n["title"] == COMMANDS_TITLE and n["message"] == line for n in waiting),
+        )
+    except OSError as e:                # not even the spool took it: the next start tries again
+        log.warn("launch_reach_commands_note", f"{e!r}", line=line)
+        return
+    marker["commands_said"] = line
 
 
 def _reach(paths: Paths, app: Path, stamp: str, desktop: Path | None, runner: Any, so: Any) -> dict[str, Any]:
