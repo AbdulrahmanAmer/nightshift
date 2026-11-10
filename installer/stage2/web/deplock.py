@@ -117,17 +117,21 @@ def _names(items: Iterable[Requirement]) -> str:
 
 def problem(app: Path) -> str | None:
     """None when ``<app>/uv.lock`` was made for ``<app>/pyproject.toml``, else one sentence saying what is
-    wrong. Reads two files; runs nothing."""
+    wrong. Reads two files; runs nothing; never raises (a file that is not what uv writes is a sentence)."""
     lock_file = app / LOCK_NAME
     if not lock_file.is_file():
         return f"{LOCK_NAME} is missing from {app}."
     try:
         lock = tomllib.loads(lock_file.read_text(encoding="utf-8"))
         project = tomllib.loads((app / PROJECT_NAME).read_text(encoding="utf-8"))["project"]
-        name = name_key(str(project["name"]))
-        version = str(project["version"])
-    except (OSError, ValueError, KeyError, TypeError) as e:
+        return _difference(app, lock, project)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         return f"{LOCK_NAME} or {PROJECT_NAME} in {app} cannot be read ({type(e).__name__}: {e})."
+
+
+def _difference(app: Path, lock: Mapping[str, Any], project: Mapping[str, Any]) -> str | None:
+    name = name_key(str(project["name"]))
+    version = str(project["version"])
     packages = lock.get("package", [])
     own = [p for p in packages if isinstance(p, dict) and name_key(str(p.get("name", ""))) == name]
     if not own:
