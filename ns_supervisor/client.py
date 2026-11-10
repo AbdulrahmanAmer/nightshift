@@ -179,12 +179,15 @@ def start_gate(paths: Paths, client: SupervisorClient | None = None) -> None:
     waits for the program in place, or an update is refreshing the environments). With `client`, an engine
     that already answers lets it through, as `ensure_running` does. The CLI entries that will need the
     engine (`studio run`, the voice commands, `ns verify`) call it first, so a refusal leaves nothing behind
-    (no job folder, no ledger row, no report)."""
-    if client is not None and client.is_up():
-        return
+    (no job folder, no ledger row, no report).
+
+    The two files are read first and the engine is asked only when they refuse: with nothing pending the
+    gate costs a file check and no connection, so a command's own refusals that come after it (no footage
+    key, no channel) are said as before, without the engine being asked anything."""
     why = venvrepair.start_refusal(paths.home, _program(paths))
-    if why is not None:
-        raise NsError("NS-W210", why)
+    if why is None or (client is not None and client.is_up()):
+        return
+    raise NsError("NS-W210", why)
 
 
 def ensure_running(
