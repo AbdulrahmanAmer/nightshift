@@ -75,6 +75,16 @@ class FakeWindows:
         if self.hang:
             self.calls.append("hang")
             raise subprocess.TimeoutExpired("powershell", kw.get("timeout_s", 60))
+        if "Set-ScheduledTask" in script:           # only the action changes (schedule.refresh_action)
+            self.calls.append("set")
+            if self.refuse_all or self.task is None:
+                return done(code=1, err="Access is denied")
+            action = re.search(r"-Argument '((?:[^']|'')*)'", script)
+            assert action is not None
+            self.task["args"] = action.group(1).replace("''", "'")
+            if getattr(self, "set_changes_logon", False):   # a Windows that does not keep the principal
+                self.task["logon"] = "Interactive"
+            return done("action set\n")
         if "Register-ScheduledTask" in script and "Unregister-ScheduledTask" not in script:
             self.calls.append("register")
             if self.gate is not None:
@@ -91,6 +101,9 @@ class FakeWindows:
                 home = re.search(r'NIGHTSHIFT_HOME=([^"]+)"', script)  # the install the action runs
                 if home is not None:
                     self.task["home"] = home.group(1)
+                action = re.search(r"-Argument '((?:[^']|'')*)'", script)   # the whole action, as registered
+                if action is not None:
+                    self.task["args"] = action.group(1).replace("''", "'")
             return done(f"registered:{logon.lower()}\n")
         if "Unregister-ScheduledTask" in script:
             self.calls.append("unregister")
@@ -106,6 +119,8 @@ class FakeWindows:
             return done("not registered\n")
         t = self.task
         args = f'args: /d /s /c "set "NIGHTSHIFT_HOME={t["home"]}" && "studio" run --daily"\n' if t.get("home") else ""
+        if t.get("args"):
+            args = f"args: {t['args']}\n"
         return done(f"state: {t['state']}\nstart: 2026-11-09T{t['at']}:00\nlogon: {t['logon']}\n{args}")
 
     @property

@@ -557,6 +557,30 @@ update if you want a copy kept again. A damaged copy is replaced and the result 
 at all (a program holds it open) stops the update before anything changes (`NS-E702`, or `NS-E115` from
 `INSTALL.cmd`); close the program and run the update again.
 
+## If Nightshift did not run because its program folder is missing
+
+You find a file `Nightshift did not run.txt` on the Desktop, or a notification "Nightshift did not run last
+night", or a shortcut opens a window that says "Nightshift cannot start: its program folder is missing or
+incomplete". An update or a rollback was interrupted (a power cut, for example) and the folder `app` inside
+the Nightshift folder is not there. Your channels, videos, settings and models are not touched. The log
+names it NS-W209.
+
+1. Close every Nightshift window and any Explorer window that shows the Nightshift folder.
+2. If you moved the folder `app` or `app.swap` somewhere else, move it back into the Nightshift folder as
+   `app.swap` first: otherwise setup starts a fresh program folder.
+3. Run `INSTALL.cmd` from a Nightshift zip of version 0.1.15 or later and choose the same install folder.
+   Setup puts the program folder back.
+4. Nothing else. The next night runs by itself. The next time Nightshift starts, the file on the Desktop is
+   removed and the Dashboard shows one note that names the nights that were missed.
+
+Until then the task tries again every night and counts the nights in the file. To stop that, disable
+`Nightshift Daily` in Task Scheduler and enable it again after step 3.
+
+`ns doctor` has a row "launch script". It fails when Nightshift could not point a Desktop shortcut or the
+nightly task at the script that makes all of the above possible; the row says which, and `INSTALL.cmd` with
+Repair fixes it. If the row "program folders" names a file `app.rollback-settings-<date>.zip`, it holds the
+settings from before an interrupted rollback: to use them, stop Nightshift and unzip it into `config`.
+
 ## Move your settings to another PC
 
 In the Dashboard open **Settings, Your settings**. **Export** saves a zip on your Desktop with your channels, voices, run

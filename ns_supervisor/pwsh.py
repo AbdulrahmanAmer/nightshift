@@ -7,7 +7,7 @@ import shutil
 import subprocess
 
 from ns_common.testguard import refuse_machine_writes, refuse_task_scheduler
-from ns_supervisor.childenv import child_env
+from ns_supervisor.childenv import child_env, window_flags
 
 
 class PowerShellMissing(RuntimeError):
@@ -48,4 +48,5 @@ def run_powershell(
         env=env,
         timeout=timeout_s,
         check=False,
+        creationflags=window_flags(),   # the engine has no console: no window per PowerShell
     )

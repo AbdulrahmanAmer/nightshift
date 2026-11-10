@@ -347,9 +347,20 @@ if under_test():
     REAL_FOLDERS, REAL_HOMES = folders_from(_read_known())
 
 
-def refuse_real_shortcut(lnk: str | os.PathLike[str], folders: Sequence[str] | None = None) -> None:
-    """Raise when a test is about to create or change a shortcut in (or under) a real shell folder."""
-    if under_test() and _inside(lnk, REAL_FOLDERS if folders is None else folders):
+def refuse_real_shortcut(lnk: str | os.PathLike[str] | None, folders: Sequence[str] | None = None) -> None:
+    """Raise when a test is about to create or change a shortcut in (or under) a real shell folder. This is
+    the ONE refusal for shortcuts and the Desktop, over the one list `REAL_FOLDERS`: `winenv.create_shortcut`,
+    `update_shortcut` and `set_shortcut_aumid` pass the shortcut, whatever the runner. `lnk` None: the caller
+    is about to ask the real Windows where the Desktop is, to work on what is there (`winenv.desktop_dir`
+    and `launch_reach.run` with the real runner): refused for any folder."""
+    if not under_test():
+        return
+    if lnk is None:
+        raise _refused(
+            "this PC's real Desktop (asking Windows where it is, to change the shortcuts on it)",
+            "Hand the code a Desktop folder under tmp_path, or a stand-in runner.",
+        )
+    if _inside(lnk, REAL_FOLDERS if folders is None else folders):
         raise _refused(
             f"a shortcut in a real shell folder ({lnk})",
             "Give the shortcut a folder under tmp_path (FakeRunner(tmp_path / 'desktop')).",

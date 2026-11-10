@@ -7,8 +7,8 @@ user is logged on (S4U, no stored password) when Windows allows it, else only wh
 
 from __future__ import annotations
 
+import base64
 import contextlib
-import os
 import re
 import subprocess
 import time
@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import NoReturn
 
+from installer.stage2 import shortcut_owner
 from ns_common.devmode import is_dev
 from ns_common.errors import describe
 from ns_common.logging import NsLogger
@@ -92,11 +93,32 @@ def studio_exe(paths: Paths) -> str:
     return str(exe) if exe.exists() else "studio"
 
 
+def action_arguments(paths: Paths) -> str:
+    r"""What the task passes to cmd.exe. NIGHTSHIFT_HOME is set inside the action because an S4U session
+    does not reliably carry the user's environment (and every release's `task_owner` reads the home from it).
+
+    The nightly run starts through `<home>\nightshift-launch.ps1 -Nightly` (`installer/launch.ps1`, which
+    setup and the first start of a version copy beside the program folder): when the program folder is
+    missing after an interrupted update, that script tells the owner, where `studio.exe` could only fail
+    unseen. `if exist` keeps tonight's run alive when the script itself was deleted: then the action is
+    what it always was."""
+    stub, studio = paths.home / shortcut_owner.STUB_NAME, studio_exe(paths)
+    return (
+        f'/d /s /c "set "NIGHTSHIFT_HOME={paths.home}" && if exist "{stub}" (powershell.exe -NoProfile '
+        f'-NonInteractive -ExecutionPolicy Bypass -File "{stub}" -Nightly -Studio "{studio}") '
+        f'else ("{studio}" run --daily)"'
+    )
+
+
+def is_stub_action(arguments: str) -> bool:
+    """True when a task's action starts the nightly run through the launch script."""
+    return f'{shortcut_owner.STUB_NAME}" -nightly' in arguments.lower()
+
+
 def build_install_script(
     paths: Paths, run_time: str, app_path: Path, task_name: str = TASK_NAME, *, disabled: bool = False
 ) -> str:
-    """PowerShell that registers the daily task. NIGHTSHIFT_HOME is set inside the action because an
-    S4U session does not reliably carry the user's environment.
+    """PowerShell that registers the daily task with the action `action_arguments` builds.
 
     S4U ("run whether the user is logged on or not", no stored password) is tried first. Registering it from a
     non-elevated shell is often refused with "Access is denied"; the script then registers the same task with
@@ -112,7 +134,7 @@ def build_install_script(
     can fire, and no second call that can fail and leave it on. `ns schedule show` and the uninstall still
     find it by name.
     """
-    arguments = f'/d /s /c "set "NIGHTSHIFT_HOME={paths.home}" && "{studio_exe(paths)}" run --daily"'
+    arguments = action_arguments(paths)
     register = (
         f"Register-ScheduledTask -TaskName {_q(task_name)} -Action $action -Trigger $trigger "
         "-Settings $settings -Principal $principal -Description 'Nightshift nightly run' -Force | Out-Null"
@@ -138,6 +160,21 @@ def build_install_script(
             f"  {register}",
             "}",
             "Write-Output ('registered:' + $mode)",
+        ]
+    )
+
+
+def build_action_script(paths: Paths, task_name: str = TASK_NAME) -> str:
+    """PowerShell that gives the existing task the action `action_arguments` builds and changes nothing
+    else: `Set-ScheduledTask -Action` keeps its trigger, its logon type (the principal) and its settings,
+    where registering it again would have to state them anew."""
+    return "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            f"$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument {_q(action_arguments(paths))} "
+            f"-WorkingDirectory {_q(str(paths.home))}",
+            f"Set-ScheduledTask -TaskName {_q(task_name)} -Action $action | Out-Null",
+            "Write-Output 'action set'",
         ]
     )
 
@@ -210,12 +247,16 @@ SIGNED_IN_ONLY_LOGONS = frozenset({"interactive", "group"})
 class TaskState:
     """What Windows has for the task now: switched on or off, the clock time of its daily trigger, whether
     it runs only while the owner is signed in (None when Windows did not say), and the install folder its
-    action names (`home`; None when the action does not say, as in a task made by hand)."""
+    action names (`home`; None when the action does not say, as in a task made by hand), and whether the
+    action starts the run through the launch script (`stub`; 0.1.14's action did not). `logon` is the logon
+    type as Windows names it (S4U, Interactive, Password, ...; None when it did not say)."""
 
     enabled: bool
     run_time: str | None
     interactive: bool | None = None
     home: str | None = None
+    stub: bool = False
+    logon: str | None = None
 
 
 #: `2026-11-09T04:15:00`; `Z` or `+02:00` follows the seconds when the trigger synchronizes across time zones.
@@ -228,6 +269,10 @@ def build_read_script(task_name: str = TASK_NAME) -> str:
     `not registered` means Windows has no such task (error category ObjectNotFound). Any other failure of
     `Get-ScheduledTask` (access denied, a corrupt task) prints `error: <category>: <message>` and is NOT read
     as "no task": the caller refuses instead of replacing a task it could not look at.
+
+    The action is printed as base64 of its UTF-8 bytes (`args64`): Windows PowerShell 5.1 writes redirected
+    output in the console's OEM code page, which turned a home with other characters into `?` or U+FFFD, and
+    such a home then read as a deleted install.
     """
     return "\n".join(
         [
@@ -247,7 +292,8 @@ def build_read_script(task_name: str = TASK_NAME) -> str:
             "if ($g -and $g.StartBoundary) { Write-Output ('start: ' + $g.StartBoundary) }",
             "if ($t.Principal) { Write-Output ('logon: ' + $t.Principal.LogonType) }",
             "$a = @($t.Actions) | Select-Object -First 1",
-            "if ($a -and $a.Arguments) { Write-Output ('args: ' + $a.Arguments) }",
+            "if ($a -and $a.Arguments) { Write-Output ('args64: ' + [Convert]::ToBase64String("
+            "[Text.Encoding]::UTF8.GetBytes([string]$a.Arguments))) }",
         ]
     )
 
@@ -283,6 +329,8 @@ def parse_task_state(out: str, local_tz: tzinfo | None = None) -> TaskState | No
     run_time: str | None = None
     interactive: bool | None = None
     home: str | None = None
+    stub = False
+    logon: str | None = None
     for line in out.splitlines():
         key, _, value = line.partition(":")
         if key.strip() == "error":
@@ -292,13 +340,20 @@ def parse_task_state(out: str, local_tz: tzinfo | None = None) -> TaskState | No
         elif key.strip() == "start":
             run_time = _local_clock(value, local_tz)
         elif key.strip() == "logon" and value.strip():
-            interactive = value.strip().lower() in SIGNED_IN_ONLY_LOGONS
-        elif key.strip() == "args":
+            logon = value.strip()
+            interactive = logon.lower() in SIGNED_IN_ONLY_LOGONS
+        elif key.strip() in ("args", "args64"):
+            if key.strip() == "args64":
+                try:
+                    value = base64.b64decode(value.strip(), validate=True).decode("utf-8")
+                except ValueError:      # (UnicodeDecodeError is one): read as an action that names no home
+                    value = ""
             named = _ACTION_HOME.search(value)
             home = named.group(1).strip() if named else None
+            stub = is_stub_action(value)
     if not state:
         return None
-    return TaskState(state.lower() != "disabled", run_time, interactive, home or None)
+    return TaskState(state.lower() != "disabled", run_time, interactive, home or None, stub, logon)
 
 
 #: The install folder inside the action `build_install_script` writes (0.1.14 wrote it the same way).
@@ -306,24 +361,18 @@ _ACTION_HOME = re.compile(r'NIGHTSHIFT_HOME=([^"]+)"')
 
 #: Whose task it is, seen from one install (`task_owner`). A PC has ONE 'Nightshift Daily' task and can
 #: have several Nightshift folders: the task runs the install its action names.
-MINE, GONE, OTHER, UNKNOWN = "mine", "gone", "other", "unknown"
+MINE, GONE, OTHER, UNKNOWN, UNREACHABLE = "mine", "gone", "other", "unknown", "unreachable"
 
 
 def task_owner(paths: Paths, task: TaskState) -> str:
     """`mine`: the task runs this install. `gone`: it names a folder that is no longer there (its Nightshift
     was deleted by hand; the task starts nothing). `other`: it runs another Nightshift folder that exists.
-    `unknown`: its action names no folder (made or edited by hand)."""
-    if not task.home:
+    `unreachable`: it names a folder on a drive or share that is not there now (it may come back: such a
+    task is never removed and never pointed elsewhere without the owner's yes). `unknown`: its action names
+    no folder (made or edited by hand), or a name that did not survive the read (U+FFFD): never `gone`."""
+    if not task.home or "\ufffd" in task.home:
         return UNKNOWN
-    try:
-        if os.path.samefile(task.home, paths.home):
-            return MINE
-    except OSError:
-        pass
-    same = os.path.normcase(os.path.abspath(task.home)) == os.path.normcase(os.path.abspath(paths.home))
-    if same:
-        return MINE
-    return OTHER if os.path.isdir(task.home) else GONE
+    return shortcut_owner.folder_state(task.home, paths.home)
 
 
 def on_here(paths: Paths, task: TaskState | None) -> bool:
@@ -333,8 +382,9 @@ def on_here(paths: Paths, task: TaskState | None) -> bool:
 
 
 def _elsewhere(paths: Paths, task: TaskState | None) -> str | None:
-    """The other, existing Nightshift folder an enabled task runs; None when there is no such task."""
-    if task is not None and task.enabled and task.home and task_owner(paths, task) == OTHER:
+    """The other Nightshift folder an enabled task runs (one that exists, or whose drive is not there
+    now); None when there is no such task."""
+    if task is not None and task.enabled and task.home and task_owner(paths, task) in (OTHER, UNREACHABLE):
         return task.home
     return None
 
@@ -547,6 +597,9 @@ def _undo(
         else:
             old = before.run_time or read_run_time(paths, include_disabled=True) or at
             theirs = _elsewhere(paths, before)      # another install's task goes back to that install
+            if theirs and task_owner(paths, before) == UNREACHABLE:
+                # its studio.exe cannot be looked up now: registering a guess would not be giving it back
+                raise ScheduleError("the Nightshift the task ran cannot be reached, so it was not given back")
             owner = Paths(Path(theirs)) if theirs else paths
             _run(build_install_script(owner, old, app_path, disabled=not before.enabled))
         after, known = read_task(), True
@@ -776,6 +829,9 @@ class SetupResult:
     other_home: str | None = None   # off here: the PC's task runs the Nightshift in this other folder (kept)
     took_from: str | None = None    # on here: the task ran the Nightshift in this other folder until now
     owner_unknown: bool = False     # the task found does not say which Nightshift it runs
+    unreachable: bool = False       # `other_home` is on a drive that is not there now (the task was left)
+    #: a Repair removed the task of a Nightshift whose folder was deleted (case `refused`: could not)
+    gone_home: str | None = None
 
 
 def setup_apply(
@@ -842,6 +898,7 @@ def _setup_locked(
     new_time = was is not None and run_time != was
     time_kept: str | None = None
     leftover = first and not nightly and owner in (MINE, GONE)   # an earlier install's: nobody's choice
+    away = owner == UNREACHABLE
     if first and (nightly or not on_now or leftover):
         case, want_on, when = "first", bool(nightly), run_time
     elif not first and answered and same:
@@ -854,10 +911,16 @@ def _setup_locked(
         moves = case == "kept" and new_time and base in (was, None)
         when = run_time if moves or base is None else base
         time_kept = run_time if new_time and not moves and base != run_time else None
+    # A Repair over an enabled task whose Nightshift folder was deleted: it starts nothing and wakes the PC
+    # every night. Removed and said, unless this run switches Automatic runs on here (that replaces it) or
+    # the window's answer was made against another state (then setup changes nothing).
+    gone_task = not first and owner == GONE and not want_on and case != "stale"
     try:
-        if leftover and before is not None:
+        if (leftover or gone_task) and before is not None:
             # first install, no yes, and the task of an earlier install of this folder (or of a deleted one)
             keep = before.run_time or run_time      # its time waits for the Settings switch
+            if gone_task:                           # (a time this install already keeps for the switch wins)
+                keep = remembered_run_time(paths) or keep
             with contextlib.suppress(OSError):
                 _forget(paths, keep)
             _run(build_remove_script())
@@ -867,6 +930,8 @@ def _setup_locked(
             with contextlib.suppress(OSError):
                 _record(paths, left, log, by_owner=True)
             log.warn("schedule_leftover_removed", f"'{TASK_NAME}' of an earlier install: {before.home}")
+            if gone_task:
+                return SetupResult(case, False, keep, seen=seen, gone_home=before.home)
             return SetupResult(case, False, keep, removed_old=True, seen=seen)
         if case == "kept" and on_now and not (first and unknown):
             task = _switch_on(paths, when, app_path, log, before)
@@ -885,7 +950,7 @@ def _setup_locked(
             at = now_time if on_now else when
             return SetupResult(
                 case, on_now, at, only, time_kept=time_kept, seen=seen, other_home=theirs,
-                owner_unknown=on_now and unknown and first,
+                owner_unknown=on_now and unknown and first, unreachable=away,
             )
         if want_on and on_now and unknown:
             # a yes over a task that does not say what it runs: registered for this install, whatever it ran
@@ -896,11 +961,16 @@ def _setup_locked(
         out = _set_locked(paths, app_path, before, want_on, when, log, quiet=True)
         return SetupResult(
             case, out.on, out.run_time, out.mode == "interactive_only", time_kept=time_kept, seen=seen,
-            took_from=out.took_from, other_home=None if out.on else theirs,
+            took_from=out.took_from, other_home=None if out.on else theirs, unreachable=away and not out.on,
         )
     except ScheduleFileError:
         raise
     except ScheduleError as e:  # Windows refused: the task is as it was
+        if gone_task and before is not None:
+            return SetupResult(
+                "refused", False, remembered_run_time(paths), reason=_one_line(e), seen=seen,
+                gone_home=before.home,
+            )
         if not on_now:
             with contextlib.suppress(OSError):
                 remember_run_time(paths, run_time)
@@ -909,6 +979,7 @@ def _setup_locked(
         return SetupResult(
             "refused", still, at, only, wanted_on=want_on and not on_now, wanted_off=still and not want_on,
             reason=_one_line(e), seen=seen, other_home=None if want_on else theirs,
+            unreachable=away and not want_on,
         )
 
 
@@ -936,6 +1007,49 @@ def reregister(paths: Paths, app_path: Path, *, log: NsLogger | None = None) -> 
         task = _switch_on(paths, when, app_path, log, before)
         _log_kept(log, before, task.run_time or "")
         return f"scheduled task re-registered (daily at {task.run_time})"
+
+
+def refresh_action(paths: Paths, app_path: Path, *, log: NsLogger | None = None) -> bool:
+    """Bring the action of THIS install's enabled task to `action_arguments` (the first start of a version
+    that an older updater installed: `ns_supervisor.launch_reach`). True when the task was registered again.
+
+    Nothing is touched, and False, for: no task, a disabled one (the owner's or a dev install's), one that
+    runs another Nightshift folder or does not say which, and one whose action is this one already.
+
+    Only the action is set (`build_action_script`), under the schedule lock; the task is not registered
+    again, so its time, its logon type and its settings are not this code's to state. Then the task is read
+    back and compared with what was read before: still enabled, the same time, the same logon type, the
+    new action. `ScheduleError` when the task cannot be read, Windows refuses (the task is as it was), or
+    the task read back differs in anything but the action (the message names what; the record follows
+    what Windows has).
+    """
+    if is_dev(paths):
+        return False
+    log = _logger(paths, log)
+    with _locked(paths):
+        before = read_task()
+        if before is None or not before.enabled or before.stub or task_owner(paths, before) != MINE:
+            return False
+        _run(build_action_script(paths))
+        after = read_task()
+        if after is None or not after.stub:
+            raise ScheduleError(f"Windows took the new action of '{TASK_NAME}'; the old one is still there")
+        changed = [
+            f"{what} was {was} and is {now}"
+            for what, was, now in (
+                ("the time", before.run_time, after.run_time),
+                ("the logon type", before.logon, after.logon),
+                ("switched on", before.enabled, after.enabled),
+            )
+            if was != now
+        ]
+        if changed:
+            _record(paths, after, log)
+            raise ScheduleError(
+                f"'{TASK_NAME}' has the new action, but more than its action changed: {'; '.join(changed)}"
+            )
+        log.info("schedule_action_refreshed", f"'{TASK_NAME}' now starts through the launch script")
+        return True
 
 
 def sync_record(

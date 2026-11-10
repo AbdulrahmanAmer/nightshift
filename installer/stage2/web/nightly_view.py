@@ -83,6 +83,11 @@ def _why(reason: Any) -> str:
 def _owner_words(o: dict[str, Any], on: bool) -> str:
     """What must be said when the PC's one nightly task belongs, or belonged, to another Nightshift folder."""
     other, took = o.get("other_home"), o.get("took_from")
+    if not on and other and o.get("unreachable"):
+        return (
+            f" The nightly task runs the Nightshift at {other}, which cannot be reached now (its drive is "
+            "not there); it was left as it is."
+        )
     if not on and other:
         return (
             f" Another Nightshift at {other} owns this PC's nightly task (a PC has one), so this one does "
@@ -114,6 +119,18 @@ def outcome_line(o: dict[str, Any]) -> str:
     Every sentence is true of the state it names and says where the owner changes it."""
     case, on, when = o.get("case"), o.get("on"), o.get("run_time")
     only, reason = bool(o.get("signed_in_only")), _why(o.get("reason"))
+    gone = o.get("gone_home")
+    if gone and case == "refused":
+        return (
+            f"Automatic runs: off. A nightly task left by a deleted Nightshift ({gone}) could not be removed "
+            f"({reason}); it still wakes this PC for nothing. Delete 'Nightshift Daily' in Task Scheduler, "
+            f"or switch Automatic runs on in {WHERE} to run this one every night."
+        )
+    if gone:
+        return (
+            f"Automatic runs: off. A nightly task left by a deleted Nightshift ({gone}) was removed: it woke "
+            f"this PC for nothing. Switch Automatic runs on in {WHERE} to run this one every night."
+        )
     if case == "unrecorded":
         return (
             f"Automatic runs: Windows runs the nightly task at {when}, but Nightshift could not record it "

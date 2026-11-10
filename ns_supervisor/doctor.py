@@ -26,8 +26,8 @@ from ns_common.devmode import is_dev
 from ns_common.errors import NsError
 from ns_common.paths import Paths, repo_root
 from ns_common.uv import find_uv
-from ns_supervisor import procs
-from ns_supervisor.childenv import child_env
+from ns_supervisor import launch_reach, procs
+from ns_supervisor.childenv import child_env, window_flags
 from ns_supervisor.client import SupervisorClient
 
 MEDIA_SUFFIXES = frozenset(
@@ -70,6 +70,7 @@ def freeze_venv(paths: Paths, venv: str) -> str | None:
             timeout=120,
             check=False,
             env=child_env(),
+            creationflags=window_flags(),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -243,6 +244,7 @@ def diagnose(
         rows.append(("nvidia-smi", smi is not None, "ok" if smi is not None else "no NVIDIA driver found"))
     have_ffmpeg = ffmpeg.available()
     rows.append(("ffmpeg", have_ffmpeg, "on PATH" if have_ffmpeg else "ffmpeg/ffprobe not found"))
+    rows.append(launch_reach.doctor_row(paths))
     rows.append(program_folders(paths, Path(st.app_path) if st.app_path else repo_root(), on_wait))
     return rows
 
@@ -312,6 +314,11 @@ def program_folders(
     failed = any(event in ("rollback_recovery_failed", "first_start_check_failed") for event, _ in told)
     waiting = rollback_intent.swap_note(app)
     left = [rollback_intent.left_sentence(f) for f in rollback_intent.left_folders(app) if str(f) not in did]
+    # (and the settings a stale rollback record held, saved beside the program before the record went)
+    left += [
+        rollback_intent.saved_settings_sentence(f, paths.config)
+        for f in rollback_intent.saved_settings(app) if str(f) not in did
+    ]
     now = f"This check: {did}" if did else ""
     if waiting or left or failed:
         said = [waiting, *left, now]
