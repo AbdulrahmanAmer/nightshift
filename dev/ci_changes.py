@@ -71,6 +71,7 @@ DOC_TESTS: tuple[str, ...] = (
     "tests/test_installer_files.py",  # BUILD_SPEC.md, OPERATOR.md
     "tests/test_installer_first_run.py",  # OPERATOR.md
     "tests/test_ns_update_git.py",  # BUILD_SPEC.md section 5, the `ns update` line
+    "tests/test_owner_texts.py",  # OPERATOR.md: no studio or ns command typed in a window that adds it
     "tests/test_release_wiring.py",  # CHANGELOG.md, docs/REPO_SETTINGS.md, docs/HANDOFF.md
     "tests/test_secret_file_no_permissions.py",  # OPERATOR.md names NS-E120 and NS-W116 like errors.json
     "tests/test_spec_clipper_text.py",  # BUILD_SPEC.md 17.2, D40, docs/FEATURE_STATUS.md
