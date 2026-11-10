@@ -19,6 +19,7 @@ import ns_common.diskneed as diskneed
 import ns_common.first_start as first_start
 from installer.stage2.web.model import PRESET_VOICES, TIERS
 from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_message
+from installer.stage2.web.nightly_view import valid_seen
 from installer.stage2.web.pathcheck import DRIVE_PATH_RE as DRIVE_PATH_RE
 from installer.stage2.web.pathcheck import home_problem
 from installer.stage2.web.plan import home_need
@@ -228,6 +229,11 @@ def draft_to_answers(
         "restore_from": None,
         "owner_name": owner,
         "ui_theme": draft.get("theme", "dark") if draft.get("theme") in THEMES else "dark",
+        # The switch "Run Nightshift by itself every night", with the state the window showed beside it
+        # (`nightlySeen`): the scheduler step applies the answer only while Windows still has that state. A
+        # page without the switch sends neither, which changes nothing on an install and is off on a new one.
+        "nightly": draft["nightly"] if isinstance(draft.get("nightly"), bool) else None,
+        "nightly_seen": valid_seen(draft.get("nightlySeen")),
     }
 
 
@@ -240,9 +246,20 @@ def _wants_voicedesign(raw: dict[str, Any]) -> bool:
 
 
 def answers_to_view(
-    raw: dict[str, Any], *, pexels_set: bool = False, pixabay_set: bool = False, default_tier: str = "small"
+    raw: dict[str, Any], *, pexels_set: bool = False, pixabay_set: bool = False, default_tier: str = "small",
+    nightly_now: str = "new",
 ) -> dict[str, Any]:
-    """AnswersView (camelCase) from an answers.json dict; ``default_tier`` fills a missing ``llm_tier``."""
+    """AnswersView (camelCase) from an answers.json dict; ``default_tier`` fills a missing ``llm_tier``.
+
+    ``nightly_now`` is what Automatic runs are in the install folder (``nightly_view.current_choice``). The
+    switch starts where they are: on when they are on, else off. An answer in ``raw`` moves it only when it
+    is the window's own earlier one (it carries ``nightly_seen``; a resumed setup shows what was chosen) or
+    the folder holds no install (a prefilled answers file may ask for it there); over an install an answers
+    file never turns the switch.
+    """
+    seen = valid_seen(raw.get("nightly_seen")) or (valid_seen(nightly_now) or "new")
+    answered = isinstance(raw.get("nightly"), bool) and (valid_seen(raw.get("nightly_seen")) or seen == "new")
+    nightly = bool(raw["nightly"]) if answered else seen.startswith("on@")
     channel = raw.get("channel") or {}
     voice = raw.get("voice") or {}
     kind = kind_from_file(str(raw.get("models_source_kind") or "internet"))
@@ -263,6 +280,8 @@ def answers_to_view(
         "installCode": bool(raw.get("install_code", True)),
         "includeVoicedesign": _wants_voicedesign(raw),
         "theme": raw.get("ui_theme", "dark"),
+        "nightly": nightly,
+        "nightlySeen": seen,
         "pexelsKeySet": pexels_set or bool(raw.get("pexels_api_key")),
         "pixabayKeySet": pixabay_set or bool(raw.get("pixabay_api_key")),
     }

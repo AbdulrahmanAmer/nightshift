@@ -33,7 +33,7 @@ The setup window opens on a short welcome of its own (what Nightshift makes, wha
 4. **Downloads the AI engine and models** from their official sources, verifying every file.
 5. **Tunes itself** to your exact hardware for maximum speed.
 6. **Tests everything** and shows a pass/fail checklist.
-7. **Creates desktop shortcuts** and a nightly scheduled task that can wake the PC.
+7. **Creates desktop shortcuts**, and a nightly scheduled task that can wake the PC if you answered yes to "Run Nightshift by itself every night?" (off by default; Settings switches it on later).
 
 ### A.4 What it does after install
 - **Nightshift Studio** (runs nightly, or on demand): for each channel it

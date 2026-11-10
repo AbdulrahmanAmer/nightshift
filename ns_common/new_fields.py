@@ -47,6 +47,20 @@ NEW_FIELDS: tuple[NewField, ...] = (
         "H-8: the answers.json switch behind Runtime.tiny_story; false unless an engine test asks for it.",
         False,
     ),
+    NewField(
+        "Answers",
+        "nightly",
+        "0.1.15",
+        "nightly-optional b: setup's answer to 'run by itself every night?'; the scheduler step uses it.",
+        None,
+    ),
+    NewField(
+        "InstallerAnswers",
+        "nightly_seen",
+        "0.1.15",
+        "nightly-optional b: the state of Automatic runs the setup window showed when the owner answered.",
+        None,
+    ),
 )
 
 #: The model class names whose top-level fields a settings file holds, for writers of plain dicts (a test

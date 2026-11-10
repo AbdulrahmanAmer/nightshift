@@ -119,6 +119,8 @@ export interface ChoicesDraft {
   voice: { speaker: PresetVoice };
   modelsSource: { kind: "internet" | "folder" | "drive-zip"; path: string | null };
   runTime: string;                   // "03:00"
+  nightly: boolean;                  // the switch "Run Nightshift by itself every night"; off on a new install
+  nightlySeen: string;               // what Automatic runs were when the page showed the switch: "new", "off" or "on@HH:MM"; sent back unchanged
   mastersPerWeek: 1 | 2 | 3;
   installCode: boolean;
   includeVoicedesign: boolean;       // download the voice design model now (about 2 GB); otherwise it comes with the first design
@@ -214,8 +216,10 @@ export interface ResultView {
   appPath: string;
   installed: { label: string; detail: string }[];
   shortcuts: string[];               // "Nightshift Dashboard", ...
-  runTime: string;
-  scheduled: boolean;
+  runTime: string;                   // the time Automatic runs have when they are on, else the chosen time
+  scheduled: boolean;                // Automatic runs are on (the record of the Windows task says so)
+  nightly?: "on" | "off" | "failed"; // off is a choice; failed: setup tried to switch them on and Windows refused
+  nightlyLine?: string | null;       // the sentence the end of setup says about Automatic runs
   diagnosticsZip: string | null;
   stockKeyMissing: boolean;          // neither a Pexels nor a Pixabay key is stored
   durationS: number;

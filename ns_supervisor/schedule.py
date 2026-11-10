@@ -11,10 +11,11 @@ import contextlib
 import re
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
+from typing import NoReturn
 
 from ns_common.devmode import is_dev
 from ns_common.errors import describe
@@ -35,6 +36,7 @@ from ns_supervisor.schedule_cfg import (
     valid_time,
     write_run_time,
 )
+from ns_supervisor.schedule_cfg import is_on as record_says_on
 
 DEFAULT_TIME = "03:00"
 #: How long a change waits for another change (a second dashboard, `ns schedule`, an update) before it is
@@ -54,6 +56,24 @@ class ScheduleBusy(ScheduleError):
 
 class ScheduleFileError(ScheduleError):
     """A file of Nightshift's own (the lock, the record, the kept time) could not be opened or written."""
+
+
+class ScheduleUndone(ScheduleFileError):
+    """Windows took the change, the record could not be written, and Windows was put back: task and record
+    agree again. `on` and `run_time` say what Automatic runs still are."""
+
+    def __init__(self, message: str, *, on: bool, run_time: str | None, why: str = "") -> None:
+        super().__init__(message)
+        self.on, self.run_time, self.why = on, run_time, why
+
+
+class ScheduleUnrecorded(ScheduleFileError):
+    """NS-W208: Windows runs the task at `run_time`, the record could not be written and the change could
+    not be undone, so Nightshift's pages say something else until `config` can be written again."""
+
+    def __init__(self, message: str, *, run_time: str | None, why: str = "") -> None:
+        super().__init__(message)
+        self.run_time, self.why = run_time, why
 
 
 class DevInstall(ScheduleError):
@@ -287,6 +307,11 @@ def read_task(task_name: str = TASK_NAME, *, timeout_s: float | None = None) -> 
 #      `sync_record` brings a record Windows no longer backs to "off" (pages: within a minute);
 #   3. an update never changes the choice: `reregister` is the only thing an update calls, and it registers
 #      only over a task that is enabled now.
+#   4. a task Nightshift could not record does not stay: when the record cannot be written after Windows took
+#      a registration, `_undo` puts Windows back, and only when that fails too is the owner told that Windows
+#      runs something the pages do not show (NS-W208);
+#   5. setup changes the choice only on a first install, or for a window answer made against the state Windows
+#      still has (`setup_apply`); a Repair and a reinstall over an install leave it as Windows has it.
 # Every change runs under `run/schedule.lock`, so two dashboards, `ns schedule` and an update take turns.
 # --------------------------------------------------------------------------------------------------------
 def lock_file(paths: Paths) -> Path:
@@ -410,13 +435,95 @@ def _follow(paths: Paths, log: NsLogger) -> None:
         _record(paths, read_task(), log, by_owner=True)
 
 
-def _switch_on(paths: Paths, when: str, app_path: Path, log: NsLogger) -> TaskState:
+class _Unread:
+    """The task was not read before the change (see `_switch_on`)."""
+
+
+_UNREAD = _Unread()
+
+
+def _one_line(why: object, limit: int = 300) -> str:
+    return " ".join(str(why).split())[:limit]
+
+
+def _note_unrecorded(paths: Paths, log: NsLogger, run_time: str | None) -> None:
+    """NS-W208 for the owner who is not at the screen: a WARN in the log and one morning note (best effort:
+    the note's own folder may be the one that cannot be written). A note that still waits is not repeated."""
+    try:
+        d = describe("NS-W208")
+        text = f"NS-W208: {d.message} Windows runs it at {run_time}. {d.hint}"
+    except (KeyError, OSError, ValueError):
+        text = f"NS-W208: Windows runs the nightly task at {run_time}, but Nightshift could not record it."
+    log.warn("schedule_unrecorded", text, code="NS-W208")
+    try:
+        if not any(n.get("message", "").startswith("NS-W208:") for n in notify.read_notes(paths)):
+            notify.leave_note(paths, "Nightshift", text)
+    except OSError as e:
+        log.warn("morning_note_failed", str(e))
+
+
+def _undo(
+    paths: Paths, app_path: Path, before: TaskState | None | _Unread, at: str, log: NsLogger, why: OSError
+) -> NoReturn:
+    """The record could not be written after Windows took a registration: put Windows back, then say which
+    of the two ends it is. Always raises.
+
+    Back means the task read before the change: none (Unregister), enabled (registered again at its old
+    time; Windows is asked for the unattended mode first, as always) or disabled (registered disabled).
+    Then Windows is read once more and compared with the RECORD, which is what every page shows:
+
+    - they agree (no enabled task and no record; or an enabled task at the recorded time): `ScheduleUndone`;
+    - they do not (Windows refused the way back, the task could not be read before or after, or an enabled
+      task was there before that the record never held): `ScheduleUnrecorded`, NS-W208, with one morning
+      note. Nothing more is tried: the next look at Windows records it as soon as `config` can be written.
+    """
+    reason = _one_line(why)
+    after: TaskState | None = None
+    known = False
+    try:
+        if isinstance(before, _Unread):
+            raise ScheduleError("the task was not read before the change")
+        if before is None:
+            _run(build_remove_script())
+        else:
+            old = before.run_time or read_run_time(paths, include_disabled=True) or at
+            _run(build_install_script(paths, old, app_path, disabled=not before.enabled))
+        after, known = read_task(), True
+    except ScheduleError as e:
+        log.warn("schedule_undo_failed", _one_line(e))
+    runs_at = after.run_time if after is not None and after.enabled else None
+    runs = after is not None and after.enabled
+    recorded = record_says_on(paths)
+    agree = known and ((recorded and read_run_time(paths) == runs_at) if runs else not recorded)
+    if agree:
+        still = f"on at {runs_at}" if runs else "off"
+        log.warn("schedule_change_undone", f"{schedule_file(paths)}: {reason}; still {still}")
+        raise ScheduleUndone(
+            f"Nightshift could not write config/schedule.json ({reason}), so the change was undone: "
+            f"Automatic runs are still {still}. Make the folder config writable (an antivirus or backup "
+            "program, a full disk, or its permissions), then try again",
+            on=runs, run_time=runs_at, why=reason,
+        )
+    when = runs_at or at
+    _note_unrecorded(paths, log, when)
+    raise ScheduleUnrecorded(
+        f"Windows runs the nightly task at {when}, but Nightshift could not write config/schedule.json "
+        f"({reason}) and could not undo the change",
+        run_time=when, why=reason,
+    )
+
+
+def _switch_on(
+    paths: Paths, when: str, app_path: Path, log: NsLogger, before: TaskState | None | _Unread = _UNREAD
+) -> TaskState:
     """Register the task enabled at `when`, then read it back and record what Windows has.
 
-    `ScheduleError` when Windows refuses both logon types (the task it had, if any, is as it was) or when no
-    enabled task is there afterwards. If only the read-back fails, or it leaves out the logon type or the
-    trigger time, Register's own answer (`registered:s4u` or `registered:interactive`, at `when`) stands in
-    for that part.
+    `before` is the task as it was read ahead of the change (None: there was none). `ScheduleError` when
+    Windows refuses both logon types (the task it had, if any, is as it was) or when no enabled task is there
+    afterwards. If only the read-back fails, or it leaves out the logon type or the trigger time, Register's
+    own answer (`registered:s4u` or `registered:interactive`, at `when`) stands in for that part. When the
+    record cannot be written the registration is undone (`_undo`): `ScheduleUndone`, or `ScheduleUnrecorded`
+    (NS-W208) when Windows could not be put back.
     """
     out = _run(build_install_script(paths, when, app_path))
     answered = "registered:interactive" in out
@@ -427,7 +534,11 @@ def _switch_on(paths: Paths, when: str, app_path: Path, log: NsLogger) -> TaskSt
     if task is not None and (task.interactive is None or task.run_time is None):
         signed_in_only = answered if task.interactive is None else task.interactive
         task = TaskState(task.enabled, task.run_time or when, signed_in_only)
-    if _record(paths, task, log, by_owner=True) == "none" or task is None:
+    try:
+        recorded = _record(paths, task, log, by_owner=True)
+    except OSError as e:
+        _undo(paths, app_path, before, (task.run_time if task is not None else None) or when, log, e)
+    if recorded == "none" or task is None:
         raise ScheduleError(f"Windows accepted the task '{TASK_NAME}' but it is not there or not enabled now")
     return task
 
@@ -476,7 +587,7 @@ def install(
             if run_time:
                 remember_run_time(paths, run_time)
             return f"not changed ({TASK_NAME}: {KEPT_OFF_NOTE})"
-        task = _switch_on(paths, when, app_path, log)
+        task = _switch_on(paths, when, app_path, log, before if keep_state else _UNREAD)
         if keep_state:
             _log_kept(log, before, task.run_time or when)
         note = f"; {INTERACTIVE_NOTE}" if task.interactive else ""
@@ -521,8 +632,9 @@ def set_automatic(
     registered at `run_time` (else the task's, the kept one, 03:00); same state and time runs no script,
     unless the task runs only while signed in and `on` is asked again (then Windows is asked again).
     `ScheduleError` with nothing changed when Windows refuses, the task cannot be read, another change is
-    still running (`ScheduleBusy`) or the lock file cannot be opened; `ScheduleFileError` also when the record
-    cannot be written (Windows may then have the change); `DevInstall` for the switch in a dev install.
+    still running (`ScheduleBusy`) or the lock file cannot be opened; `ScheduleUndone` when the record could
+    not be written and Windows was put back, `ScheduleUnrecorded` (NS-W208) when it could not be put back;
+    `DevInstall` for the switch in a dev install.
     """
     if run_time and not valid_time(run_time):
         raise ScheduleError(f"time must be HH:MM (24 h), got {run_time!r}")
@@ -535,35 +647,165 @@ def set_automatic(
                 remember_run_time(paths, run_time)
         return Outcome(False, MODE_DISABLED, run_time or remembered_run_time(paths), False)
     with _locked(paths):
-        before = read_task()
-        is_on = before is not None and before.enabled
-        if not (is_on if on is None else on):
-            if before is not None and is_on:
-                _forget(paths, run_time or before.run_time)
-                try:
-                    _run(build_remove_script())
-                except ScheduleError:
-                    _follow(paths, log)
-                    raise
-                if _record(paths, read_task(), log, by_owner=True) != "none":
-                    raise ScheduleError(f"Windows did not remove the task '{TASK_NAME}'")
-            else:
-                _record(paths, before, log)
-                if run_time:
-                    remember_run_time(paths, run_time)
-            return Outcome(False, "none", run_time or remembered_run_time(paths), is_on)
-        when = (
-            run_time or (before.run_time if before is not None and is_on else None)
-            or read_run_time(paths, include_disabled=True) or remembered_run_time(paths) or DEFAULT_TIME
+        return _set_locked(paths, app_path, read_task(), on, run_time, log)
+
+
+def _set_locked(
+    paths: Paths, app_path: Path, before: TaskState | None, on: bool | None, run_time: str | None,
+    log: NsLogger, *, quiet: bool = False,
+) -> Outcome:
+    """`set_automatic` once the lock is held and the task was read (`before`). `quiet` is setup's use: a
+    record Windows no longer backs goes without the NS-W207 note."""
+    is_on = before is not None and before.enabled
+    if not (is_on if on is None else on):
+        if before is not None and is_on:
+            _forget(paths, run_time or before.run_time)
+            try:
+                _run(build_remove_script())
+            except ScheduleError:
+                _follow(paths, log)
+                raise
+            if _record(paths, read_task(), log, by_owner=True) != "none":
+                raise ScheduleError(f"Windows did not remove the task '{TASK_NAME}'")
+        else:
+            _record(paths, before, log, by_owner=quiet)
+            if run_time:
+                remember_run_time(paths, run_time)
+        return Outcome(False, "none", run_time or remembered_run_time(paths), is_on)
+    when = (
+        run_time or (before.run_time if before is not None and is_on else None)
+        or read_run_time(paths, include_disabled=True) or remembered_run_time(paths) or DEFAULT_TIME
+    )
+    # Same state and time: no script. The one exception is the owner asking again (the switch or the
+    # NS-W205 row's "Try again") while Windows runs the task only while signed in: registering again
+    # tries the unattended mode first, and what Windows then has is the answer either way.
+    again = on is True and before is not None and before.interactive is True
+    if before is not None and is_on and before.run_time == when and not again:
+        return Outcome(True, _record(paths, before, log, by_owner=quiet), when, False)
+    task = _switch_on(paths, when, app_path, log, before)
+    return Outcome(True, read_schedule_mode(paths), task.run_time or when, True)
+
+
+@dataclass(frozen=True)
+class SetupResult:
+    """What setup's scheduler step did and what Windows has now (`setup_apply`); `ns schedule install
+    --setup` prints it as one JSON line and `installer.stage2.web.nightly_view.outcome_line` words it.
+
+    `case`: `first` (a first install: the answer, or off), `applied` (the window's answer, made against the
+    state Windows still had), `kept` (left as Windows has it), `stale` (a window answer made against another
+    state: nothing changed), `unread` (Windows or the lock did not answer: nothing changed), `refused`
+    (Windows refused the change: as it was), `undone` and `unrecorded` (the record could not be written).
+    `on` is None only for `unread`. `run_time` is the task's time when on, else the time kept for later.
+    """
+
+    case: str
+    on: bool | None
+    run_time: str | None
+    signed_in_only: bool = False
+    wanted_on: bool = False     # setup tried to switch them on (with `refused` or `unread`: NS-W206)
+    wanted_off: bool = False    # setup tried to switch them off and Windows refused
+    time_kept: str | None = None  # the time the answers name, which was not used
+    seen: str | None = None
+    reason: str = ""
+
+
+def setup_apply(
+    paths: Paths, app_path: Path, *, first: bool, nightly: bool | None, seen: str | None, run_time: str,
+    was: str | None = None, log: NsLogger | None = None,
+) -> SetupResult:
+    """Setup's one decision about Automatic runs (s09; a Repair and a reinstall are the same step again).
+
+    The rule: Automatic runs change only by an owner's action made against the state the owner saw.
+
+    - `first` (no install decided here before): `nightly` True switches them on at `run_time`; anything else
+      registers nothing and keeps `run_time` for the switch. An enabled task that is there anyway (its record
+      was lost) is kept as it is.
+    - otherwise the window's answer (`nightly` with `seen`, the state the window showed) is applied only when
+      Windows still has that state; an answer without `seen` (an answers file, which may be months old) and
+      an answer against another state change nothing. A kept enabled task is registered again at its own
+      time, so its action and settings are this version's.
+    - the answers' time (`run_time`) moves a kept task, or the time kept while off, only when it differs
+      from the time the answers had at the last setup (`was`) and the time now still is that one: a time set
+      in Settings since stays (D-14). With the window's answer applied, a time changed in the window counts.
+
+    Never raises for what Windows or the files do: the result says it (`SetupResult`). `ScheduleError` only
+    for a bad `run_time`; `DevInstall` in a dev install (its task is registered disabled by `install`).
+    """
+    if not valid_time(run_time):
+        raise ScheduleError(f"time must be HH:MM (24 h), got {run_time!r}")
+    if is_dev(paths):
+        raise DevInstall("this is a dev install: its nightly task is registered disabled and never runs")
+    log = _logger(paths, log)
+    try:
+        with _locked(paths):
+            return _setup_locked(paths, app_path, read_task(), first, nightly, seen, run_time, was, log)
+    except ScheduleUndone as e:
+        return SetupResult("undone", e.on, e.run_time, reason=e.why, seen=seen)
+    except ScheduleUnrecorded as e:
+        return SetupResult("unrecorded", True, e.run_time, reason=e.why, seen=seen)
+    except ScheduleError as e:
+        own = isinstance(e, (ScheduleFileError, ScheduleBusy))  # Nightshift's lock or files, not Windows
+        reason = _one_line(e) if own else f"Windows did not answer: {_one_line(e)}"
+        if first:
+            with contextlib.suppress(OSError):
+                remember_run_time(paths, run_time)
+        wanted = first and nightly is True
+        return SetupResult("unread", None, None, wanted_on=wanted, reason=reason, seen=seen)
+
+
+def _setup_locked(
+    paths: Paths, app_path: Path, before: TaskState | None, first: bool, nightly: bool | None,
+    seen: str | None, run_time: str, was: str | None, log: NsLogger,
+) -> SetupResult:
+    on_now = before is not None and before.enabled
+    now_time = (before.run_time or read_run_time(paths)) if on_now and before is not None else None
+    only = bool(before.interactive) if on_now and before is not None else False
+    answered = nightly is not None and seen is not None
+    same = seen == f"on@{now_time}" if on_now else seen in ("off", "new")
+    new_time = was is not None and run_time != was
+    time_kept: str | None = None
+    if first and (nightly or not on_now):
+        case, want_on, when = "first", bool(nightly), run_time
+    elif not first and answered and same:
+        case, want_on = "applied", bool(nightly)
+        when = run_time if (new_time or not on_now) else (now_time or run_time)
+    else:
+        case, want_on = ("stale" if answered and not first else "kept"), on_now
+        kept = remembered_run_time(paths) or read_run_time(paths, include_disabled=True)
+        base = now_time if on_now else kept
+        moves = case == "kept" and new_time and base in (was, None)
+        when = run_time if moves or base is None else base
+        time_kept = run_time if new_time and not moves and base != run_time else None
+    try:
+        if case == "kept" and on_now:
+            task = _switch_on(paths, when, app_path, log, before)
+            return SetupResult(
+                case, True, task.run_time or when, bool(task.interactive), time_kept=time_kept, seen=seen
+            )
+        if case == "stale" or not (want_on or on_now):
+            # nothing to change in Windows: the record follows what was read, quietly (a record an uninstall
+            # or a dev install left goes), and the time waits in dashboard.json for the switch
+            with contextlib.suppress(OSError):
+                _record(paths, before, log, by_owner=True)
+            if not on_now and when != remembered_run_time(paths):
+                with contextlib.suppress(OSError):
+                    remember_run_time(paths, when)
+            at = now_time if on_now else when
+            return SetupResult(case, on_now, at, only, time_kept=time_kept, seen=seen)
+        out = _set_locked(paths, app_path, before, want_on, when, log, quiet=True)
+        return SetupResult(
+            case, out.on, out.run_time, out.mode == "interactive_only", time_kept=time_kept, seen=seen
         )
-        # Same state and time: no script. The one exception is the owner asking again (the switch or the
-        # NS-W205 row's "Try again") while Windows runs the task only while signed in: registering again
-        # tries the unattended mode first, and what Windows then has is the answer either way.
-        again = on is True and before is not None and before.interactive is True
-        if before is not None and is_on and before.run_time == when and not again:
-            return Outcome(True, _record(paths, before, log), when, False)
-        task = _switch_on(paths, when, app_path, log)
-        return Outcome(True, read_schedule_mode(paths), task.run_time or when, True)
+    except ScheduleFileError:
+        raise
+    except ScheduleError as e:  # Windows refused: the task is as it was
+        if not on_now:
+            with contextlib.suppress(OSError):
+                remember_run_time(paths, run_time)
+        return SetupResult(
+            "refused", on_now, now_time if on_now else run_time, only, wanted_on=want_on and not on_now,
+            wanted_off=on_now and not want_on, reason=_one_line(e), seen=seen,
+        )
 
 
 def reregister(paths: Paths, app_path: Path, *, log: NsLogger | None = None) -> str | None:
@@ -586,18 +828,27 @@ def reregister(paths: Paths, app_path: Path, *, log: NsLogger | None = None) -> 
                 "Automatic runs are off (the nightly task was switched off or removed in Task Scheduler); "
                 "left as it is"
             )
-        task = _switch_on(paths, before.run_time or read_run_time(paths) or DEFAULT_TIME, app_path, log)
+        when = before.run_time or read_run_time(paths) or DEFAULT_TIME
+        task = _switch_on(paths, when, app_path, log, before)
         _log_kept(log, before, task.run_time or "")
         return f"scheduled task re-registered (daily at {task.run_time})"
 
 
-def sync_record(paths: Paths, *, log: NsLogger | None = None) -> bool:
+def sync_record(
+    paths: Paths, *, log: NsLogger | None = None, quiet: bool = False,
+    read: Callable[[], TaskState | None] | None = None,
+) -> bool:
     """One look at Windows; the record follows it. True when the record changed.
 
     For every install but a dev one (its `disabled` record is not a choice). A task deleted or disabled in
     Task Scheduler reads off (NS-W207 once); an enabled task with no record, a torn one or an older
     `switched_off` one reads on; a moved time is taken over. Never raises and never waits for another change:
     a look that fails, times out (READ_TIMEOUT_S) or finds the lock taken changes nothing.
+
+    `quiet` is setup's own look before it asks its question: a record an uninstall left behind goes without
+    the NS-W207 note (nobody switched anything off outside Nightshift; setup's summary says what it found).
+    `read` replaces the look itself (setup runs PowerShell through its own runner, before the programs that
+    hold `ns` exist); it raises `ScheduleError` when Windows did not answer.
     """
     if is_dev(paths) or read_schedule_mode(paths) == MODE_DISABLED:
         return False
@@ -609,7 +860,8 @@ def sync_record(paths: Paths, *, log: NsLogger | None = None) -> bool:
     try:
         with _locked(paths, 0):
             before = seen()
-            _record(paths, read_task(timeout_s=READ_TIMEOUT_S), _logger(paths, log))
+            task = read() if read is not None else read_task(timeout_s=READ_TIMEOUT_S)
+            _record(paths, task, _logger(paths, log), by_owner=quiet)
             return seen() != before
     except (ScheduleError, OSError):
         return False

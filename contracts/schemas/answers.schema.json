@@ -299,6 +299,18 @@
       ],
       "title": "Models Source Kind",
       "type": "string"
+    },
+    "nightly": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Nightly"
     }
   },
   "required": [

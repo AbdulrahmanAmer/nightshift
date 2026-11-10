@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
+from pydantic import Field
+
 from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_message
 from ns_common import first_start
 from ns_common.atomic import read_text_retry, write_text_atomic
@@ -46,6 +48,10 @@ class InstallerAnswers(Answers):
     # tiny model can get a story past the text validators. runtime.json says `tiny_story: true`. Needs
     # `allow_cpu`. An answers.json setting only: the setup window never asks it, the dashboard cannot set it.
     tiny_story: bool = False
+    # What the setup window showed for Automatic runs when the owner answered `nightly`: `new` (no install
+    # there), `off`, or `on@HH:MM`. Only the window writes it. The scheduler step applies the window's answer
+    # only while Windows still has that state (a Settings change made meanwhile wins), then removes both keys.
+    nightly_seen: str | None = Field(default=None, pattern=r"^(new|off|on@([01]\d|2[0-3]):[0-5]\d)$")
 
 
 def wants_voicedesign(ans: InstallerAnswers) -> bool:
@@ -162,6 +168,27 @@ def write_answers(path: Path, ans: InstallerAnswers) -> Path:
     data = disk_dict(ans, dump_blanked(ans))
     write_text_atomic(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     return path
+
+
+#: Setup input that is used once (the scheduler step, s09) and then removed from the saved answers: it
+#: answers a question about the moment setup ran, and must never be read again by a later run.
+SETUP_INPUT = ("nightly", "nightly_seen")
+
+
+def forget_setup_input(path: Path) -> bool:
+    """Remove `SETUP_INPUT` from a saved answers file. Returns True when the file changed. A file that is
+    missing or unreadable is left alone (the step that calls this already acted on the answers it loaded)."""
+    try:
+        data = json.loads(read_text_retry(path, "utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict) or not any(key in data for key in SETUP_INPUT):
+        return False
+    for key in SETUP_INPUT:
+        data.pop(key, None)
+    first_start.guard(path)
+    write_text_atomic(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    return True
 
 
 def blank_secrets_in_file(path: Path) -> bool:

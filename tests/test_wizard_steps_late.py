@@ -20,6 +20,7 @@ from installer.stage2.testing import example_answers, make_test_context
 from ns_common.config import load_channel, load_runtime, save_runtime
 from ns_common.errors import NsError, describe
 from ns_supervisor import check_names as names
+from ns_supervisor.schedule_cfg import write_run_time
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -418,8 +419,12 @@ def test_s09_creates_shortcuts_for_existing_launchers_and_registers_the_task(tmp
     assert first.meta["target"] == "powershell.exe"
     assert "-ExecutionPolicy Bypass -File" in first.meta["arguments"]
     assert "launchers" in first.meta["arguments"]
-    assert runner.called("ns schedule install")[0].argv[-4:] == ["schedule", "install", "--time", "04:30"]
-    assert ctx.flag("schedule") == "installed"
+    # nightly-optional b: the step asks `ns schedule install --setup` to decide; here no first install was
+    # declared and no answer given, so nothing is registered and the decision is recorded as off
+    argv = runner.called("ns schedule install")[0].argv
+    assert argv[argv.index("schedule"):] == ["schedule", "install", "--time", "04:30", "--setup", "again"]
+    assert (ctx.flag("schedule"), ctx.flag("schedule_mode")) == ("installed", "off")
+    assert "Automatic runs: off" in ctx.ui.text
     assert "not part of this version yet" in ctx.ui.text
     assert step.check(ctx) is True
 
@@ -502,8 +507,9 @@ def test_s09_nightshift_code_shortcut_only_with_install_code(tmp_path: Path):
 
 def test_s09_missing_schedule_command_is_a_warning_not_a_failure(tmp_path: Path):
     app = launcher_app(tmp_path, [])
+    missing = RunResult(2, "", "Error: No such command 'schedule'.")
     runner = FakeRunner(tmp_path / "desktop", results={
-        "ns schedule install --time 03:00": RunResult(2, "", "Error: No such command 'schedule'.")})
+        "ns schedule install --time 03:00 --setup again": missing})
     ctx = make_test_context(
         tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner
     )
@@ -516,7 +522,7 @@ def test_s09_missing_schedule_command_is_a_warning_not_a_failure(tmp_path: Path)
 def test_s09_a_refused_scheduler_never_blocks_the_install(tmp_path: Path):
     app = launcher_app(tmp_path, [])
     runner = FakeRunner(tmp_path / "desktop", results={
-        "ns schedule install --time 03:00": RunResult(1, "", "access denied")})
+        "ns schedule install --time 03:00 --setup again": RunResult(1, "", "access denied")})
     ctx = make_test_context(
         tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner
     )
@@ -533,17 +539,19 @@ def test_s09_a_refused_scheduler_never_blocks_the_install(tmp_path: Path):
 
 def test_s09_an_interactive_only_task_is_registered_and_the_owner_is_told(tmp_path: Path):
     app = launcher_app(tmp_path, [])
+    answer = {"case": "first", "on": True, "run_time": "03:00", "signed_in_only": True}
     runner = FakeRunner(tmp_path / "desktop", results={
-        "ns schedule install --time 03:00": RunResult(
-            0, "registered (Nightshift Daily daily at 03:00; runs only while you are logged on "
-               "(Windows refused the unattended mode))\n")})
+        "ns schedule install --time 03:00 --setup first --nightly yes": RunResult(
+            0, "setup: " + json.dumps(answer) + "\n")})
     ctx = make_test_context(
-        tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner
+        tmp_path, raw_answers=example_answers(nightly=True), resolve=True, app_path=app, runner=runner
     )
+    ctx.set_flag("first_install", True)                  # what s01 decides on a home with no install
     step = S09ShortcutsScheduler()
     step.run(ctx)
     assert ctx.flag("schedule") == "installed" and ctx.flag("schedule_mode") == "interactive"
     assert any(code == "NS-W205" for code, _ in ctx.warnings)
+    assert "only while you are signed in" in ctx.ui.text and ctx.flag("first_install") is False
 
 
 def test_s09_shortcut_failure_and_desktop_override(tmp_path: Path):
@@ -570,6 +578,7 @@ def test_s10_summary_names_the_file_to_upload(tmp_path: Path):
         if s.id != "s10_summary":
             ctx.state.mark(s.id, "done")
     ctx.set_flag("schedule", "installed")
+    write_run_time(ctx.paths, "03:00")                   # Automatic runs are on: the record of the task
     ctx.warnings.append(("NS-W401", "runtime.json now uses libx264"))
     step = S10Summary()
     assert step.check(ctx) is False
@@ -579,7 +588,7 @@ def test_s10_summary_names_the_file_to_upload(tmp_path: Path):
     assert bundle.parent == tmp_path / "desktop" and bundle.name.startswith("nightshift-diagnostics-")
     assert str(bundle) in ctx.ui.text and "upload" in ctx.ui.text.lower()
     assert "NS-W401" in ctx.ui.text and "Run now" in ctx.ui.text
-    assert "every night at 03:00" in ctx.ui.text
+    assert "Automatic runs: on at 03:00" in ctx.ui.text
     assert ctx.ui.tables[0][0] == "Setup result" and len(ctx.ui.tables[0][1]) == 11
     assert any(str(ctx.paths.outbox) in r[1] for r in ctx.ui.tables[1][1])
     stops = runner.called("ns stop")

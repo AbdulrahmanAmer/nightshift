@@ -172,6 +172,17 @@ if (-not $SkipSystem) {
             Write-Host "  removed scheduled task '$TaskName'"
         }
     }
+    # config\schedule.json is Nightshift's record of that task ("Automatic runs are on"). With "keep my data"
+    # the config folder stays, so the record goes here, with the task: left behind, the next setup and every
+    # page would read Automatic runs as on with no task in Windows. The run time stays in config\answers.json
+    # and config\dashboard.json, and the next setup asks its question again.
+    if ($nsHome) {
+        $scheduleRecord = Join-Path (Join-Path $nsHome 'config') 'schedule.json'
+        if (Test-Path -LiteralPath $scheduleRecord) {
+            if ($script:IsDry) { Show-Action "delete $scheduleRecord" }
+            else { Remove-Item -LiteralPath $scheduleRecord -Force -ErrorAction SilentlyContinue; Write-Host "  removed $scheduleRecord" }
+        }
+    }
     # The toast identity the installer registered (HKCU, no admin needed).
     $aumidKey = 'HKCU:\Software\Classes\AppUserModelId\Nightshift'
     if (Test-Path -LiteralPath $aumidKey) {

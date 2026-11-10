@@ -1,7 +1,7 @@
 // 2.3 Choices: everything s01_questions asks, on one screen. Validated here for instant feedback with the rules of the spec;
 // the server's FieldError[] stays authoritative.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, Card, CardHeader, SegmentedControl, TimeChip } from "@ref12";
+import { Button, Card, CardHeader, SegmentedControl, Switch, TimeChip } from "@ref12";
 import { cx } from "@dash/ui/kit";
 import { choices as t } from "../copy";
 import { gbNum, homePathProblem, parseRunTime } from "../format";
@@ -37,8 +37,8 @@ export function Choices() {
     const a = state.answers;
     const theme = (document.documentElement.dataset.theme === "light" ? "light" : "dark") as "dark" | "light";
     return a
-      ? { ownerName: a.ownerName, channel: a.channel, homePath: a.homePath, llmTier: a.llmTier, llmCustom: a.llmCustom, voice: a.voice, modelsSource: a.modelsSource, runTime: a.runTime, mastersPerWeek: a.mastersPerWeek, installCode: a.installCode, includeVoicedesign: a.includeVoicedesign ?? false, theme: a.theme ?? theme, pexelsKey: null, pixabayKey: null }
-      : { ownerName: null, channel: { displayName: "", niche: "", language: "en" }, homePath: state.machine.meters.disk.path, llmTier: state.plan.recommendedTier, llmCustom: null, voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", mastersPerWeek: 1, installCode: true, includeVoicedesign: false, theme, pexelsKey: null, pixabayKey: null };
+      ? { ownerName: a.ownerName, channel: a.channel, homePath: a.homePath, llmTier: a.llmTier, llmCustom: a.llmCustom, voice: a.voice, modelsSource: a.modelsSource, runTime: a.runTime, nightly: a.nightly ?? false, nightlySeen: a.nightlySeen ?? "new", mastersPerWeek: a.mastersPerWeek, installCode: a.installCode, includeVoicedesign: a.includeVoicedesign ?? false, theme: a.theme ?? theme, pexelsKey: null, pixabayKey: null }
+      : { ownerName: null, channel: { displayName: "", niche: "", language: "en" }, homePath: state.machine.meters.disk.path, llmTier: state.plan.recommendedTier, llmCustom: null, voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", nightly: false, nightlySeen: "new", mastersPerWeek: 1, installCode: true, includeVoicedesign: false, theme, pexelsKey: null, pixabayKey: null };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [d, setD] = useState<ChoicesDraft>(initial);
@@ -275,6 +275,13 @@ export function Choices() {
       <Area area="run">
         <Card as="section" padding="lg" aria-label={t.run.title}>
           <CardHeader title={t.run.title} level={2} />
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-ds-sm font-medium">{t.run.nightly}</p>
+              <p className="mt-1 text-ds-xs leading-ds-normal text-ds-muted">{t.run.nightlyHint}{d.nightlySeen !== "new" ? ` ${t.run.now(d.nightlySeen)}` : ""}</p>
+            </div>
+            <Switch checked={d.nightly} onChange={(v) => set("nightly", v)} label={t.run.nightly} disabled={locked} />
+          </div>
           <p className="flex gap-3" aria-label={`${d.runTime}`}>
             <TimeChip value={hh ?? "--"} unit={t.run.hours} /><TimeChip value={mm ?? "--"} unit={t.run.minutes} />
           </p>
@@ -283,7 +290,7 @@ export function Choices() {
               options={[...RUN_PRESETS.map((v) => ({ value: v, label: v })), { value: "other", label: t.run.other }]} />
           </div>
           {otherTime && <LabeledField className="mt-3" label={t.run.otherLabel} inputMode="numeric" pattern="([01]\d|2[0-3]):[0-5]\d" placeholder="03:00" value={d.runTime} disabled={locked} error={shown("runTime")} onChange={(e) => set("runTime", e.target.value)} onBlur={() => touch("runTime")} inputClassName="w-28 font-mono" />}
-          <p className="mt-3 text-ds-xs leading-ds-normal text-ds-muted">{t.run.caption}</p>
+          <p className="mt-3 text-ds-xs leading-ds-normal text-ds-muted">{d.nightly ? t.run.caption : t.run.captionOff}</p>
         </Card>
       </Area>
       <Area area="voice">

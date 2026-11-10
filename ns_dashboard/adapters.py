@@ -1051,11 +1051,24 @@ class RealScheduleAdapter:
     def _set(self, on: bool | None, run_time: str | None) -> dict[str, Any]:
         from ns_common.errors import describe
         from ns_supervisor.control import app_path
-        from ns_supervisor.schedule import ScheduleError, ScheduleFileError, set_automatic
+        from ns_supervisor.schedule import (
+            ScheduleError,
+            ScheduleFileError,
+            ScheduleUnrecorded,
+            set_automatic,
+        )
         from ns_supervisor.schedule_cfg import is_on
 
         try:
             out = set_automatic(self.paths, app_path(self.paths), on=on, run_time=run_time)
+        except ScheduleUnrecorded as e:
+            # Windows took the task, the record could not be written and the way back failed too: this page
+            # goes on saying off (or the old time), so the note must say what Windows does and how to stop it
+            w = describe("NS-W208")
+            return {
+                "applied": False, "code": "NS-W208",
+                "note": f"NS-W208: {w.message} Windows runs it at {e.run_time}. {w.hint}",
+            }
         except ScheduleFileError as e:
             # Nightshift's own lock or record, not Windows: the elevated-PowerShell hint would be untrue
             shown = "on" if is_on(self.paths) else "off"
