@@ -191,13 +191,19 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
     for tenant, group in groupby(stages, key=_tenant_of):
         group_list = list(group)
         if tenant is not None:
+            # Before the graphics card is asked for: a job paused between two groups must not make the engine
+            # swap tenants and load a model it will not use (the check before every stage, below, stays: the
+            # wait for the card can take hours, and a pause may come during it).
+            not_paused(group_list[0].name)
             ctx.services.acquirer.acquire(tenant, owner, model_alias="story" if tenant == "llama" else None)
         try:
             for st in group_list:
+                if needs_embed(st):
+                    not_paused(st.name)  # likewise before the embed service is started for this stage
                 with embed_lease(ctx, st, owner):
-                    # The one check: immediately before EVERY stage, after any wait for the GPU or the embed
-                    # lease (up to hours); a pause waits for the stage under way only. Raising here releases
-                    # the tenant in the `finally` below, so a held job keeps no lease.
+                    # The check no route gets past: immediately before EVERY stage, after any wait for the GPU
+                    # or the embed lease (up to hours); a pause waits for the stage under way only. Raising
+                    # here releases the tenant in the `finally` below, so a held job keeps no lease.
                     not_paused(st.name)
                     run_stage(ctx, st, force=not resume)
                 ran.append(st.name)

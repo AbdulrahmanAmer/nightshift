@@ -732,6 +732,50 @@ def test_a_pause_stops_a_running_job_before_its_next_stage_and_the_texts_say_so(
     assert "continues only the video it was making" not in guide
 
 
+def test_a_stopped_request_keeps_what_it_owes_whatever_comes_next_and_the_texts_say_so():
+    """P47, second review: the resume before the dashboard looked, Cancel, Retry, the card's list, the
+    check before the graphics card, and the nightly card. Each sentence is held against the code it names."""
+    from ns_dashboard import jobs as dashboard_jobs
+    from ns_studio import orchestrator, ownership
+
+    assert "owed_after_stop" in inspect.getsource(dashboard_jobs.JobWorker._requeue_paused)
+    assert "owed_after_stop" in inspect.getsource(svc_jobs.JobsService._resume_params)
+    assert "CANCEL_ASKED" in inspect.getsource(dashboard_jobs.JobStore.requeue)
+    assert "_whole" in inspect.getsource(dashboard_jobs.JobWorker._run_job)
+    assert dashboard_jobs.PAUSE_REQUEUE_LIMIT == 3 and svc_jobs.RETRY_LOOKBACK == 200
+    assert ownership.RESUME_WITHIN_DAYS == 3
+    run_job = inspect.getsource(orchestrator.run_job)
+    assert run_job.index("not_paused(group_list[0].name)") < run_job.index("acquirer.acquire(tenant")
+    assert run_job.count("not_paused(st.name)") == 2, "before the embed service and before every stage"
+    d = _flat(decision("Incident procedure"))
+    for words in (
+        "`owed_after_stop`", "`PAUSE_REQUEUE_LIMIT` (3)", 'goes back as plain "Queued"', "it does not fail",
+        "`made_job_ids`", "`JobWorker._whole`", "A Cancel always wins", "`jobs.cancelled_text`",
+        "`already_continued`", "`RETRY_LOOKBACK`, 200", "before it asks for the GPU tenant",
+        "`ownership._card_text`", "a resume during the same night does not continue it that night",
+    ):
+        assert words in d, words
+    assert "it ends `failed` with NS-E330 instead" not in d and "made no studio job yet, it ends" not in d
+    cancelled = dashboard_jobs.cancelled_text(
+        {"made_job_ids": ["x"], "asked": 3, "count": 2, "resume_job_id": "<job id>"})
+    assert cancelled in d, cancelled
+    card = ownership._card_text(None, "needs_retry", ownership.PAUSED_REASON, ownership.PAUSED_OWNER)
+    assert card.removeprefix("Interrupted: ").rstrip(".") in d, card
+    guide = _flat(doc_section(GUIDE, HEADING))
+    for words in (
+        'goes back to waiting as "Queued" with the same videos still to make',
+        "it does not stop with an error",
+        "lists every video of the request, also those made before the pause",
+        "names the half-made one, whose files stay in its job folder (nothing is deleted)",
+        "also makes the videos of that request that had not started", "so nothing is made twice",
+        "its channel was paused during the night's run",
+        "a resume during the same night does not continue it",
+        "does not ask for the graphics card again, so no model is loaded for it",
+    ):
+        assert words in guide, words
+    assert "it stops with NS-E330 instead" not in guide
+
+
 def test_the_content_safety_checklist_is_not_narrower_than_18_3():
     rules = spec_section("### 18.3")
     first = next(ln for ln in rules.splitlines() if ln.startswith("- Real, named people"))

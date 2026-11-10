@@ -21,7 +21,7 @@ from pydantic import ValidationError
 
 from ns_common.config import load_channel
 from ns_common.paths import Paths
-from ns_dashboard.jobs import HELD_PREFIX, Hold, JobRecord
+from ns_dashboard.jobs import HELD_PREFIX, Hold, JobRecord, asked_videos
 from ns_dashboard.state import LockedDb
 
 HELD_KINDS = frozenset({"run", "series_part"})
@@ -64,12 +64,7 @@ def owed_of(rec: JobRecord) -> tuple[int, bool]:
     """How many videos a held story job still has to make, and whether the first is half made."""
     if rec.kind != "run":
         return 1, False
-    try:
-        owed = max(1, int(rec.params.get("count") or 1))
-    except (TypeError, ValueError):
-        owed = 1
-    return (1 if rec.params.get("script") and not rec.params.get("resume_job_id") else owed,
-            bool(rec.params.get("resume_job_id")))
+    return asked_videos(rec.params), bool(rec.params.get("resume_job_id"))
 
 
 def make_channel_hold(paths: Paths, db: LockedDb) -> Hold:

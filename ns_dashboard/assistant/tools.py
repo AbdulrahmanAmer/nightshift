@@ -282,7 +282,8 @@ def _tools() -> list[ToolDef]:
         _t("resume_job", "create", "Continue a story job that stopped with an error from the stage where it stopped (same story).",
            lambda c, a: c.dash.jobs.create_resume(a["job_id"]), route=("POST", "/api/jobs/{job_id}/resume"),
            props={"job_id": _s("id of the job that stopped")}, required=["job_id"], side=True, dry_run=dryrun.check_resume,
-           confirm="Continue job {job_id} from the stage where it stopped. This uses the GPU for a while."),
+           confirm="Continue job {job_id} from the stage where it stopped, and make the videos of its request that "
+                   "had not started. This uses the GPU for a while."),
         _t("cancel_job", "create", "Cancel a queued or running job (a running one stops after its current stage).",
            lambda c, a: c.dash.jobs.cancel(a["job_id"]), route=("POST", "/api/jobs/{job_id}/cancel"),
            props={"job_id": _s("job id")}, required=["job_id"], side=True, dry_run=dryrun.check_cancel, confirm="Cancel job {job_id}."),

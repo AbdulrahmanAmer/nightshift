@@ -529,6 +529,51 @@ def test_a_paused_job_gives_its_gpu_tenant_back_and_takes_no_other(
     assert CALLS == [f"a:{CH}"]
 
 
+@pytest.mark.parametrize("next_stage", ["on_the_gpu", "embeds"])
+def test_a_job_paused_at_the_end_of_a_group_asks_for_no_further_tenant(
+    two_channels: tuple[Paths, Db], monkeypatch: pytest.MonkeyPatch, next_stage: str
+):
+    """The pause lands in the LAST stage of a group: the next look is at the group boundary. The graphics
+    card (or the embed service) must not be asked for first: the engine would swap tenants and load a model
+    for a job that then stops (P47 review note). The check before every stage stays (the test above)."""
+    from dataclasses import replace
+
+    from ns_studio.orchestrator import FORMAT_STAGES, run_job
+    from ns_studio.stages import REGISTRY
+
+    paths, _db = two_channels
+    events: list[str] = []
+
+    class Recorder:
+        def acquire(self, tenant: str, owner: str, **_kw: Any) -> None:
+            events.append(f"acquire {tenant}")
+
+        def release(self, tenant: str, owner: str) -> None:
+            events.append(f"release {tenant}")
+
+    class LlamaA(StubA):
+        name = "p47f_llama_only"
+        tenant = "llama"
+
+    class Next(StubB):
+        name = "p47f_next"
+        tenant = "tts" if next_stage == "on_the_gpu" else None
+        uses_embed = next_stage == "embeds"
+
+    for stage in (LlamaA(), Next()):
+        monkeypatch.setitem(REGISTRY, stage.name, stage)
+    monkeypatch.setitem(FORMAT_STAGES, "shorts_only", [LlamaA.name, Next.name])
+    env = jobs.open_env(frozenset({"llm", "tts", "whisper", "embed", "clips"}))
+    ctx = jobs.make_job(env, crud.get_channel(paths, CH), "shorts_only")
+    ctx = replace(ctx, services=replace(ctx.services, acquirer=Recorder()))
+    StubA.pause_on = CH
+    with pytest.raises(Exception) as ei:
+        run_job(ctx)
+    assert getattr(ei.value, "code", None) == PAUSED_CODE
+    assert events == ["acquire llama", "release llama"], "nothing asked for after the pause"
+    assert CALLS == [f"a:{CH}"]
+
+
 def test_a_clipper_job_of_a_paused_channel_is_not_stopped_between_its_stages(
     two_channels: tuple[Paths, Db], monkeypatch: pytest.MonkeyPatch
 ):
@@ -699,34 +744,10 @@ def test_a_series_part_stopped_by_a_pause_keeps_its_job_and_continues(tmp_home: 
     assert calls == [job_id, job_id] and client.get(f"/api/jobs/{job_id}").json()["status"] == "done"
 
 
-@pytest.mark.parametrize("case", ["resumed_before_the_worker_looked", "no_studio_job_yet"])
-def test_a_job_stopped_by_a_pause_fails_with_ns_e330_when_it_cannot_be_held(tmp_home: Path, case: str):
-    """The resume lands between the studio's stop and the worker's look (the worker sees no pause: holding it
-    would start it again at once, a loop), or a run job made no studio job yet: it fails with NS-E330 and its
-    hint, once, and the worker goes idle."""
-    pytest.importorskip("fastapi")
-    from ns_common.errors import NsError
-    from tests.test_dashboard_api import make_env
-
-    client, state = make_env(tmp_home)
-    seed_channel(state.db, state.paths, CH)
-    calls: list[str] = []
-
-    def run(ctl: JobControl) -> dict[str, Any]:
-        calls.append(ctl.job_id)
-        if case == "no_studio_job_yet":
-            review.pause(state.paths, Db(state.paths.db_path), CH, "warning")
-        else:
-            ctl.extras["studio_job_ids"] = ["after-dark-20261110-0001"]
-        raise NsError(PAUSED_CODE, "stopped")
-
-    state.worker.handlers["run"] = run
-    job_id = client.post("/api/jobs/run", json={"channel": CH}).json()["job_id"]
-    assert state.worker.run_next() is True
-    rec = client.get(f"/api/jobs/{job_id}").json()
-    assert rec["status"] == "failed" and rec["result"]["error"]["code"] == PAUSED_CODE
-    assert rec["result"]["error"]["hint"] == describe(PAUSED_CODE).hint
-    assert state.worker.run_next() is False and calls == [job_id], "no loop"
+# What the dashboard does with a job the studio stopped when it can NOT see the pause itself (the owner
+# resumed before it looked), or when nothing was made yet, is in tests/test_paused_request_states.py: the
+# job is put back in line with all it owes; it fails with NS-E330 only after `PAUSE_REQUEUE_LIMIT` such
+# turns in a row.
 
 
 def test_a_nightly_job_paused_between_two_stages_waits_and_the_first_night_after_the_resume_continues_it(
@@ -758,7 +779,13 @@ def test_a_nightly_job_paused_between_two_stages_waits_and_the_first_night_after
     assert (CH, first, 1) in held and (CH, None, 1) in held
     record = ownership.read_record(paths, first) or {}
     assert record.get("state") == "interrupted" and record.get("origin") == "daily"
-    assert db.query("select 1 from dashboard_jobs where params_json like ?", (f"%{first}%",)), "a Queue card"
+    (card,) = db.query(
+        "select message, params_json from dashboard_jobs where params_json like ?", (f"%{first}%",))
+    # the Queue card says the true cause and a way back that works (Retry is refused while paused)
+    assert "its channel was paused during the night's run" in card["message"], card["message"]
+    assert "Resume the channel: the next nightly run then continues it" in card["message"]
+    assert "the PC or Nightshift stopped" not in card["message"]
+    assert json.loads(card["params_json"])["result"]["error"]["code"] == PAUSED_CODE
     review.resume(paths, db, CH)
     again = night(now + timedelta(days=1))
     assert JOB_CALLS.count(f"a:{first}") == 1 and JOB_CALLS.count(f"b:{first}") == 1, "continued, not redone"
@@ -881,3 +908,60 @@ def test_a_request_for_three_videos_paused_during_the_first_makes_all_three_afte
         assert calls.count(f"a:{v}") == 1 and calls.count(f"b:{v}") == 1, f"none twice: {calls}"
         assert (state.paths.job_dir(v) / "b.json").exists()
     assert state.worker.run_next() is False
+
+
+def test_a_nightly_job_paused_again_while_the_night_continues_it_waits_again_and_its_card_says_so(
+    two_channels: tuple[Paths, Db], monkeypatch: pytest.MonkeyPatch
+):
+    """The pause arrives again: the first night after the resume continues the half-made job, and a second
+    pause lands inside that. It stays interrupted, no stage of it starts, its card stops promising "the next
+    nightly run continues it" (it says the channel is paused), and the night after the second resume runs
+    only the stage that is left, once."""
+    from ns_common.config import save_channel
+    from ns_studio import daily, ownership
+    from ns_studio.orchestrator import FORMAT_STAGES
+    from ns_studio.policy.regen import run_job_guarded
+    from ns_studio.stages import REGISTRY
+
+    class StubC:
+        name, tenant, inputs, outputs = "p47f_c", None, ("b.json",), ("c.json",)
+
+        def run(self, ctx: Any) -> None:
+            JOB_CALLS.append(f"c:{ctx.job_id}")
+            ctx.write_json("c.json", {"n": 3})
+
+    monkeypatch.setitem(REGISTRY, StubC.name, StubC())
+    monkeypatch.setitem(FORMAT_STAGES, "shorts_only", [StubA.name, StubB.name, StubC.name])
+    paths, db = two_channels
+    review.pause(paths, db, OTHER, "not part of this test")
+    now = datetime(2026, 11, 20, 3, 0, tzinfo=UTC)
+    created = (now - timedelta(weeks=9)).isoformat(timespec="seconds")
+    save_channel(paths, crud.get_channel(paths, CH).model_copy(
+        update={"created_at": created, "shorts_per_day_max": 1}))
+    env = jobs.open_env(light=True)
+    env.services.footage_key = True
+
+    def night(at: datetime) -> dict[str, Any]:
+        return daily.run_daily(env, now=at, rng=random.Random(1), run_fn=run_job_guarded,
+                               awake=contextlib.nullcontext)
+
+    def card_message() -> str:
+        (row,) = db.query("select message from dashboard_jobs where params_json like ?", (f"%{first}%",))
+        return str(row["message"])
+
+    StubA.pause_on = CH
+    night(now)
+    (first,) = {c.split(":", 1)[1] for c in JOB_CALLS}
+    review.resume(paths, db, CH)
+    StubB.pause_after = 1  # the second pause, inside the stage the next night continues with
+    report = night(now + timedelta(days=1))
+    assert JOB_CALLS == [f"a:{first}", f"b:{first}"], "its last stage did not start, no new job either"
+    assert report["failures"] == [] and any(p.get("job_id") == first for p in report["paused"])
+    assert (ownership.read_record(paths, first) or {}).get("state") == "interrupted"
+    assert "Resume the channel: the next nightly run then continues it" in card_message(), card_message()
+    assert "The next nightly run continues it, or press Retry" not in card_message()
+    StubB.pause_after = None
+    review.resume(paths, db, CH)
+    again = night(now + timedelta(days=2))
+    assert [c for c in JOB_CALLS if c.endswith(first)] == [f"a:{first}", f"b:{first}", f"c:{first}"]
+    assert any(j["job_id"] == first and j.get("resumed") for j in again["jobs"])

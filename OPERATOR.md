@@ -316,11 +316,20 @@ stop at once), what it made so far is kept, the job goes back to waiting under *
 that step by itself after you resume the channel. Nothing you asked for is lost: a Create request for several
 videos does not start the next while paused, and after the resume it finishes the video it was making and then
 makes the ones still owed (the status text says how many, for example "(3 videos still to make, the first one half
-made)"); none is made twice. If you resume before the Dashboard has looked at the stopped job again, it stops with
-NS-E330 instead: press **Retry from where it stopped**. A video the night run was making when you paused waits the same
-way and is continued by the first night after the resume if it started no more than three days before that night
-(an older one waits for **Retry** in the Queue). A waiting video holds no part of the graphics card: the engine is
-free for other work until it continues. A `studio run` typed by hand in a
+made)"); none is made twice. If you resume before the Dashboard has looked at the stopped job, nothing is lost
+either: the job goes back to waiting as "Queued" with the same videos still to make and continues in its turn
+(it does not stop with an error). Its card, while it waits and when it is finished, lists every video of the
+request, also those made before the pause. **Cancel** on a waiting request stops it for good: the card then says
+how many videos were made and names the half-made one, whose files stay in its job folder (nothing is deleted).
+**Retry from where it stopped** on a story card that stopped with an error or after a restart continues the video
+that stopped and also makes the videos of that request that had not started; once that has started work, pressing
+Retry on the old card again is refused, so nothing is made twice. A video the night run was making when you paused
+waits the same way and is continued by the first night after the resume if it started no more than three days
+before that night (an older one waits for **Retry** in the Queue; a resume during the same night does not
+continue it that night). Its Queue card says "its channel was paused during the night's run" and that the next
+nightly run continues it after you resume. A waiting video holds no part of the graphics card: the engine is
+free for other work until it continues, and a job that is paused between two steps does not ask for the
+graphics card again, so no model is loaded for it. A `studio run` typed by hand in a
 terminal refuses a paused channel with NS-E330 ("The channel is paused."): `--channel <it>` and `--resume <its job>` start
 nothing, and a run of every channel leaves it out. A pause typed while a `studio run` works stops it before its
 next step: the video under way is left half made and recorded as failed with NS-E330, and the terminal prints

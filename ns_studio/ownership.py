@@ -51,7 +51,7 @@ from ns_common.errors import describe
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.singleton import AlreadyRunning, FileLock
-from ns_studio.errors import UNEXPECTED, StudioError
+from ns_studio.errors import PAUSED, UNEXPECTED, StudioError
 
 OWNERS = "owners"
 INTERRUPTED_CODE = "NS-E328"
@@ -95,6 +95,10 @@ OPEN_STATES = ("starting", "running")
 #: Whose dead jobs the Queue offers (a clip, a series part or a calibration has its own way back).
 STORY_ORIGINS = ("daily", "manual")
 OFFER_SOURCE = "nightly_recovery"
+#: The `owner` of a record the nightly closed because the job's channel was paused while it ran (P47): its
+#: Queue card says so, with NS-E330, instead of naming a restart that did not happen.
+PAUSED_OWNER = "its channel was paused"
+PAUSED_REASON = "its channel is paused"  # `resume_problem` of a job whose channel is paused
 
 Liveness = Literal["live", "dead", "interrupted", "ended", "unknown"]
 
@@ -669,9 +673,16 @@ def _our_row(rows: Sequence[Any]) -> Any | None:
     return None
 
 
-def _card_text(stage: str | None, resume: str, reason: str | None = None) -> str:
+def _card_text(stage: str | None, resume: str, reason: str | None = None, owner: str | None = None) -> str:
     at = f"Interrupted at {stage}" if stage else "Interrupted"
     stopped = f"{at}: the PC or Nightshift stopped during the night's run."
+    if owner == PAUSED_OWNER:  # the true cause, and a way back that works: Retry is refused while paused
+        stopped = f"{at}: its channel was paused during the night's run."
+        if resume not in ("pending", "resumed") and reason == PAUSED_REASON:
+            return (
+                f"{stopped} Resume the channel: the next nightly run then continues it, if the job started "
+                f"no more than {RESUME_WITHIN_DAYS} days before that run; or press Retry after the resume."
+            )
     if resume == "pending":
         return f"{stopped} The next nightly run continues it, or press Retry."
     if resume == "resumed":
@@ -699,9 +710,12 @@ def _write_card(
 def _card_result(
     job_id: str, stage: str | None, rec: Mapping[str, Any], resume: str, reason: str | None
 ) -> dict[str, Any]:
+    error = {"code": INTERRUPTED_CODE, "hint": INTERRUPTED_HINT, "stage": stage}
+    if rec.get("owner") == PAUSED_OWNER:
+        error = {"code": PAUSED, "hint": describe(PAUSED).hint, "stage": stage}
     return {
         "studio_job_ids": [job_id],
-        "error": {"code": INTERRUPTED_CODE, "hint": INTERRUPTED_HINT, "stage": stage},
+        "error": error,
         "interrupted": {
             "stage": stage,
             "run_id": rec.get("run_id"),
@@ -731,7 +745,7 @@ def offer_job(
     if mine is None and rows:
         return None
     result = _card_result(job_id, stage, rec, resume, reason)
-    message = _card_text(stage, resume, reason)
+    message = _card_text(stage, resume, reason, rec.get("owner"))
     stamp = _iso(when)
     if mine is not None:
         _write_card(db, str(mine["job_id"]), "failed", message, result, finished=stamp)
@@ -791,7 +805,7 @@ def _settle(
         interrupted["reason"] = reason
     result["interrupted"] = interrupted
     stage = interrupted.get("stage")
-    message = _card_text(stage, resume, reason)
+    message = _card_text(stage, resume, reason, interrupted.get("owner"))
     if status == "done":
         result.pop("error", None)
         result["output_ids"] = list(output_ids or [])

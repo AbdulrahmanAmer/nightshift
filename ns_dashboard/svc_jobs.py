@@ -22,7 +22,7 @@ from ns_dashboard import studio_bridge
 from ns_dashboard.adapters import Adapters
 from ns_dashboard.common import KNOWN_FORMATS, now_iso, offered_formats
 from ns_dashboard.errors import AdapterUnavailable, ApiError, room_refusal
-from ns_dashboard.jobs import Handler, JobControl, JobRecord, scheduled_text
+from ns_dashboard.jobs import Handler, JobControl, JobRecord, owed_after_stop, scheduled_text
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
 from ns_dashboard.templates import clipper_can_run, load_templates
@@ -33,6 +33,7 @@ from ns_studio.series.plain import script_problem
 
 CLIP_PARAM_KEYS = ("channel", "template", "max_clips", "min_s", "max_s", "caption_style", "rights_confirmed")
 MAX_CSV_BYTES = 20 * 1024 * 1024
+RETRY_LOOKBACK = 200  # how many of the newest story jobs Retry reads to find a continuation of the same card
 
 
 URL_RE = re.compile(r"^https?://[^\s/@:]+(?::\d+)?(?:[/?#]\S*)?$", re.IGNORECASE)
@@ -360,7 +361,9 @@ class JobsService:
 
         A new `run` row continues the studio job the failed one announced (`result.studio_job_ids`; the last
         one is the one that failed): its finished stages are kept, so a failure at voice, clips or render does
-        not repeat the language-model pass or write a different story.
+        not repeat the language-model pass or write a different story. A request for several videos also
+        gets the videos it had not started yet (`jobs.owed_after_stop`), so Retry never covers less than was
+        asked for.
         """
         self._accepting()
         channel, params = self._resume_params(job_id)
@@ -379,29 +382,53 @@ class JobsService:
         if rec.status != "failed":
             raise ApiError(409, "not_failed", "Only a job that stopped with an error can be continued.")
         self._require_channel_not_paused(rec.channel or str(rec.params.get("channel") or ""))
-        ids = [str(i) for i in (rec.result or {}).get("studio_job_ids") or [] if i]
-        if not ids:
+        result = rec.result or {}
+        # What the request still owes, decided where the worker decides it (`owed_after_stop`): the video it
+        # was making (the last studio job of the pass that stopped) and the videos it had not started. The
+        # videos of earlier passes (`made_job_ids`, a request a pause had put back in line) are finished.
+        made = {str(i) for i in rec.params.get("made_job_ids") or []}
+        seen = [str(i) for i in result.get("studio_job_ids") or [] if i and str(i) not in made]
+        stop = result.get("stop") if isinstance(result.get("stop"), dict) else None
+        owed = owed_after_stop(rec.params, seen, stop)
+        studio_job: str | None = owed["resume_job_id"]
+        if owed["count"] < 1 or (studio_job is None and not stop and not made):
             raise ApiError(
                 409, "cannot_resume", "That job stopped before it made anything to continue from.",
                 hint="Start a new video from the Create page.",
             )
-        studio_job = ids[-1]
-        if not self.s.paths.job_dir(studio_job).joinpath("job.json").exists():
+        if studio_job is not None and not self.s.paths.job_dir(studio_job).joinpath("job.json").exists():
             raise ApiError(
                 409, "cannot_resume", "The files of that job are gone, so it cannot be continued.",
                 hint="Start a new video from the Create page.",
             )
-        for other in self.s.store.list_jobs(None, "run", 200):
-            if other.status in ("queued", "running") and other.params.get("resume_job_id") == studio_job:
+        new_videos = owed["count"] - (1 if studio_job else 0)
+        for other in self.s.store.list_jobs(None, "run", RETRY_LOOKBACK):
+            mine = other.params.get("resume_of") == rec.job_id
+            same = studio_job is not None and other.params.get("resume_job_id") == studio_job
+            if other.status in ("queued", "running") and (mine or same):
                 raise ApiError(409, "already_queued", "That job is already being continued.")
+            # A second Retry of the same card is harmless while it only continues one studio job (its finished
+            # stages are skipped). One that also makes the videos the request still owed would make them
+            # twice, so it is refused once a continuation of this card has started work (P47).
+            began = other.status in ("done", "failed") or bool((other.result or {}).get("studio_job_ids"))
+            if new_videos > 0 and mine and began:
+                raise ApiError(
+                    409, "already_continued", f"That job was already continued (job {other.job_id}).",
+                    hint="The newer job's card says what it made; press Retry there if it stopped.",
+                )
         channel = rec.channel or str(rec.params.get("channel") or "")
         self._require_footage_key()
         # a resume writes only what the unfinished stages write (the finished ones are kept)
-        self._story_room(channel, str(rec.params.get("format") or ""), self.s.paths.job_dir(studio_job))
+        folder = self.s.paths.job_dir(studio_job) if studio_job is not None else None
+        self._story_room(channel, str(rec.params.get("format") or ""), folder)
         params: dict[str, Any] = {
-            "channel": channel, "format": str(rec.params.get("format") or ""), "count": 1,
-            "resume_job_id": studio_job, "resume_of": rec.job_id,
+            "channel": channel, "format": str(rec.params.get("format") or ""), "count": owed["count"],
         }
+        if studio_job is not None:
+            params["resume_job_id"] = studio_job
+        elif rec.params.get("script"):  # the owner's own text, stopped before its video began: made from it
+            params.update(script=rec.params["script"], script_title=rec.params.get("script_title"))
+        params["resume_of"] = rec.job_id
         return channel, params
 
     def _require_channel_not_paused(self, slug: str) -> None:

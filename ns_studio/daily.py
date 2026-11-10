@@ -437,10 +437,12 @@ def _paused_mid_job(env: jobs.Env, report: dict, job_id: str, slug: str, *, resu
     under `paused` with its `job_id`. A job the night was already continuing keeps the card it has."""
     if resumed:
         ownership.write_record(env.paths, job_id, state="interrupted")
+        # its card promised "the next nightly run continues it": say now that it waits for the resume
+        ownership.settle_needs_retry(env.db, job_id, ownership.PAUSED_REASON)
     else:
         rec = {**(ownership.read_record(env.paths, job_id) or {}), "id": job_id}
         try:  # the same closing as for a killed job: the card first, then the record (`ownership._close_job`)
-            ownership._close_job(env.paths, env.db, rec, datetime.now(UTC), "its channel was paused")
+            ownership._close_job(env.paths, env.db, rec, datetime.now(UTC), ownership.PAUSED_OWNER)
         except Exception as e:  # noqa: BLE001 - the record says failed; Retry and `studio run --resume` remain
             env.log.warn("paused_job_not_closed", str(e), job_id=job_id)
     _hold_for_pause(env, report, None, slug, 1, job_id=job_id)
