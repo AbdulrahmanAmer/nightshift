@@ -65,16 +65,27 @@ class SupervisorClient:
 
     # ------------------------------------------------------------------ Acquirer
     def acquire(
-        self, service: Service, owner: str, *, model_alias: str | None = None, timeout_s: int = 7200
+        self,
+        service: Service,
+        owner: str,
+        *,
+        model_alias: str | None = None,
+        timeout_s: int = 7200,
+        pid: int | None = None,
     ) -> Endpoint:
-        """Acquire `service` for `owner`; blocks while the GPU is busy (up to `timeout_s`)."""
-        body = {
+        """Acquire `service` for `owner`; blocks while the GPU is busy (up to `timeout_s`).
+
+        `pid`: the caller's own process; the engine frees the GPU once it is gone (sent only when given).
+        """
+        body: dict[str, Any] = {
             "service": service,
             "owner": owner,
             "model_alias": model_alias,
             "wait": True,
             "timeout_s": timeout_s,
         }
+        if pid is not None:
+            body["pid"] = pid
         r = self._call("POST", "/acquire", body=body, timeout_s=timeout_s + 240)
         return Endpoint(str(r["endpoint"]), r.get("model_alias"))
 
