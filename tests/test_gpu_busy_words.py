@@ -45,6 +45,7 @@ from ns_supervisor.testing import StubTable, fast_config  # noqa: E402
 from tests.test_nightly_promise_is_conditional import PROMISES  # noqa: E402
 
 NOW = datetime(2026, 11, 20, 3, 0, tzinfo=UTC)
+BASE = "http://127.0.0.1:18099"   # the engine answers loopback addresses only (FN-1)
 CONDITION = IF_NIGHTLY_ON.strip(" ()")    # "while Automatic runs are on in Settings"
 CASES = (
     "nightly, Automatic runs on", "nightly, Automatic runs off", "dashboard job at the GPU gate",
@@ -58,7 +59,7 @@ def engine(tmp_path: Path) -> Iterator[TestClient]:
     sup = Supervisor(
         Paths(tmp_path / "ns"), Runtime.default("gpu"), config=fast_config(idle_unload_s=60), resolver=StubTable()
     )
-    with TestClient(create_app(sup)) as tc:
+    with TestClient(create_app(sup), base_url=BASE) as tc:
         assert tc.post("/acquire", json={"service": "llama", "owner": "code"}).status_code == 200
         yield tc
 
@@ -77,7 +78,7 @@ def dashboard_job(tmp_home: Path, handler: Any, **kw: Any) -> Any:
 
 def shown(case: str, tmp_home: Path, engine: TestClient) -> tuple[str, dict[str, Any]]:
     """The words the owner gets for `case` (message and hint as one text), and what the route knows."""
-    client = SupervisorClient("http://testserver", client=engine)
+    client = SupervisorClient(BASE, client=engine)
     if case.startswith("nightly"):
         from tests.test_cadence import _channel, _env
 
@@ -97,7 +98,7 @@ def shown(case: str, tmp_home: Path, engine: TestClient) -> tuple[str, dict[str,
         rec = dashboard_job(tmp_home, lambda ctl: None, gpu_gate=gate)
         return f"{rec.message} {rec.result['error']['hint']}", rec.result
     if case == "dashboard job refused by the engine":
-        link = HttpAcquirer("http://testserver", client=engine)
+        link = HttpAcquirer(BASE, client=engine)
 
         def handler(ctl: JobControl) -> None:
             link.acquire("tts", "dashboard:preview-1", timeout_s=0)
