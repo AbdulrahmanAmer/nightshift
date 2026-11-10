@@ -202,8 +202,15 @@ class Wizard:
                 ui.step_status(step.id, "failed", step.title, failure.code)
                 return self._give_up(failure)
             ctx.log.info("stage_end", step=step.id, duration_s=round(time.perf_counter() - t0, 3))
-            ctx.state.mark(step.id, "done")
-            ui.step_status(step.id, "done", step.title, None)
+            notes = " ".join(ctx.take_notes())
+            if notes:
+                # finished, with something the owner must know (a damaged file set aside): the row says it
+                # (warning) and the state keeps the sentence, which the install report prints as a note
+                ctx.state.mark(step.id, "done", error=notes)
+                ui.step_status(step.id, "warning", step.title, notes)
+            else:
+                ctx.state.mark(step.id, "done")
+                ui.step_status(step.id, "done", step.title, None)
             self._current = None
             return None
 

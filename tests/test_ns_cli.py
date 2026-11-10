@@ -74,10 +74,13 @@ def test_update_with_missing_zip_is_e701(tmp_path: Path) -> None:
     assert r.exit_code == 1 and "NS-E701" in r.output
 
 
-def test_backup_then_restore_roundtrip(tmp_path: Path) -> None:
+def test_backup_then_restore_roundtrip(tmp_path: Path, closed_port: int) -> None:
     home = tmp_path / "home"
     paths = Paths(home)
     paths.ensure()
+    rt = Runtime.default("gpu")
+    rt.supervisor_port = closed_port    # `ns restore` asks whether the engine runs: not the one on 8099
+    save_runtime(paths, rt)
     paths.channel_file("a").write_text("slug: a\n", encoding="utf-8")
     out = tmp_path / "b.zip"
     r = invoke(home, "backup", "--out", str(out))

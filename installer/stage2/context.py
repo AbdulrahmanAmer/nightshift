@@ -68,6 +68,9 @@ class StepContext:
     #: The PC's list of Nightshift folders (`shortcut_owner.LIST_NAME`); None is the one under LOCALAPPDATA.
     installs_list: Path | None = None
     warnings: list[tuple[str, str]] = field(default_factory=list)
+    # sentences a step wants on its own row and in the install report (it finished, but the owner must know
+    # something): the wizard takes them when the step ends (``note_step`` / ``take_notes``)
+    notes: list[str] = field(default_factory=list)
     # setup window (bridge mode): the pause gate (set = running) and the stop request
     gate: threading.Event | None = None
     stop_requested: threading.Event = field(default_factory=threading.Event)
@@ -86,6 +89,15 @@ class StepContext:
         self.log.warn("warning", text, code=code)
         self.warnings.append((code, detail))
         self.ui.notice(code, detail)
+
+    def note_step(self, text: str) -> None:
+        """Keep a sentence for the running step's row: it shows there and in install-report.json."""
+        self.notes.append(text)
+
+    def take_notes(self) -> list[str]:
+        """The sentences kept since the last call (the wizard asks when a step ends)."""
+        taken, self.notes = self.notes, []
+        return taken
 
     # ---- flags (wizard-internal, persisted in config/wizard_flags.json) ----
     @property
