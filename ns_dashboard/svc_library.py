@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO
 
 from ns_common.atomic import write_chunks_atomic, write_text_atomic
 from ns_common.devmode import fake_footage
-from ns_common.errors import NsError
+from ns_common.errors import NsError, describe
 from ns_common.secrets_names import SHORT_NAMES
 from ns_dashboard import formats, updater
 from ns_dashboard.common import now_iso
@@ -485,6 +485,10 @@ class LibraryService:
         """
         if name not in MODEL_NAMES:
             raise ApiError(422, "unknown_model", f"Choose one of: {', '.join(MODEL_NAMES)}.")
+        reason = self.s.adapters.update.model_unavailable(name)
+        if reason is not None:  # before "Downloading" is set and before any thread starts: nothing is written
+            defn = describe("NS-E122")
+            raise ApiError(409, "NS-E122", f"{defn.message} {reason}", hint=defn.hint)
         if not self.s.adapters.update.models_available():
             raise ApiError(
                 501, "models_unavailable", "Downloading models from here is not available yet.",

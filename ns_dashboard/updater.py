@@ -124,6 +124,24 @@ class RealUpdateAdapter:
         code, out, err = self.runner(self._command("models", "--help"), 60)
         return code == 0 and "no such command" not in (out + err).lower()
 
+    def model_unavailable(self, name: str) -> str | None:
+        """`ns_supervisor.models_get.unavailable` on this install's manifest and `runtime.json`.
+
+        Nothing is decided when either file cannot be read (None): the download then reports that itself,
+        as `ns models get` does (its no-install fallback is `models_get.get_model`'s, defect D-35).
+        """
+        from ns_common.config import load_manifest, load_runtime
+        from ns_common.errors import NsError
+        from ns_supervisor import models_get
+        from ns_supervisor.control import app_path
+
+        try:
+            manifest = load_manifest(app_path(self.paths) / "manifest.json")
+            rt = load_runtime(self.paths)
+        except NsError:
+            return None
+        return models_get.unavailable(name, manifest, rt.profile, rt.tts.engine)
+
     def get_model(self, name: str, on_line: Callable[[str], None] = lambda _l: None) -> tuple[int, str]:
         """`ns models get <name>` (a long download); every output line goes to `on_line`. Returns (exit code, last line)."""
         return stream_command(self._command("models", "get", name), on_line)

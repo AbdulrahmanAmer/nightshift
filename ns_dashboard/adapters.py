@@ -161,6 +161,10 @@ class UpdateAdapter(Protocol):
         """False until `ns models get` exists."""
         ...
 
+    def model_unavailable(self, name: str) -> str | None:
+        """Why this install cannot get the model `name` (the detail of NS-E122), or None when it can."""
+        ...
+
     def get_model(self, name: str, on_line: Callable[[str], None] = ...) -> tuple[int, str]:
         """Download the model `name` (blocks); progress lines go to `on_line`. Returns (code, last line)."""
         ...

@@ -67,6 +67,32 @@ def reference_items(
     return items
 
 
+def _not_offered(kind: str, profile: str) -> str:
+    """The detail of NS-E122: the model and this install's profile."""
+    return f"The {kind} model is not available for the {profile} profile."
+
+
+def unavailable(
+    kind: str, manifest: Manifest, profile: str, engine: str, *, everything: bool = False
+) -> str | None:
+    """Why this install cannot get `kind` (what the detail of NS-E122 says), or None when it can.
+
+    The one rule, read before any network call by `plan_items` and by the dashboard's Get button.
+    `voicedesign` needs a talker in `manifest.profiles.<profile>.tts_optional` unless the voice `engine` is
+    `reference` (or `everything` plans it too): the PyTorch weights come from Hugging Face on any profile.
+    `story_llm` needs the profile's `story_llm`. An unknown `kind` or `profile` is not decided here
+    (`plan_items` raises for them).
+    """
+    pm = manifest.profiles.get(profile)
+    if pm is None or kind not in KINDS:
+        return None
+    if kind == "voicedesign":
+        offered = bool(pm.tts_optional) or engine == "reference" or everything
+    else:
+        offered = pm.story_llm is not None
+    return None if offered else _not_offered(kind, profile)
+
+
 def plan_items(
     kind: str,
     manifest: Manifest,
@@ -77,13 +103,18 @@ def plan_items(
     everything: bool = False,
     tree: HfTree | None = None,
 ) -> list[DownloadItem]:
-    """Download items for `kind`; raises `NsError` NS-E109 when the profile has none.
+    """Download items for `kind`; raises `NsError` NS-E122 (before any network call) if the profile has none.
 
     `voicedesign` follows the voice `engine`: the GGUF talker for `qwentts` (and `faster`), the Hugging Face
     weights for `reference`; `everything` plans both.
     """
     from installer.stage2.downloader import _hf_item
 
+    if kind not in KINDS:
+        raise ValueError(f"unknown model {kind!r}; choose one of {', '.join(KINDS)}")
+    reason = unavailable(kind, manifest, profile, engine, everything=everything)
+    if reason is not None:
+        raise NsError("NS-E122", reason)
     pm = manifest.profiles[profile]
     if kind == "voicedesign":
         items = []
@@ -91,12 +122,10 @@ def plan_items(
             items += [_hf_item(f, paths.models_tts) for f in pm.tts_optional]
         if engine == "reference" or everything:
             items += reference_items(paths, tree or hf_tree, manifest.tts_fallback_revisions)
-    elif kind == "story_llm":
-        items = [_hf_item(pm.story_llm, paths.models_llm)] if pm.story_llm is not None else []
     else:
-        raise ValueError(f"unknown model {kind!r}; choose one of {', '.join(KINDS)}")
-    if not items:
-        raise NsError("NS-E109", f"the {kind} model is not available for the {profile} profile")
+        items = [_hf_item(pm.story_llm, paths.models_llm)] if pm.story_llm is not None else []
+    if not items:  # a listing that came back empty: still nothing to download, and nothing was written
+        raise NsError("NS-E122", _not_offered(kind, profile))
     return items
 
 
