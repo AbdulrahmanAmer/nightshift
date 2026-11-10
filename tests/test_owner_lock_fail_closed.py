@@ -78,6 +78,8 @@ def pids(monkeypatch: pytest.MonkeyPatch) -> Pids:
     monkeypatch.setattr(
         ownership, "_pid_started", lambda pid: LONG_AGO if pid in fake.alive else None, raising=False
     )
+    # Windows will not say who has a lock file open, so the times decide unless a test says otherwise
+    monkeypatch.setattr(ownership, "_pid_holds", lambda pid, lock: None, raising=False)
     ownership._UNPROBED.clear()  # noqa: SLF001 - per-process state of the bound
     return fake
 
@@ -381,16 +383,13 @@ def test_a_pid_that_cannot_be_checked_falls_back_to_the_time_bound(
     paths = Paths(tmp_path / "home")
     clock = Clock(monkeypatch)
     job(paths, "j-nocheck", pid=4243, started_at=clock.start.isoformat())
-    job(paths, "j-nostart", pid=4242, started_at=clock.start.isoformat())
     unopenable(monkeypatch)
     monkeypatch.setattr(ownership, "_pid_started", lambda pid: None, raising=False)
     monkeypatch.setattr(ownership, "_pid_alive", REAL_PID_ALIVE)
     monkeypatch.setattr(update_job, "pid_alive", refused)
     assert held_through(paths, clock, "j-nocheck") == [True, True, False], "the check itself failed"
-    monkeypatch.setattr(update_job, "pid_alive", lambda pid: True)
-    assert held_through(paths, clock, "j-nostart") == [True, True, False], "alive, start time not readable"
-    said = notes(paths)
-    assert len(said) == 2 and all(n.startswith("NS-W118:") for n in said), said
+    [note] = notes(paths)
+    assert note.startswith("NS-W118:") and "j-nocheck" in note, note
 
 
 def test_our_own_pid_is_alive_only_while_this_process_holds_the_work(
@@ -503,3 +502,62 @@ def test_a_gone_process_short_of_the_limit_is_listed_by_studio_status_and_leaves
     lines = ownership.status_lines(paths, NoRows(), "c1")
     assert any(ln.startswith("  held: NS-W118:") for ln in lines), lines
     assert notes(paths) == []
+
+
+# ------------------------------------------------------------------- the reviewer's notes on 9fc64bf
+def test_a_failed_tasklist_is_not_a_gone_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """tasklist answers "no process" also when it timed out: only psutil agreeing makes it gone."""
+    import ns_supervisor.update_job as update_job
+
+    monkeypatch.setattr(update_job, "pid_alive", lambda pid: False)
+    assert REAL_PID_ALIVE(os.getpid()) is None, "psutil sees this process: tasklist failed, cannot tell"
+    assert REAL_PID_ALIVE(0x7FFFFFF0) is False, "both say there is no such process"
+    monkeypatch.setattr(update_job, "pid_alive", lambda pid: True)
+    assert REAL_PID_ALIVE(0x7FFFFFF0) is True
+
+
+def test_a_process_that_has_the_lock_file_open_is_the_owner_whatever_the_clocks_say(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clock set back after the process started (a resync on wake) makes it look started 2 h after its
+    record. The lock file it holds open is the stronger evidence; a process without it is a reused pid."""
+    paths = Paths(tmp_path / "home")
+    clock = Clock(monkeypatch)
+    for owner in ("j-live", "j-other"):
+        job(paths, owner, pid=4242, started_at=clock.start.isoformat())
+    unopenable(monkeypatch)
+    asked: list[Any] = []
+
+    def holds(pid: int, lock: Path) -> bool:
+        asked.append((pid, lock))
+        return lock == ownership.lock_path(paths, "j-live")
+
+    monkeypatch.setattr(ownership, "_pid_holds", holds, raising=False)
+    monkeypatch.setattr(
+        ownership, "_pid_started", lambda pid: clock.start + timedelta(hours=2), raising=False
+    )
+    clock.at(24 * 3600)
+    limit = ownership.UNPROBED_LIMIT
+    assert [ownership.lock_held(paths, "j-live") for _ in range(limit * 2)] == [True] * (limit * 2)
+    assert (4242, ownership.lock_path(paths, "j-live")) in asked
+    [note] = notes(paths)
+    assert note.startswith("NS-W117:") and "j-live" in note and "process 4242" in note, note
+    clock.at(0)  # the same late process does not have the other job's lock file open: a reused pid
+    assert [ownership.lock_held(paths, "j-other") for _ in range(limit)] == [True] * (limit - 1) + [False]
+
+
+def test_a_live_process_whose_start_time_cannot_be_read_is_never_cut_short(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A long healthy stage: the pid exists, psutil cannot read its start or its files. Held, with NS-W117."""
+    paths = Paths(tmp_path / "home")
+    clock = Clock(monkeypatch)
+    job(paths, "j-1", pid=4242, started_at=clock.start.isoformat())
+    unopenable(monkeypatch)
+    monkeypatch.setattr(ownership, "_pid_started", lambda pid: None, raising=False)
+    assert held_through(paths, clock, "j-1") == [True, True, True]
+    clock.at(24 * 3600)
+    assert ownership.liveness(paths, "j-1") == "live"
+    assert ownership.recover(paths, NoRows(), note=False).any is False
+    [note] = notes(paths)
+    assert note.startswith("NS-W117:") and "process 4242 is still running" in note, note

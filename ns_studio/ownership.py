@@ -90,11 +90,12 @@ PROBE_RETRY_WAITS_S = (0.05, 0.1)
 #: A lock that cannot be probed at all (an `OSError` that lasts: an antivirus or backup tool holding the file,
 #: a permission the folder lost) counts as HELD, so nobody closes work that may be running. Every such hold
 #: has a bound but one (`_unprobed` is the one place that decides):
-#: * the record's pid is alive and its process started no later than the record's own time (plus
-#:   `PID_START_SLACK_S`): held for as long as that process lives, with the note `UNPROBED_CODE`;
-#: * the pid is gone, or alive but started later (a reused pid): dead after `UNPROBED_LIMIT` failed probes in
-#:   a row in this process, or at the time bound below, whichever comes first (a process that asks once, such
-#:   as the nightly's `recover`, never reaches the count);
+#: * the record's pid is alive and its process started no later than the record's own time plus
+#:   `PID_START_SLACK_S`, or its start time cannot be read, or Windows says it has the lock file open: held
+#:   for as long as that process lives, with the note `UNPROBED_CODE`;
+#: * the pid is gone, or alive but started later and not known to have the file open (a reused pid): dead
+#:   after `UNPROBED_LIMIT` failed probes in a row in this process, or at the time bound below, whichever
+#:   comes first (a process that asks once, such as the nightly's `recover`, never reaches the count);
 #: * anything else (no pid, a pid that cannot be checked, no readable record): dead `UNPROBED_UNKNOWN_PID_S`
 #:   after the last time known from disk (the record's `started_at`/`announced_at`, else the record file's
 #:   mtime, else the lock file's), with the note `UNPROBED_UNOWNED_CODE`. The clock is on disk because most
@@ -253,13 +254,18 @@ _UNPROBED: dict[tuple[str, str], list[Any]] = {}
 def _pid_alive(pid: int) -> bool | None:
     """True while a process with this pid exists, False when none does, None when that cannot be checked.
 
-    Never "alive" (and never "gone") because the check itself failed: `_unprobed` bounds an unknown by time.
-    Tests replace this.
+    Never "alive" and never "gone" because a check failed: `_unprobed` bounds an unknown by time. tasklist
+    (`pid_alive`) answers "no process" also when it could not be run or timed out, so its "no" counts only
+    when psutil says the same; when psutil is missing or fails, "no" is "cannot tell". Tests replace this.
     """
     try:
         from ns_supervisor.update_job import pid_alive
 
-        return bool(pid_alive(pid))
+        if pid_alive(pid):
+            return True
+        import psutil
+
+        return None if psutil.pid_exists(pid) else False
     except Exception:  # noqa: BLE001 - cannot tell
         return None
 
@@ -271,6 +277,52 @@ def _pid_started(pid: int) -> datetime | None:
 
         return datetime.fromtimestamp(psutil.Process(pid).create_time(), UTC)
     except Exception:  # noqa: BLE001 - no psutil, no such process, access denied: not known
+        return None
+
+
+def _pid_holds(pid: int, lock: Path) -> bool | None:
+    """Whether the process with this pid has `lock` open (the holder of an owner lock keeps its file open
+    for as long as it holds it): True, False, or None when Windows will not say.
+
+    Asked of the Windows Restart Manager, which lists the processes using a file without opening it. It
+    answers for a file another program is holding (a scan, a backup) and refuses (None) for one this account
+    has lost the right to read; None too off Windows. It can take a second or two, so `_unprobed` asks only
+    before it would call a live process a reused pid.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class Unique(ctypes.Structure):
+            _fields_ = (("pid", wintypes.DWORD), ("start", wintypes.FILETIME))
+
+        class Info(ctypes.Structure):
+            _fields_ = (
+                ("process", Unique),
+                ("app", wintypes.WCHAR * 256),
+                ("service", wintypes.WCHAR * 64),
+                ("kind", ctypes.c_int),
+                ("status", wintypes.ULONG),
+                ("session", wintypes.DWORD),
+                ("restartable", wintypes.BOOL),
+            )
+
+        rm = ctypes.WinDLL("rstrtmgr")  # type: ignore[attr-defined]  # Windows only; else the except below
+        session = wintypes.DWORD()
+        if rm.RmStartSession(ctypes.byref(session), 0, ctypes.create_unicode_buffer(33)):
+            return None
+        try:
+            names = (wintypes.LPCWSTR * 1)(str(lock))
+            if rm.RmRegisterResources(session, 1, names, 0, None, 0, None):
+                return None
+            needed, got, reasons = wintypes.UINT(), wintypes.UINT(64), wintypes.DWORD()
+            infos = (Info * 64)()
+            if rm.RmGetList(session, ctypes.byref(needed), ctypes.byref(got), infos, ctypes.byref(reasons)):
+                return None  # access denied, or more users than fit: not known
+            return any(infos[i].process.pid == pid for i in range(got.value))
+        finally:
+            rm.RmEndSession(session)
+    except Exception:  # noqa: BLE001 - not Windows, no Restart Manager: not known
         return None
 
 
@@ -311,18 +363,25 @@ def _unprobed(paths: Paths, owner_id: str, handed: Mapping[str, Any] | None = No
       `announced_at`) plus `PID_START_SLACK_S`: held, with no bound, and the owner is told once per process
       with NS-W117 (which process, and that ending it or restarting the PC clears it). Live work is never
       released here;
-    * its pid is gone, or alive but started later (the pid was given to another program): gone. Dead after
-      `UNPROBED_LIMIT` failed probes in a row in this process, or at the time bound, whichever is first;
-    * no pid, a pid whose state or start time cannot be read, a pid with no time in the record to compare
-      with, no record: unknown. Held until `UNPROBED_UNKNOWN_PID_S` after the last known time, then dead;
-      the owner is told once per process with NS-W118 (it ends by itself; `recover` then closes the work).
+    * its pid is alive and its start time cannot be read: held the same way. An unreadable start time never
+      shortens the life of work that may be running;
+    * its pid is alive but started later than that: before it is called a reused pid, Windows is asked
+      whether that process has the lock file open (`_pid_holds`). It has: held as above, whatever the
+      clocks say (a clock set back after the process started must not close live work). It has not, or
+      Windows will not say: the pid was given to another program, gone;
+    * its pid is gone, or reused as above: dead after `UNPROBED_LIMIT` failed probes in a row in this
+      process, or at the time bound, whichever is first;
+    * no pid, a pid nothing can be asked about, a live pid with no time in the record to compare with, no
+      record: unknown. Held until `UNPROBED_UNKNOWN_PID_S` after the last known time, then dead; the owner
+      is told once per process with NS-W118 (it ends by itself; `recover` then closes the work).
 
     The last known time is on disk, so a process that lives for seconds decides the same as one that has
     watched for an hour: the record's newest time, else the record file's mtime, else the lock file's
     (`stat` works where opening does not). Only when none of them can be read does it count from this
-    process's first failed probe. Limits: the times are wall-clock, so a clock set back by more than the
-    slack between a process's start and its record makes a live owner look reused (it is then closed as
-    interrupted; the lock that cannot be opened still refuses a second start, `_take`).
+    process's first failed probe. Limit: the times are wall-clock. When Windows will not say who has the
+    lock file open (a file this account may not read), a clock set back by more than the slack between a
+    process's start and its record still makes it look reused: it is closed as interrupted while it runs;
+    `_take` refuses a second start for as long as the file cannot be opened.
     """
     key = (str(paths.home), owner_id)
     now = _now()
@@ -339,10 +398,15 @@ def _unprobed(paths: Paths, owner_id: str, handed: Mapping[str, Any] | None = No
             alive = (str(owners_dir(paths)), owner_id) in _HELD
     elif pid is not None:
         started = _pid_started(pid)
-        if started is None:
-            alive = False if _pid_alive(pid) is False else None  # alive with no start time proves nothing
-        elif known is not None:
+        exists = True if started is not None else _pid_alive(pid)
+        if exists is False:
+            alive = False
+        elif exists and started is None:
+            alive = True  # a process is there and nothing says it is another one: never cut short
+        elif started is not None and known is not None:
             alive = (started - known).total_seconds() <= PID_START_SLACK_S
+            if not alive:  # looks reused: the lock file it holds open outranks the comparison of clocks
+                alive = _pid_holds(pid, lock_path(paths, owner_id)) is True
     state[3] = pid if alive else None
 
     def tell(code: str) -> None:
