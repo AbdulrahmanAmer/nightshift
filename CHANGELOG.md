@@ -512,17 +512,19 @@ suite and no more is claimed.
   Shown by tests.
 - The local servers refuse requests made by web pages (FN-1). The engine (port 8099), the voice service (8091) and
   the dashboard answer only requests addressed to 127.0.0.1 or localhost; the engine and the voice service answer no
-  web page at all, and the dashboard answers its own page and refuses a form-type POST (form-urlencoded, multipart
-  or `text/plain`) unless it carries an Origin of the dashboard's own address, and answers 415 to a body that is
+  web page at all, and the dashboard answers a browser only from its own page: the same scheme, name and port the
+  request was addressed to (D-45). A page served by another program on this PC, on another port or under the other
+  name, is refused for reading as well as for changing anything. The dashboard also answers 415 to a body that is
   not JSON on its JSON routes. Before, a page you visited could send a plain form POST to the engine and stop the
   night's services. A refusal is NS-E207 and leaves one morning note naming the page (at most three pages and one
   "more" a day, counted across the servers); a page opened from a file is named as such. Nightshift's own programs,
-  the dashboard page and its uploads work as before. A tool of yours that posts forms to the dashboard must now send
-  `Origin: http://127.0.0.1:<port>` (the dashboard's own address), and a script that calls the engine or the voice
-  service must address 127.0.0.1 or localhost, send no Origin and send JSON, not a form. Not covered: the setup
+  the dashboard page and its uploads work as before. A script of yours must address 127.0.0.1 or localhost and send no
+  Origin, Referer or Sec-Fetch-* header, with a JSON body or none; a tool that must post a form to the dashboard
+  sends an Origin equal to exactly the address it called (scheme, name and port). Not covered: the setup
   server keeps its own check; llama-server and the embedding service are not guarded by this; update
   packages are still checked for integrity only (the SHA256 beside the zip proves it arrived whole, not who made
-  it), not signed; a page served by another program on this PC is outside this check; the fake services of fake installs have no guard. Shown by tests.
+  it), not signed; a browser too old to mark its own requests (Firefox before 70, Edge's IE mode) is taken for a
+  program; the rule has not been tried in a real browser on this build; the fake services of fake installs have no guard. Shown by tests.
 - Morning notes have one owner, and Mark all read removes only what you saw (FN-2). Every note any part of Nightshift
   leaves goes through one module under one lock (the launch script takes the same lock), so two notes written at the
   same moment are both kept, and Mark all read removes exactly the notes the bell showed; a note that arrives
