@@ -1,7 +1,9 @@
 import importlib
 import importlib.util
 import os
+import shutil
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -26,7 +28,42 @@ def pytest_configure(config: pytest.Config) -> None:
     never `%LOCALAPPDATA%/Nightshift`, which the guard refuses. `tmp_home` gives a test a home to itself."""
     base = config.getoption("basetemp", None)
     root = Path(base) if base else Path(tempfile.gettempdir()) / f"nightshift-tests-{os.getpid()}"
-    os.environ["NIGHTSHIFT_HOME"] = str((root / "no-home").resolve())
+    NO_HOME.append((root / "no-home").resolve())
+    os.environ["NIGHTSHIFT_HOME"] = str(NO_HOME[0])
+
+
+#: The scratch home of this session (one entry, set by `pytest_configure`).
+NO_HOME: list[Path] = []
+
+
+def left_behind(folder: Path) -> list[str]:
+    """The names of what is in `folder`, which is emptied; nothing when it is missing or empty."""
+    try:
+        names = sorted(p.name for p in folder.iterdir())
+    except OSError:
+        return []
+    shutil.rmtree(folder, ignore_errors=True)
+    return names
+
+
+@pytest.fixture(autouse=True)
+def _scratch_home_stays_empty() -> Iterator[None]:
+    """The scratch home is shared by every test that takes no home of its own, so nothing may be left in it:
+    a test that wrote there (itself, or a child it did not hand its home) fails, by name."""
+    yield
+    left = left_behind(NO_HOME[0]) if NO_HOME else []
+    if left:
+        pytest.fail("this test wrote into the home shared by tests that take none (" + ", ".join(left[:8])
+                    + "); give it the tmp_home fixture", pytrace=False)
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    """What no test can be blamed for (written while the tests were collected, or after the last one)."""
+    left = left_behind(NO_HOME[0]) if NO_HOME else []
+    if left:
+        session.exitstatus = 1
+        said = "FAILED: the home shared by tests that take none was written to outside any test: "
+        session.config.get_terminal_writer().line(said + ", ".join(left[:8]), red=True)
 
 
 @pytest.fixture

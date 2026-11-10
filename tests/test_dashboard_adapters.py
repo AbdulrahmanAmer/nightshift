@@ -109,7 +109,7 @@ def test_supervisor_link_offline():
     assert ei.value.status == 503 and ei.value.code == "engine_offline"
 
 
-def test_events_stream_and_relay():
+def test_events_stream_and_relay(tmp_home: Path):  # the relay's logger writes in the home
     with FakeSupervisor() as sup:
         sup.events = [
             {"ts": 1, "kind": "service", "data": {"name": "llama", "state": "starting"}},

@@ -57,9 +57,12 @@ OFF_PROBE = (
 )
 
 
-class RealMachineUnderTest(RuntimeError):
-    """A test reached for the machine's real state. Not an `OSError` and not an `NsError` on purpose: no
-    handler of an ordinary failure may swallow it and carry on."""
+class RealMachineUnderTest(BaseException):
+    """A test reached for the machine's real state. A `BaseException`, like `KeyboardInterrupt`, on purpose:
+    the product is full of `except Exception` around best-effort work (a keyring that may be broken, a log
+    line, a toast), and none of them may swallow this and carry on to the real thing or hide the refusal
+    from the test. It exists only in test runs. Catch it by name, and only where "refused" is itself the
+    answer (`ns_supervisor.notify.toast`)."""
 
 
 def under_test(modules: Mapping[str, Any] | None = None, environ: Mapping[str, str] | None = None) -> bool:
@@ -163,6 +166,8 @@ _REG_SCRATCH = re.compile(
     re.IGNORECASE,
 )
 _TOAST = re.compile(r"ToastNotificationManager|CreateToastNotifier", re.IGNORECASE)
+#: Explorer as the program that is started (a folder window, a settings page): not as a word in the text.
+_EXPLORER = re.compile(r"^\s*\"?(?:[^\"\s]*[\\/])?explorer(?:\.exe)?\"?(?:\s|$)", re.IGNORECASE)
 
 
 def _only_its_own_stand_ins(text: str) -> bool:
@@ -205,6 +210,8 @@ def _machine_write(text: str) -> tuple[str, str] | None:
     if _registry_write(text):
         return ("the Windows registry",
                 "Use FakeRunner; only the scratch key AppUserModelId\\NightshiftTest* is let through.")
+    if _EXPLORER.search(text):
+        return ("a real Explorer window", "Pass a fake opener (Effects, a FolderOpener).")
     if _TOAST.search(text):
         return ("a real Windows notification",
                 "Pass a notifier, or read the morning note in the test's home.")

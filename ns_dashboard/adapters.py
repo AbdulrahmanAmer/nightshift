@@ -23,6 +23,7 @@ from typing import Any, Protocol
 import httpx
 import yaml
 
+import ns_common.testguard as testguard
 from ns_common.acquire import Acquirer, Service
 from ns_common.atomic import read_text_retry
 from ns_common.config import load_channel, load_runtime
@@ -661,12 +662,16 @@ class RealKeyringAdapter:
         return dict(self._file_problems)
 
     def _module(self) -> Any:
-        if self._keyring is not None:
-            return self._keyring
-        try:
-            return importlib.import_module("keyring")
-        except ImportError as e:
-            raise AdapterUnavailable("the keyring package is not installed") from e
+        module = self._keyring
+        if module is None:
+            try:
+                module = importlib.import_module("keyring")
+            except ImportError as e:
+                raise AdapterUnavailable("the keyring package is not installed") from e
+        # A test run never reads, writes or deletes the owner's real Credential Manager. The refusal is a
+        # BaseException, so the `except Exception` of get, set and delete below cannot swallow it.
+        testguard.refuse_real_keyring(module)
+        return module
 
     def get(self, name: str) -> str | None:
         """Stored secret (Credential Manager, else the DPAPI file) or None."""

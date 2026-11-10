@@ -594,6 +594,91 @@ def test_the_product_has_no_firewall_command():
         assert not re.search(r"netsh|NetFirewall|FirewallAPI|HNetCfg", text, re.IGNORECASE), f"{path.relative_to(ROOT).as_posix()} names the firewall"
 
 
+# ------------------------------------------------------------------------- review of 27f94a0: what was missed
+def test_a_refusal_cannot_be_swallowed_by_a_broad_handler():
+    """The product wraps best-effort work in `except Exception`. A refusal caught there would let the code carry
+    on, and the test pass: so it is a BaseException, and a test whose code swallows broadly still fails."""
+    def best_effort() -> str:
+        try:
+            testguard.refuse_real("a probe", "nothing: this is the test of the refusal itself")
+        except Exception:  # noqa: BLE001 - the handler under test
+            return "swallowed"
+        return "carried on"
+
+    assert not issubclass(RealMachineUnderTest, Exception)
+    assert refused(best_effort)
+    outcome = pytest.CallInfo.from_call(best_effort, when="call")  # what pytest itself makes of such a test body
+    assert outcome.excinfo is not None and outcome.excinfo.errisinstance(RealMachineUnderTest)
+
+
+def test_the_dashboard_keyring_adapter_refuses_the_real_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Settings > Keys reads, saves and clears keys through `RealKeyringAdapter`; its own `except Exception`
+    around each keyring call must not hide the refusal (a cleared key would be deleted from this PC)."""
+    from ns_dashboard.adapters import RealKeyringAdapter
+
+    calls: list[str] = []
+    kept: dict[str, str] = {}
+    installed = types.ModuleType("keyring")  # what the real package looks like: it has a file
+    installed.__file__ = str(Path(sys.prefix) / "Lib" / "site-packages" / "keyring" / "__init__.py")
+    for verb in ("get_password", "set_password", "delete_password"):
+        setattr(installed, verb, lambda *a, verb=verb: calls.append(verb))
+    monkeypatch.setitem(sys.modules, "keyring", installed)
+    paths = Paths(tmp_path / "home")
+    for adapter in (RealKeyringAdapter(paths), RealKeyringAdapter(), RealKeyringAdapter(paths, keyring_module=installed)):
+        assert refused(lambda a=adapter: a.get("pexels_api_key"))
+        assert refused(lambda a=adapter: a.set("pexels_api_key", "K"))
+        assert refused(lambda a=adapter: a.delete("pexels_api_key"))
+    assert calls == [] and not (tmp_path / "home").exists()  # refused before the file copy too
+    stand_in = types.SimpleNamespace(
+        get_password=lambda service, name: kept.get(name),
+        set_password=lambda service, name, value: kept.__setitem__(name, value),
+        delete_password=lambda service, name: kept.pop(name, None),
+    )
+    mine = RealKeyringAdapter(keyring_module=stand_in)  # a stand-in without a file works as before
+    mine.set("pexels_api_key", "K")
+    assert mine.get("pexels_api_key") == "K"
+    mine.delete("pexels_api_key")
+    assert mine.get("pexels_api_key") is None
+
+
+def test_the_old_module_name_gives_the_same_objects():
+    """`ns_supervisor.testguard` is still imported by product code built beside this item: one class, so its
+    `except RealMachineUnderTest` catches what `ns_common.testguard` raises."""
+    old = importlib.import_module("ns_supervisor.testguard")
+    assert set(old.__all__) >= {"RealMachineUnderTest", "under_test", "refuse_task_scheduler", "refuse_real_keyring", "ENV", "TASK_SCHEDULER"}
+    for name in old.__all__:
+        assert getattr(old, name) is getattr(testguard, name), name
+
+
+def test_explorer_as_the_started_program_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    started = Started()
+    with monkeypatch.context() as m:
+        m.setattr(subprocess, "run", started)
+        for argv in (["explorer.exe", str(tmp_path)], ["C:/Windows/explorer.exe", "/select,x"], ["EXPLORER", "windowsdefender://threathistory"]):
+            assert refused(lambda argv=argv: SubprocessRunner().run(argv)), argv
+            assert refused(lambda argv=argv: bootstrap.real_cmd(argv)), argv
+    assert started.calls == []
+    assert hook_is_on(), "without the audit hook the next call would open a real window: not made"
+    assert refused(lambda: subprocess.Popen(["explorer.exe", str(tmp_path)]))
+    sentinel = tmp_path / "started.txt"
+    subprocess.run([*carrier(sentinel), "explorer.exe", "an-internet-explorer-note"], timeout=120, check=True)  # the word alone is not it
+    assert sentinel.exists()
+
+
+def test_the_scratch_home_check_names_what_was_left(tmp_path: Path):
+    """The home shared by tests that take none must stay empty: the session's check finds what a test left,
+    empties the folder for the next test, and is quiet about a missing or an empty one."""
+    conftest: Any = importlib.import_module("tests.conftest")
+    assert conftest.NO_HOME and str(conftest.NO_HOME[0]) == os.environ["NIGHTSHIFT_HOME"]
+    assert conftest.left_behind(tmp_path / "missing") == []
+    home = tmp_path / "no-home"
+    (home / "logs").mkdir(parents=True)
+    (home / "logs" / "studio.jsonl").write_text("{}", encoding="utf-8")
+    (home / "config").mkdir()
+    assert conftest.left_behind(home) == ["config", "logs"] and not home.exists()
+    assert conftest.left_behind(conftest.NO_HOME[0]) == []  # and this test left nothing in the real one
+
+
 def test_in_this_process_no_environment_change_lifts_the_refusal(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv(testguard.ENV)
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
