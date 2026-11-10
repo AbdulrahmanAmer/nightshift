@@ -39,6 +39,12 @@ from ns_supervisor.childenv import child_env
 OWNER = "verify"
 TTS_SENTENCE = "Nightshift verification sentence. The quick brown fox jumps over the lazy dog."
 NOT_MEASURED = "short_job_s,master_job_s,nightly_run_s"
+#: How long the first talker may take to answer (what the voice test always had: it carries the cold load of
+#: the voice engine) and how long each further talker may take. Up to three talkers are spoken one after the
+#: other, and 0.1.14's updater runs `ns verify --quick` with no timeout of its own while setup's s08 gives it
+#: 3600 s: 1800 + 2 * 600 stays under that, so a stalled talker fails its own row and never hangs the run.
+FIRST_TALKER_TIMEOUT_S = 1800.0
+LATER_TALKER_TIMEOUT_S = 600.0
 
 
 class Controller(Protocol):
@@ -387,7 +393,9 @@ def run_verify(
     rec.run(names.TTS_START, tts_start, "NS-E203")
 
     def tts_modes() -> Out:
-        client = TtsClient(_need(tts[0] if tts else None, "tts").base_url)
+        base_url = _need(tts[0] if tts else None, "tts").base_url
+        client = TtsClient(base_url, timeout_s=FIRST_TALKER_TIMEOUT_S)
+        later = TtsClient(base_url, timeout_s=LATER_TALKER_TIMEOUT_S)
         voices = client.voices()
         by_mode: dict[str, str] = {}
         for v in voices:
@@ -397,13 +405,27 @@ def run_verify(
         order = ["preset", "design", "clone"]
         picked = [(m, by_mode[m]) for m in order if m in by_mode]
         picked = picked or list(by_mode.items())[:1]
-        if quick:
-            picked = picked[:1]
+        # One sentence with every installed talker, quick or not (the Base talker of clone voices and
+        # VoiceDesign are tested at install, not at the first video); only the RTF bench is left out of
+        # quick. A talker that fails gets its own failed row naming its mode; the next one is still spoken.
         rtfs: list[float] = []
+        failed: list[str] = []
         with tempfile.TemporaryDirectory(prefix="ns-verify-") as tmp:
-            for mode, voice in picked:
+            for i, (mode, voice) in enumerate(picked):
                 t0 = time.perf_counter()
-                audio_s = client.speak(TTS_SENTENCE, voice, 1.0, Path(tmp) / f"{mode}.wav")
+                try:
+                    audio_s = (client if i == 0 else later).speak(
+                        TTS_SENTENCE, voice, 1.0, Path(tmp) / f"{mode}.wav"
+                    )
+                except Exception as e:  # tolerant by design: one talker failing must not hide the others
+                    err = e if isinstance(e, NsError) else NsError("NS-E310", f"{type(e).__name__}: {e}")
+                    failed.append(mode)
+                    rec.checks.append(GateCheck(
+                        name=names.tts_mode(mode), passed=False,
+                        log=f"{mode} voice {voice!r} did not speak: {explain(err)}",
+                    ))
+                    rec.log.warn("check_failed", name=names.tts_mode(mode), code=err.code, detail=err.detail)
+                    continue
                 rtf = (time.perf_counter() - t0) / audio_s if audio_s > 0 else float("inf")
                 rtfs.append(rtf)
                 ok = audio_s > 0 and (quick or rtf <= tg.rtf)
@@ -416,11 +438,13 @@ def run_verify(
                         log=f"voice={voice} audio_s={audio_s}",
                     )
                 )
-        worst = max(rtfs)
-        save_rtf(paths, worst, quick=quick)  # the voice stage sizes its batch time limit from it (gap L4)
-        if not quick:
-            rec.bench("tts_rtf", round(worst, 3), f"<= {tg.rtf}", worst <= tg.rtf)
-        return Out(True, ",".join(m for m, _ in picked), log="modes exercised")
+        if rtfs:
+            worst = max(rtfs)
+            save_rtf(paths, worst, quick=quick)  # the voice stage sizes its batch time limit from it (gap L4)
+            if not quick:
+                rec.bench("tts_rtf", round(worst, 3), f"<= {tg.rtf}", worst <= tg.rtf)
+        note = "modes exercised" if not failed else f"modes exercised; did not speak: {', '.join(failed)}"
+        return Out(True, ",".join(m for m, _ in picked), log=note)
 
     rec.run(names.TTS_VOICES, tts_modes, "NS-E202")
     if tts:

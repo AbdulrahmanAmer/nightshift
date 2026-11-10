@@ -18,6 +18,7 @@
   "NS-W113": {"title": "A custom model is not checked", "whatToDo": "Nightshift cannot verify a file you chose yourself. Use only models you trust. Nothing else to do"},
   "NS-W115": {"title": "The driver version could not be read", "whatToDo": "Setup works and uses the CUDA 12.4 build. If a video fails on the graphics card later, install the newest driver from nvidia.com/drivers"},
   "NS-W114": {"title": "The designed voice has to wait", "whatToDo": "The voice design model is not part of this install, so the voice cannot be created yet. Get it in Settings, Models, then design the voice again"},
+  "NS-E310": {"title": "A voice did not speak", "whatToDo": "Press Retry once. If it stops again, press Save a help file and send that file"},
   "NS-E202": {"title": "A Nightshift service did not start", "whatToDo": "Press Retry once. If it stops again, press Save a help file and send that file"},
   "NS-E203": {"title": "A model took too long to start", "whatToDo": "Press Retry once. If it stops again, press Save a help file and send that file"},
   "NS-E411": {"title": "Speech recognition did not start", "whatToDo": "Press Retry once. If it stops again, press Save a help file and send that file"},

@@ -96,7 +96,8 @@ def test_quick_skips_benchmarks_and_the_job(engine: tuple[Paths, Runtime, SyncSu
     assert report.passed, [c for c in report.checks if not c.passed]
     names = {c.name for c in report.checks}
     assert "llama.tok_s" not in names and "job.fake_services" not in names
-    assert "supervisor.cold_start" not in names and "tts.clone" not in names
+    assert "supervisor.cold_start" not in names and "bench.tts_rtf" not in names
+    assert {"tts.preset", "tts.clone"} <= names      # P30a: every installed talker speaks, even in quick
     assert report.slice == "verify-quick"
     assert set(report.benchmarks) == {"idle_vram_mb"}
 

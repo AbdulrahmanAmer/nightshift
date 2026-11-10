@@ -115,7 +115,9 @@ def _stop_started_engine(client: SupervisorClient) -> None:
 
 @app.command("verify")
 def cmd_verify(
-    quick: Annotated[bool, typer.Option("--quick", help="Health, one completion, one voice only.")] = False,
+    quick: Annotated[
+        bool, typer.Option("--quick", help="Health, one completion, one sentence per installed voice mode.")
+    ] = False,
     downloads: Annotated[
         bool,
         typer.Option(

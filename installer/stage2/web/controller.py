@@ -1310,8 +1310,9 @@ class SetupController:
                     r["error"] = {"code": code, "message": title}
 
         self.store.update(fn)
+        # the detail goes into install-report.json too (a voice that did not speak is named there: P30a)
         self._last_error = {"code": code, "title": title, "step": step, "stepTitle": view["stepTitle"],
-                            "at": view["at"]}
+                            "at": view["at"], "detail": detail[:600]}
         self.log("error", f"{code}  {title}")
         self._write_install_report("failed")
 

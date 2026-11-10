@@ -1,7 +1,11 @@
 """s08_smoke: ``ns verify --quick`` and the documented fallbacks for the untestable parts (component C1).
 
 NVENC failing switches the encoder to libx264 (NS-W401); a failing TTS engine switches to the PyTorch
-reference engine and builds its venv (NS-W301, NS-E108 when torch cannot see the GPU). Whisper is tested by
+reference engine and builds its venv (NS-W301, NS-E108 when torch cannot see the GPU). ``ns verify --quick``
+speaks one sentence with every installed talker (``tts.preset``, ``tts.design``, ``tts.clone``); the switch is
+for the engine (the checks in ``names.TTS_ENGINE_CHECKS``), so a designed or cloned voice that does not speak
+while the preset does stops the step with NS-E310 naming that voice's mode instead (a new engine would not
+mend a voice). Whisper is tested by
 a 3 second transcription in the studio venv (cuBLAS and cuDNN load lazily, so the model load alone proves
 nothing): on CUDA it falls back to the CPU with int8 (NS-W404, captions are slower, the install goes on)
 until the next run, which probes CUDA again and switches back when it passes; only
@@ -156,6 +160,22 @@ def blocked_rows(rows: list[dict[str, Any]] | None) -> str:
     return ""
 
 
+def talker_failures(rows: list[dict[str, Any]] | None, report: dict[str, bool]) -> list[str]:
+    """What the failed ``tts.<mode>`` checks of single talkers (not the engine) said, one entry per mode.
+
+    ``rows`` carry the log ``ns verify`` wrote ("clone voice 'Cleo' did not speak: NS-Exxx: ..."); a report
+    that has only names and verdicts (a stripped one) still names the mode.
+    """
+    logs = {str(r.get("name", "")).lower(): str(r.get("log") or "").strip() for r in rows or []}
+    out: list[str] = []
+    for name, ok in report.items():
+        if ok or not name.startswith(names.TTS_PREFIX) or name in names.TTS_ENGINE_CHECKS:
+            continue
+        mode = name[len(names.TTS_PREFIX):]
+        out.append((logs.get(name) or f"the {mode} voice did not speak")[:400])
+    return out
+
+
 def failing(report: dict[str, bool], prefix: str) -> bool:
     """True when any check of the area ``prefix`` (for example ``names.TTS_PREFIX``) failed."""
     return any(name.startswith(prefix) and not ok for name, ok in report.items())
@@ -216,6 +236,14 @@ class S08Smoke(Step):
                 warned.add("NS-W401")
             if not failing(report, names.TTS_PREFIX):
                 break
+            if not any(not ok for n, ok in report.items() if n in names.TTS_ENGINE_CHECKS):
+                # the engine speaks (the preset passed, the voices were listed); one other talker did not
+                said = "; ".join(talker_failures(rows, report))
+                raise make_error(
+                    "NS-E310",
+                    f"{said}. The other voice tests were still run; the voice engine was not switched, "
+                    "because a new engine would not mend this voice",
+                )
             if attempt == 2 or ctx.flag("tts_fallback", False):
                 raise make_error("NS-E108", "the reference TTS engine also failed its test")
             self._switch_to_reference(ctx)

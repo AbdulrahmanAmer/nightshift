@@ -27,6 +27,10 @@ VRAM_IDLE = "vram.idle"
 #: Prefix of the per-mode TTS checks (`tts.preset`, `tts.design`, `tts.clone`).
 TTS_MODE_PREFIX = "tts."
 TTS_PRESET = "tts.preset"
+#: The voice checks that say the voice ENGINE does not work. Setup switches to the PyTorch engine (NS-W301)
+#: only when one of these fails. Any other `tts.<mode>` check (`tts.design`, `tts.clone`) is one talker, a
+#: voice that did not speak while the preset did: switching the engine would not mend a voice.
+TTS_ENGINE_CHECKS: tuple[str, ...] = (TTS_START, TTS_VOICES, TTS_PRESET)
 
 #: Area prefixes: every check of an area starts with its prefix.
 LLAMA_PREFIX = "llama."
@@ -35,7 +39,9 @@ TTS_PREFIX = "tts."
 WHISPER_PREFIX = "whisper."
 NVENC_PREFIX = "nvenc."
 
-#: The checks `ns verify --quick` records, in order, when everything works and a preset voice exists.
+#: The checks `ns verify --quick` records, in order, when everything works and the preset is the only mode
+#: installed (a fresh install). Every further installed mode (a designed or a cloned voice) adds its own
+#: `tts.<mode>` check after `tts.preset`: quick speaks one sentence with every installed talker.
 QUICK_CHECKS: tuple[str, ...] = (
     SUPERVISOR_STATUS,
     LLAMA_START,
