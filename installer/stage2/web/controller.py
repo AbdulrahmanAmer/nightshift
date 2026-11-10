@@ -44,6 +44,7 @@ from installer.stage2.web import (
     report,
     rows,
     samples,
+    shortcuts_view,
 )
 from installer.stage2.web.engine import EngineProcess, wizard_argv, wizard_env
 from installer.stage2.web.filesdir import beside as files_beside
@@ -305,6 +306,13 @@ def copy_to_clipboard(text: str) -> None:
         return
 
 
+def seen_desktop() -> Path | None:
+    """The Desktop folder whose shortcuts the window reads to say which install they open. A test run never
+    reads this PC's Desktop (what is on it is not the test's): it sees none unless the test hands one in
+    (``Effects(desktop=...)``)."""
+    return None if testguard.under_test() else desktop_dir()
+
+
 def default_uv_path(home: Path) -> str:
     """uv for the bootstrap steps: the one resolver (install folder, stage-1 hand-over, bootstrap, PATH).
 
@@ -343,6 +351,7 @@ class Effects:
     run_elevated: Callable[..., bootstrap.CmdResult] = bootstrap.run_elevated_exe
     add_user_path: Callable[[str], bool] = bootstrap.add_user_path_entry
     copy_app: Callable[..., appcopy.CopyResult] = appcopy.install_app
+    desktop: Callable[[], Path | None] = seen_desktop                            # whose shortcuts are on it
     set_execution_state: Callable[[int], int] = keepawake._set_execution_state    # keep the PC awake
 
 
@@ -462,6 +471,12 @@ class SetupController:
             return appcopy.app_dir(self.home)
         return self.cfg.app_path
 
+    def folder_now(self, home: Path) -> dict[str, Any]:
+        """Automatic runs and the Desktop shortcuts as they are for the install folder `home` (the window
+        shows both under their switches, for the folder picked: `answers_view.folder_now`)."""
+        app = appcopy.app_dir(home) if self.installs_app else self.cfg.app_path
+        return answers_view.folder_now(home, app, self.fx.desktop(), self.fx.get_home_var(bootstrap.HOME_VAR))
+
     # ---- construction ----
     def _read_settings_before(self) -> dict[str, bytes] | None:
         """The settings files this window rewrites before the program copy (None when one cannot be read: the
@@ -502,6 +517,11 @@ class SetupController:
         prefill = self._prefill_raw()
         if prefill and prefill.get("home_path"):
             return Path(str(prefill["home_path"]))
+        # INSTALL.cmd started from an install's own program folder (<home>/app) opens on THAT install: the
+        # variable may name another Nightshift folder on this PC (stage 1's Resolve-NsHome: the same rule)
+        app = self.cfg.app_path
+        if app.name.lower() == "app" and (app.parent / "config").is_dir():
+            return app.parent
         if env_home:
             return Path(env_home)
         return Path(str(self.pf.get("home") or r"C:\Nightshift"))
@@ -567,9 +587,10 @@ class SetupController:
             names = stored_names(Paths(self.home))
             self._keys_stored = {"pexelsKey": PEXELS_KEY in names, "pixabayKey": PIXABAY_KEY in names}
         if raw:
+            now = self.folder_now(self.home)
             view = answers_view.answers_to_view(
                 raw, pexels_set=self._keys_stored["pexelsKey"], pixabay_set=self._keys_stored["pixabayKey"],
-                default_tier=default_tier, nightly_now=nightly_view.current_choice(self.home),
+                default_tier=default_tier, nightly_now=now["nightlySeen"], shortcuts_now=now["shortcutsNow"],
             )
         tier = (view or {}).get("llmTier") or default_tier
         code = bool((view or {}).get("installCode", True))
@@ -823,6 +844,7 @@ class SetupController:
             raw, pexels_set=bool(self._keys["pexels_api_key"]) or self._keys_stored["pexelsKey"],
             pixabay_set=bool(self._keys["pixabay_api_key"]) or self._keys_stored["pixabayKey"],
             nightly_now=raw.get("nightly_seen") or "new",    # the page's own answer, as it sent it
+            shortcuts_now=self.folder_now(self.home)["shortcutsNow"],     # for the folder just accepted
         )
         pf = self.pf
         new_plan = plan.build_plan(
@@ -853,8 +875,9 @@ class SetupController:
             return {"ok": False, "errors": [{"field": "homePath", "code": None,
                                              "message": f"That answers file could not be read: {e}"}]}
         default_tier = "small" if self.dev else plan.recommended_tier(float(self.pf.get("ram_gb") or 0))
+        now = self.folder_now(self.home)
         view = answers_view.answers_to_view(
-            raw, default_tier=default_tier, nightly_now=nightly_view.current_choice(self.home)
+            raw, default_tier=default_tier, nightly_now=now["nightlySeen"], shortcuts_now=now["shortcutsNow"],
         )
         draft = {k: v for k, v in view.items() if k not in ("pexelsKeySet", "pixabayKeySet")}
         keys = answers_view.keys_in(raw)
@@ -904,10 +927,18 @@ class SetupController:
             return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb, models=found)
         view = {**(state.get("answers") or {}), **plan.need_fields(draft),
                 "llmCustom": plan.custom_entry(custom)}
-        return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb,
-                                    drive_type_fn=self.fx.drive_type, layout_fn=self._layout_problem,
-                                    existing_fn=self._existing_install_note, kind_fn=self.fx.folder_kind,
-                                    dev=self.dev, need_fn=lambda where: self._need_for(where, tier, view))
+        check = preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb,
+                                     drive_type_fn=self.fx.drive_type, layout_fn=self._layout_problem,
+                                     existing_fn=self._existing_install_note, kind_fn=self.fx.folder_kind,
+                                     dev=self.dev, need_fn=lambda where: self._need_for(where, tier, view))
+        # Automatic runs and the Desktop shortcuts belong to the folder: the page shows them for the folder
+        # it is checking, not for the one it was loaded with (two Nightshift folders on one PC)
+        folder = path.strip()
+        if answers_view.DRIVE_PATH_RE.match(folder):
+            check.update(self.folder_now(Path(folder)))
+        else:
+            check.update({"nightlySeen": "new", "shortcutsNow": dict(answers_view.NO_OTHER_INSTALL)})
+        return check
 
     def pick_folder(self, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/pick-folder``: the Windows folder dialog, then the same check as typing the path.
@@ -1938,7 +1969,11 @@ class SetupController:
             flags = json.loads(read_text_retry(self.home / "config" / "wizard_flags.json", "utf-8-sig"))
         except (OSError, ValueError):
             pass
-        night = nightly_view.summary(self.home, flags if isinstance(flags, dict) else {})
+        if not isinstance(flags, dict):
+            flags = {}
+        night = nightly_view.summary(self.home, flags)
+        shortcuts = shortcuts_view.summary(self.home, self.run_app_path, self.fx.desktop(), flags)
+        var_line = flags.get("home_var_line")
         sizes = {g["id"]: g for g in state["plan"]["groups"]}
         models = {i["label"]: i for i in sizes["models"]["items"]}
         llm = next((i for i in sizes["models"]["items"] if i["label"].startswith("Story model")), None)
@@ -1990,7 +2025,11 @@ class SetupController:
             "runTime": night["time"] or answers.get("runTime", "03:00"),
             "scheduled": night["state"] == "on" and not self.dev,
             "nightly": "off" if self.dev else night["state"],
-            "nightlyLine": None if self.dev else night["line"],
+            "nightlyLine": (flags.get("dev_task_line") if flags.get("schedule") == "other" else None)
+            if self.dev else night["line"],
+            # whose the Desktop shortcuts and NIGHTSHIFT_HOME are, in the scheduler step's own sentences
+            "shortcutsLine": shortcuts["line"],
+            "homeVarLine": var_line if isinstance(var_line, str) else None,
             "devMode": self.dev,
             "diagnosticsZip": self._bundle or flags.get("bundle"),
             "durationS": duration, "warnings": warnings, "stockKeyMissing": not self._stock_key_stored(),

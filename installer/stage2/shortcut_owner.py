@@ -138,6 +138,83 @@ def owner(arguments: str, home: Path, app: Path | None = None) -> str:
     return FOREIGN if opened is None else folder_state(opened, home)
 
 
+def names_home(arguments: str) -> str | None:
+    """The install folder a shortcut belongs to: the folder of the launch script it starts through, else the
+    folder above the program folder `app` of its launcher. None when it says neither (not a Nightshift
+    shortcut, or a dev install's direct shortcut: its launchers are in a repository)."""
+    found = parse(arguments)
+    if found is None:
+        return None
+    if found[1] is not None:
+        named = os.path.basename(found[1]).lower() == STUB_NAME
+        return os.path.dirname(found[1]) if named else None
+    return opens_home(arguments)
+
+
+def desktop_owner(arguments: str, home: Path, app: Path | None = None) -> tuple[str, str | None]:
+    """Whose shortcut, seen from the install `home` at setup or uninstall time (card second-install-takeover):
+    (`mine` | `other` | `gone` | `unreachable` | `foreign`, the install folder it names when that is not
+    this one).
+
+    The launch script decides when the shortcut starts through one: it is in an install's home, also a dev
+    install's, whose launchers are elsewhere. A direct shortcut is `mine` when it starts a launcher of this
+    program folder `app`. `other` is a folder that exists: whether a Nightshift still works in it is not
+    judged here, so nothing of a folder that is there is ever taken by a guess."""
+    found = parse(arguments)
+    if found is None:
+        return FOREIGN, None
+    if found[1] is None and app is not None and _same(os.path.dirname(os.path.dirname(found[0])), app):
+        return MINE, None
+    named = names_home(arguments)
+    if named is None:
+        return FOREIGN, None
+    state = folder_state(named, home)
+    return state, None if state == MINE else named
+
+
+def read_owner(lnk: Path, home: Path, app: Path | None = None) -> tuple[str, str | None]:
+    """`desktop_owner` of the shortcut file `lnk`; `none` when there is no such file, `foreign` when it is
+    there and is not a shell link that can be read (torn, held by another program: left as it is)."""
+    try:
+        return desktop_owner(read_lnk(lnk).arguments, home, app)
+    except FileNotFoundError:
+        return "none", None
+    except (OSError, ValueError):
+        return FOREIGN, None
+
+
+#: The Nightshift folders setup ran in, one per line, in `%LOCALAPPDATA%/Nightshift`: how the uninstaller
+#: of one install learns of another that holds none of the things a PC has one of (it then keeps the toast
+#: registration and the stored keys, and says the other is still there).
+LIST_NAME = "installs.txt"
+
+
+def default_list() -> Path | None:
+    base = os.environ.get("LOCALAPPDATA")
+    return Path(base) / "Nightshift" / LIST_NAME if base else None
+
+
+def record_home(home: Path, listing: Path | None) -> bool:
+    """Add `home` to the list of installs unless it is there. True when the file was written. Best effort:
+    a list that cannot be read or written is left (the uninstaller then knows one install fewer)."""
+    if listing is None:
+        return False
+    try:
+        lines = [ln.strip() for ln in listing.read_text(encoding="utf-8-sig").splitlines() if ln.strip()]
+    except (OSError, ValueError):
+        lines = []
+    if any(_same(ln, home) for ln in lines):
+        return False
+    try:
+        listing.parent.mkdir(parents=True, exist_ok=True)
+        tmp = listing.with_name(f"~ns{os.getpid()}-installs.tmp")
+        tmp.write_text("\n".join([*lines, str(home)]) + "\n", encoding="utf-8")
+        os.replace(tmp, listing)
+    except OSError:
+        return False
+    return True
+
+
 def is_stub_form(arguments: str, home: Path) -> bool:
     """True when the shortcut starts its launcher through the launch script of `home`."""
     found = parse(arguments)

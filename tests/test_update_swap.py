@@ -103,7 +103,7 @@ def test_every_shortcut_starts_in_the_install_home_not_the_app_folder(tmp_path: 
     )
     S09ShortcutsScheduler().run(ctx)
     shortcut_scripts = [s for s in _decoded_scripts(runner) if "CreateShortcut" in s]
-    assert len(shortcut_scripts) == 3
+    assert len(shortcut_scripts) == 6  # this install's own Shortcuts folder, then the Desktop
     for s in shortcut_scripts:
         assert f"$s.WorkingDirectory = '{ctx.paths.home}'" in s
         assert str(app) not in s.split("WorkingDirectory")[1].split("\n")[0]

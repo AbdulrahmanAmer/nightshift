@@ -21,7 +21,7 @@ from typing import Any
 
 from ns_common import ffmpeg
 from ns_common.models import GateCheck, GateReport
-from ns_common.paths import Paths
+from ns_common.paths import Paths, home_env
 
 SLICE = "m3-c9"
 BASE = "http://127.0.0.1:8100"
@@ -131,20 +131,22 @@ def run_checks() -> GateReport:
     except ImportError as e:
         _check(checks, "fastapi_installed", False, e)
         return _report(checks)
-    saved = os.environ.get("NIGHTSHIFT_HOME")
+    saved = {name: os.environ.get(name) for name in home_env("")}
     with tempfile.TemporaryDirectory(prefix="ns-gate-m3-", ignore_cleanup_errors=True) as td:
         home = Path(td) / "home"
         home.mkdir()
-        os.environ["NIGHTSHIFT_HOME"] = str(home)
+        # the gate's own home, vouched for: run with an install's Python it must not work on that install
+        os.environ.update(home_env(home))
         try:
             _run_in(home, checks)
         except Exception as e:  # report any crash as a failed check instead of a traceback
             _check(checks, "gate_crashed", False, f"{type(e).__name__}: {e}")
         finally:
-            if saved is None:
-                os.environ.pop("NIGHTSHIFT_HOME", None)
-            else:
-                os.environ["NIGHTSHIFT_HOME"] = saved
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
     return _report(checks)
 
 

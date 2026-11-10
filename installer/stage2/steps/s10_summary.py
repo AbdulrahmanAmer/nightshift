@@ -11,7 +11,7 @@ from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.devmode import BANNER
 from installer.stage2.errors import make_error
-from installer.stage2.web import nightly_view
+from installer.stage2.web import nightly_view, shortcuts_view
 from installer.stage2.winenv import desktop_dir
 
 NEXT_STEPS = (
@@ -23,6 +23,8 @@ DEV_NEXT_STEPS = (
 )
 #: The flags the sentence about Automatic runs is made from (`nightly_view.summary`).
 NIGHTLY_FLAGS = ("schedule", "schedule_mode", "nightly_line", "nightly_state", "nightly_time")
+#: The flags the sentence about the Desktop shortcuts is made from (`shortcuts_view.summary`).
+SHORTCUT_FLAGS = ("shortcuts_owner", "shortcuts_line", "shortcuts_names")
 
 
 def newest_bundle(folder: Path | None) -> Path | None:
@@ -69,15 +71,24 @@ class S10Summary(Step):
         if ctx.dev_mode:
             if schedule == "installed" and ctx.flag("schedule_mode") == "disabled":
                 ui.say(f"Nightly task: registered for {ans.run_time} but DISABLED (dev mode); it never runs.")
+            elif schedule == "other" and isinstance(ctx.flag("dev_task_line"), str):
+                ui.say(ctx.flag("dev_task_line"))    # the PC's task is another install's: left as it is
         else:
             # one sentence, true of what the record says now: the scheduler step's own when the state is still
             # the one it left, else the state as it is (a run in which that step had nothing to do)
             flags = {name: ctx.flag(name) for name in NIGHTLY_FLAGS}
             ui.say(nightly_view.summary(ctx.paths.home, flags)["line"])
+        # whose the Desktop shortcuts and NIGHTSHIFT_HOME are (a PC can hold several Nightshift folders): the
+        # scheduler step's sentence while the Desktop still is what it left, else the state as it is now
+        folder = ctx.desktop_override or desktop_dir(ctx.runner)
+        marks = {name: ctx.flag(name) for name in SHORTCUT_FLAGS}
+        ui.say(shortcuts_view.summary(ctx.paths.home, ctx.app_path, folder, marks)["line"])
+        var_line = ctx.flag("home_var_line")
+        if isinstance(var_line, str) and var_line:
+            ui.say(var_line)
         ui.say(DEV_NEXT_STEPS if ctx.dev_mode else NEXT_STEPS, "bold green")
 
         res = ctx.run_tool("ns", ["doctor", "--bundle"], timeout=900)
-        folder = ctx.desktop_override or desktop_dir(ctx.runner)
         bundle = newest_bundle(folder) if res.ok else None
         ui.bundle(bundle)
         if bundle is not None:

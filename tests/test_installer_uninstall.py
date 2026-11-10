@@ -40,7 +40,13 @@ def _present(home: Path) -> set[str]:
 
 def test_dry_run_deletes_nothing_and_lists_actions(tmp_path: Path):
     home = _make_home(tmp_path)
-    proc = _run(home, "-DryRun", "-DeleteModels", "-DeleteData")
+    # the PC is described (its task, its variable, its toast key) and the Desktop is a folder here: the dry
+    # run reads nothing of this PC, and what it lists does not depend on what this PC holds
+    machine = tmp_path / "machine.json"
+    machine.write_text(json.dumps({"task": None, "userHome": str(home), "toastKey": False}), encoding="utf-8")
+    (tmp_path / "desktop").mkdir()
+    described = ("-StateFile", str(machine), "-DesktopDir", str(tmp_path / "desktop"))
+    proc = _run(home, "-DryRun", "-DeleteModels", "-DeleteData", *described)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert _present(home) == set(ALL_DIRS)
     assert "[dry-run] delete folder" in proc.stdout and "venvs" in proc.stdout

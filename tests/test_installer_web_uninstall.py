@@ -47,8 +47,9 @@ def test_the_view_lists_what_goes_and_what_stays_with_sizes(tmp_path: Path):
     view = uninstall.UninstallApp(APP, home).view()
     assert view["home"] == str(home) and view["running"] is False and view["result"] is None
     assert [a["label"] for a in view["always"]] == [
-        "The nightly task", "Desktop shortcuts", "Programs and Python environments",
-        "Windows' note of where Nightshift is installed",
+        "The nightly task, when it runs this install", "Desktop shortcuts that open this install",
+        "Programs and Python environments",
+        "Windows' note of where Nightshift is installed, when it names this install",
     ]
     assert view["always"][2]["bytes"] == 150 and view["always"][0]["bytes"] is None
     assert view["models"] == {"path": str(home / "models"), "bytes": 4000}
@@ -117,7 +118,8 @@ def finished(app: uninstall.UninstallApp) -> dict:
 def test_a_file_that_could_not_be_removed_is_reported_as_kept_not_removed(tmp_path: Path):
     home = make_home(tmp_path)  # the fake script removes nothing
     app = uninstall.UninstallApp(
-        APP, home, popen=lambda argv, **kw: FakeProc(""), deferred=lambda h: False, env_var=lambda n: "x")
+        APP, home, popen=lambda argv, **kw: FakeProc(""), deferred=lambda h: False,
+        env_var=lambda n: str(home))
     result = finished(app)
     labels = [k["label"] for k in result["kept"]]
     assert "Python environments (a file is in use)" in labels

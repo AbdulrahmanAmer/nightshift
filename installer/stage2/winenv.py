@@ -7,6 +7,7 @@ This is the only module that names the home environment variable literally. Scri
 from __future__ import annotations
 
 import base64
+from collections.abc import Sequence
 from pathlib import Path
 
 import ns_common.testguard as testguard
@@ -349,11 +350,32 @@ public static class NsAumid
 """
 
 
-def register_aumid_script(aumid: str, display_name: str, icon: Path | None) -> str:
-    """PowerShell that writes the AppUserModelId key: DisplayName, plus IconUri when there is an icon."""
+def register_aumid_script(
+    aumid: str, display_name: str, icon: Path | None, *, keep_other: bool = False,
+    also_mine: Sequence[str] = (),
+) -> str:
+    """PowerShell that writes the AppUserModelId key: DisplayName, plus IconUri when there is an icon.
+
+    `keep_other` (a PC with two Nightshift folders has ONE such key): when the key is there and its IconUri
+    names a file that exists and is not this install's icon, another install uses the registration; the
+    script changes nothing and prints `kept:<that icon>`. Toasts of this install then show under that key.
+    `also_mine`: icons this install registered before (its program folder can move), which are its own.
+    """
     lines = [
         "$ErrorActionPreference = 'Stop'",
         f"$k = '{ps_quote(AUMID_KEY_PARENT)}' + [char]92 + '{ps_quote(aumid)}'",
+    ]
+    if keep_other:
+        own = [str(icon)] if icon is not None else []
+        mine = ", ".join(f"'{ps_quote(p)}'" for p in [*own, *also_mine]) or "''"
+        lines += [
+            "$old = $null",
+            "if (Test-Path -LiteralPath $k) { $old = [string](Get-ItemProperty -LiteralPath $k -Name "
+            "'IconUri' -ErrorAction SilentlyContinue).IconUri }",
+            f"if ($old -and (@({mine}) -inotcontains $old) -and (Test-Path -LiteralPath $old)) "
+            "{ Write-Output ('kept:' + $old); exit 0 }",
+        ]
+    lines += [
         "New-Item -Path $k -Force | Out-Null",
         f"New-ItemProperty -Path $k -Name 'DisplayName' -Value '{ps_quote(display_name)}' "
         "-PropertyType String -Force | Out-Null",
@@ -368,11 +390,24 @@ def register_aumid_script(aumid: str, display_name: str, icon: Path | None) -> s
 
 def register_aumid(runner: Runner, aumid: str, display_name: str, icon: Path | None = None) -> bool:
     """Register ``aumid`` for toasts under HKCU (no admin needed). True on success."""
-    meta = {"aumid": aumid, "display_name": display_name}
+    return register_aumid_keeping(runner, aumid, display_name, icon, keep_other=False) != "failed"
+
+
+def register_aumid_keeping(
+    runner: Runner, aumid: str, display_name: str, icon: Path | None = None, *, keep_other: bool,
+    also_mine: Sequence[str] = (),
+) -> str:
+    """`register_aumid` that can leave a registration another install uses (`register_aumid_script`):
+    `registered`, `kept:<the other install's icon>` or `failed`."""
+    meta = {"aumid": aumid, "display_name": display_name, "keep_other": "yes" if keep_other else "no"}
     if icon is not None:
         meta["icon"] = str(icon)
-    script = register_aumid_script(aumid, display_name, icon)
-    return run_ps(runner, script, tag="ps:aumid-register", meta=meta).ok
+    script = register_aumid_script(aumid, display_name, icon, keep_other=keep_other, also_mine=also_mine)
+    res = run_ps(runner, script, tag="ps:aumid-register", meta=meta)
+    if not res.ok:
+        return "failed"
+    kept = [ln.strip() for ln in res.stdout.splitlines() if ln.strip().startswith("kept:")]
+    return kept[-1] if kept else "registered"
 
 
 def unregister_aumid(runner: Runner, aumid: str) -> bool:
