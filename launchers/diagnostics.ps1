@@ -81,6 +81,8 @@ function Get-SmallZip {
                     # (read with every share mode: a log another program still writes is copied as it is now)
                     $src = New-Object System.IO.FileStream($f.From, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
                     try {
+                        # (a private copy in this run's own scratch folder, which nothing else reads: written
+                        # directly, not swapped; the launcher write guard allows exactly this line)
                         $dst = [IO.File]::Create($to)
                         try { $src.CopyTo($dst) } finally { $dst.Dispose() }
                     } finally { $src.Dispose() }

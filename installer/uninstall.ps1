@@ -123,6 +123,47 @@ function Test-RunsThisProgram {
     }
 }
 
+function Write-NsFileSwap {
+    # A file another program reads (installs.txt: another install's setup reads it and writes it back with
+    # its own folder added, shortcut_owner.record_home) is either the old one or the new one, never half of
+    # either: the text goes to a temp file in the same folder, is flushed, and is then swapped over -Path
+    # (File.Replace, or Move for a new file). While another process has -Path open the swap is refused for a
+    # moment: retried, the error thrown after the last try, the old file untouched. The same function as in
+    # launch.ps1, pick-folder.ps1 and stage1.ps1 (this script loads no other file: it must work when the
+    # program folder is gone). UTF-8; -Bom for a file the owner opens in Notepad.
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [int]$Tries = 20,
+        [switch]$Bom
+    )
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $tmp = Join-Path ([System.IO.Path]::GetDirectoryName($full)) ('~ns' + $PID + '-0-' + (Get-Random -Maximum 2000000000) + '.tmp')
+    try {
+        $encoding = New-Object System.Text.UTF8Encoding([bool]$Bom)
+        $bytes = $encoding.GetPreamble() + $encoding.GetBytes($Text)
+        $fs = New-Object System.IO.FileStream($tmp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush($true) }
+        finally { $fs.Dispose() }
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                if ([System.IO.File]::Exists($full)) { [System.IO.File]::Replace($tmp, $full, [NullString]::Value) }
+                else { [System.IO.File]::Move($tmp, $full) }
+                break
+            }
+            catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+                # a sharing or lock violation, or access denied while a reader has the target open
+                if ($attempt -ge $Tries) { throw }
+                Start-Sleep -Milliseconds ([Math]::Min(10 * $attempt, 100))
+            }
+        }
+    }
+    finally {
+        try { if ([System.IO.File]::Exists($tmp)) { [System.IO.File]::Delete($tmp) } }
+        catch { Write-Verbose ('temp file not removed: ' + $tmp) }
+    }
+}
+
 function Get-KnownInstalls {
     # The Nightshift folders setup recorded on this PC (%LOCALAPPDATA%\Nightshift\installs.txt, one per line):
     # how an uninstall learns of another install that holds none of the shared things.
@@ -727,11 +768,16 @@ if (-not $SkipSystem) {
     if ($stillHere.Count -eq 0 -and $others.Count -eq 0 -and ($varState -eq 'mine' -or $varState -eq 'gone')) {
         Write-Host 'If another Nightshift folder is on this PC (one installed by an older version is not listed), run its INSTALL.cmd and choose Repair once: that registers its notifications, its stock-footage keys and NIGHTSHIFT_HOME again.'
     }
-    # this folder leaves the PC's list of installs
+    # this folder leaves the PC's list of installs; another install's setup may read the list at this moment
+    # and write it back with its own folder added, so the list is swapped in whole (a half-written list read
+    # there would lose the other folders for good)
     $listFile = Join-Path (Join-Path $env:LOCALAPPDATA 'Nightshift') 'installs.txt'
     if (-not $script:IsDry -and $null -eq $machine -and (Test-Path -LiteralPath $listFile -PathType Leaf)) {
-        $rest = @(Get-Content -LiteralPath $listFile -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -and ((Get-FolderState ([string]$_).Trim()) -ne 'mine') })
-        Set-Content -LiteralPath $listFile -Value $rest -Encoding UTF8 -ErrorAction SilentlyContinue
+        $rest = @(Get-Content -LiteralPath $listFile -Encoding UTF8 -ErrorAction SilentlyContinue | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -and ((Get-FolderState $_) -ne 'mine') })
+        $listText = ''
+        if ($rest.Count -gt 0) { $listText = ($rest -join "`n") + "`n" }
+        try { Write-NsFileSwap -Path $listFile -Text $listText }
+        catch { Write-Host "Could not take this folder out of the list of installs in ${listFile}: $($_.Exception.Message)" }
     }
 }
 
