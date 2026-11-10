@@ -197,6 +197,12 @@ def uv_tags(runner: FakeRunner) -> list[str]:
     return [c.tag for c in runner.calls if c.tag.startswith("uv ")]
 
 
+def exported(runner: FakeRunner, venv: str) -> list[str]:
+    """The extras whose locked packages s04 exported for ``venv`` (P29a: they come from uv.lock)."""
+    argv = next(c for c in runner.calls if c.tag == f"uv export {venv}").argv
+    return [argv[i + 1] for i, word in enumerate(argv) if word == "--extra"]
+
+
 def test_s04_dev_installs_the_dev_extra_without_gpu_speech_or_tts_packages(tmp_path: Path):
     runner = FakeRunner(tmp_path / "desktop")
     ctx = dev_ctx(tmp_path, runner)
@@ -204,13 +210,13 @@ def test_s04_dev_installs_the_dev_extra_without_gpu_speech_or_tts_packages(tmp_p
     step.run(ctx)
     step.verify(ctx)
     assert uv_tags(runner) == [
-        "uv venv studio", "uv pip install studio app", "uv pip install studio spacy model",
-        "uv venv supervisor", "uv pip install supervisor app",
+        "uv export studio", "uv export supervisor",
+        "uv venv studio", "uv pip install studio locked packages", "uv pip install studio app",
+        "uv pip install studio spacy model",
+        "uv venv supervisor", "uv pip install supervisor locked packages", "uv pip install supervisor app",
     ]
-    studio = next(c for c in runner.calls if c.tag == "uv pip install studio app")
-    assert f"{ROOT}[dev-install,supervisor]" in studio.argv
-    sup = next(c for c in runner.calls if c.tag == "uv pip install supervisor app")
-    assert f"{ROOT}[supervisor,tts,dashboard]" in sup.argv
+    assert exported(runner, "studio") == ["dev-install", "supervisor"]
+    assert exported(runner, "supervisor") == ["supervisor", "tts", "dashboard"]
     everything = " ".join(a for c in runner.calls for a in c.argv).lower()
     assert "torch" not in everything and "cublas" not in everything and "whisper" not in everything
     assert not (ctx.paths.logs / "pins-whisper-cuda.txt").exists() and not ctx.venv_python("tts").exists()
@@ -221,7 +227,7 @@ def test_s04_real_mode_keeps_the_studio_extra(tmp_path: Path):
     runner = FakeRunner(tmp_path / "desktop")
     ctx = dev_ctx(tmp_path, runner, dev=False)
     S04Venvs().run(ctx)
-    assert f"{ROOT}[studio,supervisor]" in next(c for c in runner.calls if c.tag == "uv pip install studio app").argv
+    assert exported(runner, "studio") == ["studio", "supervisor"]
 
 
 # ---------------------------------------------------------------------------------------------- s05, s06, s07
