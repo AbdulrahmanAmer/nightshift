@@ -774,6 +774,20 @@ def test_a_stopped_request_keeps_what_it_owes_whatever_comes_next_and_the_texts_
     ):
         assert words in guide, words
     assert "it stops with NS-E330 instead" not in guide
+    # the way back follows why the job waits now, whatever stopped it first (P47, third review)
+    cut_then_paused = ownership._card_text(None, "needs_retry", ownership.PAUSED_REASON, "process 1 is gone")
+    assert "Its channel was paused after that. Resume the channel:" in cut_then_paused
+    assert "Press Retry to continue it" not in cut_then_paused
+    assert "Its channel was paused after that. Resume the channel:" in d and "`_card_error`" in d
+    pending = ownership._card_text(None, "pending", None, "process 1 is gone")
+    assert pending.split("run. ", 1)[1].rstrip(".") in d, pending
+    assert "whose channel you paused afterwards" in guide
+    assert "Retry is refused while the channel is paused" in guide
+    err = tsx("ui/JobError.tsx")
+    assert "retryWords(r?.params)" in err and "`retryWords`" in d
+    assert "says how many videos it will make" in guide
+    built = (ROOT / "ns_dashboard" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "that request still owed" in built and "of that request" in built, "the rebuilt bundle"
 
 
 def test_the_content_safety_checklist_is_not_narrower_than_18_3():

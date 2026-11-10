@@ -674,21 +674,41 @@ def _our_row(rows: Sequence[Any]) -> Any | None:
 
 
 def _card_text(stage: str | None, resume: str, reason: str | None = None, owner: str | None = None) -> str:
+    """The words of an interrupted job's Queue card. Two things are said, each from its own fact:
+
+    - the cause, from who stopped it last (`owner`): a pause, or a dead process;
+    - the way back, from why it waits NOW (`resume`, `reason`), whatever stopped it first. A job whose channel
+      is paused cannot be retried (Retry answers 409 `channel_paused`), so its card never says "press Retry"
+      without "after the resume", and it says that the first nightly run after the resume continues it. The
+      sentences stay true when the owner pauses or resumes later, because nothing rewrites a card then.
+    """
     at = f"Interrupted at {stage}" if stage else "Interrupted"
-    stopped = f"{at}: the PC or Nightshift stopped during the night's run."
-    if owner == PAUSED_OWNER:  # the true cause, and a way back that works: Retry is refused while paused
-        stopped = f"{at}: its channel was paused during the night's run."
-        if resume not in ("pending", "resumed") and reason == PAUSED_REASON:
-            return (
-                f"{stopped} Resume the channel: the next nightly run then continues it, if the job started "
-                f"no more than {RESUME_WITHIN_DAYS} days before that run; or press Retry after the resume."
-            )
-    if resume == "pending":
-        return f"{stopped} The next nightly run continues it, or press Retry."
+    cause = "its channel was paused" if owner == PAUSED_OWNER else "the PC or Nightshift stopped"
+    stopped = f"{at}: {cause} during the night's run."
     if resume == "resumed":
         return f"{stopped} The nightly run continued it and it finished."
+    if reason == PAUSED_REASON:
+        since = "" if owner == PAUSED_OWNER else " Its channel was paused after that."
+        return (
+            f"{stopped}{since} Resume the channel: the next nightly run then continues it, if the job "
+            f"started no more than {RESUME_WITHIN_DAYS} days before that run; or press Retry after the "
+            "resume."
+        )
+    if resume == "pending":
+        return (
+            f"{stopped} The next nightly run continues it, or press Retry (if its channel is paused by then, "
+            "both wait for the resume)."
+        )
     why = f" ({reason})" if reason else ""
     return f"{stopped} Press Retry to continue it{why}."
+
+
+def _card_error(stage: str | None, owner: str | None, reason: str | None) -> dict[str, Any]:
+    """The code and hint of the card: NS-E330 when a pause stopped the job or holds it now (its hint says to
+    resume the channel first), else NS-E328 (its hint says to press Retry, which then works)."""
+    if owner == PAUSED_OWNER or reason == PAUSED_REASON:
+        return {"code": PAUSED, "hint": describe(PAUSED).hint, "stage": stage}
+    return {"code": INTERRUPTED_CODE, "hint": INTERRUPTED_HINT, "stage": stage}
 
 
 def _write_card(
@@ -710,12 +730,9 @@ def _write_card(
 def _card_result(
     job_id: str, stage: str | None, rec: Mapping[str, Any], resume: str, reason: str | None
 ) -> dict[str, Any]:
-    error = {"code": INTERRUPTED_CODE, "hint": INTERRUPTED_HINT, "stage": stage}
-    if rec.get("owner") == PAUSED_OWNER:
-        error = {"code": PAUSED, "hint": describe(PAUSED).hint, "stage": stage}
     return {
         "studio_job_ids": [job_id],
-        "error": error,
+        "error": _card_error(stage, rec.get("owner"), reason),
         "interrupted": {
             "stage": stage,
             "run_id": rec.get("run_id"),
@@ -806,6 +823,8 @@ def _settle(
     result["interrupted"] = interrupted
     stage = interrupted.get("stage")
     message = _card_text(stage, resume, reason, interrupted.get("owner"))
+    if resume == "needs_retry":  # the code and hint follow the reason it waits now, like the words
+        result["error"] = _card_error(stage, interrupted.get("owner"), reason)
     if status == "done":
         result.pop("error", None)
         result["output_ids"] = list(output_ids or [])
@@ -1341,6 +1360,8 @@ def pending_resumes(paths: Paths, db: SqlDb, now: datetime | None = None) -> lis
                 write_record(paths, job_id, resume_problem=problem)
                 settle_needs_retry(db, job_id, problem)
             continue
+        if rec.get("resume_problem"):  # the problem is gone: a later one, the same again, is told again
+            write_record(paths, job_id, resume_problem=None)
         out.append(rec)
     return out
 

@@ -6,6 +6,13 @@ import { stoppedAt } from "../lib/format";
 import type { Job } from "../lib/types";
 import { Button, Icon } from "../components/ref12";
 
+/** What a Retry will make, from the job it queued (`params.count` videos, the first one continued when `resume_job_id` is set): a request for several videos also gets the ones it had not started. */
+function retryWords(p?: { count?: number; resume_job_id?: string | null }): string {
+  const n = Math.max(1, Number(p?.count) || 1); const more = n - 1;
+  if (!p?.resume_job_id) return `Making the ${n} ${n === 1 ? "video" : "videos"} that request still owed`;
+  return more > 0 ? `Continuing from where it stopped, then making ${more} more ${more === 1 ? "video" : "videos"} of that request` : "Continuing from where it stopped";
+}
+
 export function JobError({ j }: { j: Job }) {
   const { toast, refresh } = useApp(); const [busy, setBusy] = useState(false); const [resuming, setResuming] = useState(false);
   const code = j.result?.error?.code; const hint = j.result?.error?.hint;
@@ -13,7 +20,7 @@ export function JobError({ j }: { j: Job }) {
   const report = async () => { setBusy(true); try { const r = await api.post("/diagnostics"); toast(`Report saved to ${r?.path || "your Desktop"}`, "ok"); } catch (e: any) { toast(e.message, "bad"); } setBusy(false); };
   /** A story job that stopped late (voice, clips, render) continues from that stage: same story, nothing written again. */
   const canResume = j.kind === "run" && (j.result?.studio_job_ids || []).length > 0;
-  const resume = async () => { setResuming(true); try { await api.post(`/jobs/${encodeURIComponent(j.job_id)}/resume`); toast("Continuing from where it stopped. Follow it in the Queue", "ok"); refresh(); } catch (e: any) { toast(e.message, "bad"); } setResuming(false); };
+  const resume = async () => { setResuming(true); try { const r = await api.post(`/jobs/${encodeURIComponent(j.job_id)}/resume`); toast(`${retryWords(r?.params)}. Follow it in the Queue`, "ok"); refresh(); } catch (e: any) { toast(e.message, "bad"); } setResuming(false); };
   return (
     <div role="alert" className="mt-2 flex flex-col gap-2 rounded-ds-md bg-ds-danger-soft px-3 py-3 text-ds-sm">
       <p className="flex items-start gap-2 font-semibold"><Icon name="alert" size={16} className="mt-0.5 shrink-0 text-ds-danger" />{stoppedAt(j.stage)}{code && code !== "job_failed" && code !== "unavailable" ? <span className="font-mono text-ds-2xs">{code}</span> : null}</p>

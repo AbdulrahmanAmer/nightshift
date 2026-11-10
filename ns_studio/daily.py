@@ -434,10 +434,11 @@ def _paused_mid_job(env: jobs.Env, report: dict, job_id: str, slug: str, *, resu
     finished stages kept. It is not a failure: the job is closed as interrupted, the way a killed one is (a
     Queue card with Retry, which is refused while the channel is paused), so the first night after the resume
     continues it from that stage (`_resume_interrupted`, within `RESUME_WITHIN_DAYS`); the report lists it
-    under `paused` with its `job_id`. A job the night was already continuing keeps the card it has."""
+    under `paused` with its `job_id`. A job the night was already continuing keeps its card, rewritten."""
     if resumed:
         ownership.write_record(env.paths, job_id, state="interrupted")
-        # its card promised "the next nightly run continues it": say now that it waits for the resume
+        # whatever stopped it the first time, its card now says that it waits for the resume and that the
+        # first nightly run after it continues the job (`ownership._card_text` goes by this reason)
         ownership.settle_needs_retry(env.db, job_id, ownership.PAUSED_REASON)
     else:
         rec = {**(ownership.read_record(env.paths, job_id) or {}), "id": job_id}

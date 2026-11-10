@@ -323,11 +323,14 @@ request, also those made before the pause. **Cancel** on a waiting request stops
 how many videos were made and names the half-made one, whose files stay in its job folder (nothing is deleted).
 **Retry from where it stopped** on a story card that stopped with an error or after a restart continues the video
 that stopped and also makes the videos of that request that had not started; once that has started work, pressing
-Retry on the old card again is refused, so nothing is made twice. A video the night run was making when you paused
+Retry on the old card again is refused, so nothing is made twice (the message that appears when you press
+Retry says how many videos it will make). A video the night run was making when you paused
 waits the same way and is continued by the first night after the resume if it started no more than three days
 before that night (an older one waits for **Retry** in the Queue; a resume during the same night does not
 continue it that night). Its Queue card says "its channel was paused during the night's run" and that the next
-nightly run continues it after you resume. A waiting video holds no part of the graphics card: the engine is
+nightly run continues it after you resume. A video that a power cut or a restart interrupted, and whose channel
+you paused afterwards, says the same way back ("Resume the channel: the next nightly run then continues it"),
+not "Press Retry": Retry is refused while the channel is paused. A waiting video holds no part of the graphics card: the engine is
 free for other work until it continues, and a job that is paused between two steps does not ask for the
 graphics card again, so no model is loaded for it. A `studio run` typed by hand in a
 terminal refuses a paused channel with NS-E330 ("The channel is paused."): `--channel <it>` and `--resume <its job>` start
