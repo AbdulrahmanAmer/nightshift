@@ -20,7 +20,7 @@ def read(rel: str) -> str:
 
 
 def test_changelog_has_a_heading_for_the_version_file():
-    # a release candidate (VERSION 0.1.15-rc2) uses the heading of the final version it previews (H-12)
+    # a release candidate (VERSION 0.1.15-rc3) uses the heading of the final version it previews (H-12)
     version = read("VERSION").strip().split("-rc", 1)[0]
     text = read("CHANGELOG.md")
     m = re.search(rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\s*$", text, re.MULTILINE)
