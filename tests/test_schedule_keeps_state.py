@@ -423,6 +423,7 @@ def _off_task_dashboard(tmp_home: Path, monkeypatch: pytest.MonkeyPatch, task: t
     paths = Paths.from_env()
     write_run_time(paths, "04:15", "switched_off")
     fake = install_fake(monkeypatch, task)
+    monkeypatch.setattr("ns_dashboard.state.SYNC_INLINE", True)  # the look runs in the call
     dash, state = make(tmp_home)
     state.adapters.schedule = RealScheduleAdapter(state.paths)  # the adapter that looks at the (fake) task
     seed_channel(state.db, state.paths, "after-dark")  # an active channel: a night run would be due

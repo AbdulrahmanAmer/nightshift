@@ -174,6 +174,13 @@ KEPT_OFF_NOTE = (
 )
 
 
+#: Task Scheduler logon types that run the task only while the user (or a member of the group) is signed in.
+#: Everything else runs signed out too: S4U (what Nightshift registers), Password and InteractiveOrPassword
+#: ("run whether user is logged on or not" with a saved password, set by the owner in Task Scheduler),
+#: ServiceAccount.
+SIGNED_IN_ONLY_LOGONS = frozenset({"interactive", "group"})
+
+
 @dataclass(frozen=True)
 class TaskState:
     """What Windows has for the task now: switched on or off, the clock time of its daily trigger, and
@@ -255,7 +262,7 @@ def parse_task_state(out: str, local_tz: tzinfo | None = None) -> TaskState | No
         elif key.strip() == "start":
             run_time = _local_clock(value, local_tz)
         elif key.strip() == "logon" and value.strip():
-            interactive = value.strip().lower() != "s4u"
+            interactive = value.strip().lower() in SIGNED_IN_ONLY_LOGONS
     if not state:
         return None
     return TaskState(enabled=state.lower() != "disabled", run_time=run_time, interactive=interactive)
@@ -472,7 +479,8 @@ def set_automatic(
 
     `on` None keeps the state and only moves the time. Off, or already off: no task is touched and `run_time`
     goes to `dashboard.json`; a switch-off removes the task (record first, see `_forget`). On: the task is
-    registered at `run_time` (else the task's, the kept one, 03:00); same state and time runs no script.
+    registered at `run_time` (else the task's, the kept one, 03:00); same state and time runs no script,
+    unless the task runs only while signed in and `on` is asked again (then Windows is asked again).
     `ScheduleError` with nothing changed when Windows refuses, the task cannot be read or another change is
     still running (`ScheduleBusy`); `DevInstall` for the switch in a dev install.
     """
@@ -507,7 +515,11 @@ def set_automatic(
             run_time or (before.run_time if before is not None and is_on else None)
             or read_run_time(paths, include_disabled=True) or remembered_run_time(paths) or DEFAULT_TIME
         )
-        if before is not None and is_on and before.run_time == when:
+        # Same state and time: no script. The one exception is the owner asking again (the switch or the
+        # NS-W205 row's "Try again") while Windows runs the task only while signed in: registering again
+        # tries the unattended mode first, and what Windows then has is the answer either way.
+        again = on is True and before is not None and before.interactive is True
+        if before is not None and is_on and before.run_time == when and not again:
             return Outcome(True, _record(paths, before, log), when, False)
         task = _switch_on(paths, when, app_path, log)
         return Outcome(True, read_schedule_mode(paths), task.run_time or when, True)

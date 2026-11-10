@@ -3,14 +3,18 @@ supervisor's auto-exit rule (spec 6.2: stay up when a run is due within 60 minut
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
+import time
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from ns_common import first_start
 from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.paths import Paths
+from ns_common.singleton import AlreadyRunning, FileLock
 
 TASK_NAME = "Nightshift Daily"
 _HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
@@ -93,6 +97,36 @@ def _preferences(paths: Paths) -> dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
+#: How long a writer of `dashboard.json` waits for the other one (each holds the lock for one small write).
+PREFERENCES_WAIT_S = 5.0
+
+
+@contextlib.contextmanager
+def preferences_lock(paths: Paths) -> Iterator[None]:
+    """Hold `run/dashboard-settings.lock` for one read-modify-write of `config/dashboard.json`.
+
+    The file has two writers that each change one key and must keep the other's: the Settings save
+    (`ns_dashboard.state.save_dashboard_settings`, any key) and `remember_run_time` (the kept time, also
+    from the background look at Windows and from `ns schedule`, another process). Both read and write inside
+    this lock, so neither writes back a stale copy of the other's key. Windows drops the lock with its
+    holder; after PREFERENCES_WAIT_S the write goes ahead unlocked rather than lose the owner's change.
+    """
+    lock = FileLock(paths.home / "run" / "dashboard-settings.lock")
+    deadline = time.monotonic() + PREFERENCES_WAIT_S
+    while True:
+        try:
+            lock.acquire()
+            break
+        except AlreadyRunning:
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.02)
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def remembered_run_time(paths: Paths) -> str | None:
     """The time kept in `config/dashboard.json` for when Automatic runs are off (None when there is none)."""
     when = _preferences(paths).get("run_time")
@@ -107,10 +141,11 @@ def remember_run_time(paths: Paths, run_time: str) -> None:
     switching on registers the task at it.
     """
     target = paths.config / "dashboard.json"
-    data = _preferences(paths)
-    data["run_time"] = run_time
-    first_start.guard(target)
-    write_text_atomic(target, json.dumps(data, indent=2) + "\n")
+    with preferences_lock(paths):
+        data = _preferences(paths)
+        data["run_time"] = run_time
+        first_start.guard(target)
+        write_text_atomic(target, json.dumps(data, indent=2) + "\n")
 
 
 def clear_run_time(paths: Paths) -> None:

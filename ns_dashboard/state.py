@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -138,8 +138,8 @@ def status_schedule_mode(paths: Paths) -> str:
 
 _RECORD_CHECK_EVERY_S = 60.0
 _record_checked: dict[str, float] = {}
-#: True makes every look at Windows run inside the request that asked (tests); otherwise only the first look
-#: of this process does, and later ones run in a thread so a slow PowerShell never holds a page.
+#: True makes a look at Windows run inside the request that asked (tests only). The product never does: a
+#: look can take as long as PowerShell does (bounded at `schedule.READ_TIMEOUT_S`), and no page waits for it.
 SYNC_INLINE = False
 
 
@@ -147,14 +147,13 @@ def refresh_schedule_record(paths: Paths, *, now: Callable[[], float] = time.mon
     """Let `schedule.json` follow the Windows task: at most one look a minute per home, never raising.
 
     Without it a task the owner deleted or disabled in Task Scheduler would go on reading "on", and one
-    switched on there would read "off". The first look of this process is done before the page is answered
-    (what is shown at start is what Windows has); later ones run in the background and show on the next
-    poll. A dev install has nothing to follow (`sync_record` returns at once).
+    switched on there would read "off". The look runs in a background thread and the page is answered at
+    once with the last recorded state (also the first page of a new dashboard); what the look found shows on
+    the next poll, a few seconds later. A dev install has nothing to follow (`sync_record` returns at once).
     """
     key = str(paths.home)
     t = now()
-    first = key not in _record_checked
-    if not first and t - _record_checked[key] < _RECORD_CHECK_EVERY_S:
+    if key in _record_checked and t - _record_checked[key] < _RECORD_CHECK_EVERY_S:
         return
     _record_checked[key] = t
 
@@ -166,7 +165,7 @@ def refresh_schedule_record(paths: Paths, *, now: Callable[[], float] = time.mon
         except Exception:  # a task that cannot be read changes nothing
             return
 
-    if first or SYNC_INLINE:
+    if SYNC_INLINE:
         look()
     else:
         threading.Thread(target=look, name="schedule-sync", daemon=True).start()
@@ -194,11 +193,21 @@ def load_dashboard_settings(paths: Paths) -> dict[str, Any]:
 
 
 def save_dashboard_settings(paths: Paths, data: Mapping[str, Any]) -> dict[str, Any]:
-    """Merge `data` into the stored settings and return the result."""
-    merged = load_dashboard_settings(paths)
-    merged.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
-    first_start.guard(settings_file(paths))
-    write_text_atomic(settings_file(paths), json.dumps(merged, indent=2) + "\n")
+    """Merge `data` into the stored settings and return the result.
+
+    Read and written inside `schedule_cfg.preferences_lock`: the kept run time has a second writer
+    (`remember_run_time`, also from the background look at Windows), and neither may write back a stale copy
+    of the other's key.
+    """
+    try:
+        from ns_supervisor.schedule_cfg import preferences_lock
+    except ImportError:
+        preferences_lock = None
+    with preferences_lock(paths) if preferences_lock is not None else nullcontext():
+        merged = load_dashboard_settings(paths)
+        merged.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
+        first_start.guard(settings_file(paths))
+        write_text_atomic(settings_file(paths), json.dumps(merged, indent=2) + "\n")
     return merged
 
 

@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from installer.stage2.steps.s09_shortcuts_scheduler import remember_run_time  # its home on the base
 from ns_common import config_snapshot
 from ns_common.config import save_runtime
 from ns_common.errors import describe
@@ -33,7 +34,7 @@ from ns_dashboard.assistant import prompt
 from ns_dashboard.assistant.registry import ToolContext
 from ns_dashboard.fakes import seed_channel
 from ns_dashboard.handlers import Dashboard
-from ns_supervisor import cli, notify, pwsh, schedule, verify
+from ns_supervisor import backup, cli, notify, pwsh, schedule, verify
 from ns_supervisor.schedule_cfg import read_run_time, read_schedule_mode, schedule_file, write_run_time
 from tests.test_dashboard_api import make_env
 from tests.test_ns_schedule import _parse_errors, needs_powershell
@@ -62,6 +63,8 @@ class FakeWindows:
         self.calls: list[str] = []
         self.gate: threading.Event | None = None
         self.entered = threading.Event()
+        self.read_gate: threading.Event | None = None  # a slow look: the read waits for it
+        self.reading = threading.Event()
 
     def __call__(self, script: str, **kw: Any) -> subprocess.CompletedProcess[str]:
         if self.hang:
@@ -88,6 +91,9 @@ class FakeWindows:
             self.task = None
             return done("removed\n")
         self.calls.append("read")
+        if self.read_gate is not None:
+            self.reading.set()
+            assert self.read_gate.wait(10)
         if self.task is None:
             return done("not registered\n")
         t = self.task
@@ -575,3 +581,99 @@ def test_two_changes_at_once_run_one_after_the_other(
     # once the first is done the second goes through, and the record follows the last one
     assert put(client, automatic_runs=False)["schedule_registered"] is False
     assert windows.has is None and record(paths) is None and windows.changes() == ["register", "unregister"]
+
+
+# ------------------------------------------------------------------------- review round 1 (ad3fe8b)
+def test_try_again_on_the_signed_in_only_row_asks_windows_again(tmp_home: Path, windows: FakeWindows):
+    """The NS-W205 row's button sends the same state and time; that must still reach Windows."""
+    client, _state, paths = dashboard(tmp_home)
+    windows.refuse_s4u = True
+    put(client, automatic_runs=True, schedule_time="04:30")
+    again = put(client, automatic_runs=True, schedule_time="04:30")  # Windows refuses the unattended mode again
+    assert windows.changes() == ["register", "register"] and result(again).get("code") == "NS-W205"
+    assert describe("NS-W205").hint in result(again)["note"] and again["schedule_mode"] == "interactive_only"
+    windows.refuse_s4u = False  # an elevated dashboard, or the policy changed
+    ok = put(client, automatic_runs=True, schedule_time="04:30")
+    assert windows.changes() == ["register"] * 3 and windows.task is not None and windows.task["logon"] == "S4U"
+    assert result(ok)["applied"] is True and "code" not in result(ok) and ok["schedule_mode"] == "registered"
+    assert read_schedule_mode(paths) == "registered"
+    put(client, automatic_runs=True, schedule_time="04:30")  # unattended now: nothing more to ask
+    assert windows.changes() == ["register"] * 3
+    page = (UI / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    assert "Windows accepted it" in page and "if it refuses again" in page
+
+
+@pytest.mark.parametrize(
+    ("logon", "mode"),
+    [("Password", "registered"), ("InteractiveOrPassword", "registered"), ("S4U", "registered"),
+     ("Interactive", "interactive_only"), ("Group", "interactive_only")],
+)
+def test_the_tasks_own_logon_type_decides_signed_in_only(
+    tmp_home: Path, windows: FakeWindows, logon: str, mode: str
+):
+    """A task the owner set to "run whether user is logged on or not" with a saved password runs signed out."""
+    client, _state, paths = dashboard(tmp_home)
+    windows.task = {"state": "Ready", "at": "04:30", "logon": logon}
+    status = look_again(client)
+    assert status["schedule_registered"] is True and status["schedule_mode"] == mode
+    assert read_schedule_mode(paths) == mode
+
+
+def test_a_settings_save_and_the_look_at_windows_keep_each_others_change(
+    tmp_home: Path, windows: FakeWindows, monkeypatch: pytest.MonkeyPatch
+):
+    """Both rewrite dashboard.json: the save its `notifications`, the look the kept run time."""
+    client, _state, paths = dashboard(tmp_home)
+    put(client, schedule_time="03:00")
+    real = dash_state.write_text_atomic
+    inside, go = threading.Event(), threading.Event()
+
+    def slow_save(path: Path, text: str, **kw: Any) -> Any:
+        inside.set()  # the save has read the file and is about to write it back
+        assert go.wait(10)
+        return real(path, text, **kw)
+
+    monkeypatch.setattr(dash_state, "write_text_atomic", slow_save)
+    save = threading.Thread(target=lambda: dash_state.save_dashboard_settings(paths, {"notifications": False}))
+    save.start()
+    assert inside.wait(10)
+    look = threading.Thread(target=lambda: remember_run_time(paths, "06:00"))  # what a look does for a lost task
+    look.start()
+    look.join(0.5)
+    assert look.is_alive()  # it waits for the save instead of writing between its read and its write
+    go.set()
+    save.join(10)
+    look.join(10)
+    kept = json.loads((paths.config / "dashboard.json").read_text(encoding="utf-8"))
+    assert kept == {"run_time": "06:00", "notifications": False}  # neither change was lost
+
+
+def test_a_restored_backup_never_brings_back_an_older_record(tmp_home: Path, windows: FakeWindows):
+    paths = Paths.from_env()
+    paths.ensure()
+    write_run_time(paths, "04:30", "registered")  # the backup is made while Automatic runs are on
+    zip_path = backup.make_backup(paths, tmp_home.parent / "backup.zip")
+    schedule.remove(paths)  # then the owner switches them off, here
+    lines = backup.restore_backup(paths, zip_path, include_machine=True)
+    assert any(ln.startswith("skipped config/schedule.json (the record of this PC") for ln in lines)
+    assert record(paths) is None and schedule.sync_record(paths) is False
+    assert w207_notes(paths) == []  # no "switched off outside Nightshift" for a switch-off made in Nightshift
+
+
+def test_the_first_page_of_a_dashboard_does_not_wait_for_the_look_at_windows(
+    tmp_home: Path, windows: FakeWindows, monkeypatch: pytest.MonkeyPatch
+):
+    client, _state, paths = dashboard(tmp_home)
+    monkeypatch.setattr(dash_state, "SYNC_INLINE", False, raising=False)  # as the product runs
+    write_run_time(paths, "04:30", "registered")  # the last known state; the task was deleted meanwhile
+    windows.read_gate = threading.Event()  # PowerShell is slow
+    first = client.get("/api/status").json()  # answered while the look still waits
+    assert windows.reading.wait(10) and not windows.read_gate.is_set()
+    assert first["schedule_registered"] is True and first["next_run"][11:16] == "04:30"
+    assert client.get("/api/settings").json()["schedule_registered"] is True and windows.calls == ["read"]
+    windows.read_gate.set()
+    for t in threading.enumerate():
+        if t.name == "schedule-sync":
+            t.join(10)
+    after = client.get("/api/status").json()  # the next poll shows what the look found
+    assert after["schedule_registered"] is False and after["next_run"] is None and len(w207_notes(paths)) == 1

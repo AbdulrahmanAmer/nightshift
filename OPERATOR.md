@@ -262,7 +262,9 @@ its engine down by itself, unless the Dashboard is open.
 which it is: "Next run ...", "Runs at ... only while you are signed in", or "Automatic runs off". The page shows
 what Windows has, not what you clicked: if you delete or disable the task in Task Scheduler, Nightshift reads that
 as off within a minute, tells you once (`NS-W207`) and leaves the task as you set it; switch Automatic runs on in
-Settings to get the nightly run back. An update, a rollback and a reinstall never switch it on or off. If Windows
+Settings to get the nightly run back. An update and a rollback never switch it on or off. Setup does, for now:
+a Repair or a reinstall that keeps your data registers the task again, so Automatic runs are on afterwards even
+if you had switched them off; switch them off again in Settings. A backup restore leaves them as they are. If Windows
 refuses the change, the switch stays where it was and the message says so (`NS-E204`).
 
 If Windows will not let Nightshift register the task for unattended runs, it registers it for "only while you are
