@@ -188,7 +188,7 @@ def cmd_tune(
     except NsError as e:
         raise _die(e) from e
     if dry_run:
-        for line in tune.matrix_lines(rt):
+        for line in tune.matrix_lines(rt, code=tune.code_installed(paths)):
             echo(line)
         return
     if rt.dev_mode:
@@ -203,6 +203,8 @@ def cmd_tune(
     if not outcome.ok or outcome.flags is None:
         raise _die("tune: no configuration loaded; runtime.json was left unchanged. See logs\\tune-*.json.")
     echo(f"Best: {outcome.tok_s:.1f} tok/s with {outcome.flags.model_dump_json()}")
+    if outcome.context_note:
+        echo(outcome.context_note)
     echo("Saved to runtime.json.")
 
 

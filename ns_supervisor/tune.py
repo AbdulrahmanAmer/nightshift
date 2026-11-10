@@ -5,6 +5,11 @@ not load, (2) ctx x KV type, (3) `--n-cpu-moe` for MoE files, (4) MTP `--spec-dr
 only if faster than plain decoding (`NS-W302` otherwise). Speed is tokens/s from llama-server
 `/completion` timings on a fixed 400-token prompt and 300-token generation. Every attempt is recorded in
 `logs\\tune-<date>.json`; if nothing loads, runtime.json is left untouched.
+
+On the gpu profile the roomiest context among equal results wins. On `cpu-dev` (a PC that runs on the
+processor) the SMALLEST that does the work wins, then q8_0 before f16: the probe runs on an empty prompt,
+where a larger context costs nothing, but every token of context is KV memory held for the whole night
+(D-44). The floor is 8192, and 16384 when Nightshift Code is installed (it refuses below that, D-34).
 """
 
 from __future__ import annotations
@@ -35,7 +40,14 @@ CTX_OPTIONS = (8192, 16384, 32768)
 KV_OPTIONS = ("f16", "q8_0")
 MOE_OPTIONS = (0, 4, 8, 12, 16)
 MTP_OPTIONS = (2, 3, 4)
-EQUIVALENT = 0.95  # within 5 % of the best counts as equal; then prefer the roomier configuration
+EQUIVALENT = 0.95  # within 5 % of the best counts as equal; then the profile's preference decides
+#: The context Nightshift Code needs (D-34): `launchers/nightshift-code.ps1` refuses below it and setup
+#: writes it as the model's limit (`installer/stage2/steps/s07_configs.py` MIN_CODE_CONTEXT);
+#: `tests/test_opencode_budget.py` keeps the three equal. Its own copy here: the engine's `ns tune` does
+#: not import the installer.
+CODE_MIN_CONTEXT = 16384
+#: Why the tune keeps a processor-only PC's context small; the second half of the owner's line.
+CPU_WHY = "a larger one would take memory this PC needs for the jobs"
 MTP_GAIN = 1.03  # MTP must beat plain decoding by 3 % to be kept
 
 Runner = Callable[[Runtime], tuple[float, float]]
@@ -48,14 +60,51 @@ def is_moe(model_path: str) -> bool:
     return "a3b" in low or "moe" in low
 
 
-def min_ctx_for(rt: Runtime) -> int:
-    """The story pipeline needs 16K on the gpu profile; cpu-dev runs 8K."""
-    return 8192 if rt.profile == "cpu-dev" else 16384
+def code_installed(paths: Paths) -> bool:
+    """True unless `config/answers.json` says `"install_code": false`. A missing, unreadable or odd file
+    counts as installed: Nightshift Code refuses below `CODE_MIN_CONTEXT`, so the larger floor is the safe
+    side (and `Answers.install_code` defaults to True)."""
+    try:
+        data = json.loads((paths.config / "answers.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return True
+    return not (isinstance(data, dict) and data.get("install_code") is False)
 
 
-def plan_matrix(rt: Runtime) -> dict[str, list[Any]]:
+def min_ctx_for(rt: Runtime, *, code: bool = False) -> int:
+    """The story pipeline needs 16K on the gpu profile; cpu-dev runs 8K, or `CODE_MIN_CONTEXT` when Nightshift
+    Code is installed (`code`; callers that know the install pass `code_installed(paths)`)."""
+    if rt.profile != "cpu-dev":
+        return 16384
+    return max(8192, CODE_MIN_CONTEXT) if code else 8192
+
+
+def ctx_preference(rt: Runtime) -> Callable[[LlamaFlags], tuple[Any, ...]]:
+    """Among results within 5 % of the best: gpu, the roomiest context then f16; cpu-dev, the smallest context
+    then q8_0 (half the KV memory)."""
+    if rt.profile == "cpu-dev":
+        return lambda f: (f.ctx, f.kv_type != "q8_0")
+    return lambda f: (-f.ctx, f.kv_type != "f16")
+
+
+def context_note(rt: Runtime, flags: LlamaFlags, floor: int, *, code: bool) -> str:
+    """The line `ns tune` prints about the context it chose, for a cpu-dev PC ("" on the gpu profile): what it
+    is and why it is not larger. True in each state: the floor was chosen, or a larger one because the floor
+    was more than 5 % slower or did not load."""
+    if rt.profile != "cpu-dev":
+        return ""
+    needs = "Nightshift Code works with" if code else "the story pipeline needs"
+    if flags.ctx == floor:
+        return f"context {flags.ctx} tokens: the smallest that {needs}; {CPU_WHY}."
+    return (
+        f"context {flags.ctx} tokens: the smallest that {needs} is {floor}, but that size was more than 5 % "
+        f"slower or did not load, so this one is used; {CPU_WHY}."
+    )
+
+
+def plan_matrix(rt: Runtime, *, code: bool = False) -> dict[str, list[Any]]:
     """The candidates per stage (what `--dry-run` prints)."""
-    floor = min_ctx_for(rt)
+    floor = min_ctx_for(rt, code=code)
     return {
         "ngl": [0] if rt.profile == "cpu-dev" else list(NGL_STEPS),
         "ctx_kv": [(c, kv) for c in CTX_OPTIONS if c >= floor for kv in KV_OPTIONS],
@@ -64,9 +113,9 @@ def plan_matrix(rt: Runtime) -> dict[str, list[Any]]:
     }
 
 
-def matrix_lines(rt: Runtime) -> list[str]:
+def matrix_lines(rt: Runtime, *, code: bool = False) -> list[str]:
     """Human-readable matrix for `--dry-run`."""
-    m = plan_matrix(rt)
+    m = plan_matrix(rt, code=code)
     runs = 1 + max(0, len(m["ctx_kv"]) - 1) + max(0, len(m["n_cpu_moe"]) - 1) + len(m["mtp_draft_n_max"])
     return [
         f"model: {rt.llama.model_path or '(not configured)'}  profile: {rt.profile}",
@@ -82,7 +131,8 @@ def matrix_lines(rt: Runtime) -> list[str]:
 def pick_winner(
     results: list[tuple[LlamaFlags, float]], prefer: Callable[[LlamaFlags], tuple[Any, ...]]
 ) -> tuple[LlamaFlags, float]:
-    """Fastest result; anything within 5 % of it is equal, and the lowest `prefer` key wins among those."""
+    """Fastest result; anything within 5 % of it is equal, and the lowest `prefer` key wins among those
+    (`ctx_preference` for the context)."""
     best = max(t for _, t in results)
     near = [(f, t) for f, t in results if t >= best * EQUIVALENT]
     return min(near, key=lambda ft: (prefer(ft[0]), -ft[1]))
@@ -109,16 +159,18 @@ class TuneOutcome:
     tok_s: float | None = None
     attempts: list[Attempt] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    context_note: str = ""
 
 
 def tune(paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = None) -> TuneOutcome:
     """Run the staged sweep with `runner`; on success write the winner to runtime.json."""
     lg = log or NsLogger("tune", paths.logs)
     out = TuneOutcome(ok=False)
-    matrix = plan_matrix(rt)
+    code = code_installed(paths)
+    matrix = plan_matrix(rt, code=code)
     if rt.llama.story_model_path:
         out.warnings.append("two-model mode: only the primary (code) model was tuned; see CR-C2-5")
-    floor = min_ctx_for(rt)
+    floor = min_ctx_for(rt, code=code)
 
     def attempt(stage: str, flags: LlamaFlags) -> float | None:
         cand = rt.model_copy(deep=True)
@@ -160,7 +212,7 @@ def tune(paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = No
         t = attempt("ctx_kv", f)
         if t is not None:
             results.append((f, t))
-    current, current_tok = pick_winner(results, lambda f: (-f.ctx, f.kv_type != "f16"))
+    current, current_tok = pick_winner(results, ctx_preference(rt))
 
     # 3. --n-cpu-moe (MoE only)
     if matrix["n_cpu_moe"]:
@@ -189,6 +241,7 @@ def tune(paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = No
         lg.warn("mtp_disabled", "MTP was not faster; keeping plain decoding", code="NS-W302")
 
     out.ok, out.flags, out.tok_s = True, current, current_tok
+    out.context_note = context_note(rt, current, floor, code=code)
     new_rt = rt.model_copy(deep=True)
     new_rt.llama.flags = current
     save_runtime(paths, new_rt)

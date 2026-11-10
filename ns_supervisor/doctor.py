@@ -232,8 +232,10 @@ def diagnose(
     """Quick health table for plain `ns doctor`: (check, ok, detail-or-fix-hint). The last row runs the
     start check (`program_folders`); `on_wait` is called once if it has to wait for another program."""
     rows: list[tuple[str, bool, str]] = []
+    profile: str | None = None      # None: runtime.json could not be read, so the install's kind is unknown
     try:
         rt = load_runtime(paths)
+        profile = rt.profile
         rows.append(("runtime.json", True, str(paths.runtime_file)))
         for label, model in (("llm model", rt.llama.model_path), ("embed model", rt.embed.model_path)):
             ok = bool(model) and Path(model).is_file()
@@ -250,6 +252,10 @@ def diagnose(
     rows.append(("supervisor", up, where))
     if is_dev(paths):       # docs/DEV_MODE.md: a dev install has no graphics card to ask
         rows.append(("nvidia-smi", True, "not needed (dev mode)"))
+    elif profile == "cpu-dev":
+        # D-44: an install that runs on the processor (the engine test, a PC with no NVIDIA card) has no
+        # driver to ask for; a gpu install, or one whose runtime.json cannot be read, still asks
+        rows.append(("nvidia-smi", True, "not needed (this install runs on the processor: profile cpu-dev)"))
     else:
         smi = procs.nvidia_smi_report()
         rows.append(("nvidia-smi", smi is not None, "ok" if smi is not None else "no NVIDIA driver found"))
