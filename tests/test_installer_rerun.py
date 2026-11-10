@@ -21,6 +21,7 @@ from installer.stage2.web import bootstrap
 from installer.stage2.web.bootstrap import BootstrapError, CmdResult
 from ns_common.errors import NsError
 from ns_common.uv import venv_args
+from tests.test_dependency_lock import program_files
 from tests.test_installer_app_copy import make_boot, make_source, run_b02
 
 
@@ -102,13 +103,15 @@ def test_b03_gives_up_after_one_refused_attempt_with_the_real_reason(tmp_path: P
 
     def cmd(argv, env=None, cwd=None, timeout=None) -> CmdResult:
         seen.append([str(a) for a in argv])
+        if seen[-1][1] == "export":             # (the locked package list is written first: P29a)
+            return CmdResult(0, "", "")
         return CmdResult(2, "", "error: failed to remove directory: Access is denied. (os error 5)")
 
     boot.cmd = cmd
     with pytest.raises(BootstrapError) as ei:
         bootstrap.B03SetupEnv().run(boot)
     assert ei.value.code == "NS-E105" and "Access is denied" in ei.value.detail
-    assert len([c for c in seen if c[1] == "venv"]) == 1 and len(seen) == 1   # no retry loop
+    assert len([c for c in seen if c[1] == "venv"]) == 1 and len(seen) == 2   # no retry loop
 
 
 def test_b03_leaves_a_whole_venv_alone(tmp_path: Path) -> None:
@@ -137,7 +140,8 @@ def staged_bundle(root: Path, version: str) -> Path:
     text = top_level.sub(lambda m: m.group(1) + version + m.group(2), text, count=1)
     (root / "manifest.json").write_text(text, encoding="utf-8")
     (root / "VERSION").write_text(version + "\n", encoding="utf-8")
-    (root / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    for name in ("pyproject.toml", "uv.lock"):
+        (root / name).write_text(program_files(version)[name], encoding="utf-8")
     return root
 
 

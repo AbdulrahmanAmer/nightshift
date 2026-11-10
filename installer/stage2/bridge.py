@@ -281,7 +281,10 @@ class BridgeUi(Ui):
         """The ns verify rows."""
         rows = [{"name": str(c.get("name", "")), "passed": bool(c.get("passed")),
                  "value": None if c.get("value") is None else str(c.get("value")),
-                 "limit": None if c.get("limit") is None else str(c.get("limit"))} for c in checks]
+                 "limit": None if c.get("limit") is None else str(c.get("limit")),
+                 # a voice that did not speak: its sentence (and the way out) goes to the setup window
+                 **({"note": str(c.get("log"))} if c.get("value") == "warning" and c.get("log") else {})}
+                for c in checks]
         self.emit({"type": "verify", "checks": rows})
 
     def sample(self, kind: str, path: Path, seconds: float | None = None) -> None:

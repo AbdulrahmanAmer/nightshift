@@ -3,8 +3,13 @@
 Order: verify VERSION + `.sha256` sidecar (`NS-E701`, nothing touched) -> stop the engine -> extract to
 `<app>.new` -> carry over `.git`, `config`, `answers.json` and untracked data -> copy the settings files
 (`config_snapshot`, F-10a; `NS-E702` and nothing changed when that cannot be done) -> swap with
-`<app>.prev` -> `uv pip install -e` per venv -> `ns verify --quick` -> re-register the scheduled task. Any
-failure after the swap restores `<app>.prev` and the settings files, and raises `NS-E702`.
+`<app>.prev` -> the venvs are filled again (`resync_venvs`) -> `ns verify --quick` -> re-register the
+scheduled task. Any failure after the swap restores `<app>.prev` and the settings files, and raises `NS-E702`.
+
+The venvs get the packages the new program's `uv.lock` pins (P29a, `installer.stage2.web.deplock`). A package
+whose lock is missing or was not made for its `pyproject.toml` is refused with `NS-E124` before the swap
+(nothing changed); `ns update --rollback` refuses the same way before it writes its record. A program from
+before the lock (0.1.14, the 0.1.15 candidates up to rc3) has no lock and is filled its own way.
 
 `--rollback` swaps `<app>` and `<app>.prev` and puts the settings copy back with the program: the older
 version gets the files it wrote, not the ones a newer version saved with fields the older one rejects.
@@ -33,6 +38,9 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
+# (imported here, never inside a function: after the swap `<app>` holds another release's files, and an
+# import made then would load that release's module into this updater)
+from installer.stage2.web import deplock
 from ns_common import __version__, config_compat, config_snapshot, first_start, rollback_intent
 from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.devmode import is_dev
@@ -41,7 +49,7 @@ from ns_common.logging import NsLogger
 from ns_common.models import Channel, InstallState, Runtime
 from ns_common.paths import Paths
 from ns_common.uv import find_uv, home_uv, uv_env
-from ns_common.venv_extras import NO_DEPS, extras_suffix
+from ns_common.venv_extras import DEV_VENV_EXTRAS, NO_DEPS, VENV_EXTRAS, extras_suffix
 from ns_supervisor.childenv import child_env, window_flags
 
 PRESERVE = (".git", "config", "answers.json")
@@ -70,6 +78,11 @@ NO_GIT_HINT = (
     "shortcut with a Nightshift-Update zip."
 )
 NOTHING_CHANGED = "Nothing was changed: the program and your settings are as they were."
+#: A rollback refused over the previous program's lock: said after any note about an earlier, interrupted one.
+ROLLBACK_NOT_STARTED = (
+    "ns update --rollback did not start: the program, your settings and the Python environments are as they "
+    "were. To go back to that version, run INSTALL.cmd from its zip and choose the same folder."
+)
 #: How a result names a program whose VERSION file is missing or empty (`config_snapshot.program_version`
 #: answers `-`): never the version of the code that happens to run the rollback.
 UNKNOWN_VERSION = "unknown version"
@@ -880,6 +893,20 @@ def _refuse_if_pending(rec: rollback_intent.Recovery, log: NsLogger, settled: st
         )
 
 
+def _voice_notes(paths: Paths) -> list[str]:
+    """The sentences about a designed or cloned voice that did not speak in the verify step just run.
+
+    That voice is a warning, never a reason to roll back (`verify.talker_warning`); the same sentence is
+    already waiting as a morning note (`verify.leave_voice_notes`); here it is part of the update's result.
+    """
+    try:
+        from ns_supervisor import verify
+
+        return verify.read_talker_warnings(paths)
+    except Exception:  # a note must never turn a good update into a rollback
+        return []
+
+
 def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     """Apply a release zip to `app`. `NS-E701` before any change, `NS-E702` (rolled back) after."""
     zip_path, app = zip_path.resolve(), app.absolute()
@@ -908,6 +935,9 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
         shutil.rmtree(new, ignore_errors=True)
         new.mkdir(parents=True)
         safe_extract(zip_path, new, prefix)
+        stale = deplock.refusal(new)  # the last refusal that needs the package's files: before the swap
+        if stale is not None:
+            raise NsError("NS-E124", f"{stale} The update did not start. {NOTHING_CHANGED}")
         notes = list(earlier)
         notes += [f"kept {n}" for n in carry_over(app, new, env.untracked(app))]
         write_app_marker(new, log)
@@ -936,6 +966,7 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
         if not env.verify(app):
             raise NsError("NS-E702", "ns verify --quick failed on the new version")
         notes += env.reregister(app)
+        notes += _voice_notes(paths)
     except Exception as e:  # any step failing after the swap rolls back
         log.error("update_failed", str(e))
         detail = e.detail if isinstance(e, NsError) else f"{type(e).__name__}: {e}"
@@ -1033,6 +1064,13 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
                     f"It was finished now, and nothing else was done: {here} is the program. Run ns update "
                     f"--rollback again if you want to go to {back}."
                 ),
+            )
+        # (a program whose lock is gone could not get its venvs after the swap: refuse before the record)
+        stale = deplock.refusal(prev)
+        if stale is not None:
+            raise NsError(
+                "NS-E702",
+                " ".join([*notes, f"the previous version cannot be used: {stale}", ROLLBACK_NOT_STARTED]),
             )
         old_version, restored_version = current_version(app), current_version(prev)
         # One rule for a version that cannot be read (VERSION missing, empty or not a number): it is older
@@ -1207,29 +1245,68 @@ def resync_venvs(
     run: Callable[[list[str]], tuple[int, str]] | None = None,
     free: Callable[[Path], list[tuple[Path, Path]]] | None = None,
 ) -> list[str]:
-    """`uv pip install -e <app>[extras]` in every venv that exists; raises `NS-E702` on failure."""
+    """Fill every venv that exists with the packages of the program in `app`; `NS-E702` on failure.
+
+    By the rule of the program in `app` (`deplock.follows_lock`), which need not be this updater's own:
+
+    - it has a lock (every release from the first locked one): each venv's extras are exported from `uv.lock`
+      with hashes (`logs/pins-<venv>.txt`), installed with `--require-hashes`, and the program is added with
+      `--no-deps`. The lock is checked and every venv's set is exported BEFORE the first venv is touched, so
+      a missing or stale lock changes no environment;
+    - it is older (0.1.14, the 0.1.15 candidates up to rc3): `uv pip install -e <app>[extras]`, as that
+      release installed itself.
+
+    The `tts` venv is outside the lock in both cases (its packages are the manifest's pins): only the program
+    is installed again, `--no-deps`. A failure in one venv stops there: venvs filled before it stay filled,
+    and running the command again fills every venv again (uv skips what is already in place).
+    """
     runner = run or (lambda cmd: _run(cmd, uv_env(paths.home)))
     free_up = free or free_entry_points
     exe = uv if uv is not None else find_uv(paths)
-    done: list[str] = []
     dev = is_dev(paths)         # a dev install re-syncs the dev extras (no speech or GPU wheels)
-    for venv in UPDATE_VENVS:
-        extras, no_deps = extras_suffix(venv, dev=dev), venv in NO_DEPS
+    venvs = [v for v in UPDATE_VENVS if (paths.venvs / v / "Scripts" / "python.exe").exists()]
+    if not venvs:
+        return []
+    if exe is None:
+        raise NsError(
+            "NS-E702", f"uv was not found at {home_uv(paths.home)} or on PATH; cannot re-sync the venvs"
+        )
+    locked = deplock.follows_lock(app)
+    pins: dict[str, Path] = {}
+    if locked:
+        stale = deplock.problem(app)
+        if stale is not None:
+            raise NsError("NS-E702", f"{stale} {deplock.NO_VENV_CHANGED}")
+        table = DEV_VENV_EXTRAS if dev else VENV_EXTRAS
+        paths.logs.mkdir(parents=True, exist_ok=True)
+        for venv in venvs:
+            if venv in NO_DEPS or venv not in table:
+                continue
+            out = deplock.pins_file(paths.logs, venv)
+            rc, tail = runner([exe, *deplock.export_args(app, table[venv], out)])
+            if rc != 0:
+                raise NsError(
+                    "NS-E702",
+                    f"uv could not read the locked packages of venv {venv} from {app / deplock.LOCK_NAME}: "
+                    f"{tail}. {deplock.NO_VENV_CHANGED}",
+                )
+            pins[venv] = out
+    done: list[str] = []
+    for venv in venvs:
         py = paths.venvs / venv / "Scripts" / "python.exe"
-        if not py.exists():
-            continue
-        if exe is None:
-            raise NsError(
-                "NS-E702", f"uv was not found at {home_uv(paths.home)} or on PATH; cannot re-sync the venvs"
-            )
-        cmd = [exe, "pip", "install", "-e", f"{app}{extras}", "--python", str(py)]
-        if no_deps:
-            cmd.append("--no-deps")
+        if venv in pins:
+            cmds = [[exe, *deplock.install_args(py, pins[venv])], [exe, *deplock.app_args(py, app)]]
+        elif locked:                # (tts, or a dev install's venv without a row: the program only)
+            cmds = [[exe, *deplock.app_args(py, app)]]
+        else:
+            cmd = [exe, "pip", "install", "-e", f"{app}{extras_suffix(venv, dev=dev)}", "--python", str(py)]
+            cmds = [[*cmd, "--no-deps"] if venv in NO_DEPS else cmd]
         moved = free_up(paths.venvs / venv)
-        rc, tail = runner(cmd)
-        if rc != 0:
-            restore_entry_points(moved)
-            raise NsError("NS-E702", f"uv pip install failed for venv {venv}: {tail}")
+        for cmd in cmds:
+            rc, tail = runner(cmd)
+            if rc != 0:
+                restore_entry_points(moved)
+                raise NsError("NS-E702", f"uv pip install failed for venv {venv}: {tail}")
         finish_entry_points(moved)
         done.append(venv)
     return done
@@ -1344,7 +1421,7 @@ def git_update(
         env.sync(app)
         if not env.verify(app):
             raise NsError("NS-E702", "ns verify --quick failed on the new version")
-        notes = env.reregister(app)
+        notes = env.reregister(app) + _voice_notes(paths)
     except Exception as e:  # any step failing after the move goes back to the previous commit
         log.error("git_update_failed", str(e))
         run(["checkout", "--detach", head])

@@ -646,6 +646,11 @@ def uv_calls(runner: FakeRunner):
     return [c for c in runner.calls if c.tag.startswith("uv ")]
 
 
+def extras_of(argv: list[str]) -> list[str]:
+    """The extras a ``uv export`` call names (P29a: a venv's packages come from uv.lock, per extra)."""
+    return [argv[i + 1] for i, word in enumerate(argv) if word == "--extra"]
+
+
 def test_s04_creates_studio_and_supervisor_venvs_without_torch(tmp_path: Path):
     runner = FakeRunner(tmp_path / "desktop")
     ctx = ctx_resolved(tmp_path, runner=runner)
@@ -655,11 +660,15 @@ def test_s04_creates_studio_and_supervisor_venvs_without_torch(tmp_path: Path):
     step.verify(ctx)
     tags = [c.tag for c in uv_calls(runner)]
     assert tags == [
-        "uv venv studio", "uv pip install studio app", "uv pip install studio gpu dlls",
-        "uv pip install studio spacy model", "uv venv supervisor", "uv pip install supervisor app",
+        "uv export studio", "uv export supervisor",         # the locked packages of each venv (P29a)
+        "uv venv studio", "uv pip install studio locked packages", "uv pip install studio app",
+        "uv pip install studio gpu dlls", "uv pip install studio spacy model",
+        "uv venv supervisor", "uv pip install supervisor locked packages", "uv pip install supervisor app",
     ]
+    export = next(c for c in runner.calls if c.tag == "uv export studio")
+    assert extras_of(export.argv) == ["studio", "supervisor"]
     app = next(c for c in runner.calls if c.tag == "uv pip install studio app")
-    assert "-e" in app.argv and f"{ROOT}[studio,supervisor]" in app.argv
+    assert app.argv[-3:] == ["--no-deps", "-e", str(ROOT)]         # the program only: its packages are locked
     assert app.argv[:3] == [ctx.uv(), "pip", "install"] and "--python" in app.argv
     dlls = next(c for c in runner.calls if c.tag == "uv pip install studio gpu dlls")
     assert dlls.argv[-4:-1] == ["--no-deps", "--require-hashes", "-r"]         # hash-checking mode
@@ -673,8 +682,8 @@ def test_s04_creates_studio_and_supervisor_venvs_without_torch(tmp_path: Path):
     assert wheel is not None and wheel.url.endswith("en_core_web_md-3.8.0-py3-none-any.whl")
     assert Path(spacy.argv[-1]).read_text(encoding="utf-8").strip() == (
         f"en_core_web_md @ {wheel.url} --hash=sha256:{wheel.sha256}")
-    sup = next(c for c in runner.calls if c.tag == "uv pip install supervisor app")
-    assert f"{ROOT}[supervisor,tts,dashboard]" in sup.argv
+    sup = next(c for c in runner.calls if c.tag == "uv export supervisor")
+    assert extras_of(sup.argv) == ["supervisor", "tts", "dashboard"]
     assert not any("torch" in a for c in runner.calls for a in c.argv)
     assert not ctx.venv_python("tts").exists()
     assert ctx.venv_python("studio").exists() and step.check(ctx) is True

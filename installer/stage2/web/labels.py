@@ -96,6 +96,8 @@ LLAMA_TOK_S = "llama.tok_s"
 EMBED_VECTOR = "embed.vector"
 TTS_START = "tts.start"
 TTS_VOICES = "tts.voices"
+TTS_PRESET = "tts.preset"
+TALKER_WARNING_VALUE = "warning"
 WHISPER_LOAD = "whisper.load"
 NVENC_PROBE = "nvenc.probe"
 
@@ -149,7 +151,9 @@ def verify_value(name: str, passed: bool, value: str | None, speaker: str | None
         # tts.preset / tts.design / tts.clone carry the real-time factor; it stays in verify-report.json
         if not passed:
             return speaker or "voice"
-        return f"{speaker}, voice works" if speaker else "voice works"
+        if value == TALKER_WARNING_VALUE:       # a designed or cloned voice that did not speak: a warning
+            return f"{low[len(TTS_PREFIX):]} voice did not speak"
+        return f"{speaker}, voice works" if speaker and low == TTS_PRESET else "voice works"
     if low == WHISPER_LOAD:
         return "graphics card" if passed else "processor"
     if low == NVENC_PROBE:
@@ -157,11 +161,33 @@ def verify_value(name: str, passed: bool, value: str | None, speaker: str | None
     return None
 
 
+def voice_notices(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The notices for the designed or cloned voices that did not speak (the setup window shows notices).
+
+    The sentence (``ns_supervisor.verify.talker_warning``) is "The clone voice 'Cleo' did not speak a test
+    sentence (reason). Nightshift went on without it; ... way out": the title is the part up to the reason's
+    closing bracket and "what to do" the rest. No NS code fits a voice, so the notice's ``code`` is "".
+    """
+    out: list[dict[str, Any]] = []
+    for c in checks:
+        low = str(c.get("name", "")).lower()
+        note = str(c.get("note") or "").strip()
+        if c.get("passed") and c.get("value") == TALKER_WARNING_VALUE and low.startswith(TTS_PREFIX) and note:
+            cut = note.find("). ")
+            title, what = (note[: cut + 1], note[cut + 3:]) if cut > 0 else (
+                f"The {low[len(TTS_PREFIX):]} voice did not speak", note)
+            out.append({"code": "", "title": title, "whatToDo": what, "step": "s08_smoke"})
+    return out
+
+
 def verify_rows(checks: list[dict[str, Any]], speaker: str | None = None) -> list[dict[str, Any]]:
     """Setup rows from the check rows of verify-report.json: one row per area, in first-seen order.
 
     A row passes when all its checks pass; a failed nvenc or tts row is a ``fallback``, anything else
-    ``failed``. ``bench.*`` checks are not shown.
+    ``failed``. ``bench.*`` checks are not shown. A designed or cloned voice that did not speak is a passed
+    check with the value ``warning`` (``ns_supervisor.verify.talker_warning``): the row is a ``fallback`` (the
+    window's warning colour and badge), its value names the mode and its ``note`` is the sentence with the way
+    out; ``voice_notices`` makes the sentence a notice, which both screens show.
     """
     rows: dict[str, dict[str, Any]] = {}
     for c in checks:
@@ -177,8 +203,14 @@ def verify_rows(checks: list[dict[str, Any]], speaker: str | None = None) -> lis
         if not passed:
             row["status"] = "fallback" if key in VERIFY_FALLBACK_ROWS else "failed"
         value = verify_value(name, passed, c.get("value"), speaker)
-        if value is not None and (row["value"] is None or not passed):
+        warned = passed and c.get("value") == TALKER_WARNING_VALUE
+        if value is not None and (row["value"] is None or not passed or warned):
             row["value"] = value
+        if warned:
+            if row["status"] == "passed":
+                row["status"] = "fallback"     # a warning, not a green dot: the sentence is a notice (below)
+            if c.get("note"):
+                row["note"] = str(c["note"]) if row["note"] is None else f"{row['note']} {c['note']}"
     return list(rows.values())
 
 

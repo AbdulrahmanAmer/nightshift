@@ -20,7 +20,7 @@ from ns_supervisor.testing import StubTable, SyncSupervisor
 from tests.test_ns_verify import good_deps
 
 
-def real_names(tmp_path: Path, *, quick: bool) -> list[str]:
+def real_names(tmp_path: Path, *, quick: bool, only_preset: bool = False) -> list[str]:
     paths = Paths(tmp_path / "ns")
     rt = Runtime.default("gpu")
     sync = SyncSupervisor(paths, rt, resolver=StubTable())
@@ -28,13 +28,19 @@ def real_names(tmp_path: Path, *, quick: bool) -> list[str]:
         report = verify.run_verify(paths, rt, sync, quick=quick, deps=good_deps())
     finally:
         sync.close()
-    return [c.name for c in report.checks if not c.name.startswith("bench.")]
+    found = [c.name for c in report.checks if not c.name.startswith("bench.")]
+    if only_preset:  # the stub voice service also lists a clone voice; a fresh install has presets only
+        found = [n for n in found if n not in ("tts.design", "tts.clone")]
+    return found
 
 
 def test_the_fake_runner_reports_exactly_the_checks_the_real_quick_verify_records(tmp_path: Path) -> None:
-    assert list(VERIFY_CHECKS) == real_names(tmp_path, quick=True)
+    assert list(VERIFY_CHECKS) == real_names(tmp_path, quick=True, only_preset=True)
     rows = FakeRunner(tmp_path / "d")._verify_report()["checks"]
-    assert [r["name"] for r in rows] == real_names(tmp_path / "again", quick=True)
+    assert [r["name"] for r in rows] == real_names(tmp_path / "again", quick=True, only_preset=True)
+    # an installed clone voice adds its row after the preset's (P30a); the simulated report is a fresh install
+    more = real_names(tmp_path / "more", quick=True)
+    assert more.index("tts.clone") == list(VERIFY_CHECKS).index("tts.preset") + 1
 
 
 def test_every_constant_is_a_check_the_full_verify_can_record(tmp_path: Path) -> None:
@@ -43,7 +49,10 @@ def test_every_constant_is_a_check_the_full_verify_can_record(tmp_path: Path) ->
         v for k, v in vars(names).items() if k.isupper() and isinstance(v, str) and not k.endswith("PREFIX")
     }
     # tts.engine is recorded only when the voice service reports the reference engine (NS-W301)
-    assert constants - {names.TTS_MODE_PREFIX, names.TTS_ENGINE} <= full, constants - full
+    # (`warning` is the value of a voice's warning row, not a check name)
+    assert constants - {names.TTS_MODE_PREFIX, names.TTS_ENGINE, names.TALKER_WARNING_VALUE} <= full, (
+        constants - full
+    )
 
 
 def test_there_is_no_mtp_check_in_verify(tmp_path: Path) -> None:
@@ -79,7 +88,8 @@ def test_the_setup_labels_use_the_same_names_as_check_names() -> None:
     # labels.py runs on the bare Python of the setup server and cannot import check_names, so it repeats them
     for const in (
         "LLAMA_PREFIX", "EMBED_PREFIX", "TTS_PREFIX", "WHISPER_PREFIX", "NVENC_PREFIX",
-        "LLAMA_TOK_S", "EMBED_VECTOR", "TTS_START", "TTS_VOICES", "WHISPER_LOAD", "NVENC_PROBE",
+        "LLAMA_TOK_S", "EMBED_VECTOR", "TTS_START", "TTS_VOICES", "TTS_PRESET", "TALKER_WARNING_VALUE",
+        "WHISPER_LOAD", "NVENC_PROBE",
     ):  # fmt: skip
         assert getattr(labels, const) == getattr(names, const), const
     assert names.SUPERVISOR_STATUS.startswith("supervisor.") and names.VRAM_IDLE.startswith("vram.")

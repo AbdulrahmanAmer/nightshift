@@ -1051,7 +1051,7 @@ A missing winget is a warning, not a stop: setup fetches the pinned builds itsel
 | `supervisor` | `-e <app_path>[supervisor]` (fastapi, uvicorn, psutil) and the dashboard deps; also hosts `ns_tts` (which only shells out to `bin\qwentts\`) | CPU only |
 | `tts` (**fallback only**) | created by `s08_smoke` if `qwentts.cpp` fails: `torch==<pin>+cu128` from `https://download.pytorch.org/whl/cu128`, `qwen-tts==<pin>`, `soundfile`, then `-e <app_path>[tts] --no-deps` | `torch.cuda.is_available()` + capability ≥ (12,0) check (`NS-E108`) |
 
-All venvs are created from the same repo checkout (`install_state.app_path`), so `ns update` can re-sync them with `uv pip install -e …` without re-downloading models.
+All venvs are created from the same repo checkout (`install_state.app_path`), so `ns update` can re-sync them with `uv pip install -e …` without re-downloading models. From the first release with a `uv.lock`, the packages of the `studio` and `supervisor` venvs are the locked ones: `uv export --locked` per venv into `logs\pins-<venv>.txt`, `uv pip install --require-hashes -r` that file, then `-e <app_path> --no-deps` (setup and `ns update` alike; NS-E124 when the lock is missing or stale). The `tts` venv stays on the manifest pins.
 
 ### 21.5 On-disk layout the user sees
 ```

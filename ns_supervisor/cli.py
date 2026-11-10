@@ -115,7 +115,9 @@ def _stop_started_engine(client: SupervisorClient) -> None:
 
 @app.command("verify")
 def cmd_verify(
-    quick: Annotated[bool, typer.Option("--quick", help="Health, one completion, one voice only.")] = False,
+    quick: Annotated[
+        bool, typer.Option("--quick", help="Health, one completion, one sentence per installed voice mode.")
+    ] = False,
     downloads: Annotated[
         bool,
         typer.Option(
@@ -140,13 +142,17 @@ def cmd_verify(
     except NsError as e:
         typer.echo(f"Could not start the engine: {e}", err=True)
     try:
-        report = verify.run_verify(paths, rt, client, quick=quick)
+        report = verify.run_verify(paths, rt, client, quick=quick, progress=typer.echo)
     finally:
         if started_here:
             _stop_started_engine(client)
     f = verify.write_report(paths, report)
     for line in verify.format_lines(report):
         typer.echo(line)
+    try:   # a voice that did not speak: its sentence waits as a morning note, once (verify.leave_voice_notes)
+        verify.leave_voice_notes(paths, report.checks)
+    except Exception:  # the exit code and the report do not depend on it
+        pass
     typer.echo(f"Report: {f}")
     if not report.passed:
         raise typer.Exit(1)

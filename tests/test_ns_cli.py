@@ -135,7 +135,7 @@ def test_verify_exit_code_follows_report(
     monkeypatch.setattr(cli, "ensure_running", lambda *a, **k: None)
     seen: dict[str, object] = {}
 
-    def fake_run(paths, rt, ctl, *, quick=False, deps=None):  # type: ignore[no-untyped-def]
+    def fake_run(paths, rt, ctl, *, quick=False, deps=None, progress=None):  # type: ignore[no-untyped-def]
         seen["quick"] = quick
         return GateReport(
             slice="verify",

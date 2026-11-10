@@ -118,7 +118,7 @@ export function Verify() {
           {sampleDone && state.verify?.voice == null && <p className="px-1 text-ds-sm text-ds-text-2">{t.noVoice}</p>}
           {notices.map((n) => {
             const c = codeText(n.code);
-            return <IssueCard key={n.code} tone="info" code={n.code} title={n.title || c.title} whatToDo={n.whatToDo || c.whatToDo} />;
+            return <IssueCard key={n.code + n.title} tone="info" code={n.code || null} title={n.title || c.title} whatToDo={n.whatToDo || c.whatToDo} />;
           })}
         </div>
       </Area>
