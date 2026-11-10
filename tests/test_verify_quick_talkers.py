@@ -538,8 +538,16 @@ def test_the_setup_row_and_install_report_name_the_voice_and_the_way_out(
     s = Setup(tmp_path / "ctl", monkeypatch)
     s.ctl._on_event(verify_event)
     row = next(r for r in s.snap()["verify"]["checks"] if r["name"] == "tts")
-    assert row["status"] == "passed" and row["value"] == "clone voice did not speak"
+    assert row["status"] == "fallback" and row["value"] == "clone voice did not speak"      # not a green dot
     assert "clone voice 'Cleo'" in row["note"] and "Channels > Edit channel" in row["note"]
+    # the window shows notices, not row notes: the sentence is a notice, on the Verify and the Done screen
+    notice = next(n for n in s.snap()["notices"] if "Cleo" in n["title"])
+    assert notice["code"] == ""
+    assert notice["title"].startswith("The clone voice 'Cleo' did not speak a test sentence")
+    assert "Library > Voices" in notice["whatToDo"] and "Save channel" in notice["whatToDo"]
+    assert notice in s.ctl._build_result()["warnings"]
+    s.ctl._on_event(verify_event)                                   # the same test again: still one notice
+    assert len([n for n in s.snap()["notices"] if "Cleo" in n["title"]]) == 1
     flags = s.home / "config" / "wizard_flags.json"
     flags.parent.mkdir(parents=True, exist_ok=True)
     flags.write_text(json.dumps({"voice_warnings": ctx.flag("voice_warnings")}), encoding="utf-8")
@@ -547,6 +555,13 @@ def test_the_setup_row_and_install_report_name_the_voice_and_the_way_out(
     assert written is not None
     report = json.loads(written.read_text(encoding="utf-8"))
     assert len(report["voiceWarnings"]) == 1 and "clone voice 'Cleo'" in report["voiceWarnings"][0]
+    assert "" not in report["warnings"]                              # the codes only; the sentence is above
+    # a repaired voice: the next test replaces the notice
+    repaired = [
+        dict(c, value=0.2, note=None) if c["name"] == "tts.clone" else c for c in verify_event["checks"]
+    ]
+    s.ctl._on_event({"type": "verify", "checks": repaired})
+    assert not [n for n in s.snap()["notices"] if "Cleo" in n["title"]]
 
 
 def test_the_console_install_report_has_the_sentence_too(tmp_path: Path, three_talkers: Service_) -> None:
@@ -801,11 +816,53 @@ def test_the_dashboard_verify_job_gets_the_per_mode_rows_and_a_progress_line_eac
     )
     modes = [c["name"] for c in out["checks"] if c["name"] in ("tts.preset", "tts.design", "tts.clone")]
     assert modes == ["tts.preset", "tts.design", "tts.clone"] and out["quick"] is True
+    # the Settings page shows the warning beside the verdict, and the morning note is left as on the CLI
+    from ns_supervisor import notify
+
+    assert len(out["warnings"]) == 1 and "clone voice 'Cleo'" in out["warnings"][0]
+    assert [n["message"] for n in notify.read_notes(paths)] == out["warnings"]
     assert [m for m in said if m.startswith("speaking")] == [
         "speaking a test sentence with the preset voice Ryan ...",
         "speaking a test sentence with the design voice Dee ...",
         "speaking a test sentence with the clone voice Cleo ...",
     ]
+    RealVerifyAdapter(paths, controller=OneServiceCtl(three_talkers.url), deps=good_deps()).verify(
+        Job(), True  # type: ignore[arg-type]
+    )
+    assert len(notify.read_notes(paths)) == 1                        # not left twice
+
+
+def test_the_morning_note_is_keyed_by_mode_and_voice_not_by_the_error_detail(tmp_path: Path) -> None:
+    from ns_supervisor import notify
+
+    paths = Paths(tmp_path / "ns")
+    first = [verify.talker_warning("clone", "Cleo", "NS-E310: engine said: stack A")]
+    again = [verify.talker_warning("clone", "Cleo", "NS-E310: engine said: stack B, other numbers 4711")]
+    other = [verify.talker_warning("clone", "Cleo2", "NS-E310: engine said: stack A")]
+    design = [verify.talker_warning("design", "Cleo", "NS-E310: engine said: stack A")]
+    assert first[0] != again[0]
+    for checks in (first, again, first):
+        verify.leave_voice_notes(paths, checks)
+    assert len(notify.read_notes(paths)) == 1                     # a changed detail is not a new note
+    verify.leave_voice_notes(paths, other)
+    verify.leave_voice_notes(paths, design)
+    assert len(notify.read_notes(paths)) == 3                     # another voice, another mode: its own note
+
+
+def test_the_docstring_and_the_comment_say_what_is_true() -> None:
+    import ast
+
+    assert chr(11) not in (verify.read_talker_warnings.__doc__ or "")     # no vertical tab in the docstring
+    src = (Path(__file__).resolve().parents[1] / "installer" / "stage2" / "diagzip.py").read_text("utf-8")
+    assert "standard library plus two stdlib-only ns_common modules" in src.splitlines()[0]
+    import sys
+
+    for node in ast.walk(ast.parse(src)):
+        mods = [a.name for a in node.names] if isinstance(node, ast.Import) else (
+            [node.module] if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module else [])
+        for m in mods:
+            assert m.split(".")[0] in sys.stdlib_module_names or m in (
+                "ns_common.atomic", "ns_common.paths", "__future__"), f"diagzip imports {m}"
 
 
 def test_the_doctor_does_not_call_verify() -> None:

@@ -592,8 +592,12 @@ class RealVerifyAdapter:
             progress=lambda line: ctl.progress(0.3, line),     # one line per voice as it is spoken
         )
         report_file = write(self.paths, report)
+        # designed or cloned voices that did not speak: a warning, never a failure; the same sentences as the
+        # command line, once as a morning note too (the Settings page shows them beside the verdict)
+        warnings = lazy("ns_supervisor.verify", "leave_voice_notes")(self.paths, report.checks)
         return {
             "checks": [c.model_dump(mode="json") for c in report.checks],
+            "warnings": warnings,
             "passed": bool(report.passed),
             "quick": quick,
             "benchmarks": dict(report.benchmarks),

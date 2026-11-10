@@ -83,8 +83,36 @@ def talker_warnings(checks: list[GateCheck]) -> list[str]:
     ]
 
 
+def talker_key(sentence: str) -> str:
+    """Which voice a sentence is about: its start, up to the reason ("The clone voice 'Cleo' did not speak").
+
+    The reason carries an error detail that can change from run to run; a note is the same note when the
+    mode and the voice are the same.
+    """
+    return sentence.partition(" did not speak")[0]
+
+
+def leave_voice_notes(paths: Paths, checks: list[GateCheck]) -> list[str]:
+    """Leave each voice sentence of `checks` as a morning note unless one about that mode and voice waits.
+
+    Returns the sentences. Best effort: a note is a courtesy; the report file and the result carry them too.
+    """
+    sentences = talker_warnings(checks)
+    try:
+        from ns_supervisor import notify
+
+        waiting = {talker_key(str(n.get("message", ""))) for n in notify.read_notes(paths)}
+        for sentence in sentences:
+            if talker_key(sentence) not in waiting:
+                notify.leave_note(paths, "Nightshift", sentence)
+                waiting.add(talker_key(sentence))
+    except Exception:
+        pass
+    return sentences
+
+
 def read_talker_warnings(paths: Paths) -> list[str]:
-    """The same sentences from `logs\verify-report.json` (what an update reads after its verify step)."""
+    """The same sentences from `logs/verify-report.json` (what an update reads after its verify step)."""
     try:
         data = json.loads(report_path(paths).read_text(encoding="utf-8-sig"))
         checks = [GateCheck.model_validate(c) for c in data["checks"]]

@@ -883,7 +883,7 @@ def _voice_notes(paths: Paths) -> list[str]:
     """The sentences about a designed or cloned voice that did not speak in the verify step just run.
 
     That voice is a warning, never a reason to roll back (`verify.talker_warning`); the same sentence is
-    already waiting as a morning note (`cli._leave_voice_notes`), and here it is part of the update's result.
+    already waiting as a morning note (`verify.leave_voice_notes`); here it is part of the update's result.
     """
     try:
         from ns_supervisor import verify

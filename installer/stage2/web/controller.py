@@ -1862,9 +1862,15 @@ class SetupController:
 
     def _ev_verify(self, ev: dict[str, Any]) -> None:
         speaker = ((self.snapshot().get("answers") or {}).get("voice") or {}).get("speaker")
-        checks = labels.verify_rows([c for c in ev.get("checks") or [] if isinstance(c, dict)], speaker)
+        raw = [c for c in ev.get("checks") or [] if isinstance(c, dict)]
+        checks = labels.verify_rows(raw, speaker)
+        voices = labels.voice_notices(raw)
 
         def fn(s: dict[str, Any]) -> None:
+            # the voices that did not speak are notices (Verify and Done show them, with the way out); a new
+            # test replaces the earlier ones (a repaired voice leaves nothing behind)
+            s["notices"] = [n for n in s["notices"] if n.get("code") or n.get("step") != "s08_smoke"]
+            s["notices"].extend(voices)
             if s["verify"] is None:
                 s["verify"] = {"checks": [], "voice": None, "render": None, "renderNote": None,
                                "reportReady": False}

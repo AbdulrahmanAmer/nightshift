@@ -1,4 +1,4 @@
-"""A diagnostics zip the wizard can write by itself (standard library only).
+"""A diagnostics zip the wizard can write by itself (standard library plus two stdlib-only ns_common modules).
 
 ``ns doctor --bundle`` lives in the engine's venv, which does not exist before step s04, so a setup that fails
 early (the welcome step, the program copy, the setup environment) could not produce the file OPERATOR.md
@@ -16,7 +16,6 @@ import zipfile
 from functools import partial
 from pathlib import Path
 
-from installer.stage2.state import load_flags
 from ns_common.atomic import (
     copy_atomic,
     read_text_retry,
@@ -28,6 +27,19 @@ from ns_common.atomic import (
 from ns_common.paths import Paths
 
 __all__ = ["write_console_install_report", "write_fallback_bundle"]
+
+
+def _voice_warnings(paths: Paths) -> list[str]:
+    """The sentences s08 kept in ``config/wizard_flags.json``.
+
+    Read here, not through ``state``, so this module stays standard library plus ``ns_common.atomic`` and
+    ``ns_common.paths`` (both standard library only)."""
+    try:
+        flags = json.loads(read_text_retry(paths.config / "wizard_flags.json"))
+        found = flags.get("voice_warnings") if isinstance(flags, dict) else None
+    except (OSError, ValueError):
+        return []
+    return [str(w) for w in found] if isinstance(found, list) else []
 
 
 def write_console_install_report(
@@ -69,7 +81,7 @@ def write_console_install_report(
                         "error": (st or {}).get("error")} for sid, st in steps.items()},
         "last_error": last_error,
         # designed or cloned voices that did not speak in the setup test (s08): the voice, why, the way out
-        "voice_warnings": [str(w) for w in (load_flags(paths).get("voice_warnings") or [])],
+        "voice_warnings": _voice_warnings(paths),
         "answers": answers,
     }
     try:
