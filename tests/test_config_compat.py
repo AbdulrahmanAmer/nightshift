@@ -85,7 +85,10 @@ def test_every_field_a_settings_model_gained_since_0_1_14_is_in_the_table() -> N
     )
     stale = sorted(table() - found)
     assert not stale, f"{stale} are in NEW_FIELDS but 0.1.14 already had them (or no settings model has them)"
-    assert found == {("Runtime", "tiny_story"), ("InstallerAnswers", "tiny_story")}  # what 0.1.15 adds
+    assert found == {
+        ("Runtime", "tiny_story"), ("InstallerAnswers", "tiny_story"),
+        ("Answers", "nightly"), ("InstallerAnswers", "nightly_seen"),  # setup's nightly question (used once)
+    }  # what 0.1.15 adds
 
 
 def test_the_tripwire_catches_a_field_added_deep_inside_a_model() -> None:

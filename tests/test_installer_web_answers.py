@@ -109,7 +109,10 @@ def test_models_folder_must_exist_unless_the_source_is_the_internet():
 
 def test_draft_to_answers_is_snake_case_and_never_holds_a_key():
     raw = answers_view.draft_to_answers(good_draft(modelsSource={"kind": "drive-zip", "path": "E:\\zips"}))
-    assert set(raw) == set(EXAMPLE)                      # the same keys as installer/answers.example.json
+    # the same keys as installer/answers.example.json, plus the one only the window writes: the state of
+    # Automatic runs it showed beside its switch (the scheduler step uses it once and removes it)
+    assert set(raw) == set(EXAMPLE) | {"nightly_seen"}
+    assert raw["nightly"] is None and raw["nightly_seen"] is None    # a draft without the switch asks nothing
     assert raw["models_source_kind"] == "drive_zip" and raw["models_source"] == "E:\\zips"
     assert raw["pexels_api_key"] == "" and raw["pixabay_api_key"] == ""
     assert raw["owner_name"] == "Abdo" and raw["ui_theme"] == "dark" and raw["llm_tier"] == "small"

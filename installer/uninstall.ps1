@@ -31,6 +31,15 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:IsDry = [bool]$DryRun
+
+# A test run must never change this PC: the real nightly task, the Desktop shortcuts, the notification
+# registration, the user PATH and the stored keys are all removed below unless -SkipSystem (or -DryRun) is given.
+# The test session sets NS_UNDER_TEST (tests/conftest.py); pytest itself sets PYTEST_CURRENT_TEST. No switch
+# turns this off.
+if (($env:NS_UNDER_TEST -or $env:PYTEST_CURRENT_TEST) -and -not $SkipSystem -and -not $DryRun) {
+    Write-Host 'uninstall.ps1: refused. A test run may only call it with -SkipSystem or -DryRun (it would change this PC).'
+    exit 3
+}
 $TaskName = 'Nightshift Daily'
 
 function Show-Action {
@@ -170,6 +179,17 @@ if (-not $SkipSystem) {
         else {
             Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
             Write-Host "  removed scheduled task '$TaskName'"
+        }
+    }
+    # config\schedule.json is Nightshift's record of that task ("Automatic runs are on"). With "keep my data"
+    # the config folder stays, so the record goes here, with the task: left behind, the next setup and every
+    # page would read Automatic runs as on with no task in Windows. The run time stays in config\answers.json
+    # and config\dashboard.json, and the next setup asks its question again.
+    if ($nsHome) {
+        $scheduleRecord = Join-Path (Join-Path $nsHome 'config') 'schedule.json'
+        if (Test-Path -LiteralPath $scheduleRecord) {
+            if ($script:IsDry) { Show-Action "delete $scheduleRecord" }
+            else { Remove-Item -LiteralPath $scheduleRecord -Force -ErrorAction SilentlyContinue; Write-Host "  removed $scheduleRecord" }
         }
     }
     # The toast identity the installer registered (HKCU, no admin needed).

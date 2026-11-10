@@ -24,6 +24,7 @@
   "pixabay_api_key": "",
   "masters_per_week": 1,
   "run_time": "03:00",
+  "nightly": false,
   "install_code": true,
   "include_voicedesign": false,
   "allow_cpu": false,

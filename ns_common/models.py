@@ -281,6 +281,10 @@ class Answers(Strict):
     owner_name: str | None = Field(default=None, max_length=40)
     ui_theme: Literal["light", "dark", "soft"] = "dark"
     models_source_kind: Literal["internet", "folder", "drive_zip"] = "internet"
+    # setup's one optional question: run by itself every night? None: not answered, which is off on a first
+    # install and "leave Automatic runs as they are" on every other. Setup input only: the scheduler step uses
+    # it once and removes it from the saved answers; the choice itself lives in Windows (Settings switches it)
+    nightly: bool | None = None
 
 
 # ---------- manifest ----------

@@ -11,6 +11,7 @@ from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.devmode import BANNER
 from installer.stage2.errors import make_error
+from installer.stage2.web import nightly_view
 from installer.stage2.winenv import desktop_dir
 
 NEXT_STEPS = (
@@ -20,6 +21,8 @@ DEV_NEXT_STEPS = (
     "Dev mode: open 'Nightshift Dashboard' and press Create it now. The job runs every stage on fake engines "
     "and renders a real video into the outbox. Nothing is scheduled."
 )
+#: The flags the sentence about Automatic runs is made from (`nightly_view.summary`).
+NIGHTLY_FLAGS = ("schedule", "schedule_mode", "nightly_line", "nightly_state", "nightly_time")
 
 
 def newest_bundle(folder: Path | None) -> Path | None:
@@ -63,15 +66,14 @@ class S10Summary(Step):
         schedule = ctx.flag("schedule")
         if ctx.dev_mode:
             ui.say(f"{BANNER}.", "yellow")
-        if schedule == "installed" and ctx.flag("schedule_mode") == "disabled" and not ctx.dev_mode:
-            ui.say(
-                f"Nightly task: registered for {ans.run_time} but switched off in Task Scheduler "
-                "(kept as you had it); it does not run until you switch it on there."
-            )
-        elif schedule == "installed" and ctx.flag("schedule_mode") == "disabled":
-            ui.say(f"Nightly task: registered for {ans.run_time} but DISABLED (dev mode); it never runs.")
-        elif schedule == "installed":
-            ui.say(f"Nightly run: every night at {ans.run_time} (the PC wakes itself).")
+        if ctx.dev_mode:
+            if schedule == "installed" and ctx.flag("schedule_mode") == "disabled":
+                ui.say(f"Nightly task: registered for {ans.run_time} but DISABLED (dev mode); it never runs.")
+        else:
+            # one sentence, true of what the record says now: the scheduler step's own when the state is still
+            # the one it left, else the state as it is (a run in which that step had nothing to do)
+            flags = {name: ctx.flag(name) for name in NIGHTLY_FLAGS}
+            ui.say(nightly_view.summary(ctx.paths.home, flags)["line"])
         ui.say(DEV_NEXT_STEPS if ctx.dev_mode else NEXT_STEPS, "bold green")
 
         res = ctx.run_tool("ns", ["doctor", "--bundle"], timeout=900)

@@ -1,5 +1,6 @@
 """C2 `ns` console tool (spec 15.9). Thin wiring: each command delegates to its own module."""
 
+import dataclasses
 import json
 import os
 from pathlib import Path
@@ -406,9 +407,40 @@ def _schedule_call(
             msg = schedule.remove(paths)
         else:
             msg = schedule.show(paths)
+    except schedule.ScheduleUnrecorded as e:
+        # Windows has the task and Nightshift's record does not: not "nothing changed" (NS-E204)
+        raise _die(NsError("NS-W208", f"schedule {fn_name}: {e}")) from e
     except schedule.ScheduleError as e:
         raise _die(NsError("NS-E204", f"schedule {fn_name}: {e}")) from e
     typer.echo(msg)
+
+
+#: The line `ns schedule install --setup` ends with: `setup: ` and `schedule.SetupResult` as JSON. Setup's
+#: scheduler step (installer s09) reads it; the words for the owner are setup's.
+SETUP_PREFIX = "setup: "
+
+
+def _schedule_setup(
+    time: str | None, setup: str, nightly: str | None, seen: str | None, was: str | None
+) -> None:
+    """`ns schedule install --setup first|again`: setup's decision about Automatic runs, as one JSON line.
+
+    Exit 0 whatever Windows did (the result says it: setup never stops on the task); NS-E204 only for a
+    wrong call or a dev install.
+    """
+    answers = {"yes": True, "no": False, None: None}
+    if setup not in ("first", "again") or nightly not in answers or not time:
+        usage = "schedule install --setup: first or again, with --time; --nightly yes or no"
+        raise _die(NsError("NS-E204", usage))
+    paths = Paths.from_env()
+    try:
+        res = schedule.setup_apply(
+            paths, control.app_path(paths), first=setup == "first", nightly=answers[nightly], seen=seen,
+            run_time=time, was=was,
+        )
+    except schedule.ScheduleError as e:
+        raise _die(NsError("NS-E204", f"schedule install --setup: {e}")) from e
+    typer.echo(SETUP_PREFIX + json.dumps(dataclasses.asdict(res)))
 
 
 @schedule_app.command("install")
@@ -425,6 +457,10 @@ def schedule_install(
         bool,
         typer.Option("--enable", help="Switch the task on, even if you switched it off in Task Scheduler."),
     ] = False,
+    setup: Annotated[str | None, typer.Option("--setup", hidden=True)] = None,      # setup's own call:
+    nightly: Annotated[str | None, typer.Option("--nightly", hidden=True)] = None,  # see _schedule_setup
+    seen: Annotated[str | None, typer.Option("--seen", hidden=True)] = None,
+    was: Annotated[str | None, typer.Option("--was", hidden=True)] = None,
 ) -> None:
     """Register the daily task (wake the PC, run whether logged on or not, stop after 6 h).
 
@@ -434,6 +470,12 @@ def schedule_install(
     """
     if enable and disabled:
         raise _die(NsError("NS-E204", "schedule install: --enable and --disabled cannot be used together"))
+    if setup is not None:
+        if enable or disabled:
+            usage = "schedule install: --setup cannot be used with --enable or --disabled"
+            raise _die(NsError("NS-E204", usage))
+        _schedule_setup(time, setup, nightly, seen, was)
+        return
     _schedule_call("install", time, disabled, enable)
 
 

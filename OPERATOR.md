@@ -264,10 +264,30 @@ its engine down by itself, unless the Dashboard is open.
 which it is: "Next run ...", "Runs at ... only while you are signed in", or "Automatic runs off". The page shows
 what Windows has, not what you clicked: if you delete or disable the task in Task Scheduler, Nightshift reads that
 as off within a minute, tells you once (`NS-W207`) and leaves the task as you set it; switch Automatic runs on in
-Settings to get the nightly run back. An update and a rollback never switch it on or off. Setup does, for now:
-a Repair or a reinstall that keeps your data registers the task again, so Automatic runs are on afterwards even
-if you had switched them off; switch them off again in Settings. A backup restore leaves them as they are. If Windows
-refuses the change, the switch stays where it was and the message says so (`NS-E204`).
+Settings to get the nightly run back. An update and a rollback never switch it on or off. A backup restore leaves
+them as they are. If Windows refuses the change, the switch stays where it was and the message says so (`NS-E204`).
+
+**Setup asks once, and the answer is off unless you say yes.** On a first install the setup window has the switch
+**Run Nightshift by itself every night** (the console setup asks the same question; an answers file says
+`"nightly": true`). Without a yes no task is registered, and the run time you chose waits for the switch in Settings.
+Setup run again over an install (a repair, or a newer zip) leaves Automatic runs as Windows has them: an answers file
+changes nothing there, a nightly task that is on is registered again at its own time, and a new run time in the
+answers moves it only if you did not change the time in Settings since the last setup. The window's switch is used
+there only if Automatic runs still are what the window showed under it ("Now: ..."); if they changed meanwhile, setup
+changes nothing and its last line says so. "Uninstall, keep my data" removes the task, so the setup after it asks
+again. The last line of setup, and the Done screen, say what Automatic runs are.
+
+A PC has one "Nightshift Daily" task, and it runs the Nightshift folder it was switched on in. If a first install
+finds such a task and you did not say yes: a task left by an earlier Nightshift in the same folder, or in a folder
+that no longer exists, is removed (its time is kept for the switch); a task that runs another Nightshift folder on
+this PC is left alone, and setup names that folder and says this one does not run by itself. Switching Automatic
+runs on in one Nightshift (or saying yes in its setup) moves the task to it; the message says so, and the other
+Nightshift then shows Automatic runs off and tells you once (`NS-W207`).
+
+If Nightshift cannot write `config/schedule.json` after Windows took the task, it puts the task back as it was and
+says so (`NS-E204`, "the change was undone"). Only if that fails too it says `NS-W208`: Windows then runs the task
+while the pages still say off (or the old time) until the folder `config` can be written again; to stop the run
+before that, delete or disable "Nightshift Daily" in Task Scheduler.
 
 If Windows will not let Nightshift register the task for unattended runs, it registers it for "only while you are
 logged on" and says so at the end of setup (`NS-W205`). Then keep the PC logged in overnight (lock the screen, do not

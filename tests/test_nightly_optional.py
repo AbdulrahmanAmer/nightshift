@@ -53,14 +53,16 @@ class FakeWindows:
     """The Task Scheduler behind `pwsh.run_powershell`: at most one task `{state, at, logon}`.
 
     `refuse_s4u`: Register falls back to the interactive logon. `refuse_all`: Register and Unregister fail
-    ("Access is denied"), reads work. `lose`: Register answers but no task is there afterwards. `hang`: every
-    call times out. `gate`: Register waits for the event (a slow step), after setting `entered`.
+    ("Access is denied"), reads work. `refuse_unregister`: only Unregister fails (the way back from a
+    registration is closed). `lose`: Register answers but no task is there afterwards. `hang`: every call
+    times out. `gate`: Register waits for the event (a slow step), after setting `entered`.
     """
 
     def __init__(self, task: tuple[str, str] | tuple[str, str, str] | None = None, **flags: bool) -> None:
         self.task = {"state": task[0], "at": task[1], "logon": (*task, "S4U")[2]} if task else None
         self.refuse_s4u = flags.get("refuse_s4u", False)
         self.refuse_all = flags.get("refuse_all", False)
+        self.refuse_unregister = flags.get("refuse_unregister", False)
         self.lose = flags.get("lose", False)
         self.hang = flags.get("hang", False)
         self.calls: list[str] = []
@@ -86,10 +88,13 @@ class FakeWindows:
             logon = "Interactive" if self.refuse_s4u else "S4U"
             if not self.lose:
                 self.task = {"state": "Disabled" if off else "Ready", "at": at.group(1), "logon": logon}
+                home = re.search(r'NIGHTSHIFT_HOME=([^"]+)"', script)  # the install the action runs
+                if home is not None:
+                    self.task["home"] = home.group(1)
             return done(f"registered:{logon.lower()}\n")
         if "Unregister-ScheduledTask" in script:
             self.calls.append("unregister")
-            if self.refuse_all:
+            if self.refuse_all or self.refuse_unregister:
                 return done(code=1, err="Access is denied")
             self.task = None
             return done("removed\n")
@@ -100,7 +105,8 @@ class FakeWindows:
         if self.task is None:
             return done("not registered\n")
         t = self.task
-        return done(f"state: {t['state']}\nstart: 2026-11-09T{t['at']}:00\nlogon: {t['logon']}\n")
+        args = f'args: /d /s /c "set "NIGHTSHIFT_HOME={t["home"]}" && "studio" run --daily"\n' if t.get("home") else ""
+        return done(f"state: {t['state']}\nstart: 2026-11-09T{t['at']}:00\nlogon: {t['logon']}\n{args}")
 
     @property
     def has(self) -> tuple[str, str] | None:
@@ -765,11 +771,14 @@ def test_a_record_that_cannot_be_written_is_ns_e204_and_never_reads_on(tmp_home:
     body = put(client, automatic_runs=True, schedule_time="04:30")
     said = result(body)
     assert said.get("applied") is False and said.get("code") == "NS-E204"
-    assert "could not be read or written" in said["note"] and "Windows may already have the change" in said["note"]
+    assert "could not write config/schedule.json" in said["note"] and "so the change was undone" in said["note"]
     assert "shows Automatic runs off" in said["note"] and "elevated" not in said["note"]
-    assert windows.has == ("Ready", "04:30")  # Windows did take the task; the page does not say on without a record
+    assert windows.has is None  # part b: the task Windows took is removed again, so no page is untrue
     assert body["schedule_registered"] is False and body["next_run"] is None
-    assert look_again(client)["schedule_registered"] is False  # still unwritable: the look changes nothing, no error
+    # a task that is on without a record (the undo was refused, or a kill): the look changes nothing while the
+    # file cannot be written, and no page fails
+    windows.task = {"state": "Ready", "at": "04:30", "logon": "S4U"}
+    assert look_again(client)["schedule_registered"] is False
     schedule_file(paths).rmdir()
     status = look_again(client)  # writable again: the page follows Windows
     assert status["schedule_registered"] is True and status["next_run"][11:16] == "04:30"

@@ -1079,11 +1079,24 @@ class RealScheduleAdapter:
     def _set(self, on: bool | None, run_time: str | None) -> dict[str, Any]:
         from ns_common.errors import describe
         from ns_supervisor.control import app_path
-        from ns_supervisor.schedule import ScheduleError, ScheduleFileError, set_automatic
+        from ns_supervisor.schedule import (
+            ScheduleError,
+            ScheduleFileError,
+            ScheduleUnrecorded,
+            set_automatic,
+        )
         from ns_supervisor.schedule_cfg import is_on
 
         try:
             out = set_automatic(self.paths, app_path(self.paths), on=on, run_time=run_time)
+        except ScheduleUnrecorded as e:
+            # Windows took the task, the record could not be written and the way back failed too: this page
+            # goes on saying off (or the old time), so the note must say what Windows does and how to stop it
+            w = describe("NS-W208")
+            return {
+                "applied": False, "code": "NS-W208",
+                "note": f"NS-W208: {w.message} Windows runs it at {e.run_time}. {w.hint}",
+            }
         except ScheduleFileError as e:
             # Nightshift's own lock or record, not Windows: the elevated-PowerShell hint would be untrue
             shown = "on" if is_on(self.paths) else "off"
@@ -1107,13 +1120,18 @@ class RealScheduleAdapter:
             if run_time:
                 note += f". {run_time} is kept for when you switch them on"
             return {"applied": True, "note": note}
+        # the PC has one nightly task: switching on here while it ran another Nightshift folder moves it
+        moved = (
+            f". This PC has one nightly task: it now runs this Nightshift and no longer the one at "
+            f"{out.took_from}, whose Settings will show Automatic runs off"
+        ) if out.took_from else ""
         if out.mode == "interactive_only":
             w = describe("NS-W205")
             return {
                 "applied": True, "code": "NS-W205",
-                "note": f"Automatic runs are on at {out.run_time}. NS-W205: {w.message} {w.hint}",
+                "note": f"Automatic runs are on at {out.run_time}. NS-W205: {w.message} {w.hint}{moved}",
             }
-        return {"applied": True, "note": f"Automatic runs are on: every night at {out.run_time}"}
+        return {"applied": True, "note": f"Automatic runs are on: every night at {out.run_time}{moved}"}
 
 
 def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters:

@@ -22,9 +22,11 @@ export function Done() {
   const open = async () => { setOpening(true); await act("open-dashboard"); };
   // The warnings keep their instructions: the title says what is wrong, "what to do" says what to do about it.
   const warnings = [...r.warnings.map((w) => ({ key: w.code + w.title, title: w.title, what: w.whatToDo })), ...(state.machine.isAdmin ? [{ key: "admin", title: t.adminNote, what: "" }] : [])];
-  const steps = [t.steps[0], t.steps[1], r.scheduled ? t.steps[2] : t.stepsNoTask];
+  // Automatic runs: on, off by choice (the default), or failed (setup tried to switch them on and Windows refused).
+  const nightly = r.nightly ?? (r.scheduled ? "on" : "failed");
+  const steps = [t.steps[0], t.steps[1], nightly === "on" ? t.steps[2] : nightly === "off" ? t.stepsOff : nightly === "unrecorded" ? t.stepsUnrecorded : t.stepsNoTask];
   return (
-    <Screen name="done" salutation={t.salutation} description={r.scheduled ? t.description(r.runTime) : t.descriptionNoTask}
+    <Screen name="done" salutation={t.salutation} description={nightly === "on" ? t.description(r.runTime) : nightly === "off" ? t.descriptionOff : nightly === "unrecorded" ? t.descriptionUnrecorded(r.runTime) : t.descriptionNoTask}
       footerLeft={opening ? t.opening : t.footer(duration(r.durationS))}
       footerRight={
         <>
@@ -41,6 +43,7 @@ export function Done() {
               <li key={s} className="flex gap-3"><span className="grid size-5 shrink-0 place-items-center rounded-full bg-ds-sunken text-ds-xs font-semibold ds-num">{i + 1}</span><span className="min-w-0">{s}</span></li>
             ))}
           </ol>
+          {r.nightlyLine && <p className="mt-4 text-ds-xs leading-ds-normal text-ds-text-2">{r.nightlyLine}</p>}
           {r.stockKeyMissing && <p className="mt-4 flex items-center gap-2 text-ds-sm font-medium"><StatusDot tone="attention" size={7} />{t.keyReminder}</p>}
           {warnings.length > 0 && (
             <ul className="mt-4 flex flex-col gap-2.5">

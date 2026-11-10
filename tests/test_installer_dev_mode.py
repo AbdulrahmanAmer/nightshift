@@ -306,10 +306,13 @@ def test_s09_dev_registers_the_task_disabled_and_remembers_the_time(tmp_path: Pa
 
 def test_s09_real_mode_registers_an_enabled_task(tmp_path: Path):
     runner = FakeRunner(tmp_path / "desktop")
-    ctx = make_test_context(tmp_path, raw_answers=example_answers(run_time="04:30"), resolve=True,
-                            app_path=launcher_app(tmp_path), runner=runner)
+    ctx = make_test_context(tmp_path, raw_answers=example_answers(run_time="04:30", nightly=True),
+                            resolve=True, app_path=launcher_app(tmp_path), runner=runner)
+    ctx.set_flag("first_install", True)      # a first install that said yes to the nightly question
     S09ShortcutsScheduler().run(ctx)
-    assert "--disabled" not in runner.called("ns schedule install")[0].argv and ctx.flag("schedule_mode") == "s4u"
+    argv = runner.called("ns schedule install")[0].argv
+    assert "--disabled" not in argv and argv[-4:] == ["--setup", "first", "--nightly", "yes"]
+    assert ctx.flag("schedule_mode") == "s4u"
 
 
 def test_s10_dev_names_the_mode_and_says_nothing_is_scheduled(tmp_path: Path):

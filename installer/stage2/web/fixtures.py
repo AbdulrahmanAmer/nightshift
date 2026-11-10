@@ -30,6 +30,7 @@ DRAFT = {
     "channel": {"displayName": "After Dark Tales", "niche": "horror fiction", "language": "en"},
     "homePath": "D:\\Nightshift", "llmTier": "small", "voice": {"speaker": "Ryan"},
     "modelsSource": {"kind": "internet", "path": None}, "runTime": "03:00", "mastersPerWeek": 1,
+    "nightly": True, "nightlySeen": "new",
     "installCode": True, "theme": "dark", "pexelsKey": "demo-pexels-key", "pixabayKey": "demo-pixabay-key",
 }
 
@@ -148,7 +149,8 @@ def build(name: str, app_path: Path | None = None) -> dict[str, Any]:
                               {"label": "Night run", "detail": "03:00"},
                               {"label": "Everything else", "detail": "D:\\Nightshift"}],
                 "shortcuts": ["Nightshift Dashboard", "Nightshift Outbox", "Nightshift - Diagnostics"],
-                "runTime": "03:00", "scheduled": True,
+                "runTime": "03:00", "scheduled": True, "nightly": "on",
+                "nightlyLine": "Automatic runs: on at 03:00, every night (the PC wakes itself for it).",
                 "diagnosticsZip": "C:\\Users\\Abdo\\Desktop\\nightshift-diagnostics-20261102.zip",
                 "stockKeyMissing": True, "durationS": 3480, "warnings": [],
             }

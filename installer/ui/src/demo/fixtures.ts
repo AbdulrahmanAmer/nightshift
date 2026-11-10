@@ -156,7 +156,7 @@ export function steps(firstOpen: StepId | "all-done", o: { failed?: StepId; runn
 export function answers(o: Partial<AnswersView> = {}): AnswersView {
   return {
     ownerName: "Abdo", channel: { displayName: "After Dark Tales", niche: "horror fiction", language: "en" }, homePath: "D:\\Nightshift", llmTier: "balanced", llmCustom: null,
-    voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", mastersPerWeek: 1, installCode: true, includeVoicedesign: false, theme: "dark",
+    voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", nightly: true, nightlySeen: "new", mastersPerWeek: 1, installCode: true, includeVoicedesign: false, theme: "dark",
     pexelsKeySet: true, pixabayKeySet: true, ...o,
   };
 }
@@ -235,7 +235,7 @@ export function resultView(): ResultView {
       { label: "Story model (Small)", detail: "9.0 GB" }, { label: "Voices: presets and your own", detail: "4.4 GB" }, { label: "Captions, memory, faces", detail: "1.7 GB" },
       { label: "Nightshift Code", detail: "yes" }, { label: "Night run", detail: "03:00" }, { label: "Everything else", detail: "D:\\Nightshift" },
     ],
-    shortcuts: ["Nightshift Dashboard", "Nightshift Outbox", "Nightshift Diagnostics"], runTime: "03:00", scheduled: true,
+    shortcuts: ["Nightshift Dashboard", "Nightshift Outbox", "Nightshift Diagnostics"], runTime: "03:00", scheduled: true, nightly: "on", nightlyLine: "Automatic runs: on at 03:00, every night (the PC wakes itself for it).",
     diagnosticsZip: "C:\\Users\\Abdo\\Desktop\\nightshift-diagnostics-2026-11-02.zip", stockKeyMissing: true, durationS: 58 * 60 + 12,
     warnings: [
       { code: "NS-W112", title: "Long file paths are off", whatToDo: "Setup works without it. Press Fix it to let Windows handle very long file names (Windows asks for permission)", step: null },

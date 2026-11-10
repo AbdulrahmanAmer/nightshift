@@ -64,7 +64,9 @@ SIMPLE_KEYS = (
 )
 CHANNEL_KEYS = ("display_name", "niche", "language", "seed_keywords")
 #: What a file that does not name them inherits from the kept answers. Where the install lives, where the
-#: models come from and the API keys are not inherited: they belong to this run.
+#: models come from and the API keys are not inherited: they belong to this run. Neither are `nightly` and
+#: `nightly_seen` (`answers.SETUP_INPUT`): they answer setup's question for one run, the scheduler step
+#: removes them from the saved answers, and they are no "change" that makes s01 run again.
 INHERITED = (
     *SIMPLE_KEYS,
     "voice",

@@ -7,6 +7,7 @@ is at the keyboard and fall back to their defaults (or fail for required values)
 from __future__ import annotations
 
 import re
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -38,16 +39,61 @@ from installer.stage2.sysinfo import (
     recommended_tier,
 )
 from installer.stage2.web.pathcheck import FOLDER_FOREIGN, folder_kind, foreign_warning, layout_problem
-from installer.stage2.winenv import HOME_VAR, get_user_env, set_user_env
+from installer.stage2.winenv import HOME_VAR, get_user_env, run_ps, set_user_env
 from ns_common import diskneed
 from ns_common.errors import NsError
 from ns_common.pathrules import ascii_problem
+from ns_supervisor import schedule
+from ns_supervisor.schedule_cfg import MODE_DISABLED, read_schedule_mode, schedule_file
 
 PRESET_VOICES = ("Ryan", "Aiden", "Serena", "Vivian")
 PEXELS_URL = "https://www.pexels.com/api/"
 PIXABAY_URL = "https://pixabay.com/api/docs/"
 NO_KEY_NOTICE = "No stock footage key yet. Setup continues; add a Pixabay key (free) later in Settings"
 RUN_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+#: Setup's one optional question (owner, 2026-11-10). Enter is no; an unattended install without the answer
+#: `nightly` is no. Asked on a first install only: later runs leave Automatic runs as Settings has them.
+NIGHTLY_QUESTION = "Run Nightshift by itself every night? You can turn this on later in Settings."
+#: Wizard flag: True while this install has not decided about Automatic runs yet (see `first_install`).
+FIRST_INSTALL = "first_install"
+
+
+def _look_at_task(ctx: StepContext) -> schedule.TaskState | None:
+    """Setup's own look at the 'Nightshift Daily' task, through the wizard's runner (the programs that hold
+    `ns` may not exist yet). `ScheduleError` unless Windows answered: an empty answer is not "no task"."""
+    try:
+        res = run_ps(
+            ctx.runner, schedule.build_read_script(), tag="ps:task-read", timeout=schedule.READ_TIMEOUT_S
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        raise schedule.ScheduleError(f"{type(e).__name__}: {e}") from e
+    if not res.ok or not res.stdout.strip():
+        raise schedule.ScheduleError(res.text[-200:] or "PowerShell gave no answer")
+    return schedule.parse_task_state(res.stdout)
+
+
+def first_install(ctx: StepContext) -> bool:
+    """Whether this run is the first install for setup's question about Automatic runs. Decided once per
+    install and kept in the wizard flag `first_install` (a resumed run keeps the answer; the scheduler step
+    sets it False when it has acted).
+
+    First means: setup never recorded a scheduler decision here (wizard flag `schedule`; the uninstaller
+    deletes the flag file, and flags of a removed install read as unset) and no record says Automatic runs are
+    on. Before that is read, a record is settled against Windows, quietly: 0.1.14's uninstall removed the task
+    and left `config/schedule.json` saying on, which is nobody's choice and must not reach `ns verify` (its
+    note "switched off outside Nightshift" would be untrue). When Windows does not answer, nothing is
+    changed and the record is believed: such a home counts as installed, and setup changes nothing there.
+    A dev install's `disabled` record is not a choice either.
+    """
+    known = ctx.flag(FIRST_INSTALL)
+    if isinstance(known, bool):
+        return known
+    if not ctx.dev_mode and schedule_file(ctx.paths).exists():
+        schedule.sync_record(ctx.paths, log=ctx.log, quiet=True, read=lambda: _look_at_task(ctx))
+    first = ctx.flag("schedule") is None and read_schedule_mode(ctx.paths) in ("none", MODE_DISABLED)
+    ctx.set_flag(FIRST_INSTALL, first)
+    ctx.log.info("nightly_first_install", first=first)
+    return first
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -135,6 +181,8 @@ class S01Questions(Step):
     def check(self, ctx: StepContext) -> bool:
         """True when a valid answers file from an earlier run exists, its secrets are stored and the answers
         in use (``--answers``, next to INSTALL.cmd, the window's choices) do not change it (D-14)."""
+        if ctx.state.is_done(self.id):
+            first_install(ctx)  # a run over an install: its home is settled, so the question is decided here
         if ctx.ui.bridge and not ctx.state.is_done(self.id):
             return False        # the setup window writes a first answers.json before this step has run
         f = self._answers_file(ctx)
@@ -374,6 +422,7 @@ class S01Questions(Step):
         home = self._pick_home(ctx, tier, custom_need)
         ctx.relocate(home)
         ctx.paths.ensure()
+        first = first_install(ctx)  # after the home is final: the record and the flags are that home's
         if drive_type(ctx.preflight, home) == "HDD":
             ctx.warn("NS-W106", str(home))
         if not set_user_env(ctx.runner, HOME_VAR, str(home)):
@@ -412,6 +461,12 @@ class S01Questions(Step):
                 raise AnswersError("run_time must be HH:MM (24 hour clock)")
             run_time = ctx.ui.ask("Please use HH:MM, for example 03:00", "03:00")
         merged["run_time"] = run_time
+        # The one optional question, off by default. The window asks it itself (its switch), an answers file
+        # answers with `nightly`; nobody at the keyboard means no. A no is not written down: no answer and no
+        # are the same thing for the scheduler step.
+        asks = first and raw.get("nightly") is None and ctx.ui.interactive and not ctx.ui.bridge
+        if asks and not ctx.dev_mode and ctx.ui.confirm(NIGHTLY_QUESTION, False):
+            merged["nightly"] = True
 
         if "install_code" in raw and raw["install_code"] is not None:
             merged["install_code"] = bool(raw["install_code"])
@@ -467,6 +522,8 @@ class S01Questions(Step):
                 ["Voice", f"{ans.voice.mode}: {ans.voice.speaker or ans.voice.description}"],
                 ["Long videos per week", str(ans.masters_per_week)],
                 ["Nightly run time", ans.run_time],
+                *([["Run by itself every night", "yes" if ans.nightly else "no (Settings switches it on)"]]
+                  if ctx.flag(FIRST_INSTALL) is True and not ctx.dev_mode else []),
                 ["Nightshift Code", "yes" if ans.install_code else "no"],
                 ["Voice design model", voicedesign_row(ctx, ans)],
                 ["LLM size", f"custom: {ans.llm_custom.file}" if ans.llm_custom else ans.llm_tier],

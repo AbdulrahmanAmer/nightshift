@@ -1,7 +1,26 @@
 """s09_shortcuts_scheduler: desktop shortcuts and the nightly task (component C1, spec 15.9).
 
 Shortcuts point at the launcher scripts under ``<app>/launchers``; launchers that are not in this build are
-reported and skipped. The scheduled task is registered by ``ns schedule install``.
+reported and skipped.
+
+The nightly task is the owner's choice (nightly-optional part b). This step registers it only on a first
+install whose answers say yes, or for the setup window's switch when Windows still has the state the window
+showed; a Repair and a reinstall over an install leave Automatic runs exactly as Windows has them. The
+decision is made by ``ns schedule install --setup`` (``ns_supervisor.schedule.setup_apply``: it reads the
+task, under the schedule lock) and this step only passes the facts and words the answer. Its sequence, in
+this order, so a run killed at any point is repeated safely:
+
+1. Windows: ``ns schedule install --setup``. Killed after it: the rerun passes the same facts; a first
+   install's yes finds the task already on at that time and runs no second script.
+2. the flags, ``schedule`` first: the decision is recorded, ``first_install`` becomes False. Killed after it:
+   the rerun is no first install any more and keeps what step 1 made.
+3. the answers ``nightly`` and ``nightly_seen`` are removed from ``config/answers.json``: they were about
+   this run and are never read again. Killed between 2 and 3: step 2 also wrote down which answer it acted on
+   and the state that made (flag ``nightly_done``); the rerun finds its answer there with that state still in
+   place, so it does not present the answer to Windows a second time (the window's answer would no longer
+   match the state it was made against, and the last line would deny setup's own change) and says the first
+   run's sentence. The flag goes after step 3; left behind by a kill there, it is dropped by the next run
+   that has no answer, and it never matches an answer made against another state.
 
 Each shortcut starts the launcher through ``<home>/nightshift-launch.ps1`` (a copy of
 ``installer/launch.ps1``, card 206-carried): that file is beside the program folder, not in it, so when an
@@ -18,11 +37,15 @@ still show; the flag ``aumid`` records what worked (``registry+shortcut``, ``reg
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
+from installer.stage2.answers import forget_setup_input
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error
+from installer.stage2.web import nightly_view
 from installer.stage2.winenv import (
     create_shortcut,
     desktop_dir,
@@ -31,8 +54,10 @@ from installer.stage2.winenv import (
 )
 from ns_common.atomic import copy_atomic
 from ns_supervisor.notify import AUMID
-from ns_supervisor.schedule import INTERACTIVE_MARK, KEPT_OFF_MARK
 from ns_supervisor.schedule_cfg import remember_run_time
+
+#: The line ``ns schedule install --setup`` ends with (``ns_supervisor.cli.SETUP_PREFIX``).
+SETUP_PREFIX = "setup: "
 
 # The brand icon ships with the dashboard build; without it a shortcut keeps PowerShell's own icon.
 ICON_RELATIVE = Path("ns_dashboard") / "static" / "brand" / "nightshift.ico"
@@ -115,7 +140,9 @@ class S09ShortcutsScheduler(Step):
 
     id = "s09_shortcuts_scheduler"
     title = "Shortcuts and nightly task"
-    clears_on_run = ("schedule", "schedule_mode", "schedule_time", "aumid", "shortcuts_app")
+    # `schedule_time` is not cleared: it is the time the answers had when this step last finished, which
+    # the next run needs to tell a time the answers changed from one Settings changed (D-14)
+    clears_on_run = ("schedule", "schedule_mode", "aumid", "shortcuts_app")
 
     def check(self, ctx: StepContext) -> bool:
         """Shortcuts exist and the task decision is recorded."""
@@ -127,7 +154,10 @@ class S09ShortcutsScheduler(Step):
             return False
         if (ctx.app_path / STUB_SOURCE).is_file() and not (ctx.paths.home / STUB_NAME).is_file():
             return False                    # shortcuts made before the stub existed (or the copy is gone)
-        asked = ctx.ensure_answers().run_time
+        ans = ctx.ensure_answers()
+        if ans.nightly is not None or ans.nightly_seen is not None:
+            return False                    # an answer about Automatic runs that nobody acted on yet
+        asked = ans.run_time
         if ctx.flag("schedule_time", asked) != asked:
             return False                    # the answers ask for another time than the task has (D-14)
         folder = desktop(ctx)
@@ -154,44 +184,127 @@ class S09ShortcutsScheduler(Step):
             ctx.ui.say(f"  shortcut: {name}")
         self._register_toast_identity(ctx, folder, icon)
 
-        run_time = ctx.ensure_answers().run_time
-        argv = ["schedule", "install", "--time", run_time, *(["--disabled"] if ctx.dev_mode else [])]
-        res = ctx.run_tool("ns", argv, timeout=300)
-        if res.ok and ctx.dev_mode:
-            # docs/DEV_MODE.md: the task exists (`ns schedule show` and the uninstall find it) but it is
-            # disabled, so it never wakes or runs the development PC
+        ans = ctx.ensure_answers()
+        run_time = ans.run_time
+        if ctx.dev_mode:
+            self._dev_task(ctx, run_time)
+        else:
+            self._automatic_runs(ctx, ans.nightly, ans.nightly_seen, run_time)
+        ctx.set_flag("schedule_time", run_time)             # the time the answers name, as of this run
+        ctx.set_flag("shortcuts_app", str(ctx.app_path))     # the app folder the shortcuts and the task use
+        ctx.set_flag("first_install", False)                 # setup has decided: later runs keep the choice
+        # last: the answers were about this run. A kill before this line repeats the step with them.
+        if forget_setup_input(ctx.paths.config / "answers.json"):
+            ctx.log.info("setup_input_consumed", keys=["nightly", "nightly_seen"])
+        ctx.answers = ans.model_copy(update={"nightly": None, "nightly_seen": None})
+        ctx.clear_flags("nightly_done")
+
+    @staticmethod
+    def _dev_task(ctx: StepContext, run_time: str) -> None:
+        """docs/DEV_MODE.md: the task exists (`ns schedule show` and the uninstall find it) but it is
+        disabled, so it never wakes or runs the development PC. Unchanged by the nightly question."""
+        res = ctx.run_tool("ns", ["schedule", "install", "--time", run_time, "--disabled"], timeout=300)
+        if res.ok:
             ctx.set_flag("schedule", "installed")
             ctx.set_flag("schedule_mode", "disabled")
             remember_run_time(ctx.paths, run_time)      # the chosen time stays a preference
             ctx.ui.say(f"Dev mode: nightly task 'Nightshift Daily' registered for {run_time} but DISABLED.")
-        elif res.ok and KEPT_OFF_MARK in res.text:
-            # D-28: a setup rerun or repair over a task the owner switched off in Task Scheduler keeps it off
-            ctx.set_flag("schedule", "installed")
-            ctx.set_flag("schedule_mode", "disabled")
-            ctx.ui.say(
-                "Nightly task 'Nightshift Daily' was left SWITCHED OFF, as you had it in Task Scheduler. "
-                "Switch Automatic runs on in Settings when you want the nightly run."
-            )
-        elif res.ok:
-            ctx.set_flag("schedule", "installed")
-            ctx.ui.say(f"Nightly task 'Nightshift Daily' registered for {run_time} (wakes the PC).")
-            if INTERACTIVE_MARK in res.text:      # "...only while you are logged on"
-                ctx.set_flag("schedule_mode", "interactive")
-                ctx.warn("NS-W205", f"registered for {run_time}")
-            else:
-                ctx.set_flag("schedule_mode", "s4u")
         elif "No such command" in res.text or res.returncode == 2:
             ctx.set_flag("schedule", "unavailable")
             ctx.ui.say("The nightly task is not part of this version yet; nothing was scheduled.", "yellow")
             ctx.log.warn("schedule_unavailable", res.text[-200:])
         else:
-            # Never block the install on the task: the PC works without it, the owner can run it by hand.
             ctx.set_flag("schedule", "failed")
             ctx.log.warn("schedule_failed", f"exit {res.returncode}: {res.text[-300:]}")
-            remember_run_time(ctx.paths, run_time)       # a preference only: no schedule.json without a task
+            remember_run_time(ctx.paths, run_time)
             ctx.warn("NS-W206", res.text.strip()[-200:])
-        ctx.set_flag("schedule_time", run_time)             # the time the task was made for
-        ctx.set_flag("shortcuts_app", str(ctx.app_path))     # the app folder the shortcuts and the task use
+
+    @staticmethod
+    def _setup_result(text: str) -> dict[str, Any] | None:
+        """The JSON the last `setup: ` line of the command's output carries; None when there is none."""
+        for line in reversed(text.splitlines()):
+            if line.startswith(SETUP_PREFIX):
+                try:
+                    data = json.loads(line[len(SETUP_PREFIX):])
+                except ValueError:
+                    return None
+                return data if isinstance(data, dict) and isinstance(data.get("case"), str) else None
+        return None
+
+    def _automatic_runs(
+        self, ctx: StepContext, nightly: bool | None, seen: str | None, run_time: str
+    ) -> None:
+        """Steps 1 and 2 of the module docstring for a real install. Never raises for the task: the PC works
+        without it, and every outcome ends in one true sentence (the summary and the Done screen repeat
+        it)."""
+        first = ctx.flag("first_install") is True
+        was = ctx.flag("schedule_time")
+        answer = {"nightly": nightly, "seen": seen}
+        done = ctx.flag("nightly_done")
+        acted = (
+            nightly is not None and isinstance(done, dict) and not first
+            and {k: done.get(k) for k in answer} == answer
+            and done.get("state") == nightly_view.state_word(ctx.paths.home)
+        )
+        earlier_line = ctx.flag("nightly_line") if acted else None
+        if acted:           # an earlier run of this step already acted on this answer and was killed after it
+            nightly = seen = None
+        argv = ["schedule", "install", "--time", run_time, "--setup", "first" if first else "again"]
+        if nightly is not None:
+            argv += ["--nightly", "yes" if nightly else "no"]
+        if seen:
+            argv += ["--seen", seen]
+        if isinstance(was, str) and was:
+            argv += ["--was", was]
+        res = ctx.run_tool("ns", argv, timeout=300)
+        out = self._setup_result(res.stdout) if res.ok else None
+        if out is None and ("No such command" in res.text or res.returncode == 2):
+            ctx.set_flag("schedule", "unavailable")
+            line = (
+                "Automatic runs: off. The nightly task is not part of this version yet; nothing was "
+                "scheduled."
+            )
+            ctx.log.warn("schedule_unavailable", res.text[-200:])
+        elif out is None:
+            # Never block the install on the task: the owner can switch Automatic runs on in Settings. Only
+            # what is known is said: a first install's yes was not carried out (NS-W206); in every other case
+            # nothing was asked of Windows, so what it had is unchanged, whatever that is.
+            wanted = first and nightly is True
+            ctx.set_flag("schedule", "failed" if wanted else "installed")
+            ctx.log.warn("schedule_failed", f"exit {res.returncode}: {res.text[-300:]}")
+            detail = res.text.strip()[-200:] or "ns schedule install gave no answer"
+            if wanted:
+                remember_run_time(ctx.paths, run_time)   # a preference only: no schedule.json without a task
+                ctx.warn("NS-W206", detail)
+            line = nightly_view.outcome_line({"case": "unread", "wanted_on": wanted, "reason": detail})
+        else:
+            line = nightly_view.outcome_line(out)
+            case, on = out["case"], out.get("on") is True
+            if acted and case == "kept" and isinstance(earlier_line, str) and earlier_line:
+                line = earlier_line         # the sentence of the run that made this state
+            wanted_on = bool(out.get("wanted_on"))
+            ctx.set_flag("schedule", "failed" if wanted_on and case in ("refused", "unread") else "installed")
+            only = on and bool(out.get("signed_in_only"))
+            mode = ("interactive" if only else "s4u") if on else "off"
+            if case == "unrecorded":
+                mode = "unrecorded"
+            ctx.set_flag("schedule_mode", mode)
+            ctx.log.info(
+                "automatic_runs_setup", line, first=first, nightly=nightly, seen=seen, case=case,
+                on=out.get("on"), run_time=out.get("run_time"), time_kept=out.get("time_kept"),
+            )
+            if case == "unrecorded":
+                ctx.warn("NS-W208", f"at {out.get('run_time')}")
+            elif wanted_on and case in ("refused", "unread"):
+                ctx.warn("NS-W206", str(out.get("reason") or "")[:200])
+            elif only and case in ("first", "applied"):
+                ctx.warn("NS-W205", f"registered for {out.get('run_time')}")
+        ctx.set_flag("nightly_line", line)
+        ctx.set_flag("nightly_state", nightly_view.state_word(ctx.paths.home))
+        ctx.set_flag("nightly_time", (out or {}).get("run_time"))
+        if answer["nightly"] is not None:   # which answer was acted on, and the state that made
+            ctx.set_flag("nightly_done", {**answer, "state": nightly_view.state_word(ctx.paths.home)})
+        ctx.ui.say(line)
 
     @staticmethod
     def _register_toast_identity(ctx: StepContext, folder: Path, icon: Path | None) -> None:

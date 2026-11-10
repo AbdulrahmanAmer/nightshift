@@ -282,9 +282,9 @@ def test_setup_over_a_task_the_owner_switched_off_says_so_and_does_not_claim_a_n
     app = tmp_path / "app"
     (app / "launchers").mkdir(parents=True)
     (app / "launchers" / "nightshift-dashboard.ps1").write_text("# x\n", encoding="utf-8")
-    kept = f"registered (Nightshift Daily daily at 04:30; {schedule.KEPT_OFF_NOTE})"
+    kept = 'setup: {"case": "kept", "on": false, "run_time": "04:30"}'  # what `--setup again` answers
     runner = FakeRunner(
-        tmp_path / "desktop", results={"ns schedule install --time 04:30": RunResult(0, kept)}
+        tmp_path / "desktop", results={"ns schedule install --time 04:30 --setup again": RunResult(0, kept)}
     )
     ui = FakeUi()
     ctx = make_test_context(
@@ -296,8 +296,9 @@ def test_setup_over_a_task_the_owner_switched_off_says_so_and_does_not_claim_a_n
         ui=ui,
     )
     S09ShortcutsScheduler().run(ctx)
-    assert (ctx.flag("schedule"), ctx.flag("schedule_mode")) == ("installed", "disabled")
-    assert "SWITCHED OFF" in ui.text and "wakes the PC" not in ui.text and ctx.warnings == []
+    assert (ctx.flag("schedule"), ctx.flag("schedule_mode")) == ("installed", "off")
+    assert "Automatic runs: off, kept as set in Settings" in ui.text
+    assert "wakes the PC" not in ui.text and ctx.warnings == []
 
 
 def test_the_setup_summary_names_a_task_left_switched_off_without_calling_it_dev_mode(tmp_path: Path):
@@ -307,10 +308,11 @@ def test_the_setup_summary_names_a_task_left_switched_off_without_calling_it_dev
         if step.id != "s10_summary":
             ctx.state.mark(step.id, "done")
     ctx.set_flag("schedule", "installed")
-    ctx.set_flag("schedule_mode", "disabled")
+    ctx.set_flag("schedule_mode", "off")
     S10Summary().run(ctx)
-    assert "switched off in Task Scheduler" in ui.text and "dev mode" not in ui.text.lower()
-    assert "the PC wakes itself" not in ui.text
+    # nightly-optional b: off is said as the state of Automatic runs, with where to switch them on
+    assert "Automatic runs: off, kept as set in Settings" in ui.text and "dev mode" not in ui.text.lower()
+    assert "the PC wakes itself" not in ui.text and "every night" not in ui.text
 
 
 # ---------------------------------------------------------- break-it round: dev install, then a real one

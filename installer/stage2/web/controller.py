@@ -36,6 +36,7 @@ from installer.stage2.web import (
     labels,
     machine,
     modelcheck,
+    nightly_view,
     pathcheck,
     plan,
     preflight,
@@ -564,7 +565,7 @@ class SetupController:
         if raw:
             view = answers_view.answers_to_view(
                 raw, pexels_set=self._keys_stored["pexelsKey"], pixabay_set=self._keys_stored["pixabayKey"],
-                default_tier=default_tier,
+                default_tier=default_tier, nightly_now=nightly_view.current_choice(self.home),
             )
         tier = (view or {}).get("llmTier") or default_tier
         code = bool((view or {}).get("installCode", True))
@@ -817,6 +818,7 @@ class SetupController:
         view = answers_view.answers_to_view(
             raw, pexels_set=bool(self._keys["pexels_api_key"]) or self._keys_stored["pexelsKey"],
             pixabay_set=bool(self._keys["pixabay_api_key"]) or self._keys_stored["pixabayKey"],
+            nightly_now=raw.get("nightly_seen") or "new",    # the page's own answer, as it sent it
         )
         pf = self.pf
         new_plan = plan.build_plan(
@@ -847,7 +849,9 @@ class SetupController:
             return {"ok": False, "errors": [{"field": "homePath", "code": None,
                                              "message": f"That answers file could not be read: {e}"}]}
         default_tier = "small" if self.dev else plan.recommended_tier(float(self.pf.get("ram_gb") or 0))
-        view = answers_view.answers_to_view(raw, default_tier=default_tier)
+        view = answers_view.answers_to_view(
+            raw, default_tier=default_tier, nightly_now=nightly_view.current_choice(self.home)
+        )
         draft = {k: v for k, v in view.items() if k not in ("pexelsKeySet", "pixabayKeySet")}
         keys = answers_view.keys_in(raw)
         draft["pexelsKey"] = keys["pexels_api_key"]
@@ -1923,6 +1927,7 @@ class SetupController:
             flags = json.loads(read_text_retry(self.home / "config" / "wizard_flags.json", "utf-8-sig"))
         except (OSError, ValueError):
             pass
+        night = nightly_view.summary(self.home, flags if isinstance(flags, dict) else {})
         sizes = {g["id"]: g for g in state["plan"]["groups"]}
         models = {i["label"]: i for i in sizes["models"]["items"]}
         llm = next((i for i in sizes["models"]["items"] if i["label"].startswith("Story model")), None)
@@ -1938,7 +1943,7 @@ class SetupController:
             {"label": "Voices: presets and your own", "detail": gb(voices)},
             {"label": "Captions, memory, faces", "detail": gb(rest)},
             {"label": "Nightshift Code", "detail": "yes" if answers.get("installCode", True) else "no"},
-            {"label": "Night run", "detail": answers.get("runTime", "03:00")},
+            {"label": "Night run", "detail": self._night_detail(night)},
             {"label": "Everything else", "detail": str(self.home)},
         ]
         if self.dev:        # docs/DEV_MODE.md: stubs and fakes, no Nightshift Code, a disabled night task
@@ -1969,12 +1974,25 @@ class SetupController:
                 duration = 0
         return {
             "home": str(self.home), "outbox": str(self.home / "outbox"), "appPath": str(self.run_app_path),
-            "installed": installed, "shortcuts": list(SHORTCUTS), "runTime": answers.get("runTime", "03:00"),
-            "scheduled": flags.get("schedule") == "installed" and flags.get("schedule_mode") != "disabled",
+            "installed": installed, "shortcuts": list(SHORTCUTS),
+            # Automatic runs as the record says now, in the scheduler step's own sentence (s10 says the same)
+            "runTime": night["time"] or answers.get("runTime", "03:00"),
+            "scheduled": night["state"] == "on" and not self.dev,
+            "nightly": "off" if self.dev else night["state"],
+            "nightlyLine": None if self.dev else night["line"],
             "devMode": self.dev,
             "diagnosticsZip": self._bundle or flags.get("bundle"),
             "durationS": duration, "warnings": warnings, "stockKeyMissing": not self._stock_key_stored(),
         }
+
+    @staticmethod
+    def _night_detail(night: dict[str, Any]) -> str:
+        """The "Night run" row of the Done screen: the time, off, or NS-W208's two-sided state."""
+        if night["state"] == "on":
+            return str(night["time"])
+        if night["state"] == "unrecorded":
+            return f"{night['time']} in Windows, not recorded (NS-W208)"
+        return "off"
 
     def _stock_key_stored(self) -> bool:
         """True when a stock footage key was typed in this session or is in the encrypted file from s07."""

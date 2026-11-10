@@ -155,6 +155,10 @@ class FakeRunner:
                 logs.mkdir(parents=True, exist_ok=True)
                 (logs / "verify-report.json").write_text(json.dumps(report), encoding="utf-8")
             return RunResult(0, json.dumps(report))
+        if tag.startswith("ns schedule install") and "--setup" in call.argv:
+            return self._schedule_setup(call)
+        # "ps:task-read" (setup's own look at the task) gets the empty default below: no answer, so a
+        # simulated run never settles a record against a Windows it did not ask
         if tag == "ns doctor --bundle":
             self.desktop.mkdir(parents=True, exist_ok=True)
             zip_path = self.desktop / f"nightshift-diagnostics-{date.today():%Y%m%d}.zip"
@@ -166,6 +170,28 @@ class FakeRunner:
         if tag == "opencode --version":
             return RunResult(0, "1.19.5\n")
         return RunResult(0)
+
+    @staticmethod
+    def _schedule_setup(call: Call) -> RunResult:
+        """``ns schedule install --setup`` on a PC whose Windows holds no task: a first install that says yes
+        gets one (the record ``config/schedule.json`` is written, as the real command does), everything else
+        stays off. The answer is the real command's one JSON line."""
+        def value(flag: str) -> str | None:
+            return call.argv[call.argv.index(flag) + 1] if flag in call.argv else None
+
+        when = value("--time") or "03:00"
+        first = value("--setup") == "first"
+        on = first and value("--nightly") == "yes"
+        home = call.env.get("NIGHTSHIFT_HOME")
+        if home and on:
+            config = Path(home) / "config"
+            config.mkdir(parents=True, exist_ok=True)
+            record = {"run_time": when, "task_name": "Nightshift Daily", "mode": "registered"}
+            (config / "schedule.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        out = {"case": "first" if first else "kept", "on": on, "run_time": when, "signed_in_only": False,
+               "wanted_on": False, "wanted_off": False, "time_kept": None, "seen": value("--seen"),
+               "reason": ""}
+        return RunResult(0, "setup: " + json.dumps(out) + "\n")
 
     @staticmethod
     def _pip_install(call: Call) -> None:
