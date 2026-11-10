@@ -266,7 +266,7 @@ def test_a_refused_switch_off_stays_on_and_says_so(tmp_home: Path, windows: Fake
     put(client, automatic_runs=True, schedule_time="04:30")
     windows.refuse_all = True
     body = put(client, automatic_runs=False)
-    assert result(body).get("applied") is False and result(body).get("code") == "NS-E204"
+    assert result(body).get("applied") is False and result(body).get("code") == "NS-E206"
     assert "Automatic runs are still on" in result(body)["note"]
     assert windows.has == ("Ready", "04:30") and read_schedule_mode(paths) == "registered"
     assert body["schedule_registered"] is True and body["next_run"][11:16] == "04:30"
@@ -597,8 +597,11 @@ def test_two_changes_at_once_run_one_after_the_other(
     monkeypatch.setattr(schedule, "LOCK_WAIT_S", 0.3, raising=False)
     busy = put(client, automatic_runs=False)
     assert windows.changes() == ["register"]  # no Unregister ran inside the Register
-    assert result(busy).get("applied") is False and result(busy).get("code") == "NS-E204"
+    assert result(busy).get("applied") is False and result(busy).get("code") == "NS-E206"
     assert "another change" in result(busy)["note"].lower()
+    # Windows was never asked for this switch-off: the note does not blame it or send the owner to Task Scheduler
+    assert "Windows did not" not in result(busy)["note"] and "Task Scheduler" not in result(busy)["note"]
+    assert "try again in a few seconds" in result(busy)["note"] and "shows Automatic runs" in result(busy)["note"]
     windows.gate.set()
     t.join(10)
     assert first and first[0]["schedule_registered"] is True and windows.has == ("Ready", "04:30")
@@ -729,9 +732,9 @@ def test_the_switch_answers_ns_e204_when_the_schedule_lock_cannot_be_opened(
     off = put(client, automatic_runs=False)
     moved = put(client, schedule_time="05:00")
 
-    for body in (off, moved):
+    for body, code in ((off, "NS-E206"), (moved, "NS-E204")):  # the code follows what was asked: off, or the time
         said = result(body)
-        assert said.get("applied") is False and said.get("code") == "NS-E204"
+        assert said.get("applied") is False and said.get("code") == code and f"Not saved ({code})" in said["note"]
         assert "schedule.lock could not be opened" in said["note"] and "nothing was changed" in said["note"]
         assert "shows Automatic runs on" in said["note"] and "elevated" not in said["note"]  # true words only
         assert body["schedule_registered"] is True and body["schedule_time"] == "04:30"
@@ -821,3 +824,119 @@ def test_the_settings_switch_takes_the_fresh_state_when_the_status_brings_it():
     assert "status.schedule_registered !== s.schedule_registered" in page
     assert "[status?.schedule_registered, status?.schedule_mode, status?.schedule_time]" in page
     assert "schedule_registered: status.schedule_registered" in page
+
+
+# ------------------------------------------------------- FN-4: a failed switch-off, and whose task was left
+def test_a_failed_switch_off_tells_how_to_switch_off(tmp_home: Path, windows: FakeWindows):
+    """NS-E204's way out is "run ns schedule install": the opposite of what an owner who switched OFF needs."""
+    client, state, paths = dashboard(tmp_home)
+    put(client, automatic_runs=True, schedule_time="04:30")
+    windows.refuse_unregister = True
+    body = put(client, automatic_runs=False)
+    said = result(body)
+    assert said.get("applied") is False and said.get("code") == "NS-E206"
+    note = said["note"]
+    assert note.startswith("Not saved: Windows did not switch off the nightly task (Access is denied). Automatic runs are still on. NS-E206: ")
+    assert describe("NS-E206").hint in note and "Task Scheduler" in note and "Disable" in note
+    assert "ns schedule install" not in note and "elevated PowerShell" not in note
+    assert body["schedule_registered"] is True and windows.has == ("Ready", "04:30")  # the page says what Windows has
+    # failed, then retried: once Windows lets go, the same click works and nothing is left over
+    windows.refuse_unregister = False
+    assert put(client, automatic_runs=False)["schedule_registered"] is False and windows.has is None
+    assert record(paths) is None and state is not None
+
+
+def test_a_failed_switch_on_still_names_ns_schedule_install(tmp_home: Path, windows: FakeWindows):
+    client, _state, _paths = dashboard(tmp_home)
+    windows.refuse_all = True
+    said = result(put(client, automatic_runs=True, schedule_time="04:30"))
+    assert said.get("code") == "NS-E204" and describe("NS-E204").hint in said["note"]
+    assert "Windows did not change the nightly task (Access is denied)" in said["note"]
+    windows.refuse_all = False
+    put(client, automatic_runs=True, schedule_time="04:30")
+    windows.refuse_all = True
+    moved = result(put(client, schedule_time="05:00"))   # a time change that Windows refuses is a registration too
+    assert moved.get("code") == "NS-E204" and "Settings > Schedule > Automatic runs" in moved["note"]
+    assert '\\venvs\\supervisor\\Scripts\\ns.exe" schedule install' in moved["note"]   # ns is not on the PATH
+
+
+def test_ns_schedule_remove_that_windows_refuses_is_ns_e206(tmp_home: Path, windows: FakeWindows):
+    paths = Paths.from_env()
+    paths.ensure()
+    windows.task = {"state": "Ready", "at": "04:30", "logon": "S4U"}
+    write_run_time(paths, "04:30", "registered")
+    windows.refuse_unregister = True
+    res = CliRunner().invoke(cli.app, ["schedule", "remove"])
+    assert res.exit_code == 1 and "NS-E206" in res.output and "NS-E204" not in res.output, res.output
+    assert "schedule remove: Access is denied" in res.output and "choose Disable" in res.output
+    assert "ns schedule install" not in res.output
+    assert windows.has == ("Ready", "04:30") and read_schedule_mode(paths) == "registered"  # the record follows Windows
+    windows.refuse_unregister, windows.hang = False, True
+    res = CliRunner().invoke(cli.app, ["schedule", "show"])
+    assert res.exit_code == 1 and "NS-E206" in res.output and "schedule show: PowerShell timed out" in res.output
+    windows.hang, windows.refuse_all = False, True
+    res = CliRunner().invoke(cli.app, ["schedule", "install", "--time", "05:00"])
+    assert res.exit_code == 1 and "NS-E204" in res.output and "NS-E206" not in res.output   # registering: unchanged
+
+
+def _missing_drive() -> str:
+    import string
+
+    free = [f"{letter}:" for letter in reversed(string.ascii_uppercase) if not Path(f"{letter}:/").exists()]
+    if not free:
+        pytest.skip("every drive letter is in use on this PC")
+    return free[0]
+
+
+@pytest.mark.parametrize("row", ["none", "disabled", "other", "unreachable", "gone"])
+def test_reregister_says_whose_task_it_left(tmp_path: Path, windows: FakeWindows, row: str):
+    """An update of an install whose record says on (written by the previous release) finds the task not on
+    here: each reason has its own sentence, and nothing is changed in any of them."""
+    paths = Paths(tmp_path / "ns")
+    paths.ensure()
+    write_run_time(paths, "03:00", "registered")
+    other = tmp_path / "other-ns"
+    other.mkdir()
+    places = {"other": str(other), "gone": str(tmp_path / "deleted")}
+    if row == "unreachable":
+        places[row] = str(Path(f"{_missing_drive()}/Nightshift"))
+    there = places.get(row, "")
+    if row == "disabled":
+        windows.task = {"state": "Disabled", "at": "05:45", "logon": "S4U"}
+    elif row != "none":
+        windows.task = {"state": "Ready", "at": "05:45", "logon": "S4U", "home": there}
+    expected = {
+        "none": (
+            "Automatic runs are off: Windows no longer has the nightly task 'Nightshift Daily' (it was removed "
+            "outside this Nightshift), so it was not registered again. To get the nightly run back, switch "
+            "Automatic runs on in Settings."
+        ),
+        "disabled": (
+            "Automatic runs are off: the nightly task 'Nightshift Daily' is disabled in Task Scheduler and was "
+            "left as it is. To get the nightly run back, switch Automatic runs on in Settings."
+        ),
+        "other": (
+            f"Automatic runs are off here: the nightly task runs the Nightshift at {there}, so it was left as it "
+            "is. Switch Automatic runs on in this Nightshift's Settings to move it back."
+        ),
+        "unreachable": (
+            f"Automatic runs are off here: the nightly task runs the Nightshift at {there}, whose drive is not "
+            "connected now, so it was left as it is. Switch Automatic runs on in this Nightshift's Settings to "
+            "move it back."
+        ),
+        "gone": (
+            f"Automatic runs are off: the nightly task runs a Nightshift folder that no longer exists ({there}), "
+            "so it was left as it is. Switch Automatic runs on in Settings to take it."
+        ),
+    }[row]
+    before = windows.has
+    env = update.UpdateEnv(
+        stop=lambda: None, sync=lambda a: None, verify=lambda a: True,
+        reregister=lambda a: cli._reregister(paths, a), settle=lambda: None,
+    )
+    res = update.update_app(make_zip(tmp_path), make_app(tmp_path), env, paths=paths)
+    assert expected in res.notes, res.notes
+    assert windows.has == before and windows.changes() == [] and record(paths) is None  # left exactly as it is
+    # the second run (the next update): the record says off now, so Windows is not asked and nothing is said
+    windows.calls.clear()
+    assert cli._reregister(paths, tmp_path) == [] and windows.calls == []

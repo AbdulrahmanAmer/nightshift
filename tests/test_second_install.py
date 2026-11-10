@@ -585,7 +585,9 @@ def test_uninstalling_the_second_install_leaves_everything_of_the_first(tmp_path
     assert f"Left the Desktop shortcut {desktop / 'Nightshift notes.lnk'}: it could not be read" in out
     assert f"[dry-run] delete folder {b / 'Shortcuts'}" in out
     assert "remove toast registration" not in out and f"Left the notification registration: the Nightshift at {a} uses it." in out
-    assert "forget the Pexels" not in out and "Left the stock-footage keys in Credential Manager" in out
+    # B has no Python environment here, so Credential Manager is not looked into: left, and the line says so
+    assert "remove from Credential Manager" not in out
+    assert f"Left Credential Manager as it is (not looked into: this install has no Python environment to look with): any stock-footage keys in it are used by the Nightshift at {a}." in out
     assert "remove user environment variable" not in out and f"Left NIGHTSHIFT_HOME: it names the Nightshift at {a}." in out
     assert links(desktop).keys() >= before.keys() and (b / "Shortcuts").is_dir()  # a dry run changes nothing
     # a task that does not say which Nightshift it runs, and one on a drive that is not there: left, and said
@@ -603,14 +605,14 @@ def test_uninstalling_the_only_install_still_removes_all_of_it(tmp_path: Path):
     mine = put_shortcuts(desktop, b)
     write_lnk(desktop / "Nightshift Code.lnk", direct(b, "nightshift-code.ps1"), str(b))  # 0.1.14's form
     (b / "Shortcuts").mkdir()
-    machine = {"task": {"arguments": schedule.action_arguments(Paths(b))}, "userHome": str(b), "toastKey": True}
+    machine = {"task": {"arguments": schedule.action_arguments(Paths(b))}, "userHome": str(b), "toastKey": True, "credentials": ["Nightshift"]}
     proc = uninstall_dry(b, desktop, machine)
     out = proc.stdout
     assert proc.returncode == 0, out + proc.stderr
     assert "[dry-run] remove scheduled task 'Nightshift Daily'" in out
     for name in [*mine, "Nightshift Code.lnk"]:
         assert f"[dry-run] delete shortcut {desktop / name}" in out
-    assert "[dry-run] remove toast registration" in out and "[dry-run] forget the Pexels and Pixabay keys" in out
+    assert "[dry-run] remove toast registration" in out and "[dry-run] remove from Credential Manager with cmdkey: Nightshift (" in out
     assert "[dry-run] remove user environment variable NIGHTSHIFT_HOME" in out
     assert f"[dry-run] delete folder {b / 'Shortcuts'}" in out
     assert not [ln for ln in out.splitlines() if ln.startswith("Left ")]
@@ -777,8 +779,8 @@ def test_uninstalling_the_first_install_says_the_second_is_still_there_and_keeps
     machine = {"task": {"arguments": schedule.action_arguments(Paths(a))}, "userHome": str(a), "toastKey": True, "installs": [str(a), *known, str(tmp_path / "deleted")]}
     out = uninstall_dry(a, desktop, machine).stdout
     assert "[dry-run] remove scheduled task" in out and "[dry-run] remove user environment variable NIGHTSHIFT_HOME" in out
-    assert "remove toast registration" not in out and "forget the Pexels" not in out  # B uses them
-    assert f"Left the stock-footage keys in Credential Manager: the Nightshift at {b} uses them." in out
+    assert "remove toast registration" not in out and "remove from Credential Manager" not in out  # B uses them
+    assert f"Left Credential Manager as it is (not looked into: this install has no Python environment to look with): any stock-footage keys in it are used by the Nightshift at {b}." in out
     assert f"Another Nightshift is still installed at {b}." in out and f"run INSTALL.cmd in {b / 'app'}" in out
     assert str(tmp_path / "deleted") not in out
     # the window shows that sentence too, and still reports the Desktop shortcuts as removed

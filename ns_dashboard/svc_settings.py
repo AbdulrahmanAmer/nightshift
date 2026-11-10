@@ -152,7 +152,7 @@ class SettingsService:
         """Save Automatic runs (the switch and the time), notifications and (only when unlocked) runtime flags.
 
         `schedule_result` in the answer is what the page says about the switch or the time: `applied`, a
-        `note` in words and the `code` (NS-W205, NS-E204) when there is one. `schedule_registered`,
+        `note` in words and the `code` (NS-W205, NS-E204, NS-E206) when there is one. `schedule_registered`,
         `schedule_time` and `next_run` beside it are read after the change, from the record of what Windows has.
         """
         unlocked = unlock or body.get("unlock") is True

@@ -157,7 +157,7 @@ function ConfirmCard({ c, what, onYes, onNo }: { c: Confirm; what: string; onYes
 const CAN: { icon: IconName; t: string; s: string }[] = [
   { icon: "wand", t: "Start a story video or clips", s: "For any channel, with the same options as Create" },
   { icon: "lightbulb", t: "Draft story concepts", s: "Three concepts for a series, and redo any of them" },
-  { icon: "pause", t: "Pause or resume channels", s: "Skips tonight's run for that channel" },
+  { icon: "pause", t: "Pause or resume channels", s: "A paused channel makes no story videos until it is resumed" },
   { icon: "fileSearch", t: "Find files and explain results", s: "Where a video is, why a run stopped, what changed" },
   { icon: "scissors", t: "Cut clips from a link", s: "Paste a link to a video you own" },
 ];

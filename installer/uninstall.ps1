@@ -19,8 +19,9 @@
                  (then %LOCALAPPDATA%\Nightshift) only when that install runs THIS program folder; otherwise it
                  changes nothing and asks for -HomeDir: the variable may name another Nightshift folder.
     -DesktopDir  the Desktop folder to look in, instead of this user's and the public one.
-    -StateFile   with -DryRun only: a JSON file {task: {arguments} or null, userHome, toastKey} that stands in
-                 for what Windows has, so a dry run reads nothing of this PC (the tests use it).
+    -StateFile   with -DryRun only: a JSON file {task: {arguments} or null, userHome, toastKey, installs,
+                 credentials} that stands in for what Windows has, so a dry run reads nothing of this PC (the
+                 tests use it; credentials: the names of Nightshift's entries in Credential Manager).
     -DryRun      print "[dry-run] <action>" lines, change nothing, exit 0.
     -SkipSystem  leave the scheduled task, shortcuts and environment variable alone (used by CI).
     -KeepBin     leave bin for the caller to remove after it has exited (the uninstall window itself has
@@ -494,28 +495,139 @@ if (-not $SkipSystem) {
 }
 
 # ---- the stock-footage keys -----------------------------------------------------------------------------
-# A key left in Credential Manager or config\secrets.dpapi made the next setup on this PC fail (it validated the
-# stale key and stopped). Forget both copies, best effort, before the venv that can talk to the vault goes.
-if (-not $SkipSystem) {
-    if ($others.Count -gt 0) { Write-Host "Left the stock-footage keys in Credential Manager: the Nightshift at $($others[0]) uses them." }
-    elseif ($script:IsDry) { Show-Action 'forget the Pexels and Pixabay keys in Credential Manager' }
-    else {
-        $kpy = Join-Path $nsHome 'venvs\supervisor\Scripts\python.exe'
-        $forgot = $false
-        if (Test-Path -LiteralPath $kpy) {
-            try {
-                & $kpy -I -c "import keyring`nfor n in ('pexels_api_key','pixabay_api_key'):`n    try: keyring.delete_password('Nightshift', n)`n    except Exception: pass" 2>$null | Out-Null
-                $forgot = $true
-            } catch { $forgot = $false }
+# A key is kept in two places: Windows Credential Manager (one per Windows account, so every Nightshift folder
+# of this account shares it) and config\secrets.dpapi (this folder's own). A key left behind made the next
+# setup on this PC fail (it validated the stale key and stopped). What happened to them is said by the one
+# function that knows both places (installer.stage2.secrets, forget_stock_keys), run with this install's own
+# Python before its environment goes below; its lines are printed as they are. Without that Python, or when it
+# cannot reach Credential Manager, this script looks with cmdkey itself and its lines say so.
+$secretsFile = Join-Path (Join-Path $nsHome 'config') 'secrets.dpapi'
+$KeysByHand = 'open Control Panel > Credential Manager > Windows Credentials and remove every entry whose name ends in Nightshift'
+
+function Get-NightshiftCredential {
+    # The Credential Manager entries keyring makes for Nightshift ('Nightshift' and '<key name>@Nightshift'):
+    # @{ Ok; Entries (Target to delete, Name shown); Problem }. A described PC (-StateFile) lists them as
+    # 'credentials'; a test run without one reads nothing of this PC. cmdkey's labels are in the language of
+    # Windows, so a line is matched by the entry's name at its end, never by its label.
+    if ($null -ne $machine) {
+        $listed = @(Get-MachineValue 'credentials' | Where-Object { $_ } | ForEach-Object { [pscustomobject]@{ Target = [string]$_; Name = [string]$_ } })
+        return @{ Ok = $true; Entries = $listed; Problem = '' }
+    }
+    if ($env:NS_UNDER_TEST -or $env:PYTEST_CURRENT_TEST) { return @{ Ok = $false; Entries = @(); Problem = 'a test run reads nothing of this PC' } }
+    $saved = $ErrorActionPreference
+    $lines = @()
+    $code = 0
+    try {
+        $ErrorActionPreference = 'Continue'
+        $lines = @(& cmdkey.exe /list 2>$null)
+        $code = $LASTEXITCODE
+    }
+    catch { return @{ Ok = $false; Entries = @(); Problem = "cmdkey could not run: $($_.Exception.Message)" } }
+    finally { $ErrorActionPreference = $saved }
+    if ($code -ne 0) { return @{ Ok = $false; Entries = @(); Problem = "cmdkey /list stopped with exit code $code" } }
+    $found = @()
+    foreach ($line in $lines) {
+        $token = @(([string]$line).Trim() -split '\s+')[-1]
+        $name = $token
+        $at = $token.ToLowerInvariant().LastIndexOf('target=')
+        if ($at -ge 0) { $name = $token.Substring($at + 7) }
+        if ($name -match '^(?:[A-Za-z0-9_]+@)?Nightshift$') { $found += [pscustomobject]@{ Target = $token; Name = $name } }
+    }
+    return @{ Ok = $true; Entries = $found; Problem = '' }
+}
+
+function Remove-NightshiftCredential {
+    # Credential Manager without Python: cmdkey removes each entry, and a second look says what is gone.
+    param([string]$Why)
+    $look = Get-NightshiftCredential
+    if (-not $look.Ok) {
+        Write-Host "  could not check the stock-footage keys in Credential Manager ($Why; $($look.Problem)): $KeysByHand"
+        return
+    }
+    $entries = @($look.Entries)
+    if ($entries.Count -eq 0) {
+        if ($script:IsDry) { Show-Action "no stock-footage keys found in Credential Manager ($Why)" }
+        else { Write-Host "  no stock-footage keys found in Credential Manager ($Why)" }
+        return
+    }
+    $names = ($entries | ForEach-Object { $_.Name }) -join ', '
+    if ($script:IsDry) { Show-Action "remove from Credential Manager with cmdkey: $names ($Why)"; return }
+    $saved = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        foreach ($entry in $entries) {
+            & cmdkey.exe "/delete:$($entry.Target)" 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0 -and $entry.Target -ne $entry.Name) { & cmdkey.exe "/delete:$($entry.Name)" 2>$null | Out-Null }
         }
-        if (-not $forgot) { foreach ($i in 1..2) { cmdkey /delete:Nightshift 2>$null | Out-Null } }
-        Write-Host '  forgot the stock-footage keys in Credential Manager'
+    }
+    catch { Write-Verbose "cmdkey: $($_.Exception.Message)" }
+    finally { $ErrorActionPreference = $saved }
+    $after = Get-NightshiftCredential
+    if (-not $after.Ok) {
+        Write-Host "  asked cmdkey to remove $names from Credential Manager and could not look again ($Why; $($after.Problem)): if they are still listed, $KeysByHand"
+        return
+    }
+    $still = @($after.Entries | ForEach-Object { $_.Name })
+    $gone = @($entries | Where-Object { $still -notcontains $_.Name } | ForEach-Object { $_.Name })
+    $left = @($entries | Where-Object { $still -contains $_.Name } | ForEach-Object { $_.Name })
+    if ($gone.Count -gt 0) { Write-Host "  removed from Credential Manager with cmdkey: $($gone -join ', ') ($Why)" }
+    if ($left.Count -gt 0) { Write-Host "  could not remove from Credential Manager with cmdkey: $($left -join ', ') ($Why): $KeysByHand" }
+}
+
+function Remove-SecretsFile {
+    # This folder's copy of the keys, when no Python said what became of it.
+    if (-not (Test-Path -LiteralPath $secretsFile -PathType Leaf)) { return }
+    if ($script:IsDry) { Show-Action "delete $secretsFile"; return }
+    try {
+        Remove-Item -LiteralPath $secretsFile -Force -ErrorAction Stop
+        Write-Host "  removed $secretsFile (where nightly runs keep a copy of the stock-footage keys)"
+    }
+    catch { Write-Host "  could not remove $secretsFile ($($_.Exception.Message)): delete it by hand, it may still hold stock-footage keys" }
+}
+
+function Invoke-KeysProgram {
+    # installer.stage2.secrets with this install's Python: @{ Lines; Code } (Code -1: it could not start).
+    param([string]$Python, [string[]]$Arguments)
+    $saved = $ErrorActionPreference
+    $encoding = $null
+    try {
+        $ErrorActionPreference = 'Continue'
+        try { $encoding = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false }
+        catch { $encoding = $null }
+        $out = @(& $Python -I -X utf8 -m installer.stage2.secrets forget @Arguments 2>$null)
+        return @{ Lines = $out; Code = $LASTEXITCODE }
+    }
+    catch { return @{ Lines = @(); Code = -1 } }
+    finally {
+        if ($null -ne $encoding) { try { [Console]::OutputEncoding = $encoding } catch { Write-Verbose 'console encoding kept' } }
+        $ErrorActionPreference = $saved
     }
 }
-$secretsFile = Join-Path (Join-Path $nsHome 'config') 'secrets.dpapi'
-if (Test-Path -LiteralPath $secretsFile) {
-    if ($script:IsDry) { Show-Action "delete $secretsFile" }
-    else { Remove-Item -LiteralPath $secretsFile -Force -ErrorAction SilentlyContinue; Write-Host "  removed $secretsFile" }
+
+if ($SkipSystem) { Remove-SecretsFile }     # Credential Manager is part of this PC: left alone
+else {
+    $keysPython = Join-Path $nsHome 'venvs\supervisor\Scripts\python.exe'
+    $usedBy = ''
+    if ($others.Count -gt 0) { $usedBy = $others[0] }
+    $why = 'this install has no Python environment to look with'
+    $saidFile = $false
+    $vaultAsked = $false
+    if (Test-Path -LiteralPath $keysPython -PathType Leaf) {
+        $keysArgs = @('--home', $nsHome)
+        if ($script:IsDry) { $keysArgs += '--dry-run' }
+        if ($usedBy) { $keysArgs += @('--used-by', $usedBy) }
+        $said = Invoke-KeysProgram -Python $keysPython -Arguments $keysArgs
+        foreach ($line in @($said.Lines)) { Write-Host ([string]$line) }
+        if ($said.Code -eq 0) { $vaultAsked = $true; $saidFile = $true }
+        elseif ($said.Code -eq 4) { $why = "this install's Python has no keyring package"; $saidFile = $true }
+        elseif ($said.Code -eq -1) { $why = "this install's Python could not start" }
+        else { $why = "this install's Python stopped with exit code $($said.Code)" }
+    }
+    if (-not $vaultAsked) {
+        if ($usedBy) { Write-Host "Left Credential Manager as it is (not looked into: $why): any stock-footage keys in it are used by the Nightshift at $usedBy." }
+        else { Remove-NightshiftCredential -Why $why }
+    }
+    if (-not $saidFile) { Remove-SecretsFile }
 }
 
 # The install state describes the program being removed; the next setup must run its steps again (the

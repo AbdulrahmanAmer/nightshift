@@ -285,7 +285,6 @@ const LOGS = [
 
 const STAYS = [
   "Your settings and logs, in D:\\Nightshift\\config and D:\\Nightshift\\logs",
-  "Your stock footage keys, in Windows Credential Manager",
   "The Visual C++ runtime, FFmpeg and Windows Terminal, which other programs use",
   "The Python that setup fetched and its download cache (several GB), in your user folders",
 ];
@@ -375,7 +374,7 @@ export function fixture(name: string): { state: SetupState | null; uninstall: Un
     case "uninstall-done":
       return {
         state: null,
-        uninstall: uninstallView({ result: { removed: ["The nightly task", "Desktop shortcuts", "Programs and Python environments"], kept: [{ label: "AI models", path: "D:\\Nightshift\\models" }, { label: "Videos and history", path: "D:\\Nightshift\\data" }], stays: STAYS } }),
+        uninstall: uninstallView({ result: { removed: ["The nightly task", "Desktop shortcuts", "Programs and Python environments"], kept: [{ label: "AI models", path: "D:\\Nightshift\\models" }, { label: "Videos and history", path: "D:\\Nightshift\\data" }], stays: STAYS, keys: ["forgot the Pixabay key in Credential Manager", "removed D:\\Nightshift\\config\\secrets.dpapi (the copy of the Pixabay key for nightly runs)"] } }),
       };
     default: return { state: baseState(), uninstall: null };
   }

@@ -222,7 +222,9 @@ class BackupAdapter(Protocol):
 class ScheduleAdapter(Protocol):
     """Automatic runs: the switch and the nightly run time, applied to the Windows task.
 
-    Both answer `{applied, note}` and, when there is one, the `code` of what happened (NS-W205, NS-E204).
+    Both answer `{applied, note}` and, when there is one, the `code` of what happened
+    (NS-W205; NS-E204 for a refused switch-on or time, NS-E206 for a refused switch-off:
+    `ns_supervisor.schedule.refused_code`).
     """
 
     def apply(self, run_time: str) -> dict[str, Any]: ...
@@ -1092,9 +1094,12 @@ class RealScheduleAdapter:
         from ns_common.errors import describe
         from ns_supervisor.control import app_path
         from ns_supervisor.schedule import (
+            SWITCH_OFF_FAILED,
+            ScheduleBusy,
             ScheduleError,
             ScheduleFileError,
             ScheduleUnrecorded,
+            refused_code,
             set_automatic,
         )
         from ns_supervisor.schedule_cfg import is_on
@@ -1109,20 +1114,23 @@ class RealScheduleAdapter:
                 "applied": False, "code": "NS-W208",
                 "note": f"NS-W208: {w.message} Windows runs it at {e.run_time}. {w.hint}",
             }
-        except ScheduleFileError as e:
-            # Nightshift's own lock or record, not Windows: the elevated-PowerShell hint would be untrue
+        except (ScheduleFileError, ScheduleBusy) as e:
+            # Nightshift's own lock or record, or another change that holds the lock: Windows was not asked,
+            # so neither the elevated-PowerShell hint nor Task Scheduler would be the way out
+            code = refused_code(on)
             shown = "on" if is_on(self.paths) else "off"
             return {
-                "applied": False, "code": "NS-E204",
-                "note": f"Not saved (NS-E204): {e}. This page shows Automatic runs {shown}.",
+                "applied": False, "code": code,
+                "note": f"Not saved ({code}): {e}. This page shows Automatic runs {shown}.",
             }
         except ScheduleError as e:
+            code = refused_code(on)
             still = "on" if is_on(self.paths) else "off"
-            hint = describe("NS-E204").hint
+            did = "switch off" if code == SWITCH_OFF_FAILED else "change"
             return {
-                "applied": False, "code": "NS-E204",
-                "note": f"Not saved: Windows did not change the nightly task ({e}). Automatic runs are still "
-                        f"{still}. NS-E204: {hint}",
+                "applied": False, "code": code,
+                "note": f"Not saved: Windows did not {did} the nightly task ({e}). Automatic runs are still "
+                        f"{still}. {code}: {describe(code).hint}",
             }
         if not out.on:
             note = (

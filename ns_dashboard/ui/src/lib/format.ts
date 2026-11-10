@@ -92,6 +92,8 @@ export const doneWords = (j: { kind: string; result?: { output_ids?: string[] } 
   return n ? `Done · ${plural(n, "video")}` : "Done · no videos";
 };
 
+/** Whether a nightly run is coming: Automatic runs are on (an enabled task) and a run is due (an active channel; the server gives `next_run` only then). The one test every page sentence that promises "tonight's run" or "the next night" is chosen by (tests/test_nightly_promise_is_conditional.py). */
+export const nightComes = (s?: { next_run?: string | null; schedule_registered?: boolean } | null) => !!s?.next_run && !!s?.schedule_registered;
 /** What the top bar, the Queue and Settings say while Automatic runs are off (no enabled 'Nightshift Daily' task): a choice, not a fault. */
 export const RUNS_OFF = "Nothing runs by itself; videos are made only when you start them";
 /** NS-W205: Windows refused the unattended task, so it runs only while the owner is signed in. */
