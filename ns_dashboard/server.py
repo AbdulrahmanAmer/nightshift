@@ -499,8 +499,8 @@ def create_app(
         return ok(await run_in_threadpool(dash.engine.notes))
 
     @app.post("/api/notes/clear")
-    async def notes_clear() -> SafeJSONResponse:
-        return ok(await run_in_threadpool(dash.engine.clear_notes))
+    async def notes_clear(request: Request) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.engine.dismiss_notes, await body_json(request)))
 
     @app.get("/api/runs")
     async def runs(request: Request) -> SafeJSONResponse:

@@ -266,9 +266,10 @@ def leave_note(paths: Paths, log: NsLogger, message: str) -> bool:
     (the file is held); an install without the note store has nowhere to say it and counts as said."""
     try:
         notify = importlib.import_module("ns_supervisor.notify")
-        if any(n.get("message") == message for n in notify.read_notes(paths)):
+        # "already said" is decided by the owner of the notes, under its lock (two runs at once say it once)
+        waits = lambda notes: any(n["message"] == message for n in notes)  # noqa: E731
+        if not notify.leave_note(paths, NOTE_TITLE, message, once=waits):
             return True
-        notify.leave_note(paths, NOTE_TITLE, message)
     except (ImportError, AttributeError) as e:
         log.warn("pending_voice_note_unavailable", str(e))
         return True

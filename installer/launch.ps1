@@ -1,4 +1,4 @@
-# STUB_SCHEMA: 3
+# STUB_SCHEMA: 4
 param(
     [string]$Launcher = '',
     [switch]$Nightly,
@@ -172,12 +172,89 @@ function Show-Toast {
     } catch { return ('failed: ' + $_.Exception.Message) }
 }
 
+function Open-NsNotesLock {
+    # The one lock of the Dashboard's notes: byte 0 of the file morning_note.lock in <home>\run, locked by
+    # Windows. The program takes the same byte (ns_supervisor/notify.py, through msvcrt.locking), so its
+    # writers and this script never change the notes at the same time. The lock belongs to the open file:
+    # when its holder ends or is killed, Windows drops it, so the file that stays on disk never keeps anybody
+    # out. Returns the open file (Dispose it to release), or nothing when the lock was not free in -WaitMs.
+    param([Parameter(Mandatory = $true)][string]$RunDir, [int]$WaitMs = 5000)
+    $until = [DateTime]::UtcNow.AddMilliseconds($WaitMs)
+    while ($true) {
+        $file = $null
+        try {
+            [void][IO.Directory]::CreateDirectory($RunDir)
+            $file = New-Object System.IO.FileStream((Join-Path $RunDir 'morning_note.lock'), [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)
+            $file.Lock(0, 1)
+            return $file
+        } catch {
+            if ($null -ne $file) { $file.Dispose() }
+            if ([DateTime]::UtcNow -ge $until) { return $null }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+}
+
+function Add-NsMorningNote {
+    # The only place this script touches the Dashboard's notes (the program's side is ns_supervisor/notify.py,
+    # which owns the file; tests/test_morning_notes_owner.py fails on any other writer). One read-modify-write
+    # under the notes lock: read, skip when a waiting note already says it (its message starts with -OnceStart
+    # and contains -OnceHas), add, swap the file. No waiting note is dropped to make room. The file keeps the
+    # format 0.1.14 reads: UTF-8 without a byte order mark, { notes: [ { at, title, message } ] }.
+    # A damaged file is never emptied: it is first copied to a file of the same name plus .bad-<its time>,
+    # then replaced by what could be read of it plus a note that says so (notify.damaged_message's words).
+    # Returns true when the note was added and false when it was said already; throws when it could not be
+    # written (the lock not free in 5 seconds, the notes full, the file not readable or writable): then
+    # nothing was changed and the caller keeps what it wanted to say for the next start.
+    param([Parameter(Mandatory = $true)][string]$Message, [string]$OnceStart = '', [string]$OnceHas = '')
+    $run = Join-Path $nsHome 'run'
+    $notesFile = Join-Path $run 'morning_note.json'
+    $lock = Open-NsNotesLock -RunDir $run
+    if ($null -eq $lock) { throw 'the notes are being written by another program (waited 5 seconds); nothing was changed' }
+    try {
+        $notes = @()
+        $damaged = $false
+        if (Test-Path -LiteralPath $notesFile -PathType Leaf) {
+            $text = [IO.File]::ReadAllText($notesFile)
+            $read = $null
+            try { $read = $text | ConvertFrom-Json } catch { $damaged = $true }
+            if (-not $damaged) {
+                if (($read -is [System.Management.Automation.PSCustomObject]) -and $read.PSObject.Properties['notes'] -and ($read.notes -is [array])) {
+                    foreach ($n in $read.notes) {
+                        if ($n -is [System.Management.Automation.PSCustomObject]) { $notes += $n } else { $damaged = $true }
+                    }
+                } else { $damaged = $true }
+            }
+        }
+        $now = [DateTime]::Now.ToString('s')
+        if ($damaged) {
+            $kept = $notesFile + '.bad-' + [IO.File]::GetLastWriteTime($notesFile).ToString('yyyyMMdd-HHmmss', $inv)
+            [IO.File]::Copy($notesFile, $kept, $true)
+            $notes += [ordered]@{ at = $now; title = 'Nightshift'; message = 'Nightshift could not read its waiting notes: the file that holds them was damaged. The notes that could still be read are listed here. The damaged file was kept as ' + $kept + '; open it in Notepad to see what else it held.' }
+        }
+        $said = @($notes | Where-Object {
+                $OnceStart -and ($_ -is [System.Management.Automation.PSCustomObject]) -and $_.PSObject.Properties['message'] -and ([string]$_.message).StartsWith($OnceStart) -and ([string]$_.message).Contains($OnceHas)
+            })
+        $add = ($said.Count -eq 0)
+        # the program refuses new notes at 200 waiting and says so in the notes; this script stops one short
+        if ($add -and @($notes).Count -ge 199) { throw 'the notes are full (199 or more wait unread); nothing was changed' }
+        if ($add) { $notes += [ordered]@{ at = $now; title = 'Nightshift'; message = $Message } }
+        if ($add -or $damaged) {
+            Write-NsFileSwap -Path $notesFile -Text ((ConvertTo-Json -InputObject ([ordered]@{ notes = @($notes) }) -Depth 5) + "`n")
+        }
+        return $add
+    }
+    finally { $lock.Dispose() }
+}
+
 function Restore-AfterMiss {
     # The program is back. One morning note, then the Desktop note, then the count: a failure keeps the
     # count for the next start, and never stops what this start was asked to run. The count's file is held
     # open, sharing nothing but its deletion, from before the note until the count is gone: a second
     # starter (a shortcut, the nightly task, the engine's -Cleanup) cannot open it and leaves the work to
-    # the first. Says what it did: nothing, busy, waiting, cleared, or kept: <why>.
+    # the first. The note goes through Add-NsMorningNote, which waits up to 5 seconds for the program's
+    # writers; when it cannot write, the count stays and the next start leaves the note.
+    # Says what it did: nothing, busy, waiting, cleared, or kept: <why>.
     param([bool]$EnvironmentKnown)
     $held = $null
     try {
@@ -192,22 +269,12 @@ function Restore-AfterMiss {
                 $exe = Join-Path $nsHome 'venvs\studio\Scripts\studio.exe'
                 if (-not $EnvironmentKnown -and -not (Test-Path -LiteralPath $exe -PathType Leaf)) { return 'waiting' }
             }
-            $notesFile = Join-Path (Join-Path $nsHome 'run') 'morning_note.json'
-            $notes = @()
-            if (Test-Path -LiteralPath $notesFile -PathType Leaf) {
-                try { $notes = @(([IO.File]::ReadAllText($notesFile) | ConvertFrom-Json).notes) } catch { $notes = @() }
-            }
+            # said once per first missed date: a start killed after the note and before the count went
+            $start = 'Nightshift did not run on '
             $mark = ', from ' + $m.first + ' to '
-            $said = @($notes | Where-Object {
-                    $_ -and $_.PSObject.Properties['message'] -and ([string]$_.message).StartsWith('Nightshift did not run on ') -and ([string]$_.message).Contains($mark)
-                })
-            if ($said.Count -eq 0) {
-                $message = 'Nightshift did not run on ' + (Get-Nights $m.nights) + $mark + $m.last + ': its ' + $thing +
-                    ' was missing until it was put back on ' + $today + '.'
-                $all = @($notes) + @([ordered]@{ at = [DateTime]::Now.ToString('s'); title = 'Nightshift'; message = $message })
-                if ($all.Count -gt 20) { $all = @($all[($all.Count - 20)..($all.Count - 1)]) }
-                Write-NsFileSwap -Path $notesFile -Text ((ConvertTo-Json -InputObject ([ordered]@{ notes = $all }) -Depth 5) + "`n")
-            }
+            $message = $start + (Get-Nights $m.nights) + $mark + $m.last + ': its ' + $thing +
+                ' was missing until it was put back on ' + $today + '.'
+            [void](Add-NsMorningNote -Message $message -OnceStart $start -OnceHas $mark)
         }
         $desk = Get-NoteFolder
         if ($desk) {

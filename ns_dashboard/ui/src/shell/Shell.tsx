@@ -102,11 +102,11 @@ function Notifications() {
   const jobs = useLoad<Job[]>(() => (status ? api.get("/jobs") : Promise.resolve([])), [status?.engine?.state], []);
   const { channelName } = useApp();
   useDismiss(open, () => setOpen(false), ref);
-  // Notes the nightly run left because Windows could not show a toast then; reading them here removes them.
+  // Notes Nightshift left while nobody was at the screen. Mark all read removes the ones listed here, by id: a note that arrives while the list is open waits for the next look.
   const notes = useLoad<MorningNote[]>(() => (status ? api.get("/notes") : Promise.resolve([])), [status?.engine?.state, open], []);
   const events = jobs.data.filter((j) => !["queued", "running"].includes(j.status)).slice(0, 6);
   const unread = events.filter((j) => (j.created_at || "") > readAt);
-  const markRead = () => { const t = new Date().toISOString(); setReadAt(t); store.set("ns-notif-read", t); if (notes.data.length) api.post("/notes/clear").then(() => notes.reload()).catch(() => undefined); };
+  const markRead = () => { const t = new Date().toISOString(); setReadAt(t); store.set("ns-notif-read", t); if (notes.data.length) api.post("/notes/clear", { ids: notes.data.map((n) => n.id) }).then(() => notes.reload()).catch(() => notes.reload()); };
   const label = unread.length ? `Notifications, ${unread.length} unread` : "Notifications";
   return (
     <div ref={ref} className="relative">

@@ -537,9 +537,13 @@ def test_morning_notes_are_listed_and_cleared(tmp_home: Path):
     f = state.paths.home / "run" / "morning_note.json"
     f.parent.mkdir(parents=True)
     f.write_text(json.dumps({"notes": [{"at": "2026-11-03T03:30:00", "title": "Nightshift", "message": "2 videos are ready"}, "junk"]}), encoding="utf-8")
-    assert dash.engine.notes() == [{"at": "2026-11-03T03:30:00", "title": "Nightshift", "message": "2 videos are ready"}]
-    dash.engine.clear_notes()
+    # FN-2: an entry that is no note makes the file a damaged one: it is kept aside and the bell says so
+    first, said = dash.engine.notes()
+    assert {k: first[k] for k in ("at", "title", "message")} == {"at": "2026-11-03T03:30:00", "title": "Nightshift", "message": "2 videos are ready"}
+    assert said["message"].startswith("Nightshift could not read its waiting notes") and len(list(f.parent.glob("morning_note.json.bad-*"))) == 1
+    assert dash.engine.dismiss_notes({"ids": [first["id"], said["id"]]}) == {"ok": True, "removed": 2, "left": 0}
     assert not f.exists() and dash.engine.notes() == []
     f.write_text("{broken", encoding="utf-8")
-    assert dash.engine.notes() == []
+    (told,) = dash.engine.notes()
+    assert told["message"].startswith("Nightshift could not read its waiting notes")
 

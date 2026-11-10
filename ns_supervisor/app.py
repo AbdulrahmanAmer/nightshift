@@ -275,12 +275,14 @@ def _with_hint(code: str, line: str) -> str:
 
 
 def _note_once(paths: Paths, log: Any, message: str, code: str, about: str) -> None:
-    """Leave `message` as a morning note unless a note with the same code about the same file still waits."""
-    waiting = notify.read_notes(paths)
-    if any(n.get("message", "").startswith(f"{code}:") and about in n.get("message", "") for n in waiting):
-        return
+    """Leave `message` as a morning note unless a note with the same code about the same file still waits
+    (the owner of the notes decides that under its lock: two starts at once say it once)."""
+
+    def waits(notes: list[notify.Note]) -> bool:
+        return any(n["message"].startswith(f"{code}:") and about in n["message"] for n in notes)
+
     try:
-        notify.leave_note(paths, "Nightshift", message)
+        notify.leave_note(paths, "Nightshift", message, once=waits)
     except OSError as e:  # a note must never stop an engine start
         log.warn("morning_note_failed", str(e))
 
