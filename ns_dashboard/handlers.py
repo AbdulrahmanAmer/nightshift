@@ -105,17 +105,11 @@ def build_state(
 
     def recover_studio_work() -> None:
         """Engine start: a run or job whose process is gone is closed as interrupted and offered (D-31)."""
-        from ns_studio import jobs as studio_jobs
         from ns_studio import ownership
 
-        # The dashboard never runs a stage, so nothing has put the Short combos and the policy gates into the
-        # stage table of this process. Recovery reads that table to say which stage an interrupted job had
-        # reached; without them its card named the stage after a gate ("voice" for a job stopped in the policy
-        # check). Completing the table is idempotent and loads no stage module.
-        try:
-            studio_jobs.install_plan_extras()
-        except Exception as e:  # a card may then name a stage one too early; recovery itself must still run
-            log.warn("stage_table_incomplete", str(e))
+        # Recovery says which stage an interrupted job had reached. It reads the job's own plan through
+        # `orchestrator.plan_names`, which completes a bare stage table itself (Short combos, policy gates,
+        # the Clipper's stages), so this process, which never runs a stage, needs no set-up call here.
         ownership.recover(paths, db, log=log)
 
     worker = JobWorker(

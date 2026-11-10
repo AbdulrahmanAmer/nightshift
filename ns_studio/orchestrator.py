@@ -114,9 +114,13 @@ FORMAT_STAGES: dict[str, list[str]] = {
     "series_compilation": [],
     "clip": [],
 }
-# The table above is completed once per process, when the stage modules load (`jobs.load_stage_modules`):
-# the per-Short combo stage goes into COMBO_FORMATS and the two policy gates into GATED_FORMATS. A job never
-# writes it: a job whose policy is off leaves the gates out of its own copy (`plan_names`).
+# The table above is the bare one: the per-Short combo stage (COMBO_FORMATS), the two policy gates
+# (GATED_FORMATS) and the Clipper's stages are put in by the modules that own them. A process that runs jobs
+# does that when the stage modules load (`jobs.load_stage_modules`); a process that only READS a job's
+# progress (`studio status`, the dashboard's recovery and status, the nightly's note) loads no stage
+# module, so `plan_names`, the one reader, completes an entry that is still bare before it answers
+# (`complete_plan`).
+# A job never writes the table: a job whose policy is off leaves the gates out of its own copy (`plan_names`).
 POLICY_STAGES: tuple[str, ...] = ("policy_text", "policy_final")  # `policy/gate.py` TEXT_STAGE, FINAL_STAGE
 COMBO_FORMATS: tuple[str, ...] = ("master_first", "master_from_script", "master_from_owner_script")
 GATED_FORMATS: tuple[str, ...] = (
@@ -131,6 +135,40 @@ OWNER_SCRIPT_FORMATS: dict[str, str] = {
     "master_first": "master_from_owner_script",
     "shorts_only": "shorts_from_owner_script",
 }
+
+
+# What the table held when this module was written into memory. An entry that still equals it has not been
+# completed in this process; any other value was put there by an installer or by a caller and is left alone.
+_BARE_PLANS: dict[str, tuple[str, ...]] = {key: tuple(names) for key, names in FORMAT_STAGES.items()}
+
+
+def complete_plan(key: str) -> None:
+    """Complete the table entry `key` when it is still the bare plan of this module; else do nothing.
+
+    Every reader of a plan comes through `plan_names`, which calls this first, so no process and no caller has
+    to remember a set-up call before it names a job's stage. The Short combos go in before the gates (the text
+    gate of a master-first plan sits after `short_combos`); a clip plan comes from the Clipper, which is
+    imported for it. A Clipper that cannot be imported leaves the clip plan empty: such a process could not
+    run a clip either, and a reader then names no stage instead of a wrong one.
+    """
+    current = FORMAT_STAGES.get(key)
+    if current is None or tuple(current) != _BARE_PLANS.get(key):
+        return
+    if key == "clip":
+        try:
+            from ns_studio.clipper import stages_clip
+        except ImportError:
+            return
+        stages_clip.register_clip_stages()
+        return
+    if key in COMBO_FORMATS:
+        from ns_studio.variation.stages import install_short_combos
+
+        install_short_combos(key)
+    if key in GATED_FORMATS:
+        from ns_studio.policy import gate  # imported here: gate imports this module
+
+        gate.install_gates(key)
 
 
 def _tenant_of(stage: Stage) -> Tenant:
@@ -177,8 +215,11 @@ def job_policy(job_dir: Path) -> bool:
 def plan_names(key: str, policy: bool) -> list[str]:
     """The stage names of plan `key` for a job whose policy is `policy`: a new list, the table is not touched.
 
-    With the policy off the gate stages (`POLICY_STAGES`) are left out; nothing else changes.
+    With the policy off the gate stages (`POLICY_STAGES`) are left out; nothing else changes. The entry is
+    completed first when this process has not done so (`complete_plan`), so the answer is the same in a
+    process that runs jobs and in one that only reads their progress.
     """
+    complete_plan(key)
     return [n for n in FORMAT_STAGES.get(key) or () if policy or n not in POLICY_STAGES]
 
 
