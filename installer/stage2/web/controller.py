@@ -45,6 +45,7 @@ from installer.stage2.web import (
     rows,
     samples,
     shortcuts_view,
+    venvrepair,
 )
 from installer.stage2.web.engine import EngineProcess, wizard_argv, wizard_env
 from installer.stage2.web.filesdir import beside as files_beside
@@ -84,6 +85,10 @@ UPDATE_STEPS = (
 )
 EXIT_ALREADY_RUNNING = 15
 EXIT_STOPPED = 130
+#: D-39b: after the engine was asked to stop, how long setup waits for every program that runs from the
+#: install's Python environments to end before it refuses (NS-E706, nothing changed), and how often it looks.
+HOLDER_WAIT_S = 60.0
+HOLDER_PAUSE_S = 2.0
 DETACHED = 0x00000008 | 0x00000200      # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP (Windows only)
 SHORTCUTS = ("Nightshift Dashboard", "Nightshift Studio", "Nightshift Outbox", "Nightshift - Stop All",
              "Nightshift - Update", "Nightshift - Diagnostics")
@@ -1378,7 +1383,70 @@ class SetupController:
         with keepawake.keep_awake(self.fx.set_execution_state):     # released when the run ends or fails
             self._pipeline_run()
 
+    def _guard_venvs(self) -> FileLock | None:
+        """D-39b, the one place setup enforces it: setup (INSTALL.cmd over an install, Repair) rewrites the
+        Python environments only as the holder of ``run/update.lock`` (the lock every updater and the launch
+        script's repair take) and only when no program runs from them. Over an install that has environments:
+        take the lock (held for the whole run; ``NS-E705`` when an update, rollback, repair or another setup
+        holds it), ask the engine to stop, and wait up to ``HOLDER_WAIT_S`` for every program that runs from
+        ``<home>/venvs`` to end (``NS-E706`` naming each). Both refusals come before anything is changed.
+        Returns the lock to release when the run ends; None for a fresh install (nothing to protect)."""
+        venvs = self.home / "venvs"
+        if not venvs.is_dir():
+            return None
+        lock = FileLock(self.home / "run" / "update.lock")
+        try:
+            lock.acquire()
+        except AlreadyRunning as e:
+            who = f"process {e.owner}" if e.owner else "its process number is not known"
+            raise bootstrap.BootstrapError(
+                "NS-E705",
+                f"Another update, rollback or repair of this Nightshift is running ({who}). Nothing was "
+                f"changed. Its progress: {self.home / 'run' / 'update_state.json'}. Press Retry when it has "
+                "finished.",
+            ) from None
+        except OSError:
+            return None     # the lock file cannot be made: the steps below meet the same folder and say so
+        try:
+            bootstrap.B02Home._stop_engine(self._boot())
+            deadline = time.monotonic() + HOLDER_WAIT_S
+            while True:
+                res = self.fx.cmd(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", venvrepair.PROCESS_LIST],
+                    None, None, 120,
+                )
+                listing = res.stdout if res.returncode == 0 else ''
+                found = venvrepair.holders_in(listing, venvs, (os.getpid(),))
+                if not found:
+                    return lock
+                if time.monotonic() >= deadline or self._stop.is_set():
+                    raise bootstrap.BootstrapError(
+                        "NS-E706",
+                        "These programs still run from Nightshift's Python environments, and setup must not "
+                        f"replace their files: {'; '.join(found)}. Nothing was changed. Close them, then "
+                        "press Retry (or run INSTALL.cmd again).",
+                    )
+                time.sleep(HOLDER_PAUSE_S)
+        except BaseException:
+            lock.release()
+            raise
+
     def _pipeline_run(self) -> None:
+        step_id = BOOTSTRAP_STEPS[0]
+        lock: FileLock | None = None
+        try:
+            lock = self._guard_venvs()
+        except bootstrap.BootstrapError as e:   # (not recorded in install_state.json: nothing was done)
+            self._set_failure(step_id, e.code, "", "", e.detail, False)
+            self._waiting_on = "pipeline"
+            return
+        try:
+            self._pipeline_steps()
+        finally:
+            if lock is not None:
+                lock.release()
+
+    def _pipeline_steps(self) -> None:
         step_id = BOOTSTRAP_STEPS[0]
         try:
             for step in bootstrap.bootstrap_steps():
@@ -2089,6 +2157,20 @@ class SetupController:
             return 11
         self.home = Path(str(raw.get("home_path") or self.home))
         self._started = True
+        try:
+            guard = self._guard_venvs()       # D-39b: held until this run ends
+        except bootstrap.BootstrapError as e:
+            title, what = preflight.copy_for(e.code)
+            say(f"{e.code}  {title}", "error")
+            say(f"    {e.detail}", "error")
+            return EXIT_ALREADY_RUNNING if e.code == "NS-E705" else 14
+        try:
+            return self._run_headless_steps(say)
+        finally:
+            if guard is not None:
+                guard.release()
+
+    def _run_headless_steps(self, say: Callable[[str, str], None]) -> int:
         try:
             for step in bootstrap.bootstrap_steps():
                 self._run_bootstrap_step(step)

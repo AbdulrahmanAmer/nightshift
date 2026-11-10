@@ -19,6 +19,7 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 
+from installer.stage2.web import venvrepair
 from ns_common import __version__, config_snapshot, ffmpeg, first_start, rollback_intent
 from ns_common.atomic import read_text_retry, retry_busy, write_zip_atomic
 from ns_common.config import load_install_state, load_runtime
@@ -245,8 +246,30 @@ def diagnose(
     have_ffmpeg = ffmpeg.available()
     rows.append(("ffmpeg", have_ffmpeg, "on PATH" if have_ffmpeg else "ffmpeg/ffprobe not found"))
     rows.append(launch_reach.doctor_row(paths))
-    rows.append(program_folders(paths, Path(st.app_path) if st.app_path else repo_root(), on_wait))
+    app = Path(st.app_path) if st.app_path else repo_root()
+    rows.append(program_folders(paths, app, on_wait))
+    rows.append(python_environments(paths, app))
     return rows
+
+
+ENV_ROW = "python environments"
+
+
+def python_environments(paths: Paths, app: Path) -> tuple[str, bool, str]:
+    """The row "python environments" (D-39b): an update, rollback or resync left a venv unfinished (its
+    repair record waits for the next start), or a venv holds another Nightshift than the program in `app`
+    (an older updater left it, with no record). Read from the disk only; it changes nothing."""
+    try:
+        record = venvrepair.read(paths.home)
+    except ValueError as e:     # the launch script treats it as present: nothing starts until it is gone
+        return (ENV_ROW, False, venvrepair.pending_sentence(paths.home, app, None, str(e)))
+    if record is not None and venvrepair.matches(record, app):
+        return (ENV_ROW, False, venvrepair.pending_sentence(paths.home, app, record))
+    found = venvrepair.mixed(paths.home, app)
+    if found:
+        return (ENV_ROW, False, venvrepair.mixed_sentence(found, app))
+    stale = " (a repair record of another program is left; the next start deletes it)" if record else ""
+    return (ENV_ROW, True, f"ok: each environment holds Nightshift {venvrepair.program_version(app)}{stale}")
 
 
 #: The log events that say the start check, an update or a rollback changed something beside the program.

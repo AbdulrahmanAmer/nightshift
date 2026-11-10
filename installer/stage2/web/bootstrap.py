@@ -29,7 +29,7 @@ from typing import NamedTuple
 import installer.stage2.shortcut_owner as shortcut_owner
 import ns_common.testguard as testguard
 import ns_common.vcruntime as vcruntime
-from installer.stage2.web import appcopy, deplock, filesdir, pathcheck
+from installer.stage2.web import appcopy, deplock, filesdir, pathcheck, venvrepair
 from ns_common.atomic import copy_atomic, write_stream_atomic
 from ns_common.avblock import is_blocked_error, looks_blocked
 from ns_common.uv import looks_full, uv_env, venv_args
@@ -904,14 +904,21 @@ class B03SetupEnv:
     title = "Setup helper"
 
     def check(self, boot: Boot) -> bool:
-        """True when the venv exists and was filled from this program folder at this version."""
+        """True when the venv exists and was filled from this program folder at this version, no update left
+        a repair record, and the studio venv holds this program's Nightshift (D-39b: an update after setup
+        changes the venv, not this step's marker). b03 runs outside the venvs, so it is the step that brings
+        the studio venv to the program before the wizard, which runs from it, starts."""
         try:
-            return (
-                boot.venv_python.is_file() and boot.venv_marker.read_text(encoding="utf-8").strip()
-                == boot.venv_stamp()
-            )
+            stamped = boot.venv_marker.read_text(encoding="utf-8").strip() == boot.venv_stamp()
         except OSError:
             return False
+        if not (boot.venv_python.is_file() and stamped):
+            return False
+        why = venvrepair.unfinished(boot.home, boot.run_app, ("studio",))
+        if why is not None:
+            boot.say(f"The setup environment is filled again: {why}")
+            return False
+        return True
 
     def run(self, boot: Boot) -> None:
         """Create the venv when it is missing, then install the studio extra."""

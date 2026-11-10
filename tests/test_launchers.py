@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1106,7 +1107,10 @@ def test_the_shortcut_script_keeps_the_rules_of_every_ps1() -> None:
     raw = STUB.read_bytes()
     text = raw.decode("ascii")  # ASCII only
     assert "Set-StrictMode -Version Latest" in text and "$ErrorActionPreference = 'Stop'" in text
-    assert "Invoke-Expression" not in text and "python" not in text.lower()
+    # it starts no Python (the words "Python environment" are what it tells the owner; a replayed record runs
+    # uv, whose command lines come from the record)
+    assert "Invoke-Expression" not in text
+    assert not re.search(r"python(w)?\.exe|-m ns_|\bpy\.exe", text.lower())
 
 
 # ---- card launcher-reach: the nightly task runs through the same script, and a missed night is said ----
@@ -1321,3 +1325,231 @@ def test_the_stub_names_the_zip_version_that_puts_the_program_back(tmp_path: Pat
         f"If you moved the folder app or app.swap somewhere else, move it back to {home}\\app.swap before "
         "you run INSTALL.cmd: otherwise setup starts a fresh program folder."
     ) in (desk / NOTE).read_text(encoding="utf-8-sig")
+
+
+# ---- card D-39b: nothing starts on an environment an update left unfinished, nor while one runs ----------
+# The record and the state file are written here in the shape the update worker writes them
+# (installer/stage2/web/venvrepair.py write, ns_supervisor/update_job.py write_status).
+MARKER = "0.2.0|aaaaaaaaaaaaaaaa|bbbbbbbbbbbbbbbb"
+RUN_EXIT = 0
+
+
+def _program_home(tmp_path: Path) -> tuple[Path, Path]:
+    """An install home on 0.2.0 with two venvs and a launcher stand-in that notes each start."""
+    home = _home(tmp_path)
+    app = home / "app"
+    (app / "VERSION").write_text("0.2.0\n", encoding="ascii")
+    (app / ".ns-app.done").write_text(MARKER, encoding="ascii")
+    launcher = app / "launchers" / "x.ps1"
+    launcher.parent.mkdir(parents=True)
+    body = "Add-Content -LiteralPath (Join-Path $PSScriptRoot 'ran.txt') -Value 'x'\r\nexit 0\r\n"
+    launcher.write_text(body, encoding="ascii")
+    for venv in ("studio", "supervisor"):
+        (home / "venvs" / venv / "Scripts").mkdir(parents=True)
+        (home / "venvs" / venv / "Scripts" / "python.exe").write_bytes(b"MZ")
+    return home, launcher
+
+
+def _uv(tmp_path: Path, *, fail: bool = False) -> Path:
+    """A stand-in for uv.exe: it writes its environment's UV_LINK_MODE and its arguments, one line a call."""
+    lines = ["@echo off", 'echo %UV_LINK_MODE% %*>>"%~dp0uv-ran.txt"']
+    if fail:
+        lines += [
+            "echo Resolved 1 package 1>&2",
+            "echo error: failed to remove file `ns.exe`: The process cannot access the file because it is "
+            "being used by another process. (os error 32) 1>&2",
+            "exit /b 1",
+        ]
+    else:
+        lines.append("exit /b 0")
+    cmd = tmp_path / "uv.cmd"
+    cmd.write_bytes(("\r\n".join(lines) + "\r\n").encode("ascii"))
+    return cmd
+
+
+def _record(home: Path, uv: Path, **over: object) -> Path:
+    app = home / "app"
+
+    def argv(venv: str) -> list[str]:
+        py = home / "venvs" / venv / "Scripts" / "python.exe"
+        return [str(uv), "pip", "install", "-e", f"{app}[{venv}]", "--python", str(py)]
+
+    data = {
+        "schema": 1, "app": str(app), "match": "marker", "for_app": MARKER, "version": "0.2.0",
+        "by": "update",
+        "written": "2026-11-10T03:00:00", "uv": str(uv), "env": {"UV_LINK_MODE": "copy"},
+        "commands": [{"venv": v, "argv": argv(v)} for v in ("studio", "supervisor")], **over,
+    }
+    target = home / "run" / "venv-repair.json"
+    target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
+def _ran(tmp_path: Path) -> list[str]:
+    f = tmp_path / "uv-ran.txt"
+    return f.read_text(encoding="ascii", errors="replace").splitlines() if f.exists() else []
+
+
+def _starts(launcher: Path) -> int:
+    f = launcher.parent / "ran.txt"
+    return len(f.read_text(encoding="ascii").split()) if f.exists() else 0
+
+
+def _words(text: str) -> str:
+    return " ".join(text.split())
+
+
+@needs_powershell
+def test_the_stub_finishes_an_interrupted_sync_before_starting_anything(tmp_path: Path) -> None:
+    home, launcher = _program_home(tmp_path)
+    record = _record(home, _uv(tmp_path))
+    proc = _stub(home, "-Launcher", launcher)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    ran = _ran(tmp_path)
+    assert len(ran) == 2, f"the launcher started on a half-filled environment (uv ran {ran})"
+    assert ran[0].startswith("copy pip install -e ") and "studio" in ran[0] and "supervisor" in ran[1]
+    assert (tmp_path / "uv-ran.txt").stat().st_mtime_ns <= (launcher.parent / "ran.txt").stat().st_mtime_ns
+    assert _starts(launcher) == 1 and not record.exists()
+    said = (f"An interrupted update was finished on {TODAY}: the Python environments 'studio', 'supervisor' "
+            "now match Nightshift 0.2.0.")
+    assert [n["message"] for n in notify.read_notes(Paths(home))] == [said]
+    # the next start has nothing to finish: no uv, no second note
+    assert _stub(home, "-Launcher", launcher).returncode == 0
+    assert len(_ran(tmp_path)) == 2 and _starts(launcher) == 2 and len(notify.read_notes(Paths(home))) == 1
+    # the nightly task finishes it the same way before the night runs
+    _record(home, _uv(tmp_path))
+    assert _stub(home, "-Nightly", "-Studio", _studio(tmp_path)).returncode == 5
+    assert len(_ran(tmp_path)) == 4 and (tmp_path / "seen.txt").exists() and not record.exists()
+
+
+@needs_powershell
+def test_a_failed_repair_is_said_and_nothing_starts(tmp_path: Path) -> None:
+    home, launcher = _program_home(tmp_path)
+    record = _record(home, _uv(tmp_path, fail=True))
+    proc = _stub(home, "-Launcher", launcher)
+    assert proc.returncode == 1 and _starts(launcher) == 0, "Nightshift started on a half-filled environment"
+    assert _words(
+        "Nightshift could not finish an interrupted update (NS-W210): its Python environment 'studio' "
+        "does not match the program yet. uv said: error: failed to remove file `ns.exe`: The process "
+        "cannot access the "
+        "file because it is being used by another process. (os error 32) Close every Nightshift window and "
+        "open Nightshift again. If it fails again, run INSTALL.cmd from the Nightshift 0.2.0 zip and choose "
+        "this folder (Repair)."
+    ) in _words(proc.stdout)
+    assert record.exists() and len(_ran(tmp_path)) == 1
+    # the nightly run: a missed night with that reason, the record kept for the next start
+    desk = tmp_path / "Desk"
+    desk.mkdir()
+    proc = _stub(home, "-Nightly", "-Studio", _studio(tmp_path), "-DesktopDir", desk)
+    assert proc.returncode == 1 and not (tmp_path / "seen.txt").exists() and record.exists()
+    assert _missed(home)["what"] == "repair"
+    line = _lines(home)[-1]
+    assert line["data"]["code"] == "NS-W210" and "(os error 32)" in line["data"]["reason"]
+    note = (desk / NOTE).read_text(encoding="utf-8-sig")
+    assert "(NS-W210)" in note.splitlines()[0] and "uv said: error: failed to remove file" in note
+    # a record that cannot be read is treated as there: nothing starts, and it is said
+    record.write_text("{torn", encoding="utf-8")
+    proc = _stub(home, "-Launcher", launcher)
+    assert proc.returncode == 1 and _starts(launcher) == 0
+    said = _words(proc.stdout)      # (the home's non-ASCII letters may not survive the console)
+    assert "(NS-W210): the record " in said and "venv-repair.json cannot be read" in said
+    assert record.exists()
+
+
+@needs_powershell
+def test_a_stale_record_is_dropped_by_the_stub(tmp_path: Path) -> None:
+    home, launcher = _program_home(tmp_path)
+    record = _record(home, _uv(tmp_path), for_app="0.1.9|cccc|dddd", version="0.1.9")   # a later INSTALL.cmd
+    assert _stub(home, "-Launcher", launcher).returncode == 0
+    assert _ran(tmp_path) == [] and not record.exists() and _starts(launcher) == 1
+    assert [x["event"] for x in _lines(home)] == ["venv_record_stale"]
+    assert notify.read_notes(Paths(home)) == []
+
+
+def _sleeper(seconds: float) -> "subprocess.Popen[bytes]":
+    return subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({seconds})"])
+
+
+def _running(home: Path, pid: int, **extra: object) -> None:
+    state = {"state": "running", "old": "0.2.0", "new": "", "message": "Updating.",
+             "updated_at": "2026-11-10T03:00:00", "log": str(home / "logs" / "update-x.log"), "pid": pid,
+             **extra}
+    (home / "run" / "update_state.json").write_text(json.dumps(state), encoding="utf-8")
+
+
+@needs_powershell
+def test_the_nightly_task_during_an_update_waits_then_runs(tmp_path: Path) -> None:
+    home, launcher = _program_home(tmp_path)
+    studio, desk = _studio(tmp_path), tmp_path / "Desk"
+    desk.mkdir()
+    procs: list[subprocess.Popen] = []
+    try:
+        # an update of an older release (it takes no lock) ends inside the bound: the night runs after it
+        procs.append(_sleeper(4))
+        _running(home, procs[-1].pid)
+        proc = _stub(home, "-Nightly", "-Studio", studio, "-UpdateWaitSeconds", 60)
+        assert proc.returncode == 5, proc.stdout + proc.stderr
+        assert procs[-1].poll() is not None and (tmp_path / "seen.txt").exists()
+        (tmp_path / "seen.txt").unlink()
+        # one that is still running at the bound: a missed night, said as that
+        procs.append(_sleeper(120))
+        _running(home, procs[-1].pid)
+        proc = _stub(home, "-Nightly", "-Studio", studio, "-UpdateWaitSeconds", 2, "-DesktopDir", desk)
+        assert proc.returncode == 1 and not (tmp_path / "seen.txt").exists()
+        assert _missed(home)["what"] == "update" and _lines(home)[-1]["data"]["code"] == "NS-W210"
+        assert "was still running after" in (desk / NOTE).read_text(encoding="utf-8-sig")
+        # a shortcut meanwhile starts nothing and says why
+        proc = _stub(home, "-Launcher", launcher)
+        assert proc.returncode == 1 and _starts(launcher) == 0
+        assert "An update, rollback or repair of Nightshift is running (progress: " in _words(proc.stdout)
+        assert "Nothing was started." in proc.stdout
+        procs[-1].kill()
+        procs[-1].wait(timeout=30)
+        # this release's update holds run\update.lock (its state may say anything): the same
+        (home / "run" / "update_state.json").unlink()
+        code = ("import sys, time; from pathlib import Path; from ns_common.singleton import FileLock; "
+                "lock = FileLock(Path(sys.argv[1])); lock.acquire(); print('held', flush=True); "
+                "time.sleep(120)")
+        holder = subprocess.Popen([sys.executable, "-c", code, str(home / "run" / "update.lock")],
+                                  cwd=str(LAUNCHERS.parent), stdout=subprocess.PIPE, text=True)
+        procs.append(holder)
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "held"
+        proc = _stub(home, "-Launcher", launcher)
+        assert proc.returncode == 1 and _starts(launcher) == 0 and "is running" in proc.stdout
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
+                p.wait(timeout=30)
+    assert _stub(home, "-Launcher", launcher).returncode == 0 and _starts(launcher) == 1
+
+
+@needs_powershell
+def test_a_dead_update_is_told_once_at_the_next_start(tmp_path: Path) -> None:
+    home, launcher = _program_home(tmp_path)
+    gone = _sleeper(0)
+    gone.wait(timeout=30)
+    left = "The update process stopped before it changed anything. 0.2.0 is in place."
+    _running(home, gone.pid, if_stopped_here=left)
+    assert _stub(home, "-Launcher", launcher).returncode == 0 and _starts(launcher) == 1
+    state = json.loads((home / "run" / "update_state.json").read_text(encoding="utf-8"))
+    assert state["state"] == "failed" and state["message"] == left and state["pid"] == gone.pid
+    notes = notify.read_notes(Paths(home))
+    assert [(n["title"], n["message"]) for n in notes] == [
+        ("Nightshift", f"An update or rollback of Nightshift was interrupted. {left}")]
+    assert _stub(home, "-Launcher", launcher).returncode == 0 and len(notify.read_notes(Paths(home))) == 1
+
+
+@needs_powershell
+def test_an_environment_an_older_updater_left_is_said_once_and_nightshift_starts(tmp_path: Path) -> None:
+    home, launcher = _program_home(tmp_path)
+    info = home / "venvs" / "supervisor" / "Lib" / "site-packages" / "nightshift-0.1.14.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: nightshift\nVersion: 0.1.14\n", "utf-8")
+    said = ("The Python environment 'supervisor' holds Nightshift 0.1.14, but the program is 0.2.0 (an "
+            "update by an older version was interrupted). Run INSTALL.cmd from the Nightshift 0.2.0 zip and "
+            "choose this folder (Repair).")
+    proc = _stub(home, "-Launcher", launcher)
+    assert proc.returncode == 0 and _starts(launcher) == 1 and said in _words(proc.stdout)
+    assert [n["message"] for n in notify.read_notes(Paths(home))] == [said]
+    assert _stub(home, "-Launcher", launcher).returncode == 0 and len(notify.read_notes(Paths(home))) == 1

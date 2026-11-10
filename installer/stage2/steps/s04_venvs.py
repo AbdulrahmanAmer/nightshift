@@ -26,7 +26,7 @@ from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error, uv_error
 from installer.stage2.fallback import ensure_tts_venv
 from installer.stage2.runner import RunResult
-from installer.stage2.web import deplock, filesdir
+from installer.stage2.web import deplock, filesdir, venvrepair
 from ns_common.errors import NsError
 from ns_common.uv import uv_env, venv_args
 from ns_common.venv_extras import DEV_VENV_EXTRAS, VENV_EXTRAS
@@ -192,6 +192,12 @@ class S04Venvs(Step):
             return False                    # the editable installs point at another program folder
         if ctx.flag("tts_fallback", False) and not ctx.flag("tts_venv_installed", False):
             return False
+        # D-39b: an update, rollback or resync that broke off (its repair record), or an older updater that
+        # left a venv on another version: the flags are setup's own and say nothing of either
+        unfinished = venvrepair.unfinished(ctx.paths.home, ctx.app_path)
+        if unfinished is not None:
+            ctx.log.info("venv_check_failed", why=unfinished)
+            return False
         for name in venv_names(ctx):
             problem = cannot_load(ctx, name)
             if problem is not None:
@@ -279,6 +285,12 @@ class S04Venvs(Step):
 
         if ctx.flag("tts_fallback", False):
             ensure_tts_venv(ctx)
+        # D-39b: every venv now holds this program, so a repair record (this program's, or a stale one of
+        # another) has nothing left to do; a delete that fails is replayed harmlessly at the next start
+        try:
+            venvrepair.clear(ctx.paths.home)
+        except OSError as e:
+            ctx.log.warn("venv_record_left", str(e))
         # the done-state is written last, after every venv was filled (the wizard cleared it before the work)
         ctx.set_flag("venvs_installed", True)
         ctx.set_flag("venvs_version", ctx.manifest.version)

@@ -525,6 +525,14 @@ Settings > Updates), a note waits on the Queue page, and Settings > Updates show
 until the next one. The commands such a message names are the `--detach` forms, because after a rollback the `ns`
 you type is the older version's, and from 0.1.14 to 0.1.15-rc3 only its `--detach` form works; for a version that
 has no `--detach` it names INSTALL.cmd. A failed update or rollback never says more than what is on the disk.
+Before it changes the program, an update or rollback writes `run/venv-repair.json` (the uv commands that fill the
+environments); it deletes it after the last one. If it stops in between (a program held a file, the packages were
+unreachable, the power went off), the next start from a Desktop shortcut or the nightly task runs those commands
+first and starts Nightshift only when they worked (a note on the Queue page says so); otherwise it says why
+(`NS-W210`) and starts nothing. Nothing starts from a shortcut while an update runs, and the nightly task waits up
+to 30 minutes for one. An environment an older updater left on another version is named by `ns doctor` (row
+"python environments") and at each start, with INSTALL.cmd's Repair as the way out. INSTALL.cmd and Repair take
+the same lock as the update and refuse while a program runs from the environments (`NS-E705`, `NS-E706`, Retry).
 From 0.1.14 and the 0.1.15 candidates up to rc3, update or go back with Settings > Updates, the Update shortcut or
 `ns update ... --detach`: their own `ns update` typed in a terminal without `--detach` fails on its own `ns.exe`
 (0.1.14's `ns update <zip>` then puts 0.1.14 back; rc3's `ns update --rollback` leaves one environment on the newer

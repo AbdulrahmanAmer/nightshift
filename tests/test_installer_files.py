@@ -202,7 +202,7 @@ def test_web_package_imports_only_the_standard_library():
 
 ALLOWED_WEB_IMPORTS = (
     "installer.stage2.web", "installer.stage2.web.samples", "installer.stage2.web.pathcheck",
-    "installer.stage2.web.filesdir", "installer.stage2.web.deplock",
+    "installer.stage2.web.filesdir", "installer.stage2.web.deplock", "installer.stage2.web.venvrepair",
 )
 
 
@@ -210,7 +210,8 @@ def test_only_the_samples_helpers_are_shared_with_the_wizard():
     # P2 may import installer.stage2.web.samples, .pathcheck and .filesdir (stdlib only; pathcheck is the one
     # rule for what a folder holds, D-21; filesdir is the one rule for taking a pinned file from the files
     # folder beside INSTALL.cmd, D-17; deplock is the one rule for installing from uv.lock, P29a, which b03,
-    # s04 and ns update share); the rest of the web package is P1's.
+    # s04 and ns update share; venvrepair is the one rule for a venv an update left unfinished, D-39b, which
+    # s04, b03, ns update and ns doctor share); the rest of the web package is P1's.
     wizard_side = [ROOT / "installer" / "stage2" / "wizard.py", ROOT / "installer" / "stage2" / "bridge.py",
                    *sorted((ROOT / "installer" / "stage2" / "steps").glob("*.py"))]
     for f in wizard_side:

@@ -204,6 +204,8 @@ class Hand:
         monkeypatch.setattr(update_job, "spawn_detached", lambda argv, cwd: self.workers.append(argv) or 4242)
         monkeypatch.setattr(update_job, "open_window", self._window, raising=False)
         monkeypatch.setattr(update_job, "follow", self._follow, raising=False)
+        # a desktop session (a CI runner is a service in session 0, where no window is opened: D-39b)
+        monkeypatch.setattr(update_job, "has_desktop", lambda: True, raising=False)
 
     def _window(self, argv: list[str], cwd: Path) -> int:
         self.windows.append(argv)

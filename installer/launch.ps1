@@ -1,10 +1,11 @@
-# STUB_SCHEMA: 4
+# STUB_SCHEMA: 5
 param(
     [string]$Launcher = '',
     [switch]$Nightly,
     [string]$Studio = '',
     [string]$DesktopDir = '',
-    [switch]$Cleanup
+    [switch]$Cleanup,
+    [int]$UpdateWaitSeconds = 1800
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -29,13 +30,31 @@ $ErrorActionPreference = 'Stop'
 # A dev install and a test run never touch the real Desktop: no note is written or removed there unless
 # -DesktopDir names the folder. The line above the param block is this file's format number: a copy in the
 # home is only replaced by one with the same or a higher number.
+#
+# Format 5 (card D-39b): Nightshift never starts on a Python environment an update, a rollback or a resync
+# left unfinished, and never while one runs. Before a shortcut's launcher or the nightly run, holding
+# <home>\run\update.lock (the byte lock every updater and setup take, ns_common/singleton.py):
+#   S0  an update, rollback, repair or setup runs: a shortcut says so and starts nothing; the task waits up to
+#       -UpdateWaitSeconds (30 minutes), then runs or counts a missed night. An update whose process died (a
+#       power cut) is told once: its state becomes 'failed' with the sentence it left, and a morning note.
+#   S1-S4  <home>\run\venv-repair.json (written by the update before it changed anything) is replayed: its
+#       uv command lines, with its environment, then it is deleted and a morning note says so. A record of
+#       another program is stale and deleted; one that cannot be read, or a uv that fails, keeps the record
+#       and starts nothing (NS-W210, with the way out).
+#   S5  without a record, an environment that holds another Nightshift than the program (an older updater
+#       was interrupted) is said once, with INSTALL.cmd's Repair; the start goes on.
 $nsHome = $PSScriptRoot
 if ($Launcher) { $app = Split-Path -Parent (Split-Path -Parent $Launcher) } else { $app = Join-Path $nsHome 'app' }
 $swap = $app + '.swap'
 $inv = [Globalization.CultureInfo]::InvariantCulture
 $today = [DateTime]::Now.ToString('yyyy-MM-dd', $inv)
 $utf8 = New-Object System.Text.UTF8Encoding($false)
-$missedFile = Join-Path (Join-Path $nsHome 'run') 'launch-missed.json'
+$runDir = Join-Path $nsHome 'run'
+$missedFile = Join-Path $runDir 'launch-missed.json'
+$lockFile = Join-Path $runDir 'update.lock'
+$stateFile = Join-Path $runDir 'update_state.json'
+$repairFile = Join-Path $runDir 'venv-repair.json'
+$mixedTold = Join-Path $runDir 'venv-mixed-told.txt'
 $noteName = 'Nightshift did not run.txt'
 $noteStart = 'Nightshift could not start its nightly run on '
 # A test run never shows a toast and never names the real Desktop: only -DesktopDir counts there.
@@ -106,7 +125,7 @@ function Read-Missed {
         $r = $text | ConvertFrom-Json
         $m = @{ first = [string]$r.first; last = [string]$r.last; nights = [int]$r.nights; what = [string]$r.what }
         $day = '^\d{4}-\d\d-\d\d$'
-        if ($m.first -match $day -and $m.last -match $day -and $m.nights -ge 1 -and @('folder', 'environment') -contains $m.what) { return $m }
+        if ($m.first -match $day -and $m.last -match $day -and $m.nights -ge 1 -and @('folder', 'environment', 'update', 'repair') -contains $m.what) { return $m }
     } catch { }
     return $null
 }
@@ -130,9 +149,22 @@ function Get-Nights {
 }
 
 function Get-NoteLines {
-    param($Missed)
-    $head = $noteStart + $Missed.last + ' (' + (Get-Nights $Missed.nights) + ' so far, the first on ' + $Missed.first + '). (NS-W209)'
+    param($Missed, [string]$Reason = '')
+    $code = 'NS-W209'
+    if (@('update', 'repair') -contains $Missed.what) { $code = 'NS-W210' }
+    $head = $noteStart + $Missed.last + ' (' + (Get-Nights $Missed.nights) + ' so far, the first on ' + $Missed.first + '). (' + $code + ')'
     $lines = @($head, '')
+    if ($Missed.what -eq 'update') {
+        $lines += ('An update, rollback or repair of Nightshift was still running after ' + [string][Math]::Round($UpdateWaitSeconds / 60) + ' minutes, so the nightly run did not start.')
+        $lines += @('', 'What to do: nothing. The next night runs by itself, and this file is removed the next time Nightshift starts.')
+        $lines += @('', "To stop the nightly attempts, disable 'Nightshift Daily' in Task Scheduler.")
+        return $lines
+    }
+    if ($Missed.what -eq 'repair') {
+        $lines += @($Reason, '', 'This file is removed the next time Nightshift starts.')
+        $lines += @('', "To stop the nightly attempts until then, disable 'Nightshift Daily' in Task Scheduler.")
+        return $lines
+    }
     if ($Missed.what -eq 'environment') {
         $thing = 'program environment'
         $lines += 'Its program environment is missing or incomplete (not found: ' + $Studio + ').'
@@ -294,6 +326,23 @@ function Add-NsMorningNote {
     finally { $lock.Dispose() }
 }
 
+function Write-LaunchLog {
+    # One line, one write, at the end of the day's logs\launch-<yyyymmdd>.jsonl (UTF-8 without a BOM, like
+    # every Nightshift log). Never throws.
+    param([string]$Level, [string]$EventName, [string]$Message, $Data)
+    try {
+        $now = [DateTime]::UtcNow
+        $rec = [ordered]@{ ts = $now.ToString('o', $inv); level = $Level; component = 'launch'; event = $EventName; msg = $Message; data = $Data }
+        $logs = Join-Path $nsHome 'logs'
+        [void][IO.Directory]::CreateDirectory($logs)
+        $bytes = $utf8.GetBytes((ConvertTo-Json -InputObject $rec -Compress -Depth 4) + "`n")
+        $file = Join-Path $logs ('launch-' + $now.ToString('yyyyMMdd', $inv) + '.jsonl')
+        $fs = New-Object System.IO.FileStream($file, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+        try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush($true) }
+        finally { $fs.Dispose() }
+    } catch { Write-Verbose 'launch log line not written' }
+}
+
 function Restore-AfterMiss {
     # The program is back. One morning note, then the Desktop note, then the count: a failure keeps the
     # count for the next start, and never stops what this start was asked to run. The count's file is held
@@ -319,8 +368,10 @@ function Restore-AfterMiss {
             # said once per first missed date: a start killed after the note and before the count went
             $start = 'Nightshift did not run on '
             $mark = ', from ' + $m.first + ' to '
-            $message = $start + (Get-Nights $m.nights) + $mark + $m.last + ': its ' + $thing +
-                ' was missing until it was put back on ' + $today + '.'
+            $why = ': its ' + $thing + ' was missing until it was put back on ' + $today + '.'
+            if ($m.what -eq 'update') { $why = ': an update, rollback or repair of Nightshift was running at the time.' }
+            if ($m.what -eq 'repair') { $why = ': an interrupted update had left its Python environments unfinished until ' + $today + '.' }
+            $message = $start + (Get-Nights $m.nights) + $mark + $m.last + $why
             [void](Add-NsMorningNote -Message $message -OnceStart $start -OnceHas $mark)
         }
         $desk = Get-NoteFolder
@@ -337,7 +388,7 @@ function Restore-AfterMiss {
 function Write-Miss {
     # The nightly run cannot start. The count first (a kill after it still counts the night), then the
     # Desktop note, the toast, and one log line that says how each of them went.
-    param([string]$What)
+    param([string]$What, [string]$Reason = '')
     $m = Read-Missed
     if ($null -eq $m) { $m = @{ first = $today; last = $today; nights = 1; what = $What } }
     elseif ($m.last -ne $today) { $m.nights = $m.nights + 1; $m.last = $today }
@@ -355,40 +406,270 @@ function Write-Miss {
             if (-not (Test-Path -LiteralPath $desk -PathType Container)) { $note = 'failed: the Desktop folder ' + $desk + ' is not there' }
             elseif ((Test-Path -LiteralPath $file) -and -not (Test-OurNote $file)) { $note = 'failed: ' + $file + ' is there and is not a note from Nightshift; it was left alone' }
             else {
-                Write-NsFileSwap -Path $file -Text (((Get-NoteLines $m) -join "`r`n") + "`r`n") -Bom
+                Write-NsFileSwap -Path $file -Text (((Get-NoteLines $m $Reason) -join "`r`n") + "`r`n") -Bom
                 $note = 'written'
             }
         } elseif ($devInstall) { $note = 'dev-install' }
         elseif (-not $underTest) { $note = 'failed: Windows named no Desktop folder for this session' }
     } catch { $note = 'failed: ' + $_.Exception.Message }
-    $thing = 'program folder'
-    if ($What -eq 'environment') { $thing = 'program environment' }
     $where = "Details: '" + $noteName + "' on your Desktop."
     if ($note -ne 'written') { $where = 'Details: the newest launch-*.jsonl in ' + (Join-Path $nsHome 'logs') + '.' }
-    $body = 'Its ' + $thing + ' is missing. Run INSTALL.cmd from the Nightshift zip (0.1.15 or later) into ' + $nsHome + '. ' + $where
+    $code = 'NS-W209'
+    if ($What -eq 'update') {
+        $code = 'NS-W210'
+        $why = 'an update, rollback or repair of Nightshift was running.'
+        $body = 'An update, rollback or repair of Nightshift was running. The next night runs by itself. ' + $where
+    } elseif ($What -eq 'repair') {
+        $code = 'NS-W210'
+        $why = 'an interrupted update could not be finished.'
+        $body = $Reason + ' ' + $where
+    } else {
+        $thing = 'program folder'
+        if ($What -eq 'environment') { $thing = 'program environment' }
+        $why = 'the ' + $thing + ' is missing.'
+        $body = 'Its ' + $thing + ' is missing. Run INSTALL.cmd from the Nightshift zip (0.1.15 or later) into ' + $nsHome + '. ' + $where
+    }
     $toast = Show-Toast 'Nightshift did not run last night' $body
+    $data = [ordered]@{ code = $code; home = $nsHome; first = $m.first; last = $m.last; nights = $m.nights; what = $m.what; toast = $toast; desktop_note = $note }
+    if ($Reason) { $data['reason'] = $Reason }
+    Write-LaunchLog 'WARN' 'nightly_not_started' ('The nightly run could not start: ' + $why) $data
+}
+
+function Get-AppVersion {
+    try { return [IO.File]::ReadAllText((Join-Path $app 'VERSION')).Trim() } catch { return '' }
+}
+
+function Get-VersionKey {
+    # a project version as uv writes it (installer/stage2/web/deplock.py version_key): 0.1.15-rc3 is 0.1.15rc3
+    param([string]$Version)
+    return ($Version.Trim().ToLowerInvariant() -replace '[-_.]?(a|b|rc)[-_.]?(\d+)$', '$1$2')
+}
+
+function Lock-Update {
+    # S0: the byte lock of run\update.lock (byte 0, this pid after it), as ns_common/singleton.py FileLock takes
+    # it. The open file that holds it; $null when another process holds it; 'none' when there is nothing to
+    # protect (no run folder: no update ever ran here) or the file cannot be opened at all.
+    if (-not (Test-Path -LiteralPath $runDir -PathType Container)) { return 'none' }
+    try { $fs = New-Object System.IO.FileStream($lockFile, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)) }
+    catch {
+        Write-LaunchLog 'WARN' 'update_lock_unread' ('run\update.lock could not be opened: ' + $_.Exception.Message) $null
+        return 'none'
+    }
+    try { $fs.Lock(0, 1) }
+    catch { $fs.Dispose(); return $null }
     try {
-        $now = [DateTime]::UtcNow
-        $data = [ordered]@{ code = 'NS-W209'; home = $nsHome; first = $m.first; last = $m.last; nights = $m.nights; what = $m.what; toast = $toast; desktop_note = $note }
-        $rec = [ordered]@{ ts = $now.ToString('o', $inv); level = 'WARN'; component = 'launch'; event = 'nightly_not_started'
-            msg = 'The nightly run could not start: the ' + $thing + ' is missing.'; data = $data }
-        $logs = Join-Path $nsHome 'logs'
-        [void][IO.Directory]::CreateDirectory($logs)
-        # one line, one write, at the end of the day's file (UTF-8 without a BOM, like every Nightshift log)
-        $bytes = $utf8.GetBytes((ConvertTo-Json -InputObject $rec -Compress -Depth 4) + "`n")
-        $file = Join-Path $logs ('launch-' + $now.ToString('yyyyMMdd', $inv) + '.jsonl')
-        $fs = New-Object System.IO.FileStream($file, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
-        try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush($true) }
-        finally { $fs.Dispose() }
-    } catch { }
+        $bytes = [Text.Encoding]::ASCII.GetBytes([string]$PID + "`n")
+        $fs.SetLength(1); $fs.Position = 1; $fs.Write($bytes, 0, $bytes.Length); $fs.Flush()
+    } catch { Write-Verbose 'pid not written into the lock file' }
+    return $fs
+}
+
+function Unlock-Update {
+    param($Held)
+    if ($Held -is [System.IO.FileStream]) {
+        try { $Held.Unlock(0, 1) } catch { Write-Verbose 'already unlocked' }
+        $Held.Dispose()
+    }
+}
+
+function Read-UpdateState {
+    try { return ([IO.File]::ReadAllText($stateFile) | ConvertFrom-Json) } catch { return $null }
+}
+
+function Test-WorkerAlive {
+    # An update process of an older release takes no lock: its 'running' state with a live Python process (or,
+    # without a pid, written in the last 2 minutes: ns_supervisor/update_job.py effective_status) is one.
+    param($State)
+    if ($null -eq $State -or -not $State.PSObject.Properties['state'] -or [string]$State.state -ne 'running') { return $false }
+    $workerPid = 0
+    if ($State.PSObject.Properties['pid']) { try { $workerPid = [int]$State.pid } catch { $workerPid = 0 } }
+    if ($workerPid -gt 0) {
+        $proc = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+        return ($null -ne $proc -and $proc.ProcessName -match 'python')
+    }
+    try { $at = [DateTime]::Parse([string]$State.updated_at, $inv) } catch { return $false }
+    return (([DateTime]::Now - $at).TotalSeconds -lt 120)
+}
+
+function Send-DeadUpdate {
+    # S0b: the update's process died without a result (a power cut, a kill). Nobody saw its window: the state
+    # becomes 'failed' with the sentence it left for that step (this script holds the lock, so it may write
+    # the state), and one morning note says it.
+    param($State)
+    if ($null -eq $State -or -not $State.PSObject.Properties['state'] -or [string]$State.state -ne 'running') { return }
+    $left = 'The update process stopped before it finished.'
+    if ($State.PSObject.Properties['if_stopped_here'] -and [string]$State.if_stopped_here) { $left = [string]$State.if_stopped_here }
+    try {
+        foreach ($pair in @(@('state', 'failed'), @('exit_code', 1), @('message', $left), @('updated_at', [DateTime]::Now.ToString('s')))) {
+            $State | Add-Member -NotePropertyName $pair[0] -NotePropertyValue $pair[1] -Force
+        }
+        Write-NsFileSwap -Path $stateFile -Text (ConvertTo-Json -InputObject $State -Compress -Depth 5)
+        [void](Add-NsMorningNote -Message ('An update or rollback of Nightshift was interrupted. ' + $left) -OnceStart ('An update or rollback of Nightshift was interrupted. ' + $left))
+        Write-LaunchLog 'WARN' 'update_interrupted' $left $null
+    } catch { Write-LaunchLog 'WARN' 'update_interrupted_not_told' $_.Exception.Message $null }
+}
+
+function Get-RepairWords {
+    param([string]$What, [string]$Said)
+    $version = Get-AppVersion
+    if (-not $version) { $version = 'unknown version' }
+    $lead = 'Nightshift could not finish an interrupted update (NS-W210): ' + $What + '.'
+    if ($Said) { $lead += ' uv said: ' + $Said }
+    return ($lead + ' Close every Nightshift window and open Nightshift again. If it fails again, run INSTALL.cmd from the Nightshift ' + $version + ' zip and choose this folder (Repair).')
+}
+
+function Test-RecordFor {
+    # S2: the record was written for the program now in $app (its .ns-app.done marker, else its VERSION).
+    param($Record)
+    try {
+        $there = [IO.Path]::GetFullPath([string]$Record.app).TrimEnd('\')
+        if ($there -ine [IO.Path]::GetFullPath($app).TrimEnd('\')) { return $false }
+    } catch { return $false }
+    $marker = Join-Path $app '.ns-app.done'
+    if ([string]$Record.match -eq 'marker' -and (Test-Path -LiteralPath $marker -PathType Leaf)) {
+        return ([IO.File]::ReadAllText($marker).Trim() -ceq [string]$Record.for_app)
+    }
+    return ([bool][string]$Record.version -and (Get-VersionKey (Get-AppVersion)) -eq (Get-VersionKey ([string]$Record.version)))
+}
+
+function Invoke-Repair {
+    # S1 to S4. '' when nothing is left to do (no record, a stale one, or the replay worked); else the words.
+    if (-not (Test-Path -LiteralPath $repairFile -PathType Leaf)) { return '' }
+    try {
+        $record = [IO.File]::ReadAllText($repairFile) | ConvertFrom-Json
+        $commands = @($record.commands)
+        if ($commands.Count -eq 0) { throw 'it holds no command' }
+    } catch { return (Get-RepairWords ('the record ' + $repairFile + ' cannot be read (' + $_.Exception.Message + ')') '') }
+    if (-not (Test-RecordFor $record)) {
+        Remove-Item -LiteralPath $repairFile -Force
+        Write-LaunchLog 'INFO' 'venv_record_stale' ('deleted: written for ' + [string]$record.version + ' at ' + [string]$record.app) $null
+        return ''
+    }
+    $names = @()
+    foreach ($c in $commands) { if ($names -notcontains [string]$c.venv) { $names += [string]$c.venv } }
+    $quoted = ($names | ForEach-Object { "'" + $_ + "'" }) -join ', '
+    Write-Host ('Finishing an interrupted update: refreshing the Python environments ' + $quoted + '. This can take a few minutes.')
+    $saved = @{}
+    if ($record.PSObject.Properties['env'] -and $null -ne $record.env) {
+        foreach ($p in $record.env.PSObject.Properties) {
+            $saved[$p.Name] = [Environment]::GetEnvironmentVariable($p.Name, 'Process')
+            [Environment]::SetEnvironmentVariable($p.Name, [string]$p.Value, 'Process')
+        }
+    }
+    try {
+        foreach ($c in $commands) {
+            $argv = @($c.argv | ForEach-Object { [string]$_ })
+            $what = "its Python environment '" + [string]$c.venv + "' does not match the program yet"
+            if (-not (Test-Path -LiteralPath $argv[0] -PathType Leaf)) { return (Get-RepairWords $what ('uv was not found at ' + $argv[0])) }
+            $rest = @($argv | Select-Object -Skip 1)
+            $ErrorActionPreference = 'Continue'
+            $global:LASTEXITCODE = 0
+            $out = @(& $argv[0] @rest 2>&1 | ForEach-Object { [string]$_ })
+            $exitCode = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            if ($exitCode -ne 0) {
+                $last = [string](@($out | Where-Object { $_.Trim() }) | Select-Object -Last 1)
+                Write-LaunchLog 'WARN' 'venv_repair_failed' $what ([ordered]@{ code = 'NS-W210'; venv = [string]$c.venv; exit_code = $exitCode; uv = $last })
+                return (Get-RepairWords $what $last.Trim())
+            }
+        }
+    } finally {
+        $ErrorActionPreference = 'Stop'
+        foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k], 'Process') }
+    }
+    Remove-Item -LiteralPath $repairFile -Force
+    $version = Get-AppVersion
+    if ($names.Count -eq 1) { $now = "the Python environment " + $quoted + ' now matches' } else { $now = 'the Python environments ' + $quoted + ' now match' }
+    $said = 'An interrupted update was finished on ' + $today + ': ' + $now + ' Nightshift ' + $version + '.'
+    try { [void](Add-NsMorningNote -Message $said -OnceStart $said) } catch { Write-LaunchLog 'WARN' 'morning_note_not_written' $_.Exception.Message $null }
+    Write-LaunchLog 'INFO' 'venv_repaired' $said ([ordered]@{ venvs = $names })
+    return ''
+}
+
+function Get-Mixed {
+    # S5: without a record, a venv whose nightshift-*.dist-info is not the program's VERSION, or two of them
+    # (installer/stage2/web/venvrepair.py mixed, the same words).
+    $want = Get-VersionKey (Get-AppVersion)
+    $parts = @()
+    foreach ($v in @('studio', 'supervisor', 'tts')) {
+        $folder = Join-Path (Join-Path $nsHome 'venvs') $v
+        if (-not (Test-Path -LiteralPath (Join-Path $folder 'Lib\site-packages') -PathType Container)) { continue }
+        $have = @()
+        foreach ($d in @(Get-ChildItem -LiteralPath (Join-Path $folder 'Lib\site-packages') -Directory -Filter 'nightshift-*.dist-info' -ErrorAction SilentlyContinue | Sort-Object Name)) {
+            $ver = $d.Name.Substring(11, $d.Name.Length - 21)
+            try {
+                foreach ($line in [IO.File]::ReadAllLines((Join-Path $d.FullName 'METADATA'))) {
+                    if ($line -match '^(?i)version:\s*(.+)$') { $ver = $Matches[1].Trim(); break }
+                }
+            } catch { Write-Verbose 'METADATA not read' }
+            $have += $ver
+        }
+        if ($have.Count -gt 1 -or ($have.Count -eq 1 -and (Get-VersionKey $have[0]) -ne $want)) {
+            $parts += ("The Python environment '" + $v + "' holds Nightshift " + ($have -join ' and '))
+        }
+    }
+    if ($parts.Count -eq 0) { return '' }
+    $here = Get-AppVersion
+    if (-not $here) { $here = 'unknown version' }
+    return (($parts -join '; ') + ', but the program is ' + $here + ' (an update by an older version was interrupted). Run INSTALL.cmd from the Nightshift ' + $here + ' zip and choose this folder (Repair).')
+}
+
+function Test-BeforeStart {
+    # S0 to S5 before a shortcut's launcher ($Night false) or the nightly run. $null: go on. Else
+    # @{ what = 'update' | 'repair'; text = <the words> }: the caller says it and starts nothing.
+    param([bool]$Night)
+    $deadline = [DateTime]::UtcNow.AddSeconds([Math]::Max(0, $UpdateWaitSeconds))
+    while ($true) {
+        $held = Lock-Update
+        $state = Read-UpdateState
+        if ($null -ne $held -and -not (Test-WorkerAlive $state)) { break }
+        Unlock-Update $held
+        if (-not $Night -or [DateTime]::UtcNow -ge $deadline) {
+            $progress = $stateFile
+            if ($null -ne $state -and $state.PSObject.Properties['log'] -and [string]$state.log) { $progress = [string]$state.log }
+            return @{ what = 'update'; text = ('An update, rollback or repair of Nightshift is running (progress: ' + $progress + '). Nothing was started. Open Nightshift again when it has finished: an update opens Nightshift by itself when it is done.') }
+        }
+        Start-Sleep -Seconds ([Math]::Max(1, [Math]::Min(5, [int]($deadline - [DateTime]::UtcNow).TotalSeconds)))
+    }
+    try {
+        Send-DeadUpdate $state
+        $words = Invoke-Repair
+        if ($words) { return @{ what = 'repair'; text = $words } }
+        if (Test-Path -LiteralPath $repairFile -PathType Leaf) { return $null }
+        $mixed = Get-Mixed
+        if ($mixed) {
+            Write-Host $mixed
+            $told = ''
+            try { $told = [IO.File]::ReadAllText($mixedTold) } catch { $told = '' }
+            if ($told -ne $mixed) {
+                [void](Add-NsMorningNote -Message $mixed -OnceStart $mixed)
+                Write-LaunchLog 'WARN' 'venv_mixed' $mixed ([ordered]@{ code = 'NS-W210' })
+                Write-NsFileSwap -Path $mixedTold -Text $mixed
+            }
+        } elseif (Test-Path -LiteralPath $mixedTold -PathType Leaf) { Remove-Item -LiteralPath $mixedTold -Force }
+    } catch {
+        # nothing starts on a record that is still there, whatever went wrong while it was replayed
+        Write-LaunchLog 'WARN' 'start_check_failed' $_.Exception.Message $null
+        if (Test-Path -LiteralPath $repairFile -PathType Leaf) {
+            return @{ what = 'repair'; text = (Get-RepairWords ('the repair stopped: ' + $_.Exception.Message) '') }
+        }
+    } finally { Unlock-Update $held }
+    return $null
 }
 
 if ($Nightly) {
-    $what = ''
-    if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $app 'ns_studio') 'cli.py') -PathType Leaf)) { $what = 'folder' }
-    elseif (-not $Studio -or -not ((Test-Path -LiteralPath $Studio -PathType Leaf) -or (Get-Command -Name $Studio -CommandType Application -ErrorAction SilentlyContinue))) { $what = 'environment' }
-    if ($what) {
-        Write-Miss $what
+    if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $app 'ns_studio') 'cli.py') -PathType Leaf)) {
+        Write-Miss 'folder'
+        exit 1
+    }
+    # (before the look at studio.exe: an interrupted sync may have removed it, and the repair puts it back)
+    $stop = Test-BeforeStart $true
+    if ($null -ne $stop) {
+        Write-Miss $stop.what $stop.text
+        exit 1
+    }
+    if (-not $Studio -or -not ((Test-Path -LiteralPath $Studio -PathType Leaf) -or (Get-Command -Name $Studio -CommandType Application -ErrorAction SilentlyContinue))) {
+        Write-Miss 'environment'
         exit 1
     }
     [void](Restore-AfterMiss $true)
@@ -411,6 +692,14 @@ if (Test-Path -LiteralPath $Launcher -PathType Leaf) {
     # A PC can hold several Nightshift folders and has one NIGHTSHIFT_HOME: a shortcut runs the install this
     # file is in, whatever the variable names (the launchers read the variable before their own place).
     if (Test-Path -LiteralPath (Join-Path (Join-Path $nsHome 'config') 'runtime.json') -PathType Leaf) { $env:NIGHTSHIFT_HOME = $nsHome }
+    $stop = Test-BeforeStart $false
+    if ($null -ne $stop) {
+        Write-Host ''
+        Write-Host $stop.text
+        Write-Host ''
+        Read-Host 'Press Enter to close' | Out-Null
+        exit 1
+    }
     [void](Restore-AfterMiss $false)
     $global:LASTEXITCODE = 0
     & $Launcher

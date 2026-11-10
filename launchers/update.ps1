@@ -94,6 +94,9 @@ if (Test-Path -LiteralPath $logFile) {
     for ($i = $seen; $i -lt $lines.Count; $i++) { Write-Host $lines[$i] }
 }
 if ($final.state -eq 'failed') {
-    Exit-NsWithPause ('The update did not complete: ' + [string]$final.message) 1
+    # an update that was applied and only the restart failed did complete: said as that (D-39a review note)
+    $lead = 'The update did not complete: '
+    if ($final.PSObject.Properties['updated'] -and $final.updated -eq $true) { $lead = 'The update was applied, but Nightshift did not start again: ' }
+    Exit-NsWithPause ($lead + [string]$final.message) 1
 }
 Read-Host 'Update finished. Press Enter to close' | Out-Null

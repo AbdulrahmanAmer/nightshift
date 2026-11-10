@@ -65,6 +65,14 @@ LOCK_TRIES = 10
 LOCK_PAUSE_S = 0.2
 BUSY = "Another update, rollback or repair of this Nightshift is running"
 WINDOW_TITLE = "Nightshift update"
+#: The longest a progress window waits for Enter after the result (then it closes by itself).
+CLOSE_AFTER_S = 1800
+#: The morning note's title when a run ends with Nightshift not running (`_tell`): it says whether the
+#: program was changed, because "did not complete" is untrue of an update that applied and only the restart
+#: failed (D-39a review note).
+NOT_COMPLETE_TITLE = "The last update or rollback did not complete"
+APPLIED_TITLE = "The update or rollback was applied, but Nightshift did not start again"
+NOT_RESTARTED_TITLE = "Nothing was updated, and Nightshift did not start again"
 NOT_STARTED = "Nightshift was not started."
 OPEN_IT = "Open Nightshift from a Desktop shortcut."
 NO_RESTART = "The update process stopped before it restarted Nightshift."
@@ -573,7 +581,21 @@ def follower_script(status: Path, log: Path, pid: int, *, wait: bool = True) -> 
         "        }",
         "    }",
         "}",
-        *(["Read-Host 'Press Enter to close this window' | Out-Null"] if wait else []),
+        # D-39a review: a window nobody can see (no desktop, no console) must not wait for ever: it waits for
+        # Enter at most CLOSE_AFTER_S, and not at all where no key can be read
+        *([
+            f"Write-Host 'Press Enter to close this window (it closes by itself in {CLOSE_AFTER_S // 60} "
+            "minutes).'",
+            f"$until = [DateTime]::UtcNow.AddSeconds({CLOSE_AFTER_S})",
+            "try {",
+            "    while ([DateTime]::UtcNow -lt $until) {",
+            "        if ([Console]::KeyAvailable) {",
+            "            if ([Console]::ReadKey($true).Key -eq 'Enter') { break }",
+            "        }",
+            "        else { Start-Sleep -Milliseconds 250 }",
+            "    }",
+            "} catch { }",
+        ] if wait else []),
         "exit $code",
     ])
 
@@ -595,9 +617,19 @@ def open_window(argv: list[str], cwd: Path) -> int:
         return int(subprocess.Popen(argv, creationflags=CREATE_NEW_CONSOLE, **common).pid)
 
 
+def has_desktop() -> bool:
+    """False in session 0 (a service, an engine started behind the dashboard route there, an OpenSSH
+    command): a window opened there is invisible. The notes owner's public check."""
+    from ns_supervisor import notify
+
+    return notify.session_is_interactive()
+
+
 def start_follower(paths: Paths, pid: int, log: Path) -> bool:
     """Open the progress window for the worker `pid`; False when it could not be opened (no PowerShell, no
-    desktop session). The worker runs either way."""
+    desktop session: nothing is started there). The worker runs either way."""
+    if not has_desktop():
+        return False
     cwd = paths.home if paths.home.is_dir() else Path(os.path.expanduser("~"))
     try:
         open_window(follower_argv(follower_script(status_file(paths), log, pid)), cwd)
@@ -665,16 +697,19 @@ def _take(lock: FileLock, sleep: Callable[[float], None]) -> AlreadyRunning | No
     return refusal
 
 
-def _tell(paths: Paths, log: Path | None, watched: bool, message: str) -> None:
+def _tell(
+    paths: Paths, log: Path | None, watched: bool, message: str, *, title: str = NOT_COMPLETE_TITLE
+) -> None:
     """The run ends with Nightshift NOT running (an environment left unfinished, or the engine did not come
     back): no page can show the result. So it is left as a morning note (the Queue page shows it at the
     next start, whoever starts it) and, unless a window already follows this run (`watched`: a terminal's
-    progress window, the Update shortcut), the progress window is opened now; it shows the final line."""
+    progress window, the Update shortcut), the progress window is opened now; it shows the final line. In a
+    session without a desktop no window is opened (`start_follower`): the note is the way it is told."""
 
     def note() -> None:
         from ns_supervisor import notify
 
-        notify.leave_note(paths, "The last update or rollback did not complete", message)
+        notify.leave_note(paths, title, message)
 
     def window() -> None:
         if not watched and log is not None:
@@ -787,13 +822,14 @@ def _work(
         versions = {**base, "old": out.old or old_version, "new": out.new, "updated": out.updated}
         if out.release_notes:
             versions["release_notes"] = out.release_notes
-        _progress(
+        _progress(      # (`updated` and `new`: a reader of a worker that dies here knows the program changed)
             paths, "running", "Starting Nightshift again.",
             if_stopped_here=f"{out.message} {NO_RESTART} {OPEN_IT}",
-            **base,
+            **{k: v for k, v in versions.items() if k != "release_notes"},
         )
         if _restart(relaunch):
-            _tell(paths, log, watched, f"{out.message} {RESTART_HINT}")
+            _tell(paths, log, watched, f"{out.message} {RESTART_HINT}",
+                  title=APPLIED_TITLE if out.updated else NOT_RESTARTED_TITLE)
             _final(paths, "failed", f"{out.message} {RESTART_HINT}", exit_code=1,
                    restart_failed=True, **versions)
             return 1
