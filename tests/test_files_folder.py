@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 
-from installer.stage2.downloader import is_done, plan_bins, qwentts_item
+from installer.stage2.downloader import is_done, plan_bins, plan_models, qwentts_item
 from installer.stage2.steps import S02DownloadBins, S04Venvs
 from installer.stage2.steps.s02_download_bins import QWENTTS_RELEASE_URL
 from installer.stage2.testing import FakeRunner, FakeUi, NullReporter, example_answers, make_test_context
@@ -648,6 +648,8 @@ def test_a_dry_run_of_stage1_names_the_files_folder_and_hands_it_to_every_step(t
 
 # ------------------------------------------------------------------- the preflight network row
 GITHUB_FILES = ("uv", "yt_dlp", "yunet", "llama_cuda13", "cudart13", "ffmpeg", "qwentts", "opencode")
+PY_ARCHIVE = "cpython-3.12.16+20261026-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
+PY_FILE = "20261026\\" + PY_ARCHIVE         # what the pinned uv names (the fake probe says it; CI has no uv)
 COVERS = "github.com does not answer; setup takes the pinned programs from files\\ (SHA256 checked)"
 
 
@@ -667,8 +669,7 @@ def github_bundle(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
         pin["sha256"] = sha(blob)
         names[key] = leaf(pin["url"])
         (files / names[key]).write_bytes(blob)
-    archive = "cpython-3.12.16+20261026-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
-    (files / "python" / "20261026" / archive).write_bytes(b"stand-in")
+    (files / "python" / "20261026" / PY_ARCHIVE).write_bytes(b"stand-in")
     (app / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     shutil.copytree(ROOT / "contracts", app / "contracts")           # errors.json: the real hints
     return app, files, names
@@ -682,6 +683,7 @@ def stage1_probe(
     probe = tmp_path / "probe.json"
     probe.write_text(json.dumps({
         "smi_text": "CUDA Version: 13.0", "unreachable": unreachable, "tools": {"ffmpeg": False},
+        "python_file": PY_FILE,
         "drives": [{"letter": "C", "free_gb": 500, "type": "SSD"}]}), encoding="utf-8")
     out = tmp_path / "handover.json"
     mode = ["-DryRun"] if dry else ["-ProbeOnly", "-Out", str(out)]
@@ -718,6 +720,8 @@ def test_github_unreachable_with_a_complete_files_folder_does_not_stop_setup(tmp
     assert raw["status"] == "warn", raw
     assert raw["value"] == COVERS + "; also unreachable: api.github.com" and raw["files"] == "covers"
     assert "would block" not in console and COVERS in console
+    assert "stops its step with NS-E105 after a few minutes of trying" in raw["hint"]
+    assert "after a few minutes of trying" in shown["whatToDo"]
     assert "[dry-run] take the pinned programs from" in console
     # the window (the same JSON, also after Check again): the Install button is not held
     handover, _ = stage1_probe(tmp_path, app, ["github.com", "huggingface.co"])
@@ -746,11 +750,20 @@ def test_github_unreachable_with_an_incomplete_files_folder_stays_red_and_names_
     assert shown["blocking"] is True and "tools\\make-files-kit.ps1" in shown["whatToDo"]
     assert "press Check again" in shown["whatToDo"]
     # OpenCode is not needed when the answers say so, and FFmpeg is not when the PC has it: not asked for
+    assert "Nightshift Code" not in raw["value"]            # OpenCode is there: nothing is said about it
     (files / names["opencode"]).unlink()
     (files / names["llama_cuda13"]).write_bytes(b"stand-in for llama_cuda13")
     (files / names["yt_dlp"]).write_bytes(b"stand-in for yt_dlp")
     (files / "python" / "20261026").mkdir(parents=True)
-    (files / "python" / "20261026" / "cpython-3.12.16+20261026-x.tar.gz").write_bytes(b"x")
+    (files / "python" / "20261026" / PY_ARCHIVE).write_bytes(b"x")
+    # a kit made without OpenCode: red (the window asks about Nightshift Code only later), with both ways out
+    raw, shown = network_rows(stage1_probe(tmp_path, app, ["github.com"])[0])
+    assert raw["status"] == "fail" and shown["blocking"] is True
+    assert raw["value"].endswith(
+        f"the files folder lacks: {names['opencode']}. {names['opencode']} is needed only for Nightshift "
+        'Code: add it with the kit, or install without Nightshift Code (put "install_code": false in an '
+        "answers.json next to INSTALL.cmd and start INSTALL.cmd -Ui)")
+    assert shown["value"] == raw["value"]
     answers = tmp_path / "answers.json"
     answers.write_text(json.dumps({"install_code": False}), encoding="utf-8")
     handover, _ = stage1_probe(tmp_path, app, ["github.com"], answers=answers)
@@ -786,6 +799,133 @@ def test_the_network_row_for_every_other_state(tmp_path, unreachable, folder, st
     assert shown["blocking"] is (status == "fail") and raw["hint"].startswith("Check the internet")
     if files == "pypi":
         assert "no folder replaces them" in shown["whatToDo"]
+
+
+GAP_FUNCTIONS = ("Get-Prop", "Get-UrlLeaf", "Find-PinnedFile", "Get-UvPythonFile", "Get-PythonFileGap",
+                 "Get-GitHubFilesGap")
+
+
+def gap_harness(tmp_path: Path, body: str) -> str:
+    """Run the named functions of stage1.ps1 under powershell.exe (StrictMode, as stage 1 runs)."""
+    listed = ", ".join(repr(x) for x in GAP_FUNCTIONS)
+    script = f"""
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$ast = [System.Management.Automation.Language.Parser]::ParseFile('{STAGE1}', [ref]$null, [ref]$null)
+$fnType = [System.Management.Automation.Language.FunctionDefinitionAst]
+foreach ($name in @({listed})) {{
+    $found = @($ast.FindAll({{ param($n) $n -is $fnType -and $n.Name -eq $name }}, $true))
+    if ($found.Count -gt 0) {{ . ([scriptblock]::Create($found[0].Extent.Text)) }}
+    else {{ Write-Host "MISSING:$name" }}
+}}
+""" + body
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "gap.ps1").write_text(script, encoding="utf-8")
+    argv = [str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(tmp_path / "gap.ps1")]
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=180)
+    out = proc.stdout + proc.stderr
+    assert "MISSING:" not in out and proc.returncode == 0, out
+    return proc.stdout
+
+
+@needs_ps
+def test_stage_1_and_stage_2_agree_on_what_this_pc_takes_from_github(tmp_path: Path):
+    """Get-GitHubFilesGap is a PowerShell twin of stage 2's plan. Both are worked out from the repository's
+    manifest for every profile, driver pair and option; a pin added to one side only fails here."""
+    manifest = load_manifest()
+    (tmp_path / "files").mkdir()                    # an empty folder: the gap is the whole list
+    combos = [(dev, profile, pair, code, ffmpeg)
+              for dev in (False, True) for profile in (("cpu-dev",) if dev else ("gpu", "cpu-dev"))
+              for pair in (("cuda12", "cuda13") if profile == "gpu" else ("",))
+              for code in (True, False) for ffmpeg in (True, False)]
+    calls = "\n".join(
+        f"Show-Gap {str(dev).lower()} '{profile}' '{pair}' {str(code).lower()} {str(ffmpeg).lower()}"
+        for dev, profile, pair, code, ffmpeg in combos)
+    out = gap_harness(tmp_path, f"""
+$m = Get-Content -Raw -LiteralPath '{ROOT / "manifest.json"}' | ConvertFrom-Json
+function Show-Gap {{
+    param($Dev, $ProfileName, $Pair, $Code, $Ffmpeg)
+    $tools = [pscustomobject]@{{ ffmpeg = ($Ffmpeg -eq 'true') }}
+    $probe = [pscustomobject]@{{ python_file = 'tag\\file'; tools = $tools }}
+    $gap = @(Get-GitHubFilesGap -Manifest $m -Probe $probe -FilesDir '{tmp_path / "files"}' `
+        -ProfileName $ProfileName -LlamaPair $Pair -DevMode ($Dev -eq 'true') -InstallCode ($Code -eq 'true'))
+    $names = $gap -join ';'
+    Write-Host ("GAP|" + (($Dev, $ProfileName, $Pair, $Code, $Ffmpeg, $names) -join '|'))
+}}
+{calls}
+""")
+    stage1 = {}
+    for line in out.splitlines():
+        if line.startswith("GAP|"):
+            _, dev, profile, pair, code, ffmpeg, names = line.split("|")
+            key = (dev == "true", profile, pair, code == "true", ffmpeg == "true")
+            stage1[key] = {n for n in names.split(";") if n and not n.startswith("python\\")}
+    assert len(stage1) == len(combos) == 16
+
+    def github(urls: list[str | None]) -> set[str]:
+        return {leaf(u) for u in urls if u and urlsplit(u).hostname == "github.com"}
+
+    def pin_url(key: str) -> str | None:
+        pin = manifest.bins.get(key)
+        return pin.url if pin is not None else None
+
+    for dev, profile, pair, code, ffmpeg in combos:
+        home = tmp_path / "home"
+        # ctx.constrain: a dev install has no Nightshift Code
+        bins = plan_bins(manifest, profile, home, include_code=code and not dev, llama_pair=pair or None)
+        urls: list[str | None] = [i.url for i in bins]                               # s02
+        voice = None if dev else qwentts_item(manifest, home)                        # s02 _qwentts
+        urls.append(voice.url if voice else None)
+        models = plan_models(manifest, profile, "small", home, dev=dev)             # s03
+        urls += [i.url for i in models if i.name == "yunet"]
+        wheel = manifest.python.spacy_wheel                                          # s04
+        urls.append(wheel.url if wheel else None)
+        urls.append(pin_url("uv"))                                                   # stage 1 / b02
+        if not ffmpeg:
+            urls.append(pin_url("ffmpeg"))                                           # b01
+        assert stage1[(dev, profile, pair, code, ffmpeg)] == github(urls), (dev, profile, pair, code, ffmpeg)
+
+
+@needs_ps
+def test_a_stale_python_archive_does_not_pass_the_check(tmp_path: Path):
+    """The folder must hold the exact archive the pinned uv asks its mirror for, not any 3.12 build."""
+    app, files, _names = github_bundle(tmp_path)
+    exact = files / "python" / "20261026" / PY_ARCHIVE
+    stale = files / "python" / "20250918" / PY_ARCHIVE.replace("3.12.16+20261026", "3.12.11+20250918")
+    stale.parent.mkdir()
+    exact.rename(stale)
+    raw, _shown = network_rows(stage1_probe(tmp_path, app, ["github.com"])[0])
+    assert raw["status"] == "fail", raw
+    assert raw["value"] == ("unreachable: github.com; the files folder lacks: python\\" + PY_FILE
+                            + " (make it with -Only uv,python)")
+    # the kit's list names the file with another SHA256: a broken copy does not pass either
+    stale.rename(exact)
+    listed = {"key": "python", "file": "python\\" + PY_FILE, "sha256": sha(b"what the kit saved")}
+    (files / "files.json").write_text(json.dumps({"files": [listed]}), encoding="utf-8")
+    raw, _shown = network_rows(stage1_probe(tmp_path, app, ["github.com"])[0])
+    assert raw["status"] == "fail" and "(not the bytes the kit saved)" in raw["value"]
+    (files / "files.json").write_text(json.dumps({"files": [
+        {"key": "python", "file": "python\\" + PY_FILE, "sha256": sha(b"stand-in")}]}), encoding="utf-8")
+    assert network_rows(stage1_probe(tmp_path, app, ["github.com"])[0])[0]["status"] == "warn"
+    # the name comes from uv's own list (the line of uv 0.13.6); other interpreters and versions are skipped
+    uv = tmp_path / "fake uv" / "uv.cmd"
+    uv.parent.mkdir()
+    site = "https://releases.astral.sh/github/python-build-standalone/releases/download"
+    uv.write_text("\r\n".join([
+        "@echo off",
+        "echo pypy-3.12.15-windows-x86_64-none       https://downloads.python.org/pypy/pypy3.12-v8.0.1-win64.zip",
+        f"echo cpython-3.12.16-windows-x86_64-none    {site}/20261026/{PY_ARCHIVE.replace('+', '%%2B')}",
+        f"echo cpython-3.12.15-windows-x86_64-none    {site}/20260901/older.tar.gz"]) + "\r\n",
+        encoding="ascii")
+    out = gap_harness(tmp_path / "ask", f"""
+Write-Host ('ASKED=[' + (Get-UvPythonFile -Uv '{uv}' -Version '3.12') + ']')
+$m = [pscustomobject]@{{ python_version = '3.12'; bins = [pscustomobject]@{{ uv = $null }} }}
+$known = Get-PythonFileGap -Manifest $m -Probe $null -FilesDir '{files}' -KnownUv '{uv}'
+Write-Host ('KNOWN=[' + $known + ']')
+Write-Host ('NOUV=[' + (Get-PythonFileGap -Manifest $m -Probe $null -FilesDir '{files}') + ']')
+""")
+    assert f"ASKED=[{PY_FILE}]" in out and "KNOWN=[]" in out
+    assert "NOUV=[python\\ (the Python 3.12 build could not be checked without the pinned uv)" in out
 
 
 # ------------------------------------------------------------------------------------------- the kit

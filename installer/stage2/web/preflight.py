@@ -132,7 +132,8 @@ NETWORK_FAIL_TEXT = (
 FILES_COVER_TITLE = "GitHub cannot be reached"
 FILES_COVER_TEXT = (
     "Nothing to do: setup takes the pinned programs from the files folder next to INSTALL.cmd and checks "
-    "each one. If a program is missing from the folder after all, that step stops and names the file"
+    "each one. If a program is missing from the folder after all, that step stops after a few minutes of "
+    "trying and names the file"
 )
 FILES_KIT_TEXT = (
     "Or give setup the programs GitHub serves: on a PC that reaches GitHub run tools\\make-files-kit.ps1 "

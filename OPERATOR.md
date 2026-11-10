@@ -156,8 +156,16 @@ after 10 seconds).
 
 - "Everything this PC takes from GitHub" is: uv, the llama.cpp build for this PC's driver and its CUDA runtime,
   yt-dlp, the face finder, the spaCy language model, FFmpeg unless it is already installed, the voice engine,
-  OpenCode unless your answers switch Nightshift Code off, and a Python build under `files/python`. Each file is
+  OpenCode unless your answers switch Nightshift Code off, and the Python build under `files/python`. Each file is
   hashed for this check, so with a large folder on a slow stick the check takes a little longer.
+- **Python** has no SHA256 in `manifest.json` (uv chooses the build and checks it when it installs it), so the
+  check asks the pinned uv which archive it wants and looks for exactly that file; an older 3.12 archive does not
+  pass. If the kit's `files.json` lists the archive, its bytes must match what the kit saved.
+- **A kit made without OpenCode** keeps the row red, because the window asks about Nightshift Code only after
+  the check. The row says so and gives both ways out: add the file with the kit, or install without Nightshift
+  Code (put `"install_code": false` in an `answers.json` next to `INSTALL.cmd` and start `INSTALL.cmd -Ui`).
+- The warning itself says that a program missing from the folder after all stops its step after a few minutes
+  of trying; the bullets below give the exact waits.
 - **With no internet at all setup does not start**, whatever the folder holds: the Python packages come from
   PyPI and nothing replaces them. The row says so before anything is installed. With GitHub alone gone, setup
   runs to the end as long as PyPI and the model source (Hugging Face, or your models folder) answer.

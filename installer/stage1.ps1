@@ -589,6 +589,7 @@ function Get-FakeProbe {
         ram_gb       = [double](Get-Prop $j 'ram_gb' 32)
         drives       = @(Get-Prop $j 'drives' @([pscustomobject]@{ letter = 'C'; free_gb = 500; type = 'SSD' }))
         unreachable  = @(Get-Prop $j 'unreachable' @())
+        python_file  = [string](Get-Prop $j 'python_file' '')
         winget       = [bool](Get-Prop $j 'winget' $true)
         tools        = [pscustomobject]@{
             ffmpeg = [bool](Get-Prop $tools 'ffmpeg' $true)
@@ -766,13 +767,18 @@ function Get-PreflightRows {
         $others = @($unreachable | Where-Object { $_ -ne 'github.com' })
         if ($others.Count -gt 0) { $value += '; also unreachable: ' + ($others -join ', ') }
         $netRow = New-Row 'network' $netLabel 'warn' 'NS-E105' $value
-        $netRow.hint = 'Nothing to do. A program that turns out to be missing from the folder stops its step with NS-E105, which names the file and how to add it.'
+        $netRow.hint = 'Nothing to do. A program that turns out to be missing from the folder stops its step with NS-E105 after a few minutes of trying; the message names the file and how to add it.'
     }
     elseif ($blocked.Count -gt 0) {
         $value = 'unreachable: ' + ($unreachable -join ', ')
         if ($githubDown -and $FilesState -eq 'lacks') {
             $netFiles = 'lacks'
             $value += '; the files folder lacks: ' + ($FilesMissing -join ', ')
+            # Nightshift Code is a choice (the window asks it after this check, so it counts as yes here)
+            $code = @($FilesMissing | Where-Object { $_ -like 'opencode*' })
+            if ($code.Count -gt 0) {
+                $value += ('. {0} is needed only for Nightshift Code: add it with the kit, or install without Nightshift Code (put "install_code": false in an answers.json next to INSTALL.cmd and start INSTALL.cmd -Ui)' -f $code[0])
+            }
         }
         elseif ($githubDown -and $FilesState -eq 'covers') {
             $netFiles = 'pypi'
@@ -1021,21 +1027,87 @@ function Find-PinnedFile {
     return ''
 }
 
+function Get-UvPythonFile {
+    # '<tag>\<file>' of the CPython archive this uv installs for -Version on 64-bit Windows, which is the path it
+    # asks a mirror for (files\python\<tag>\<file>); '' when uv cannot say. No network: the list is inside uv.
+    # The same line tools\make-files-kit.ps1 reads.
+    param([string]$Uv, [string]$Version)
+    try {
+        $lines = @(& $Uv python list $Version --show-urls --only-downloads)
+        $pattern = '^cpython-' + [regex]::Escape($Version) + '\.\d+-windows-x86_64-none\s+(https?://\S+)'
+        foreach ($line in $lines) {
+            if ([string]$line -match $pattern) {
+                $parts = @(([System.Uri]$Matches[1]).AbsolutePath.Trim('/') -split '/')
+                if ($parts.Count -lt 2) { return '' }
+                return ([System.Uri]::UnescapeDataString($parts[$parts.Count - 2]) + '\' + [System.Uri]::UnescapeDataString($parts[$parts.Count - 1]))
+            }
+        }
+    }
+    catch { Write-Verbose "uv python list failed: $($_.Exception.Message)" }
+    return ''
+}
+
+function Get-PythonFileGap {
+    # '' when files\python holds the exact archive the pinned uv will ask for, else the words for the red row.
+    # manifest.json has no SHA256, size or file name for Python (uv chooses the build), so the exact name comes
+    # from the pinned uv itself: a copy already on this PC (-KnownUv), else the uv zip in the folder (taken only
+    # when its SHA256 is the manifest's pin, unpacked to a temp folder that is removed again). A stale 3.12.x
+    # archive therefore does not pass. The bytes: when files.json (written by the kit) lists that file, its
+    # SHA256 there must be the file's, which catches a broken copy; uv checks its own SHA256 at install anyway.
+    param($Manifest, $Probe, [string]$FilesDir, [string]$KnownUv = '')
+    $version = [string](Get-Prop $Manifest 'python_version' '3.12')
+    $how = '(make it with -Only uv,python)'
+    $want = [string](Get-Prop $Probe 'python_file' '')
+    $temp = ''
+    try {
+        if (-not $want -and $KnownUv) { $want = Get-UvPythonFile -Uv $KnownUv -Version $version }
+        if (-not $want) {
+            $pin = Get-Prop (Get-Prop $Manifest 'bins' $null) 'uv' $null
+            $zip = Find-PinnedFile -FilesDir $FilesDir -Name (Get-UrlLeaf ([string](Get-Prop $pin 'url' ''))) -Sha256 ([string](Get-Prop $pin 'sha256' ''))
+            if ($zip) {
+                $temp = Join-Path ([IO.Path]::GetTempPath()) ('nightshift-uvlook-' + $PID)
+                Expand-Archive -LiteralPath $zip -DestinationPath $temp -Force
+                $exe = Get-ChildItem -LiteralPath $temp -Recurse -Filter 'uv.exe' | Select-Object -First 1
+                if ($null -ne $exe) { $want = Get-UvPythonFile -Uv $exe.FullName -Version $version }
+            }
+        }
+    }
+    catch { Write-Verbose "could not ask uv for its Python build: $($_.Exception.Message)" }
+    finally {
+        if ($temp -and (Test-Path -LiteralPath $temp)) { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    if (-not $want) { return "python\ (the Python $version build could not be checked without the pinned uv) $how" }
+    $path = Join-Path (Join-Path $FilesDir 'python') $want
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) { return "python\$want $how" }
+    try {
+        $listFile = Join-Path $FilesDir 'files.json'
+        if (Test-Path -LiteralPath $listFile -PathType Leaf) {
+            $listed = @((Get-Content -Raw -LiteralPath $listFile | ConvertFrom-Json).files | Where-Object { [string](Get-Prop $_ 'file' '') -eq ('python\' + $want) })
+            if ($listed.Count -gt 0 -and [string](Get-Prop $listed[0] 'sha256' '') -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash) {
+                return "python\$want (not the bytes the kit saved) $how"
+            }
+        }
+    }
+    catch { Write-Verbose "files.json not usable: $($_.Exception.Message)" }
+    return ''
+}
+
 function Get-GitHubFilesGap {
     # The files this install would fetch from GitHub that the files folder does NOT hold with the pinned SHA256
     # (an empty list: the folder covers GitHub). The list is what this PC installs: uv, the llama.cpp build of
     # its profile and driver (with its CUDA runtime), yt-dlp, the face finder, the spaCy wheel, FFmpeg unless it
-    # is already on this PC, the voice engine on a real install with a graphics card, OpenCode unless the answers
-    # say no (the window has not asked yet, so it counts), and a Python archive under files\python (uv checks
-    # that one itself). Only pins whose URL is on github.com count; a pin without a real SHA256 cannot come from
+    # is already on this PC, the voice engine on a real (not dev) install, OpenCode unless the answers
+    # say no (the window has not asked yet, so it counts), and the Python archive the pinned uv asks for (Get-PythonFileGap). Only pins whose URL is on github.com count; a pin without a real SHA256 cannot come from
     # the folder and is not listed (its step fails or falls back as it always did).
-    param($Manifest, $Probe, [string]$FilesDir, [string]$ProfileName, [string]$LlamaPair, [bool]$DevMode = $false, [bool]$InstallCode = $true)
+    # The program list is the PowerShell twin of stage 2's plan (downloader.plan_bins, s02 _qwentts, plan_models'
+    # yunet, s04's wheel, b01's FFmpeg): tests/test_files_folder.py compares the two for every combination.
+    param($Manifest, $Probe, [string]$FilesDir, [string]$ProfileName, [string]$LlamaPair, [bool]$DevMode = $false, [bool]$InstallCode = $true, [string]$KnownUv = '')
     $keys = @('uv', 'yt_dlp', 'yunet')
     if ($ProfileName -eq 'cpu-dev') { $keys += 'llama_cpu' }
     elseif ($LlamaPair -eq 'cuda13') { $keys += @('llama_cuda13', 'cudart13') }
     else { $keys += @('llama_cuda', 'cudart') }
     if (-not [bool](Get-Prop (Get-Prop $Probe 'tools' $null) 'ffmpeg' $false)) { $keys += 'ffmpeg' }
-    if (-not $DevMode -and $ProfileName -eq 'gpu') { $keys += 'qwentts' }
+    if (-not $DevMode) { $keys += 'qwentts' }
     if (-not $DevMode -and $InstallCode) { $keys += 'opencode' }
     $bins = Get-Prop $Manifest 'bins' $null
     $pins = @($keys | ForEach-Object { Get-Prop $bins $_ $null })
@@ -1051,13 +1123,8 @@ function Get-GitHubFilesGap {
         $name = Get-UrlLeaf $url
         if (-not (Find-PinnedFile -FilesDir $FilesDir -Name $name -Sha256 $sha)) { $missing += $name }
     }
-    $pyVersion = [string](Get-Prop $Manifest 'python_version' '3.12')
-    $pyDir = Join-Path $FilesDir 'python'
-    $archives = @()
-    if (Test-Path -LiteralPath $pyDir -PathType Container) {
-        $archives = @(Get-ChildItem -LiteralPath $pyDir -File -Recurse -Depth 2 -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "cpython-$pyVersion.*" })
-    }
-    if ($archives.Count -eq 0) { $missing += "python\<build>\cpython-$pyVersion.x (make it with -Only python)" }
+    $python = Get-PythonFileGap -Manifest $Manifest -Probe $Probe -FilesDir $FilesDir -KnownUv $KnownUv
+    if ($python) { $missing += $python }
     return $missing
 }
 
@@ -1510,7 +1577,11 @@ if ($null -ne $cuda) { $cudaString = [string]$cuda }
 $filesState = ''
 $filesMissing = @()
 if ($filesDir -and (@($probe.unreachable) -contains 'github.com')) {
-    $filesMissing = @(Get-GitHubFilesGap -Manifest $Manifest -Probe $probe -FilesDir $filesDir -ProfileName $profileName -LlamaPair $llamaPair -DevMode $script:DevMode -InstallCode ([bool](Get-Prop $answersObj 'install_code' $true)))
+    # a pinned uv already on this PC can name its Python build (never an unpinned one: it may want another build)
+    $knownUv = ''
+    $uvPinVersion = [string](Get-Prop (Get-Prop (Get-Prop $Manifest 'bins' $null) 'uv' $null) 'version' '')
+    if ($uvPinVersion) { $knownUv = [string](Find-Uv -NsHome $NsHome -Version $uvPinVersion) }
+    $filesMissing = @(Get-GitHubFilesGap -Manifest $Manifest -Probe $probe -FilesDir $filesDir -ProfileName $profileName -LlamaPair $llamaPair -DevMode $script:DevMode -InstallCode ([bool](Get-Prop $answersObj 'install_code' $true)) -KnownUv $knownUv)
     if ($filesMissing.Count -eq 0) { $filesState = 'covers' } else { $filesState = 'lacks' }
 }
 $rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu -DevMode $script:DevMode -FilesState $filesState -FilesMissing $filesMissing
