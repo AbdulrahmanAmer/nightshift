@@ -7,6 +7,7 @@ import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import psutil
 
@@ -16,7 +17,7 @@ from ns_common.errors import NsError
 from ns_common.models import Runtime
 from ns_common.paths import Paths, repo_root
 from ns_common.runtime_read import read_runtime as read_runtime  # the one reading for the commands
-from ns_supervisor import procs
+from ns_supervisor import procs, stopping
 from ns_supervisor.childenv import child_env, window_flags
 from ns_supervisor.client import SupervisorClient
 
@@ -115,20 +116,23 @@ def stop(
     identify: Callable[[int], str | None] = image_name,
     wait_s: float = 45,
     exit_wait_s: float = ENGINE_EXIT_WAIT_S,
+    holders: Callable[[], list[Any]] | None = None,
+    say: Callable[[str], None] | None = None,
 ) -> list[str]:
-    """Stop the engine: `POST /shutdown` if it answers, else kill the pids recorded in run/supervisor.json.
+    """Stop the engine; returns report lines for the console.
 
-    After a shutdown through the API it also waits (`exit_wait_s`) until the recorded processes are gone,
-    not only until `/status` is quiet. Returns report lines for the console.
+    D-46: when the engine answers, or does not answer but its own processes still run (one that closed its
+    port and never exited holds `run/supervisor.lock`), this is `stopping.stop_nightshift`: what is ours is
+    noted, the engine is asked, everything is waited for (with `holders`, also every program that runs from
+    the environments), and what is ours and still there after `stopping.STOP_WAIT_S` is ended by its
+    recorded process. `say` gets each progress line. Otherwise the pids recorded in run/supervisor.json are
+    killed when their image is still the recorded kind (an engine that died and left its record).
     """
-    if client.is_up():
-        recorded = engine_pids(paths)
-        client.shutdown(30)
-        wait_down(client, wait_s)
-        left = wait_gone(recorded, exit_wait_s)
-        lines = ["Engine stopped through the supervisor API."]
-        if left:
-            lines.append(f"{len(left)} of its processes had not ended after {exit_wait_s:g} s.")
+    if client.is_up() or stopping.engine_holder(paths) is not None:
+        done = stopping.stop_nightshift(paths, client, holders=holders, say=say)
+        lines = list(done.lines)
+        if done.not_ended:
+            lines.append("Still running, and could not be ended: " + "; ".join(done.not_ended) + ".")
         return lines
     state_file = paths.home / "run" / "supervisor.json"
     if not state_file.exists():

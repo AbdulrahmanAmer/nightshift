@@ -96,6 +96,13 @@ ENGINE_ASKED = (
     " The Nightshift engine was asked to stop for setup; it starts again when setup is done, or from a "
     "Desktop shortcut."
 )
+#: D-46: a refusal puts Nightshift back as setup found it. Said when the engine that was running before is
+#: running again; `ENGINE_ASKED` when it could not be started within `ENGINE_BACK_WAIT_S`.
+ENGINE_BACK = (
+    " Setup had stopped the Nightshift engine for this and has started it again, so Nightshift runs as "
+    "before (Retry stops it again)."
+)
+ENGINE_BACK_WAIT_S = 30.0
 DETACHED = 0x00000008 | 0x00000200      # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP (Windows only)
 SHORTCUTS = ("Nightshift Dashboard", "Nightshift Studio", "Nightshift Outbox", "Nightshift - Stop All",
              "Nightshift - Update", "Nightshift - Diagnostics")
@@ -348,6 +355,7 @@ class Effects:
     key_check: Callable[[str, str], dict[str, Any]] = check_key
     head: modelcheck.Head = modelcheck.urllib_head
     launch: Callable[..., None] = launch_detached
+    engine_running: Callable[[Path], bool] = venvrepair.engine_running              # looks at its lock only
     launch_captured: Callable[..., tuple[int | None, str]] = launch_captured
     elevate_longpaths: Callable[[], bool] = elevate_longpaths
     console: Callable[[str, str], None] = ignore_console
@@ -1422,7 +1430,9 @@ class SetupController:
             ) from None
         except OSError:
             return None     # the lock file cannot be made: the steps below meet the same folder and say so
+        was_up = self.fx.engine_running(self.home)
         try:
+            # (`ns stop` is the update's stop sequence: it ends the engine's own processes that do not end)
             bootstrap.B02Home._stop_engine(self._boot())
             deadline = time.monotonic() + HOLDER_WAIT_S
             while True:
@@ -1437,6 +1447,7 @@ class SetupController:
                 if listed and not found:
                     return lock
                 if time.monotonic() >= deadline or self._stop.is_set():
+                    back = self._engine_back(was_up)       # D-46: never left down by a refusal
                     if not listed:
                         why = " ".join((res.stderr or res.stdout or f"exit code {res.returncode}").split())
                         raise bootstrap.BootstrapError(
@@ -1446,18 +1457,39 @@ class SetupController:
                             "Nothing was changed. Close every Nightshift window (Studio, terminals, "
                             "Nightshift Code, a Python prompt), then press Retry (or run INSTALL.cmd "
                             "again). If it keeps failing, restart the PC, then press Retry (or run "
-                            "INSTALL.cmd again)." + ENGINE_ASKED,
+                            "INSTALL.cmd again)." + back,
                         )
                     raise bootstrap.BootstrapError(
                         "NS-E706",
                         "These programs still run from Nightshift's Python environments, and setup must not "
                         f"replace their files: {'; '.join(found)}. Nothing was changed. Close them, then "
-                        "press Retry (or run INSTALL.cmd again)." + ENGINE_ASKED,
+                        "press Retry (or run INSTALL.cmd again)." + back,
                     )
                 time.sleep(HOLDER_PAUSE_S)
         except BaseException:
             lock.release()
             raise
+
+    def _engine_back(self, was_up: bool) -> str:
+        """D-46: after a refusal, start again the engine that ran before setup asked it to stop, and wait up
+        to ``ENGINE_BACK_WAIT_S`` for it to hold its lock. The words for the refusal: ``ENGINE_BACK`` when
+        it runs again, ``ENGINE_ASKED`` when it does not (an engine refuses to start on environments an
+        update left unfinished: the shortcut's replay is then the way back), nothing when none ran before."""
+        if not was_up:
+            return ""
+        py = self.home / "venvs" / "supervisor" / "Scripts" / "python.exe"
+        try:
+            self.fx.launch([str(py), "-m", "ns_supervisor.app"],
+                           {bootstrap.HOME_VAR: str(self.home), **STAGE1_ONLY_ENV})
+        except OSError as e:
+            self.log("warn", f"The engine could not be started again: {e}")
+            return ENGINE_ASKED
+        deadline = time.monotonic() + ENGINE_BACK_WAIT_S
+        while not self.fx.engine_running(self.home):
+            if time.monotonic() >= deadline:
+                return ENGINE_ASKED
+            time.sleep(0.5)
+        return ENGINE_BACK
 
     def _pipeline_run(self) -> None:
         step_id = BOOTSTRAP_STEPS[0]

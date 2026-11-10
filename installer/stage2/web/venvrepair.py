@@ -230,7 +230,16 @@ def update_running(home: Path) -> bool:
     """True while another process holds ``run/update.lock`` (an update, rollback, setup or the launch
     script's replay): byte 0 is locked then, and reading it is refused. It only looks: taking the lock, even
     for a moment, could make a starting update refuse itself. Off Windows: False (nothing to look at)."""
-    lock = Path(home) / "run" / "update.lock"
+    return _held(Path(home) / "run" / "update.lock")
+
+
+def engine_running(home: Path) -> bool:
+    """True while an engine of this home lives: it holds ``run/supervisor.lock`` from its start to its last
+    instant (``ns_supervisor.app.main``). Looks only, like ``update_running``."""
+    return _held(Path(home) / "run" / "supervisor.lock")
+
+
+def _held(lock: Path) -> bool:
     if sys.platform != "win32":
         return False
     try:

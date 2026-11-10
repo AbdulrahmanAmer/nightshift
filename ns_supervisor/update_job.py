@@ -84,6 +84,8 @@ DONE_STATES = ("done", "failed")
 PopenFn = Callable[..., Any]
 
 RESTART_HINT = "Nightshift could not restart by itself; click the Nightshift Dashboard shortcut."
+#: D-46: said after a refused or failed run when Nightshift was running before it and was started again.
+STARTED_AGAIN = "Nightshift was started again, as it was running before."
 
 
 class Relauncher(Protocol):
@@ -873,8 +875,9 @@ def _work(
     if _restart(relaunch):
         _tell(paths, log, watched, f"{message} {RESTART_HINT}")
         _final(paths, "failed", f"{message} {RESTART_HINT}", exit_code=1, restart_failed=True, **base)
-    else:
-        _final(paths, "failed", message, exit_code=1, **base)
+    else:   # D-46: a refusal or a failure never leaves Nightshift down; the owner reads that it is back
+        back = f" {STARTED_AGAIN}" if getattr(relaunch, "wanted", False) else ""
+        _final(paths, "failed", message + back, exit_code=1, **base)
         if cleanup is not None and relaunch is not None:
             _guarded(cleanup)
     return 1
