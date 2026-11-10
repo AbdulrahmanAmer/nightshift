@@ -193,6 +193,43 @@ def pending_sentence(home: Path, app: Path, record: Mapping[str, Any] | None, pr
     )
 
 
+#: Exit code of `main` when a start is refused (the launchers' `Start-NsSupervisor` and the engine use it).
+REFUSED_EXIT = 4
+
+
+def start_refusal(home: Path, app: Path) -> str | None:
+    """The one start gate of the Python side (D-39b review): None when Nightshift may start from the program
+    in ``app``; else the sentence that says why not. Refused while a repair record waits for that program,
+    or when the record cannot be read (the launch script treats it as present too). A record of another
+    program is stale and does not stop a start (the next update, setup or shortcut start deletes it).
+
+    Standard library only, and reads nothing but two files: a process that already runs from a half-filled
+    environment got this far, so its own imports worked, but this check needs nothing from those
+    environments (``main`` runs it under ``python -I -S``)."""
+    try:
+        record = read(home)
+    except ValueError as e:
+        why = pending_sentence(home, app, None, str(e))
+    else:
+        if record is None or not matches(record, app):
+            return None
+        why = pending_sentence(home, app, record)
+    return "Nightshift was not started: " + why.replace(f" ({CODE})", "", 1)
+
+
+def main(argv: Sequence[str]) -> int:
+    """``python -I -S -c <import this> <app> <home>``: print the refusal and return ``REFUSED_EXIT``, or 0.
+    Run by the launchers before they start the engine, with the interpreter of the supervisor venv but none
+    of its packages (``-S``)."""
+    if len(argv) != 2:
+        return 2
+    why = start_refusal(Path(argv[1]), Path(argv[0]))
+    if why is None:
+        return 0
+    print(f"{CODE}: {why}")
+    return REFUSED_EXIT
+
+
 #: Read-only: every process's id, image and command line (Windows PowerShell 5.1, CIM). The folder looked
 #: for is not on this command line, so the listing never names itself.
 PROCESS_LIST = (

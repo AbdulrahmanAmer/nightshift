@@ -363,3 +363,172 @@ def test_no_progress_window_waits_for_ever_without_a_desktop(
     assert r.returncode == 0 and "Result: Now on 0.2.0." in r.stdout and time.monotonic() - t0 < 60
     decoded = base64.b64decode(argv[argv.index("-EncodedCommand") + 1]).decode("utf-16-le")
     assert "AddSeconds(1800)" in decoded
+
+
+# ------------------------------------------- D-39b review blocker 1: every start from Python passes one gate
+def _unfinished_install(tmp_path: Path) -> tuple[Path, Paths]:
+    """A home whose program (0.1.0, at `app`) has a repair record waiting: an update broke off in the sync."""
+    app, paths = program(tmp_path), Paths(tmp_path / "ns")
+    point_home_at(paths, app)
+    (paths.home / "config").mkdir(parents=True, exist_ok=True)
+    (paths.home / "config" / "runtime.json").write_text('{"dev_mode": true}', encoding="utf-8")
+    vr = venvrepair()
+    assert vr is not None
+    vr.write(paths.home, app=app, for_app="0.1.0|x|y", version="0.1.0", uv="uv", env={},
+             commands=[("studio", ["uv", "pip", "install"])], by="update", match="version")
+    return app, paths
+
+
+class Spawns:
+    """The engine as the routes start it: never really started here, only counted."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from ns_supervisor import client
+
+        self.calls: list[str] = []
+        monkeypatch.setattr(client.SupervisorClient, "is_up", lambda self: False)
+        monkeypatch.setattr(client, "spawn_supervisor", lambda paths, **kw: self.calls.append("engine"))
+
+
+SAID = "Nightshift was not started: an interrupted update or rollback left the Python environment 'studio'"
+
+
+def test_every_python_start_of_the_engine_refuses_an_unfinished_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from ns_studio import cli as studio_cli
+    from ns_studio.acquirer import StudioAcquirer
+    from ns_supervisor import cli, client
+
+    app, paths = _unfinished_install(tmp_path)
+    monkeypatch.setenv("NIGHTSHIFT_HOME", str(paths.home))
+    spawns = Spawns(monkeypatch)
+    # the one gate: client.ensure_running, before anything is spawned
+    down = client.SupervisorClient("http://127.0.0.1:9")
+    err = raised(lambda: client.ensure_running(down, paths, wait_s=0.1))
+    assert err is not None and err.code == "NS-W210", "the engine was started on unfinished environments"
+    assert SAID in err.detail and "INSTALL.cmd from the Nightshift 0.1.0 zip" in err.detail
+    assert spawns.calls == []
+    # `studio run` and every studio command that needs a model: the acquirer connects through the gate
+    acq = StudioAcquirer(update.Runtime.default("gpu"), paths)
+    err = raised(acq._connect)
+    assert err is not None and err.code == "NS-W210" and spawns.calls == []
+    # `studio dashboard`: one line, exit 1, nothing started
+    r = CliRunner().invoke(studio_cli.app, ["dashboard"], env={"NIGHTSHIFT_HOME": str(paths.home)})
+    assert r.exit_code == 1 and SAID in " ".join(r.output.split()), r.output
+    assert spawns.calls == []
+    # `ns verify`: says it, starts no engine (the checks then find no engine: exit 1)
+    monkeypatch.setattr(cli.verify, "run_verify", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop")))
+    monkeypatch.setattr(cli, "_client", lambda p: down)                 # never another engine on this PC
+    monkeypatch.setattr(cli, "_stop_started_engine", lambda c: None)
+    r = CliRunner().invoke(cli.app, ["verify"], env={"NIGHTSHIFT_HOME": str(paths.home)})
+    out = " ".join(r.output.split())
+    assert out.startswith("Could not start the engine: NS-W210: ") and SAID in out, r.output
+    assert r.exit_code == 1 and spawns.calls == []
+    # no record, or a record of another program: the start goes on as before
+    rec = record(paths)
+    assert rec is not None
+    record_file(paths).write_text(json.dumps({**rec, "version": "0.0.9"}), encoding="utf-8")       # stale
+    raised(lambda: client.ensure_running(down, paths, wait_s=0.1))
+    record_file(paths).unlink()
+    raised(lambda: client.ensure_running(down, paths, wait_s=0.1))
+    assert spawns.calls == ["engine", "engine"]
+
+
+def test_the_engine_refuses_at_its_own_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from ns_supervisor import app as engine
+
+    _app, paths = _unfinished_install(tmp_path)
+    monkeypatch.setenv("NIGHTSHIFT_HOME", str(paths.home))
+    monkeypatch.setattr(engine, "_serve", lambda *a: pytest.fail("it served on unfinished environments"))
+    assert engine.main([]) == 4
+    assert [n["message"] for n in notify.read_notes(paths)] == [
+        update.venvrepair.start_refusal(paths.home, _app)]
+    assert engine.main([]) == 4 and len(notify.read_notes(paths)) == 1          # said once
+    record_file(paths).unlink()
+    assert engine.refuse_unfinished(paths) == 0
+
+
+def test_the_gate_needs_nothing_but_the_standard_library(tmp_path: Path) -> None:
+    """A process that already runs from a half-filled environment can still ask: the check runs with
+    `python -I -S` (no site-packages at all) and the repository on its path, and answers both ways."""
+    app, paths = _unfinished_install(tmp_path)
+    gate = ("import sys; sys.path.insert(0, sys.argv[1]); from installer.stage2.web import venvrepair; "
+            "third = ('pydantic', 'httpx', 'yaml', 'psutil'); "
+            "assert not [m for m in sys.modules if m.split('.')[0] in third]; "
+            "sys.exit(venvrepair.main(sys.argv[2:]))")
+
+    def ask() -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, "-I", "-S", "-c", gate, str(ROOT), str(app), str(paths.home)],
+                              capture_output=True, text=True, timeout=60)
+
+    r = ask()
+    assert r.returncode == 4 and r.stdout.startswith("NS-W210: " + SAID), r.stdout + r.stderr
+    record_file(paths).unlink()
+    r = ask()
+    assert r.returncode == 0 and r.stdout == "", r.stderr
+
+
+@pytest.mark.skipif(pwsh.find_powershell() is None, reason="powershell not on PATH")
+def test_a_launcher_run_directly_starts_no_engine_on_an_unfinished_record(tmp_path: Path) -> None:
+    import venv as venv_module
+
+    home = tmp_path / "home"
+    app = home / "app"
+    shutil.copytree(ROOT / "launchers", app / "launchers")
+    for pkg in ("installer/__init__.py", "installer/stage2/__init__.py", "installer/stage2/shortcut_owner.py",
+                "installer/stage2/web/__init__.py", "installer/stage2/web/venvrepair.py",
+                "installer/stage2/web/deplock.py"):
+        (app / pkg).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(ROOT / pkg, app / pkg)
+    shutil.copytree(ROOT / "ns_common", app / "ns_common", ignore=shutil.ignore_patterns("__pycache__"))
+    (app / "VERSION").write_text("0.2.0\n", encoding="utf-8")
+    (app / ".ns-app.done").write_text("0.2.0|a|b", encoding="utf-8")
+    (home / "config").mkdir(parents=True)
+    (home / "config" / "runtime.json").write_text('{"supervisor_port": 9}', encoding="utf-8")  # no engine
+    venv_module.create(home / "venvs" / "supervisor", with_pip=False)
+    vr = venvrepair()
+    assert vr is not None
+    vr.write(home, app=app, for_app="0.2.0|a|b", version="0.2.0", uv="uv", env={},
+             commands=[("supervisor", ["uv", "pip"])], by="update")
+    exe = pwsh.find_powershell()
+    assert exe is not None
+    r = subprocess.run([exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                        str(app / "launchers" / "nightshift-dashboard.ps1")],
+                       input="\n", capture_output=True, text=True, timeout=120)
+    said = " ".join(r.stdout.split())
+    assert r.returncode == 1 and "NS-W210: Nightshift was not started: an interrupted update" in said, said
+    assert "The Nightshift engine did not start" not in said      # refused before the start, not timed out
+
+
+# -------------------------------------------- review notes: setup's headless exit codes, a listing that fails
+def test_unattended_setup_refuses_with_15_beside_an_update_and_14_when_it_cannot_tell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from installer.stage2.web import answers_view, controller
+    from ns_common.singleton import FileLock
+    from tests.test_installer_web_controller import draft
+
+    s = Setup(tmp_path, monkeypatch)
+    answers = tmp_path / "answers.json"
+    answers_view.write_answers(answers, answers_view.draft_to_answers(draft(s.home)))
+    s.cfg.answers, s.cfg.headless = answers, True
+    (s.home / "venvs" / "studio").mkdir(parents=True)                  # an install is there
+    monkeypatch.setattr(controller.subprocess, "run", lambda *a, **k: pytest.fail("the wizard was started"))
+    monkeypatch.setattr(controller, "HOLDER_WAIT_S", 0.2, raising=False)
+    monkeypatch.setattr(controller, "HOLDER_PAUSE_S", 0.05, raising=False)
+    update_lock = FileLock(s.home / "run" / "update.lock")
+    update_lock.acquire()                                              # an update runs
+    try:
+        assert s.ctl.run_headless() == 15
+    finally:
+        update_lock.release()
+    assert any("NS-E705" in line for line in s.fx.console_lines)
+    # the running programs cannot be listed: it refuses (closed) instead of taking that for "none"
+    s.cmd.fail["Get-CimInstance"] = CmdResult(1, "", "Get-CimInstance : Access denied")
+    assert s.ctl.run_headless() == 14
+    told = " ".join(" ".join(s.fx.console_lines).split())
+    assert "NS-E706" in told and "could not list the running programs" in told and "Access denied" in told
+    assert not any(len(c) > 1 and c[1] in ("venv", "pip") for c in s.cmd.calls), "a venv was changed"

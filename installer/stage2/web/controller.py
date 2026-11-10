@@ -89,6 +89,11 @@ EXIT_STOPPED = 130
 #: install's Python environments to end before it refuses (NS-E706, nothing changed), and how often it looks.
 HOLDER_WAIT_S = 60.0
 HOLDER_PAUSE_S = 2.0
+#: Said with every NS-E706 of setup: `_guard_venvs` asked the engine to stop before it looked.
+ENGINE_ASKED = (
+    " The Nightshift engine was asked to stop for setup; it starts again when setup is done, or from a "
+    "Desktop shortcut."
+)
 DETACHED = 0x00000008 | 0x00000200      # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP (Windows only)
 SHORTCUTS = ("Nightshift Dashboard", "Nightshift Studio", "Nightshift Outbox", "Nightshift - Stop All",
              "Nightshift - Update", "Nightshift - Diagnostics")
@@ -1415,16 +1420,28 @@ class SetupController:
                     ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", venvrepair.PROCESS_LIST],
                     None, None, 120,
                 )
-                listing = res.stdout if res.returncode == 0 else ''
-                found = venvrepair.holders_in(listing, venvs, (os.getpid(),))
-                if not found:
+                # fails CLOSED: a listing that did not come (PowerShell missing or refused, CIM broken) is
+                # no proof that nothing runs from the environments setup is about to rewrite
+                listed = res.returncode == 0 and any(line.strip() for line in res.stdout.splitlines())
+                found = venvrepair.holders_in(res.stdout, venvs, (os.getpid(),)) if listed else []
+                if listed and not found:
                     return lock
                 if time.monotonic() >= deadline or self._stop.is_set():
+                    if not listed:
+                        why = " ".join((res.stderr or res.stdout or f"exit code {res.returncode}").split())
+                        raise bootstrap.BootstrapError(
+                            "NS-E706",
+                            "Setup could not list the running programs, so it cannot tell whether one runs "
+                            f"from Nightshift's Python environments, which it has to refresh ({why[:200]}). "
+                            "Nothing was changed. Close every Nightshift window (Studio, terminals, "
+                            "Nightshift Code, a Python prompt), then press Retry (or run INSTALL.cmd "
+                            "again)." + ENGINE_ASKED,
+                        )
                     raise bootstrap.BootstrapError(
                         "NS-E706",
                         "These programs still run from Nightshift's Python environments, and setup must not "
                         f"replace their files: {'; '.join(found)}. Nothing was changed. Close them, then "
-                        "press Retry (or run INSTALL.cmd again).",
+                        "press Retry (or run INSTALL.cmd again)." + ENGINE_ASKED,
                     )
                 time.sleep(HOLDER_PAUSE_S)
         except BaseException:

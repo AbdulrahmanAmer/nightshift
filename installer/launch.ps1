@@ -693,9 +693,22 @@ if (Test-Path -LiteralPath $Launcher -PathType Leaf) {
     # file is in, whatever the variable names (the launchers read the variable before their own place).
     if (Test-Path -LiteralPath (Join-Path (Join-Path $nsHome 'config') 'runtime.json') -PathType Leaf) { $env:NIGHTSHIFT_HOME = $nsHome }
     $stop = Test-BeforeStart $false
+    # After a repair that FAILED (not while an update runs: then they would read files it is replacing), the
+    # Diagnostics and Outbox shortcuts still work: the diagnostics zip is what the way out may ask for, and
+    # the outbox is only a folder. Neither starts the engine.
+    $readOnly = @('diagnostics.ps1', 'open-outbox.ps1') -contains ([IO.Path]::GetFileName($Launcher).ToLowerInvariant())
+    if ($null -ne $stop -and $stop.what -eq 'repair' -and $readOnly) {
+        Write-Host $stop.text
+        Write-Host ''
+        $stop = $null
+    }
     if ($null -ne $stop) {
         Write-Host ''
         Write-Host $stop.text
+        if ($stop.what -eq 'repair') {
+            Write-Host ''
+            Write-Host 'The Diagnostics shortcut still works (it makes the diagnostics zip and does not start Nightshift), and so does the Outbox shortcut.'
+        }
         Write-Host ''
         Read-Host 'Press Enter to close' | Out-Null
         exit 1

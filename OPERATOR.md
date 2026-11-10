@@ -537,7 +537,12 @@ first and starts Nightshift only when they worked (a note on the Queue page says
 (`NS-W210`) and starts nothing. Nothing starts from a shortcut while an update runs, and the nightly task waits up
 to 30 minutes for one. An environment an older updater left on another version is named by `ns doctor` (row
 "python environments") and at each start, with INSTALL.cmd's Repair as the way out. INSTALL.cmd and Repair take
-the same lock as the update and refuse while a program runs from the environments (`NS-E705`, `NS-E706`, Retry).
+the same lock as the update and refuse while a program runs from the environments (`NS-E705`, `NS-E706`, Retry);
+an unattended setup (an answers.json beside INSTALL.cmd, or `-NoUi`) prints the same message and exits with 15
+when an update, rollback or repair holds the lock, and with 14 when programs still run from the environments or
+the running programs could not be listed (setup then refuses rather than guess). Every other start refuses as long
+as the record waits: `studio run`, `studio dashboard`, `ns verify` and a launcher started without its shortcut
+print `NS-W210` with the same way out and start no engine.
 From 0.1.14 and the 0.1.15 candidates up to rc3, update or go back with Settings > Updates, the Update shortcut or
 `ns update ... --detach`: their own `ns update` typed in a terminal without `--detach` fails on its own `ns.exe`
 (0.1.14's `ns update <zip>` then puts 0.1.14 back; rc3's `ns update --rollback` leaves one environment on the newer

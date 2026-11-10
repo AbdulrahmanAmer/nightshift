@@ -1553,3 +1553,30 @@ def test_an_environment_an_older_updater_left_is_said_once_and_nightshift_starts
     assert proc.returncode == 0 and _starts(launcher) == 1 and said in _words(proc.stdout)
     assert [n["message"] for n in notify.read_notes(Paths(home))] == [said]
     assert _stub(home, "-Launcher", launcher).returncode == 0 and len(notify.read_notes(Paths(home))) == 1
+
+@needs_powershell
+def test_after_a_failed_repair_the_diagnostics_and_outbox_shortcuts_still_open(tmp_path: Path) -> None:
+    """The way out may ask for the diagnostics zip: those two shortcuts open after a FAILED replay (they start
+    no engine), the others say so on their refusal; while an update runs, all of them wait."""
+    home, launcher = _program_home(tmp_path)
+    _record(home, _uv(tmp_path, fail=True))
+    body = "Add-Content -LiteralPath (Join-Path $PSScriptRoot 'ran.txt') -Value 'x'\r\nexit 0\r\n"
+    for name in ("diagnostics.ps1", "open-outbox.ps1"):
+        (launcher.parent / name).write_text(body, encoding="ascii")
+    proc = _stub(home, "-Launcher", launcher)
+    assert proc.returncode == 1 and _starts(launcher) == 0
+    assert "The Diagnostics shortcut still works" in _words(proc.stdout)
+    for name in ("diagnostics.ps1", "open-outbox.ps1"):
+        proc = _stub(home, "-Launcher", launcher.parent / name)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "(NS-W210)" in proc.stdout              # the reason is still said
+    assert _starts(launcher) == 2                        # (both stand-ins write the same ran.txt)
+    # while an update runs (an older release's worker: a live python pid), even these wait
+    sleeper = _sleeper(120)
+    try:
+        _running(home, sleeper.pid)
+        proc = _stub(home, "-Launcher", launcher.parent / "diagnostics.ps1")
+        assert proc.returncode == 1 and _starts(launcher) == 2 and "is running" in proc.stdout
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=30)

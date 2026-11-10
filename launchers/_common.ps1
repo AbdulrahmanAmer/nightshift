@@ -299,10 +299,35 @@ function Close-NsHostWindows {
     }
 }
 
+function Assert-NsVenvsFinished {
+    param([Parameter(Mandatory = $true)][string]$Python)
+    # D-39b: no engine on Python environments an update left unfinished (run\venv-repair.json). The check is
+    # installer/stage2/web/venvrepair.py, run by the venv's interpreter with none of the venv's packages (-I -S):
+    # it needs only the standard library, so it works on a half-filled environment too. Exit 4: refused, and
+    # it printed why; then nothing is started. Any other failure of the check leaves the decision to the
+    # engine, which runs the same check first thing (ns_supervisor/app.py refuse_unfinished).
+    $gate = 'import sys; sys.path.insert(0, sys.argv[1]); from installer.stage2.web import venvrepair; sys.exit(venvrepair.main(sys.argv[1:]))'
+    # (like the engine, the check never sees the setup window's NS_DASHBOARD_NO_HOST: see Start-NsSupervisor)
+    $eap = $ErrorActionPreference
+    $noHost = $env:NS_DASHBOARD_NO_HOST
+    Remove-Item Env:NS_DASHBOARD_NO_HOST -ErrorAction SilentlyContinue
+    $ErrorActionPreference = 'Continue'
+    try {
+        $said = @(& $Python -I -S -c $gate (Get-NsAppPath) (Get-NsHome) 2>&1 | ForEach-Object { [string]$_ })
+        $gateCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $eap
+        if ($null -ne $noHost) { $env:NS_DASHBOARD_NO_HOST = $noHost }
+    }
+    if ($gateCode -eq 4) { Exit-NsWithPause (($said -join ' ').Trim()) 1 }
+}
+
 function Start-NsSupervisor {
     param([switch]$Headless)
     $py = Get-NsVenvExe 'supervisor' 'python.exe'
     if (-not (Test-Path -LiteralPath $py)) { throw ('Supervisor venv not found: ' + $py + '. Run INSTALL.cmd first.') }
+    Assert-NsVenvsFinished $py
     $argList = @('-m', 'ns_supervisor.app')
     $style = 'Minimized'
     if ($Headless) {
