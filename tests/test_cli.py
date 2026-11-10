@@ -243,8 +243,8 @@ def test_voice_list_and_preview_with_fakes(tmp_home: Path):
     assert out.exists() and out.stat().st_size > 1000
 
 
-def test_master_first_plan_includes_short_combos_and_gates(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setitem(FORMAT_STAGES, "master_first", list(FORMAT_STAGES["master_first"]))
+def test_master_first_plan_includes_short_combos_and_gates():
+    jobs.load_stage_modules()  # the stage table gets the Short combos and the gates when the modules load
     assert jobs.prepare_plan("master_first", True) is True
     names = FORMAT_STAGES["master_first"]
     assert names.index("short_combos") == names.index("shorts_select") + 1
@@ -338,10 +338,8 @@ def test_series_stage_module_registers_script_import():
     assert "script_import" in REGISTRY
 
 
-def test_policy_gates_also_cover_the_script_plan(monkeypatch: pytest.MonkeyPatch):
-    for fmt in ("master_first", "master_from_script"):
-        monkeypatch.setitem(FORMAT_STAGES, fmt, list(FORMAT_STAGES[fmt]))
-    assert jobs.prepare_plan("master_first", True) is True
+def test_policy_gates_also_cover_the_script_plan():
+    jobs.load_stage_modules()
     names = FORMAT_STAGES["master_from_script"]
     assert names.index("policy_text") == names.index("seo_shorts") + 1
     assert names.index("policy_final") == names.index("outbox") - 1

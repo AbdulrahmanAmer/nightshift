@@ -160,5 +160,6 @@ def install_gates(fmt: str) -> bool:
         if not placed:
             names.append(FINAL_STAGE)
         changed = True
-    FORMAT_STAGES[fmt] = names
+    if changed:  # a plan that has both gates already is not written again
+        FORMAT_STAGES[fmt] = names
     return changed

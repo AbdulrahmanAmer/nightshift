@@ -277,7 +277,7 @@ def _run_job_guarded(ctx: JobContext, *, resume: bool) -> list[str]:
                 raise
             att = _attempts(ctx)
             n = int(att["regenerations"])
-            names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
+            names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir), ctx.policy)]
             if e.code == "NS-E304" and _critic_failed(ctx, names):
                 _redraw_idea(ctx, e, att, names)
                 first = False

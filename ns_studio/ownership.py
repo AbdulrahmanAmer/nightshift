@@ -370,8 +370,9 @@ def job_info(paths: Paths, job_id: str) -> dict[str, Any]:
 def reached_stage(paths: Paths, job_id: str, fmt: str | None) -> str | None:
     """The stage a job stopped at: the first stage of its plan that `stage_state.json` does not call done.
 
-    The plan is the one `FORMAT_STAGES` holds for the job's format (an owner script or a series part runs its
-    own). None when the job has no plan; the last stage when all of them finished (the kill came at the end).
+    The plan is the one the job runs (`orchestrator.stage_names`: an owner script or a series part runs its
+    own, a job made without the policy gates has none). None when the job has no plan; the last stage when all
+    of them finished (the kill came at the end).
     """
     try:
         entries = json.loads((paths.job_dir(job_id) / "stage_state.json").read_text(encoding="utf-8"))
@@ -379,9 +380,9 @@ def reached_stage(paths: Paths, job_id: str, fmt: str | None) -> str | None:
     except (OSError, ValueError, AttributeError):
         done = set()
     try:
-        from ns_studio.orchestrator import FORMAT_STAGES, plan_format
+        from ns_studio.orchestrator import stage_names
 
-        names = list(FORMAT_STAGES.get(plan_format(fmt or "", paths.job_dir(job_id))) or [])
+        names = stage_names(fmt or "", paths.job_dir(job_id))
     except Exception:  # noqa: BLE001 - a plan that cannot be read only costs the stage name
         names = []
     for name in names:
@@ -933,9 +934,9 @@ def job_finished(paths: Paths, db: SqlDb, job_id: str, fmt: str | None = None) -
         entries = None
     names: list[str] = []
     try:
-        from ns_studio.orchestrator import FORMAT_STAGES, plan_format
+        from ns_studio.orchestrator import stage_names
 
-        names = list(FORMAT_STAGES.get(plan_format(fmt or "", paths.job_dir(job_id))) or [])
+        names = stage_names(fmt or "", paths.job_dir(job_id))  # its own plan: gates only if it runs them
     except Exception:  # noqa: BLE001 - a plan that cannot be read: fall back to the output rows
         names = []
     if not isinstance(entries, dict) or not names:

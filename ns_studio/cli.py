@@ -5,6 +5,7 @@ import json
 import random
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -164,11 +165,11 @@ def run_cmd(
     with guarded():
         jobs.load_stage_modules()
         if dry_run and resume is None and not daily:
-            jobs.prepare_plan(fmt or "shorts_only", policy)
+            enabled = jobs.prepare_plan(fmt or "shorts_only", policy)
             plan_fmt = fmt or "shorts_only"
             if script_text:
                 plan_fmt = OWNER_SCRIPT_FORMATS[plan_fmt]
-            names = [s.name for s in plan_job(plan_fmt)]
+            names = [s.name for s in plan_job(plan_fmt, enabled)]
             typer.echo("plan: " + " -> ".join(names))
             return
         env = jobs.open_env(fake)
@@ -253,8 +254,8 @@ def _run_jobs(
 ) -> None:
     """The `--resume` and plain branches of `studio run`."""
     if resume is not None:
-        ctx = jobs.load_job(env, resume)  # reads the channel profile again (`get_channel`)
-        jobs.prepare_plan(ctx.fmt, policy)
+        # reads the channel profile again (`get_channel`); the job's own policy unless a flag is given
+        ctx = jobs.load_job(env, resume, policy=policy)
         if dry_run:
             typer.echo("plan: " + " -> ".join(run_job(ctx, dry_run=True)))
             return
@@ -264,6 +265,7 @@ def _run_jobs(
             raise StudioError(PAUSED, f"{who}: job {ctx.job_id} was not continued")
         # a resumed job needs only what its unfinished stages still write; refused (NS-E104) before it starts
         require_story_room(env.paths, env.log, ctx.channel, ctx.fmt, fake=env.fake, resume_dir=ctx.job_dir)
+        jobs.record_policy(ctx, policy)  # after the last refusal (the pause and the room checks above)
         with _say_how_to_continue(ctx):
             ran = run_job_guarded(ctx, resume=True)
         rows = env.db.query("select output_id from outputs where job_id=?", (ctx.job_id,))
@@ -277,7 +279,7 @@ def _run_jobs(
         raise typer.BadParameter("--script makes one video: name the channel with --channel")
     for ch in channels:
         job_fmt = fmt or ch.format
-        jobs.prepare_plan(job_fmt, policy)
+        job_policy = jobs.prepare_plan(job_fmt, policy)
         for n in range(count):
             # before EVERY job, as a pause typed in another window lands at any time (P47): the named
             # channel is refused with NS-E330, as the Dashboard refuses it; a run of every channel (a paused
@@ -293,9 +295,9 @@ def _run_jobs(
             # and before the job exists: a drive with less room than the job needs writes nothing (D-33)
             require_story_room(env.paths, env.log, ch, job_fmt, fake=env.fake)
             if script is not None:
-                ctx = jobs.make_script_job(env, ch, job_fmt, script, title, rng=rng)
+                ctx = jobs.make_script_job(env, ch, job_fmt, script, title, rng=rng, policy=job_policy)
             else:
-                ctx = jobs.make_job(env, ch, job_fmt, rng=rng)
+                ctx = jobs.make_job(env, ch, job_fmt, rng=rng, policy=job_policy)
             with _say_how_to_continue(ctx):
                 ran = run_job_guarded(ctx)
             typer.echo(f"job {ctx.job_id} done: {len(ran)} stages ({ch.slug}, {ctx.fmt})")
@@ -320,8 +322,7 @@ def _say_how_to_continue(ctx: JobContext) -> Iterator[None]:
 def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
     """The `--daily` branch of `studio run`."""
     now = datetime.now(UTC)
-    for fmt_name in sorted({c.format for c in crud.all_channels(env.paths) if c.status == "active"}):
-        jobs.prepare_plan(fmt_name, policy)
+    env = replace(env, policy=policy)  # the night's new jobs keep this choice; a resumed one keeps its own
     if dry_run:
         due = cadence.plan_daily(env.paths, env.db, now)
         if not due:
@@ -761,8 +762,10 @@ def learn_cmd(
 
 # ---------------------------------------------------------------- calibrate
 def _calibration_job(env: jobs.Env, ch: Channel, rng: random.Random) -> JobContext:
-    """A throw-away job context for one calibration story (its combo is not written to the ledger)."""
-    return jobs.make_job(env, ch, "shorts_only", rng=rng, record=False)
+    """A throw-away job context for one calibration story (its combo is not written to the ledger).
+
+    Without the policy gates, as before: calibration measures the critic, not the unsafe-topic check."""
+    return jobs.make_job(env, ch, "shorts_only", rng=rng, record=False, policy=False)
 
 
 @app.command("calibrate")

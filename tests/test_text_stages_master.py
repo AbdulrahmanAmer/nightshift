@@ -20,7 +20,7 @@ from ns_common.models import (
 )
 from ns_common.textstats import split_sentences, word_count
 from ns_studio.context import FIXTURES_LLM
-from ns_studio.orchestrator import FORMAT_STAGES, MASTER_FIRST_STAGES, run_job
+from ns_studio.orchestrator import FORMAT_STAGES, MASTER_FIRST_STAGES, POLICY_STAGES, run_job
 from ns_studio.stages import REGISTRY
 from ns_studio.text import stages_master as M
 from ns_studio.text.budget import master_budget
@@ -65,7 +65,9 @@ def _master_ctx(monkeypatch: pytest.MonkeyPatch, tmp_home: Path, stages: list[st
 
 
 def test_registration_order():
-    assert FORMAT_STAGES["master_first"][:9] == M.MASTER_STAGES
+    # the table may hold the Short combos and the gates (added once the stage modules load) between them
+    extras = ("short_combos", *POLICY_STAGES)
+    assert [n for n in FORMAT_STAGES["master_first"] if n not in extras][:9] == M.MASTER_STAGES
     assert list(MASTER_FIRST_STAGES[:9]) == M.MASTER_STAGES
     assert all(n in REGISTRY for n in M.MASTER_STAGES)
     assert all(REGISTRY[n].tenant == "llama" for n in M.MASTER_STAGES)

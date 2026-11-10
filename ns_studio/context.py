@@ -130,6 +130,11 @@ class JobContext:
     services: Services
     log: NsLogger
     prompt_versions: dict[str, int] = field(default_factory=dict)
+    #: Whether this job runs the policy gates, chosen when the job is made and kept in `job.json` (`policy`).
+    #: `jobs.make_job` and `jobs.load_job` set it, and so does the series part of the dashboard. A context
+    #: built by hand (the clipper, the series workshop's prompts, a test) runs none: its plan never depends on
+    #: what another job in the same process asked for.
+    policy: bool = False
 
     def _saved_prompt_versions(self) -> dict[str, int]:
         f = self.job_dir / PROMPT_VERSIONS_FILE

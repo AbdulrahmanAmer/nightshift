@@ -681,7 +681,7 @@ def test_a_job_that_ran_tiny_stays_marked_when_the_switch_is_turned_off_and_it_r
     from ns_studio import orchestrator as orch
 
     sp = profiles()
-    monkeypatch.setattr(orch, "plan_job", lambda _names: [])
+    monkeypatch.setattr(orch, "plan_job", lambda *_plan: [])
     ctx = make_ctx(tmp_home, fmt="master_first")
     ctx.runtime = tiny_runtime(ctx.runtime)
     assert sp.job_mark(ctx) == "tiny_story"  # the live switch
@@ -700,7 +700,7 @@ def test_a_job_started_normal_and_resumed_with_the_switch_on_is_marked_from_then
     from ns_studio import orchestrator as orch
 
     sp = profiles()
-    monkeypatch.setattr(orch, "plan_job", lambda _names: [])
+    monkeypatch.setattr(orch, "plan_job", lambda *_plan: [])
     ctx = make_ctx(tmp_home, fmt="master_first")
     orch.run_job(ctx)
     assert not ctx.file("profile.json").exists() and sp.job_mark(ctx) is None
@@ -715,7 +715,7 @@ def test_a_normal_job_gets_no_note_and_a_damaged_note_is_not_a_marker(
     from ns_studio import orchestrator as orch
 
     sp = profiles()
-    monkeypatch.setattr(orch, "plan_job", lambda _names: [])
+    monkeypatch.setattr(orch, "plan_job", lambda *_plan: [])
     ctx = make_ctx(tmp_home, fmt="master_first")
     orch.run_job(ctx)
     assert not ctx.file("profile.json").exists() and sp.job_mark(ctx) is None
@@ -731,7 +731,7 @@ def test_a_clip_job_is_never_noted_or_marked_on_a_tiny_install(
     from ns_studio import orchestrator as orch
 
     sp = profiles()
-    monkeypatch.setattr(orch, "plan_job", lambda _names: [])
+    monkeypatch.setattr(orch, "plan_job", lambda *_plan: [])
     ctx = make_ctx(tmp_home, fmt="clip")
     ctx.runtime = tiny_runtime(ctx.runtime)
     orch.run_job(ctx)

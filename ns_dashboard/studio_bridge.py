@@ -129,7 +129,7 @@ def run_story_jobs(
     """
     from ns_studio import diskroom, jobs
     from ns_studio.channels.crud import get_channel
-    from ns_studio.orchestrator import plan_format, plan_job
+    from ns_studio.orchestrator import plan_job, stage_names
     from ns_studio.policy.regen import run_job_guarded
 
     env = open_env(fake, acquirer, paths=paths)
@@ -142,8 +142,7 @@ def run_story_jobs(
         # NS-E104 before the job runs again, for the stages it has left (a drive that filled up meanwhile)
         diskroom.require_story_room(
             env.paths, env.log, ctx.channel, ctx.fmt, fake=fake, resume_dir=ctx.job_dir)
-        jobs.prepare_plan(ctx.fmt, None)
-        names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
+        names = stage_names(ctx.fmt, ctx.job_dir, ctx.policy)  # the job keeps the policy it was made with
         if seen is not None:
             seen.append(ctx.job_id)
         with _owed_on_pause(ctx.job_id, n - 1):
@@ -153,8 +152,8 @@ def run_story_jobs(
             return out
         start = 1
     ch = get_channel(env.paths, channel)
-    jobs.prepare_plan(fmt, None)
-    names = [s.name for s in plan_job(fmt)]
+    policy = jobs.prepare_plan(fmt, None)
+    names = [s.name for s in plan_job(fmt, policy)]
     rng = random.Random()
     for i in range(start, n):
         if paused_now(env, ch.slug):  # before EVERY video, the first too: a pause stops all new work (P47)
@@ -164,10 +163,10 @@ def run_story_jobs(
         # every job of a batch, a scheduled one too: the drive may have filled up since the request was made
         diskroom.require_story_room(env.paths, env.log, ch, fmt, fake=fake)
         if script is not None:
-            ctx = jobs.make_script_job(env, ch, fmt, script, script_title, rng=rng)
-            names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
+            ctx = jobs.make_script_job(env, ch, fmt, script, script_title, rng=rng, policy=policy)
+            names = stage_names(ctx.fmt, ctx.job_dir, ctx.policy)
         else:
-            ctx = jobs.make_job(env, ch, fmt, rng=rng)
+            ctx = jobs.make_job(env, ch, fmt, rng=rng, policy=policy)
         if seen is not None:
             seen.append(ctx.job_id)
         with _owed_on_pause(ctx.job_id, n - i - 1):
@@ -491,7 +490,7 @@ def run_series_part(
     job_id = str(params["job_id"])
     channel = get_channel(env.paths, str(params["channel"]))
     _require_not_paused(env, channel.slug)  # before a combo is drawn or a job folder made (P47)
-    jobs.prepare_plan("master_first", None)
+    policy = jobs.prepare_plan("master_first", None)  # a new part's choice; a resumed one keeps its own
     job_dir = env.paths.job_dir(job_id)
     diskroom.require_series_part_room(env.paths, env.log, fake=fake, resume_dir=job_dir)
     if (job_dir / "job.json").exists():
@@ -516,6 +515,7 @@ def run_series_part(
             runtime=env.runtime,
             services=env.services,
             log=env.log,
+            policy=policy,
         )
         ctx.write_json(
             "job.json",
@@ -525,9 +525,10 @@ def run_series_part(
                 "fmt": "master_first",
                 "combo": combo.model_dump(mode="json"),
                 "created_at": now.isoformat(timespec="seconds"),
+                "policy": policy,
             },
         )
-    names = [s.name for s in plan_job("master_from_script")]
+    names = [s.name for s in plan_job("master_from_script", ctx.policy)]
     run_job_guarded(watched(ctx, names, 0, 1, report))
     return output_ids(env.db, job_id)
 
