@@ -264,7 +264,8 @@ def _run_jobs(
             raise StudioError(PAUSED, f"{who}: job {ctx.job_id} was not continued")
         # a resumed job needs only what its unfinished stages still write; refused (NS-E104) before it starts
         require_story_room(env.paths, env.log, ctx.channel, ctx.fmt, fake=env.fake, resume_dir=ctx.job_dir)
-        ran = run_job_guarded(ctx, resume=True)
+        with _say_how_to_continue(ctx):
+            ran = run_job_guarded(ctx, resume=True)
         rows = env.db.query("select output_id from outputs where job_id=?", (ctx.job_id,))
         # the Queue card of an interrupted job is done now
         ownership.settle_resumed(env.db, ctx.job_id, [r["output_id"] for r in rows])
@@ -295,8 +296,25 @@ def _run_jobs(
                 ctx = jobs.make_script_job(env, ch, job_fmt, script, title, rng=rng)
             else:
                 ctx = jobs.make_job(env, ch, job_fmt, rng=rng)
-            ran = run_job_guarded(ctx)
+            with _say_how_to_continue(ctx):
+                ran = run_job_guarded(ctx)
             typer.echo(f"job {ctx.job_id} done: {len(ran)} stages ({ch.slug}, {ctx.fmt})")
+
+
+@contextmanager
+def _say_how_to_continue(ctx: JobContext) -> Iterator[None]:
+    """A pause typed while the job runs stops it before its next stage (NS-E330, `ns_studio.pause`): say how
+    to continue it, then let `guarded` print the error. Its finished stages are kept."""
+    try:
+        yield
+    except NsError as e:
+        if e.code == PAUSED:
+            typer.echo(
+                f"job {ctx.job_id} stopped before its next stage because {ctx.channel.slug} was paused; after"
+                f" studio resume {ctx.channel.slug}, continue it with: studio run --resume {ctx.job_id}",
+                err=True,
+            )
+        raise
 
 
 def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:

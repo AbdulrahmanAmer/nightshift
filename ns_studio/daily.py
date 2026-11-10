@@ -23,7 +23,7 @@ from ns_studio.channels import cadence
 from ns_studio.channels.crud import broken_channels, get_channel
 from ns_studio.context import JobContext
 from ns_studio.diskroom import require_story_room
-from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
+from ns_studio.errors import PAUSED, UNEXPECTED, StudioError, describe_unexpected
 from ns_studio.footage_keys import require_footage_key
 from ns_studio.media.outbox import retime_sheet
 from ns_studio.policy.regen import run_job_guarded
@@ -418,12 +418,32 @@ def _attempt(
         return BUSY
     except (NsError, StudioError) as e:
         code, detail = e.code, str(e)
+        if code == PAUSED and job_id != "(not created)":  # stopped between two stages by a pause (P47)
+            _paused_mid_job(env, report, job_id, slug, resumed=resumed)
+            return PAUSED
     except Exception as e:  # an uncoded bug or corrupt file ends this job, never the night
         code, detail = UNEXPECTED, f"{UNEXPECTED}: {describe_unexpected(e)}"
         env.log.error("daily_job_crashed", job_id=job_id, traceback=traceback.format_exc())
     env.log.error("daily_job_failed", job_id=job_id, code=code, detail=detail)
     report["failures"].append({"job_id": job_id, "channel": slug, "code": code, "error": detail})
     return code
+
+
+def _paused_mid_job(env: jobs.Env, report: dict, job_id: str, slug: str, *, resumed: bool) -> None:
+    """The channel was paused while its job ran: the studio stopped it before its next stage (NS-E330), its
+    finished stages kept. It is not a failure: the job is closed as interrupted, the way a killed one is (a
+    Queue card with Retry, which is refused while the channel is paused), so the first night after the resume
+    continues it from that stage (`_resume_interrupted`, within `RESUME_WITHIN_DAYS`); the report lists it
+    under `paused` with its `job_id`. A job the night was already continuing keeps the card it has."""
+    if resumed:
+        ownership.write_record(env.paths, job_id, state="interrupted")
+    else:
+        rec = {**(ownership.read_record(env.paths, job_id) or {}), "id": job_id}
+        try:  # the same closing as for a killed job: the card first, then the record (`ownership._close_job`)
+            ownership._close_job(env.paths, env.db, rec, datetime.now(UTC), "its channel was paused")
+        except Exception as e:  # noqa: BLE001 - the record says failed; Retry and `studio run --resume` remain
+            env.log.warn("paused_job_not_closed", str(e), job_id=job_id)
+    _hold_for_pause(env, report, None, slug, 1, job_id=job_id)
 
 
 Outcomes = dict[str, tuple[str, str | None]]
@@ -465,6 +485,9 @@ def _resume_interrupted(
         has_card = ownership.has_card(rec)
         if code == BUSY:  # a Retry runs it: leave the job, its card and the report alone
             outcomes[job_id] = ("busy", None)
+            continue
+        if code == PAUSED:  # paused while it was being continued: interrupted again, it waits for the resume
+            outcomes[job_id] = ("paused", None)
             continue
         if code == "NS-E201":  # the GPU is busy: it stays interrupted, the next night tries again
             ownership.write_record(env.paths, job_id, state="interrupted")
@@ -543,7 +566,12 @@ def _tonight(
             if _no_room(env, report, ch, dj.fmt, dj.count - n):
                 break
             make = partial(jobs.make_job, env, ch, dj.fmt, now=now, rng=rng, origin="daily", run_id=run_id)
-            if _attempt(env, run, report, make, ch.slug, run_id=run_id) == "NS-E201":
+            code = _attempt(env, run, report, make, ch.slug, run_id=run_id)
+            if code == PAUSED:  # paused while this job ran: it waits for the resume, the others do not start
+                if dj.count - n - 1:
+                    _hold_for_pause(env, report, why, ch.slug, dj.count - n - 1)
+                break
+            if code == "NS-E201":
                 gpu_busy = True
                 report.setdefault("skipped", []).append({"channel": ch.slug, "jobs": dj.count - n})
                 break

@@ -706,6 +706,27 @@ def test_the_texts_name_ns_e330_the_last_night_card_and_the_engine_start():
     assert "Last night" in _flat(doc_section(GUIDE, HEADING))
 
 
+def test_a_pause_stops_a_running_job_before_its_next_stage_and_the_texts_say_so():
+    """Owner decision (BUILDER_RULES 1b): no stage of a paused channel's job starts, on any route."""
+    from ns_dashboard import jobs as dashboard_jobs
+    from ns_studio import daily, orchestrator
+
+    assert "require_not_paused" in inspect.getsource(orchestrator.run_job)
+    assert "_requeue_paused" in inspect.getsource(dashboard_jobs.JobWorker._run_job)
+    assert "_paused_mid_job" in inspect.getsource(daily._attempt)
+    d = _flat(decision("Incident procedure"))
+    assert "`require_not_paused`" in d and "`JobWorker._requeue_paused`" in d
+    assert "`daily._paused_mid_job`" in d
+    assert "A running job is not stopped by a pause" not in d and "the video being made is finished" not in d
+    assert "never taken" in d and "`RESUME_WITHIN_DAYS` (3)" in d
+    texts = (("OPERATOR.md", doc_section(GUIDE, HEADING)), ("README.md", doc_section(README, HEADING)))
+    for name, text in texts:
+        flat = _flat(text)
+        assert "stops before its next step" in flat, name
+        assert "A pause does not stop a story video" not in flat and "is not stopped" not in flat, name
+    assert "holds no part of the graphics card" in _flat(doc_section(GUIDE, HEADING))
+
+
 def test_the_content_safety_checklist_is_not_narrower_than_18_3():
     rules = spec_section("### 18.3")
     first = next(ln for ln in rules.splitlines() if ln.startswith("- Real, named people"))

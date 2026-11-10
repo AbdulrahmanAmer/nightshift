@@ -28,6 +28,7 @@ STATUSES = ("queued", "running", "done", "failed", "cancelled")
 GPU_KINDS = frozenset({"run", "clip", "verify", "series_part", "apply_voice"})
 JOB_OWNER = "dashboard:job"  # the owner id of the worker's heartbeat to the engine (never holds the GPU)
 PULSE_S = 60.0  # how often a running job tells the engine it is alive
+PAUSED_CODE = "NS-E330"  # the studio stopped a job because its channel was paused (contracts/errors.json)
 HELD_PREFIX = "Paused: "  # the message of a queued job that waits because its channel is paused (P47)
 #: Called with a queued job: the plain reason it must not start now (its channel is paused), or None.
 Hold = Callable[["JobRecord"], str | None]
@@ -357,6 +358,27 @@ class JobStore:
             (message, job_id),
         )
         return changed > 0
+
+    def requeue_paused(self, job_id: str, message: str, params_update: dict[str, Any]) -> bool:
+        """running -> queued with `message` and `params_update` merged into the params; False when it is no
+        longer running. For a job stopped by a pause between two stages (NS-E330, P47): it waits, held, and
+        continues where it stopped once its channel is resumed (`resume_job_id` for a run job)."""
+        with self.db.tx():
+            row = self.db.one("SELECT status, params_json FROM dashboard_jobs WHERE job_id = ?", (job_id,))
+            if row is None or row["status"] != "running":
+                return False
+            params, _old = _unpack(row["params_json"])
+            payload = json.dumps(
+                {"params": {**params, **params_update}, "result": None,
+                 "dismissed_at": _dismissed_at(row["params_json"])},
+                default=str,
+            )
+            self.db.execute(
+                "UPDATE dashboard_jobs SET status = 'queued', started_at = NULL, progress = 0.0, message = ?,"
+                " params_json = ? WHERE job_id = ? AND status = 'running'",
+                (message, payload, job_id),
+            )
+        return True
 
     def finish(self, job_id: str, status: str, message: str, result: dict[str, Any] | None = None) -> None:
         """Terminal state; merges `result` into `params_json`."""
@@ -762,6 +784,31 @@ class JobWorker:
             self.log.info("job_held_after_gate", job_id=rec.job_id, channel=rec.channel, reason=reason)
         return True
 
+    def _requeue_paused(self, rec: JobRecord, ctl: JobControl) -> bool:
+        """The studio stopped the job with NS-E330 (its channel was paused while it ran): put it back in line,
+        held, to continue where it stopped after the resume; True when it was put back (or is no longer
+        running). False, and the job fails with NS-E330 as before, when there is nothing to continue (a run
+        job that made no studio job yet: its card says none was made) or when the worker does not see the
+        pause itself (resumed meanwhile, a profile it cannot read, no hold): then it would start again at
+        once, so a job can never go round in a loop. The kind's end hook is not called: a series part stays
+        with its job and its job folder."""
+        reason = self._hold_reason(rec)
+        if reason is None:
+            return False
+        update: dict[str, Any] = {}
+        if rec.kind == "run":
+            ids = [str(i) for i in ctl.extras.get("studio_job_ids") or [] if i]
+            if not ids and rec.params.get("resume_job_id"):
+                ids = [str(rec.params["resume_job_id"])]
+            if not ids:
+                return False
+            update = {"resume_job_id": ids[-1], "count": 1}  # the video it was making, as Retry continues it
+        elif rec.kind != "series_part":
+            return False
+        if self.store.requeue_paused(rec.job_id, reason, update):
+            self.log.info("job_held_mid_way", job_id=rec.job_id, channel=rec.channel, reason=reason, **update)
+        return True
+
     def _held(self, rec: JobRecord) -> str | None:
         """Why `rec` must not start (None: it may). Keeps the job's message true: the reason while held,
         the usual "Queued" / "Scheduled for ..." again once the reason is gone."""
@@ -874,6 +921,8 @@ class JobWorker:
             self.log.warn("job_unavailable", str(e), job_id=rec.job_id)
             self._end_hook(rec)
         except NsError as e:
+            if e.code == PAUSED_CODE and self._requeue_paused(rec, ctl):
+                return  # stopped by a pause between two stages: held, it continues after the resume
             self.store.finish(rec.job_id, "failed", str(e), self._failure(ctl, e.code, hint_of(e)))
             self.log.error("job_failed", str(e), job_id=rec.job_id, code=e.code)
             self._end_hook(rec)
