@@ -103,18 +103,21 @@ def tell_refusal(
             pass  # an unreadable time: tell again
     text = refusal_message(e)
 
-    def noted() -> bool:
-        return any(n.get("message") == text for n in notify.read_notes(paths))
+    def waits(notes: list[notify.Note]) -> bool:
+        return any(n["message"] == text for n in notes)
 
-    shown = False
+    shown = noted = False
     try:
         if notifications_enabled(paths):
             shown = bool((toaster or notify.toast_or_note)(TITLE, text))
-        if not shown and not noted():
-            notify.leave_note(paths, TITLE, text)
+        if not shown:
+            # `toast_or_note` leaves the note itself when no toast could show: then it waits and is not
+            # left twice. Either way the note is in the file when this returns without raising.
+            notify.leave_note(paths, TITLE, text, once=waits)
+            noted = True
     except Exception as err:  # the telling must never hurt the check; it is tried again at the next poll
         log.error("update_refusal_not_told", f"{type(err).__name__}: {err}", code=e.code)
-    if not (shown or noted()):
+    if not (shown or noted):
         log.error("update_refusal_not_told", "no toast was shown and no note could be left", code=e.code)
         return False
     state["refused"] = {"code": e.code, "told": now.isoformat(timespec="seconds"), "detail": e.detail}

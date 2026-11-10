@@ -479,6 +479,12 @@ def _locked(paths: Paths, wait_s: float | None = None) -> Iterator[None]:
             lock.release()
 
 
+def _waits(start: str) -> Callable[[list[notify.Note]], bool]:
+    """For `notify.leave_note(once=)`: a note whose message begins with `start` still waits. The owner of the
+    notes asks this between its read and its write, under its lock, so two checks at once say it once."""
+    return lambda notes: any(n["message"].startswith(start) for n in notes)
+
+
 def _note_switched_off_outside(paths: Paths, log: NsLogger, other: str | None = None) -> None:
     """NS-W207, once: a WARN in the log and a note the dashboard shows on its next page load. A note that
     still waits is not repeated (a pass killed after the note and before the record went must not say it
@@ -497,8 +503,7 @@ def _note_switched_off_outside(paths: Paths, log: NsLogger, other: str | None = 
         text = "NS-W207: Automatic runs were switched off outside Nightshift."
     log.warn("automatic_runs_off_outside", text, code="NS-W207")
     try:
-        if not any(n.get("message", "").startswith("NS-W207:") for n in notify.read_notes(paths)):
-            notify.leave_note(paths, "Nightshift", text)
+        notify.leave_note(paths, "Nightshift", text, once=_waits("NS-W207:"))
     except OSError as e:
         log.warn("morning_note_failed", str(e))
 
@@ -568,8 +573,7 @@ def _note_unrecorded(paths: Paths, log: NsLogger, run_time: str | None) -> None:
         text = f"NS-W208: Windows runs the nightly task at {run_time}, but Nightshift could not record it."
     log.warn("schedule_unrecorded", text, code="NS-W208")
     try:
-        if not any(n.get("message", "").startswith("NS-W208:") for n in notify.read_notes(paths)):
-            notify.leave_note(paths, "Nightshift", text)
+        notify.leave_note(paths, "Nightshift", text, once=_waits("NS-W208:"))
     except OSError as e:
         log.warn("morning_note_failed", str(e))
 

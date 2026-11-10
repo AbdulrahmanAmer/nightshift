@@ -493,7 +493,7 @@ def test_a_rollback_to_a_version_without_the_reach_and_forward_again_keeps_worki
     inst.new_stamp()
     inst.run()
     assert (inst.home / "nightshift-launch.ps1").read_bytes() == newer
-    assert so.stub_schema(source) == so.STUB_SCHEMA == 3
+    assert so.stub_schema(source) == so.STUB_SCHEMA == 4
 
 
 @pytest.mark.parametrize("logon", ["Interactive", "S4U", "Password"])

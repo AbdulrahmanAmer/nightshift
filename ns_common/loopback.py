@@ -43,7 +43,7 @@ import json
 import threading
 import weakref
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -59,7 +59,7 @@ BIND_HOST = "127.0.0.1"
 NOTE_AFTER = 3
 WINDOW = timedelta(minutes=10)
 #: Notes that name a page, per local day; after them one last note says there were more (a site with many
-#: sub-domains is many origins, and the notes file keeps its newest 20 for everything the owner must read).
+#: sub-domains is many origins, and every one of them would be a note).
 PAGES_NAMED = 3
 #: Pages counted one by one per local day; the rest of that day are counted together.
 PAGES_TRACKED = 32
@@ -70,9 +70,8 @@ FALLBACK_MESSAGE = "Nightshift refused a request that did not come from a progra
 SAFE_METHODS = frozenset({"GET", "HEAD"})
 #: The content types a plain HTML form can send to another origin without a preflight.
 FORM_TYPES = frozenset({"application/x-www-form-urlencoded", "multipart/form-data", "text/plain"})
-#: The notes file keeps its newest 20 (`ns_supervisor.notify.NOTE_KEEP`): a refusal note is written only while
-#: there is room, so it never pushes another note out, and at most this many of ours wait unread.
-NOTES_KEPT = 20
+#: At most this many of our notes wait unread. The notes file's own bound is its owner's
+#: (`ns_supervisor.notify`): a refusal note is routine there, so it never pushes out a note that is not.
 NOTES_WAITING_MAX = 8
 NULL_PAGE = "a page opened from a file or an embedded frame"
 FORM_SENDER = "a web form without a sender"
@@ -316,9 +315,12 @@ class _Page:
     tried_at: datetime | None = None
 
 
-#: One note writer at a time in this process: the notes file is read, extended and written back, and two
-#: writers at once would lose a note.
-_NOTES = threading.Lock()
+#: How a guard leaves a note: `tell(choose, at)` hands `choose` to the owner of the notes, which calls it
+#: under the notes lock with the notes that wait and adds the message it answers (None: nothing); `tell`
+#: returns the message when it was added, None when it was not (chosen none, or the notes are full of
+#: notes that are not routine). The servers pass `ns_supervisor.notify.leave_chosen_note`.
+Choose = Callable[[Sequence[Mapping[str, Any]]], str | None]
+Tell = Callable[[Choose, datetime], str | None]
 #: The live guards, so a test can wait for their note writers.
 _GUARDS: weakref.WeakSet[LoopbackGuard] = weakref.WeakSet()
 
@@ -336,10 +338,11 @@ def settle(timeout_s: float = 10.0) -> bool:
 class LoopbackGuard:
     """Pure ASGI middleware: `decide`, then the app or a 403 (a websocket is closed with 1008).
 
-    `log`: an `NsLogger` (or None). `tell(message, at)`: leaves a morning note; `waiting()`: the notes that
-    wait now, so a restarted server (or the other server of the same install) does not tell the owner twice
-    about one page on one day. Both run on a thread of their own, never on the request path; with `tell`
-    None the refusals are logged only.
+    `log`: an `NsLogger` (or None). `tell(choose, at)` (`Tell`): leaves a morning note, counting what waits
+    and writing in one step under the notes lock, so a restarted server (or the other server of the same
+    install, at the same moment) does not tell the owner twice about one page on one day, nor pass the
+    day's cap. It runs on a thread of its own, never on the request path; with `tell` None the refusals are
+    logged only.
     """
 
     def __init__(
@@ -348,15 +351,13 @@ class LoopbackGuard:
         *,
         rule: Rule,
         log: Any = None,
-        tell: Callable[[str, datetime], None] | None = None,
-        waiting: Callable[[], list[dict[str, Any]]] | None = None,
+        tell: Tell | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.app = app
         self.rule = rule
         self.log = log
         self.tell = tell
-        self.waiting = waiting
         self.clock = clock
         self._lock = threading.Lock()
         self._day: date | None = None
@@ -462,40 +463,48 @@ class LoopbackGuard:
             thread.start()
 
     def _write_note(self, key: str, refusal: Refusal, count: int, at: datetime) -> None:
-        """On its own thread: leave today's note about this page, within the bounds the notes file sets.
+        """On its own thread: leave today's note about this page, within the day's bounds.
 
-        The bounds are counted in the notes that wait in the file (`waiting`), which every server of the
-        install and every restart shares: nothing when a note about this page already waits from today; at
-        most `PAGES_NAMED` notes that name a page per day and then one that says there were more; and nothing
-        while the file is full or `NOTES_WAITING_MAX` of ours wait unread (the note stays owed and is tried
-        again at a later refusal), so a refusal note never pushes another note out of the file.
+        The bounds are counted in the notes that wait (which every server of the install and every restart
+        shares) by `choose`, which the owner of the notes calls under its lock and then writes what it chose:
+        the count and the write are one step, so two servers refusing at the same moment cannot both pass
+        it. Nothing when a note about this page already waits from today; at most `PAGES_NAMED` notes that
+        name a page per day and then one that says there were more; nothing while `NOTES_WAITING_MAX` of ours
+        wait unread (the note stays owed and is tried again at a later refusal). A refusal note is routine in
+        the owner's rule: it never pushes out a note that is not, and when the notes are full of those it is
+        not added and stays owed.
         """
         told, problem, held = False, "", ""
+        chosen: list[bool] = []              # the note `choose` chose: is it today's "more" note
+        day = at.date().isoformat()
+        with self._lock:
+            same_day = self._day == at.date()
+            named_here, more_here = (self._named, self._more) if same_day else (0, False)
+
+        def choose(waits: Sequence[Mapping[str, Any]]) -> str | None:
+            nonlocal held
+            ours = [n for n in waits if str(n.get("message", "")).startswith(f"{CODE}:")]
+            today = [str(n.get("message", "")) for n in ours if str(n.get("at", ""))[:10] == day]
+            named = max(named_here, sum(1 for m in today if MORE_PAGES not in m))
+            more = more_here or any(MORE_PAGES in m for m in today)
+            text, mark = note_text(refusal, count, at)
+            as_more = key == OTHER_PAGES or named >= PAGES_NAMED
+            if any(mark in m for m in today) or (as_more and more):
+                return None   # the owner has today's note about this page, or today's notes are used up
+            if len(ours) >= NOTES_WAITING_MAX:
+                held = f"{len(ours)} notes about refused requests already wait unread"
+                return None
+            chosen.append(as_more)
+            return note_text(refusal, count, at, more=True)[0] if as_more else text
+
         try:
-            day = at.date().isoformat()
-            with self._lock:
-                same_day = self._day == at.date()
-                named, more = (self._named, self._more) if same_day else (0, False)
-            with _NOTES:
-                waits = list(self.waiting()) if self.waiting is not None else []
-                ours = [n for n in waits if str(n.get("message", "")).startswith(f"{CODE}:")]
-                today = [str(n.get("message", "")) for n in ours if str(n.get("at", ""))[:10] == day]
-                named = max(named, sum(1 for m in today if MORE_PAGES not in m))
-                more = more or any(MORE_PAGES in m for m in today)
-                text, mark = note_text(refusal, count, at)
-                as_more = key == OTHER_PAGES or named >= PAGES_NAMED
-                if any(mark in m for m in today) or (as_more and more):
-                    pass   # the owner has today's note about this page, or today's notes are used up
-                elif len(waits) >= NOTES_KEPT:
-                    held = f"the notes file is full ({len(waits)} notes wait unread)"
-                elif len(ours) >= NOTES_WAITING_MAX:
-                    held = f"{len(ours)} notes about refused requests already wait unread"
-                elif self.tell is not None:
-                    if as_more:
-                        text, mark = note_text(refusal, count, at, more=True)
-                    self.tell(text, at)
+            if self.tell is not None:
+                written = self.tell(choose, at)
+                if chosen and written is None:
+                    held = "the notes are full of notes that are not routine"
+                elif chosen:
                     with self._lock:
-                        if self._day == at.date() and as_more:
+                        if self._day == at.date() and chosen[0]:
                             self._more = True
                         elif self._day == at.date():
                             self._named += 1

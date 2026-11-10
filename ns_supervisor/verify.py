@@ -101,11 +101,11 @@ def leave_voice_notes(paths: Paths, checks: list[GateCheck]) -> list[str]:
     try:
         from ns_supervisor import notify
 
-        waiting = {talker_key(str(n.get("message", ""))) for n in notify.read_notes(paths)}
-        for sentence in sentences:
-            if talker_key(sentence) not in waiting:
-                notify.leave_note(paths, "Nightshift", sentence)
-                waiting.add(talker_key(sentence))
+        def waits(key: str) -> Callable[[list[notify.Note]], bool]:
+            return lambda notes: any(talker_key(n["message"]) == key for n in notes)
+
+        for sentence in sentences:  # the owner of the notes decides "already said" under its lock
+            notify.leave_note(paths, "Nightshift", sentence, once=waits(talker_key(sentence)))
     except Exception:
         pass
     return sentences

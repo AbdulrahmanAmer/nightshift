@@ -738,7 +738,7 @@ def test_studio_run_and_the_nightly_say_the_same_sentence_on_the_console_and_in_
     cli._setup_voice(env)
     assert capsys.readouterr().out == "" and notes(paths) == [SAID_C]
     # a refusal: the warning and the note are the same sentence, and neither says "try: apply-pending"
-    notify.clear_notes(paths)
+    notify.dismiss(paths, [n["id"] for n in notify.read_notes(paths)])
     queue(paths)
     channel_on(paths)
     cli._setup_voice(env)

@@ -204,8 +204,8 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
         LoopbackGuard,
         rule=NO_BROWSER,
         log=sup.log,
-        tell=lambda message, at: notify.leave_note(sup.paths, "Nightshift", message, now=at),
-        waiting=lambda: notify.read_notes(sup.paths),
+        # the day's count and the note are one step under the notes lock (`notify.leave_chosen_note`)
+        tell=lambda choose, at: notify.leave_chosen_note(sup.paths, "Nightshift", choose, now=at),
     )
     return app
 
@@ -241,6 +241,9 @@ def main(argv: list[str] | None = None) -> int:
         # a crash between a write and its swap leaves a ~ns*.tmp in config/ (with every key blob, for
         # secrets.dpapi); the next key write sweeps them too, this catches the ones nothing writes again
         sweep_stale_tmp(paths.config)
+        # notes that could not be written when they were left (a writer that hung, a full disk) wait in the
+        # spool: the start moves them into the notes the bell shows, each once (never raises)
+        notify.drain_spool(paths)
         return _serve(args, paths)
     finally:
         lock.release()
@@ -285,14 +288,16 @@ def _with_hint(code: str, line: str) -> str:
 
 
 def _note_once(paths: Paths, log: Any, message: str, code: str, about: str) -> None:
-    """Leave `message` as a morning note unless a note with the same code about the same file still waits."""
-    waiting = notify.read_notes(paths)
-    if any(n.get("message", "").startswith(f"{code}:") and about in n.get("message", "") for n in waiting):
-        return
+    """Leave `message` as a morning note unless a note with the same code about the same file still waits
+    (the owner of the notes decides that under its lock: two starts at once say it once)."""
+
+    def waits(notes: list[notify.Note]) -> bool:
+        return any(n["message"].startswith(f"{code}:") and about in n["message"] for n in notes)
+
     try:
-        notify.leave_note(paths, "Nightshift", message)
-    except OSError as e:  # a note must never stop an engine start
-        log.warn("morning_note_failed", str(e))
+        notify.leave_note(paths, "Nightshift", message, once=waits)
+    except OSError as e:  # neither the notes nor their spool took it (notify logged it); never stop a start
+        log.warn("morning_note_failed", str(e), message=message)
 
 
 def _serve(args: argparse.Namespace, paths: Paths) -> int:
