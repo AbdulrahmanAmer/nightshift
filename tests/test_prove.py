@@ -311,6 +311,35 @@ def test_a_skip_is_recorded_as_skipped_not_passed(env):
     assert (ev["result"], ev["reason"]) == ("skipped", "needs fake_gpu")
 
 
+def test_strict_makes_a_skip_fail_the_run(env, capsys):
+    write_proof(env.pdir, "needs_gpu", boxes=["F-S1"], body="ctx.skip('needs fake_gpu')")
+    write_proof(env.pdir, "plain", boxes=["F-S3"])
+    assert run_main(env, "--all") == 0  # without --strict a skip does not fail the run, as before
+    assert "skipped: a skip is not a pass" not in capsys.readouterr().out
+    assert run_main(env, "--all", "--strict") == 3
+    out = capsys.readouterr().out
+    assert "1 skipped: a skip is not a pass" in out
+    assert "needs-gpu: needs fake_gpu" in out  # which proof skipped, and why
+    assert evidence(env, "F-S1")["result"] == "skipped"  # the evidence still says skipped, never passed
+    assert evidence(env, "F-S3")["result"] == "pass"
+
+
+def test_strict_counts_a_window_proof_skipped_by_no_window_and_a_failure_still_wins(env, capsys):
+    write_proof(env.pdir, "windowed", boxes=["F-W1"], window=True)
+    assert run_main(env, "--all", "--no-window") == 0
+    capsys.readouterr()
+    assert run_main(env, "--all", "--no-window", "--strict") == 3  # selected, and not run: not a pass
+    assert "windowed: window proof skipped by --no-window" in capsys.readouterr().out
+    write_proof(env.pdir, "bad", boxes=["F-B1"], body="ctx.check(False, 'broken')")
+    assert run_main(env, "--all", "--no-window", "--strict") == 1  # a failure is 1, whatever else skipped
+
+
+def test_strict_passes_when_nothing_skipped(env, capsys):
+    write_proof(env.pdir, "plain", boxes=["F-S3"])
+    assert run_main(env, "--all", "--strict") == 0
+    assert "a skip is not a pass" not in capsys.readouterr().out
+
+
 def test_a_skip_cannot_be_swallowed_by_a_proofs_except_exception(env):
     body = """
         try:

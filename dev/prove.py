@@ -4,6 +4,7 @@
     python dev/prove.py --home D:\\NightShift\\installs\\dev --dept qa --box F-B7 [--box F-C2 ...]
     python dev/prove.py --home D:\\NightShift\\installs\\dev --dept qa --proof f-b7-review-reject
     python dev/prove.py --home D:\\NightShift\\installs\\dev --dept qa --all [--no-window]
+    python dev/prove.py --home D:\\NightShift\\installs\\dev --dept qa --all --strict   # the release rule
 
 ``--dept`` is required (it has no default): it names the department that holds ``LAPTOP.lock`` and must be
 the caller's own, so a run can never borrow another department's lock.
@@ -36,9 +37,16 @@ replaces an earlier pass or fail of the same proof.
 
 Exit codes: 0 every proof passed or was skipped, 1 any proof failed, 2 usage or setup error (no install, lock
 not held, unknown box, no engine tool, a proof asked for by name that does not fit this install kind, other
-processes already running when the engine has to be started).
+processes already running when the engine has to be started), 3 with ``--strict`` when no proof failed but any
+selected proof was skipped (``--strict`` is the release rule: a skipped proof is not a passed one; the summary
+names each skipped proof and why). Without ``--strict`` a skip does not change the exit code.
 
-Standard library only. Never global input, nothing on C:, one proof at a time.
+The runner is standard library only. A proof may import product code (F-B7 imports `ns_studio.media.outbox`,
+the FFmpeg lookup is `ns_common.ffmpeg`), so run it from a Python that has the repository's dependencies, for
+example the repository test venv; it finds FFmpeg the way the product does (`NS_FFMPEG`, PATH,
+`<home>/bin/ffmpeg`), not by that Python's PATH alone. Every proof has a test in `tests/test_proof_scripts.py`
+that runs it against a fake-services home (`tests/proofhome.py`), and CI runs it.
+Never global input, nothing on C:, one proof at a time.
 """
 
 from __future__ import annotations
@@ -667,6 +675,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--all", action="store_true", dest="everything", help="run every proof the install kind fits"
     )
+    ap.add_argument(
+        "--strict",
+        action="store_true",
+        help="a skipped proof is not a pass: exit 3 when none failed but any selected proof was skipped "
+        "(the release rule; without it a skip does not change the exit code)",
+    )
     ap.add_argument("--list", action="store_true", help="print id, boxes, install, window, needs and exit")
     ap.add_argument("--no-window", action="store_true", help="skip proofs that drive a page or a window")
     ap.add_argument("--runs", type=Path, help="evidence root (default: <home>\\..\\..\\runs)")
@@ -743,7 +757,15 @@ def main(argv: list[str] | None = None, *, runner_options: dict[str, Any] | None
         f"{sum(r.result == 'pass' for r in results)} passed, {failed} failed, "
         f"{sum(r.result == 'skipped' for r in results)} skipped; evidence in {runner.evidence_dir}"
     )
-    return 1 if failed else 0
+    if failed:
+        return 1
+    skipped = [r for r in results if r.result == "skipped"]
+    if args.strict and skipped:
+        print(f"{len(skipped)} skipped: a skip is not a pass (--strict). Skipped, and why:")
+        for r in skipped:
+            print(f"  {r.proof.label}: {r.reason or 'skipped'}")
+        return 3
+    return 0
 
 
 if __name__ == "__main__":

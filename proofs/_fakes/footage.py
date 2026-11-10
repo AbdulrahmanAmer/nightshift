@@ -6,7 +6,7 @@ HTTPS_PROXY=http://127.0.0.1:<port>, NO_PROXY=127.0.0.1,localhost and SSL_CERT_F
 (`client_env`). CONNECT to an intercepted host is ended here with a leaf certificate signed by the fake CA and
 answered by the fake API; every other host is tunnelled to the real server untouched.
 
-    python footage.py --dir <folder> [--good-key GOODKEY]
+    python footage.py --dir <folder> [--good-key GOODKEY] [--ffmpeg <path to ffmpeg>]
 
 It writes `<folder>/certs/*`, `<folder>/media/*`, `<folder>/requests.jsonl` and, once it listens,
 `<folder>/ready.json` ({"port": N, "pid": N}). The port is chosen by the system.
@@ -82,7 +82,7 @@ def find_openssl() -> str | None:
 
 def _has_cryptography() -> bool:
     try:
-        import cryptography  # noqa: F401
+        import cryptography  # noqa: F401  # pyright: ignore[reportMissingImports]
     except ImportError:
         return False
     return True
@@ -99,10 +99,10 @@ def cert_tool_problem() -> str | None:
 
 
 def _make_certs_cryptography(folder: Path) -> None:
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+    from cryptography import x509  # pyright: ignore[reportMissingImports]
+    from cryptography.hazmat.primitives import hashes, serialization  # pyright: ignore[reportMissingImports]
+    from cryptography.hazmat.primitives.asymmetric import rsa  # pyright: ignore[reportMissingImports]
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID  # pyright: ignore[reportMissingImports]
 
     now = datetime.datetime.now(datetime.UTC)
     start = now - datetime.timedelta(minutes=5)
@@ -236,9 +236,10 @@ def media_path(folder: Path, portrait: bool) -> Path:
     return folder / "media" / f"clip_{w}x{h}.mp4"
 
 
-def make_media(folder: Path) -> None:
-    """Two short H.264 test clips (1080x1920 and 1920x1080) with FFmpeg."""
-    exe = shutil.which("ffmpeg")
+def make_media(folder: Path, ffmpeg: str | None = None) -> None:
+    """Two short H.264 test clips (1080x1920 and 1920x1080) with FFmpeg: `ffmpeg` when given (the proof passes
+    the one it found the way the product finds it), else the one on PATH."""
+    exe = ffmpeg or shutil.which("ffmpeg")
     if not exe:
         raise RuntimeError("ffmpeg is not on PATH, cannot make the fake clips")
     (folder / "media").mkdir(parents=True, exist_ok=True)
@@ -440,7 +441,7 @@ class Api(BaseHTTPRequestHandler):
     server_version = "footage-fake"
     timeout = 60
 
-    def log_message(self, *a) -> None:  # the stdlib access log is off; requests.jsonl has the lines
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002  # the stdlib access log is off; requests.jsonl has the lines
         pass
 
     def handle(self) -> None:
@@ -556,7 +557,7 @@ class Proxy(BaseHTTPRequestHandler):
     server_version = "footage-fake-proxy"
     timeout = 120
 
-    def log_message(self, *a) -> None:
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         pass
 
     @property
@@ -690,12 +691,13 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="fake Pexels and Pixabay behind an intercepting HTTPS proxy")
     ap.add_argument("--dir", required=True, help="folder for certs/, media/, requests.jsonl and ready.json")
     ap.add_argument("--good-key", default="GOODKEY", help="accepted key(s), comma separated")
+    ap.add_argument("--ffmpeg", default=None, help="FFmpeg to make the clips with (default: the one on PATH)")
     args = ap.parse_args(argv)
     folder = Path(args.dir).resolve()
     folder.mkdir(parents=True, exist_ok=True)
     try:
         make_certs(folder)
-        make_media(folder)
+        make_media(folder, args.ffmpeg)
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
         sys.stderr.write(f"footage fake could not start: {e}\n")
         return 3
