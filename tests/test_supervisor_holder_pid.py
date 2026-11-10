@@ -535,6 +535,219 @@ def test_the_client_passes_the_pid_when_given() -> None:
     assert sent[1].get("pid") is None  # no pid given: none sent
 
 
+# ---------------------------------------------------------------- holder gone while the previous tenant stops
+
+
+async def dead_waiter_granted_mid_stop(
+    sup: Supervisor, gone: dict[str, bool], service: str, alias: str | None
+) -> tuple[list[dict[str, Any]], BaseException | dict[str, Any]]:
+    """A Studio render holds tts; a Code console waits for `service` and is closed with X while queued.
+
+    At the render's stage boundary the dead waiter is granted and starts stopping tts, which takes 1.5 s (the
+    stop runs under the service's own lock, as a real taskkill does). A monitor pass frees the lock meanwhile
+    and the render's next stage acquires tts again. Returns the events and how the dead acquire ended.
+    """
+    await sup.acquire("tts", "studio:night-1")
+    real_stop = sup._stop_locked
+
+    async def slow_stop(rt: Any) -> None:
+        await asyncio.sleep(1.5)
+        await real_stop(rt)
+
+    sup._stop_locked = slow_stop  # type: ignore[method-assign]  # an instance attribute, removed below
+    q = sup.subscribe()
+    dead = asyncio.create_task(sup.acquire(service, "opencode", alias, **pid_kw(4242)))
+    try:
+        assert await asyncio.to_thread(wait_until, lambda: bool(sup.lock.waiters()), 10)
+        await sup.release("tts", "studio:night-1")  # stage boundary: the dead waiter is granted
+        assert await asyncio.to_thread(wait_until, lambda: sup.services["tts"].op_lock.locked(), 10)
+        assert sup.lock.state.owner == "opencode"
+        gone["v"] = True
+        await sup.tick()  # the holder is gone: freed while tts is still stopping
+        assert sup.lock.state.owner is None
+        await asyncio.wait_for(sup.acquire("tts", "studio:night-1"), 20)  # the render's next stage
+        (ended,) = await asyncio.wait_for(asyncio.gather(dead, return_exceptions=True), 20)
+    finally:
+        delattr(sup, "_stop_locked")
+        if not dead.done():
+            dead.cancel()
+        await asyncio.gather(dead, return_exceptions=True)
+        sup.unsubscribe(q)
+    return drain(q), ended
+
+
+def test_a_holder_gone_while_the_previous_tenant_stops_never_loads_its_model(tmp_path: Path) -> None:
+    """Review blocker 1: the dead acquire must not load llama on a lock it no longer holds."""
+    gone = {"v": False}
+    sup, _clock = make(tmp_path, probe=lambda pid: None if gone["v"] else 7.0)
+
+    async def main() -> None:
+        try:
+            events, ended = await dead_waiter_granted_mid_stop(sup, gone, "llama", "code")
+            llama_starts = [
+                e
+                for e in events
+                if e["data"].get("service") == "llama" and e["data"].get("event") == "starting"
+            ]
+            assert llama_starts == [], "the code model started on a lock the dead console no longer held"
+            assert sup.services["llama"].state == "stopped" and sup.services["llama"].proc is None
+            assert sup.lock.state.owner == "studio:night-1"
+            assert sup.services["tts"].state == "ready"  # the render's tenant is up for its next stage
+            assert isinstance(ended, NsError) and ended.code == "NS-E202", ended
+        finally:
+            await close(sup)
+
+    asyncio.run(main())
+
+
+def test_a_whisper_holder_gone_while_the_previous_tenant_stops_is_refused(tmp_path: Path) -> None:
+    """The whisper path has its own swap (no process to start): the dead acquire ends with NS-E202 too."""
+    gone = {"v": False}
+    sup, _clock = make(tmp_path, probe=lambda pid: None if gone["v"] else 7.0)
+
+    async def main() -> None:
+        try:
+            events, ended = await dead_waiter_granted_mid_stop(sup, gone, "whisper", None)
+            acquired = [
+                e
+                for e in events
+                if e["data"].get("event") == "acquired" and e["data"].get("owner") == "opencode"
+            ]
+            assert acquired == [], "whisper announced as acquired by a holder that was already freed"
+            assert isinstance(ended, NsError) and ended.code == "NS-E202", ended
+            assert sup.lock.state.owner == "studio:night-1" and sup.services["tts"].state == "ready"
+        finally:
+            await close(sup)
+
+    asyncio.run(main())
+
+
+def test_a_console_closed_while_queued_never_stops_the_current_tenant(tmp_path: Path) -> None:
+    """Waiter step: the console died while it waited. Its turn comes, the grant finds its process gone: the
+    lock passes on at once, the loaded tenant is not stopped, and the dead acquire ends with NS-E202."""
+    sup, _clock = make(tmp_path, probe=lambda pid: None)  # 4242 runs no process by the time it is granted
+
+    async def main() -> None:
+        await sup.acquire("tts", "studio:night-1")
+        q = sup.subscribe()  # from here on: nothing may stop or start a model
+        dead = asyncio.create_task(sup.acquire("llama", "opencode", "code", **pid_kw(4242)))
+        nxt: asyncio.Task[dict[str, Any]] | None = None
+        try:
+            assert await asyncio.to_thread(wait_until, lambda: bool(sup.lock.waiters()), 10)
+            nxt = asyncio.create_task(sup.acquire("tts", "studio:night-2"))  # queued behind the dead console
+            assert await asyncio.to_thread(wait_until, lambda: len(sup.lock.waiters()) == 2, 10)
+            await sup.release("tts", "studio:night-1")
+            (ended,) = await asyncio.wait_for(asyncio.gather(dead, return_exceptions=True), 20)
+            assert isinstance(ended, NsError) and ended.code == "NS-E202", ended
+            done, _ = await asyncio.wait({nxt}, timeout=10)
+            assert done and sup.lock.state.owner == "studio:night-2", "the next waiter did not get the GPU"
+            events = drain(q)
+            stops = [e for e in events if e["data"].get("event") in ("stopping", "starting")]
+            assert stops == [], "the dead console's turn stopped or started a model"
+            assert sup.services["tts"].state == "ready" and sup.services["llama"].proc is None
+            assert holder_gone_events(events, "opencode")
+        finally:
+            for t in (dead, nxt):
+                if t is not None and not t.done():
+                    t.cancel()
+            await asyncio.gather(*(t for t in (dead, nxt) if t is not None), return_exceptions=True)
+            sup.unsubscribe(q)
+            await close(sup)
+
+    asyncio.run(main())
+
+
+def test_a_holder_gone_during_the_ready_step_gets_no_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ready step (slowed): the VRAM sample after the health check awaits; the holder goes meanwhile. The
+    acquire ends with NS-E202, `acquired` is never announced, and the next owner gets the GPU."""
+    import ns_supervisor.core as core_mod
+
+    gone = {"v": False}
+    sup, _clock = make(tmp_path, probe=lambda pid: None if gone["v"] else 7.0)
+
+    def slow_vram(pid: int) -> int | None:
+        import time
+
+        time.sleep(1.5)
+        return None
+
+    monkeypatch.setattr(core_mod.procs, "vram_mb", slow_vram)
+
+    async def main() -> None:
+        q = sup.subscribe()
+        task = asyncio.create_task(sup.acquire("llama", "opencode", "code", **pid_kw(4242)))
+        try:
+            assert await asyncio.to_thread(wait_until, lambda: sup.services["llama"].state == "ready", 15)
+            gone["v"] = True
+            await sup.tick()  # the console is closed while the engine samples VRAM
+            assert sup.lock.state.owner is None
+            (ended,) = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 20)
+            assert isinstance(ended, NsError) and ended.code == "NS-E202", ended
+            assert not [e for e in drain(q) if e["data"].get("event") == "acquired"]
+            await sup.acquire("llama", "studio:nightly-1", wait=False)
+            assert sup.lock.state.owner == "studio:nightly-1"
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            sup.unsubscribe(q)
+            await close(sup)
+
+    asyncio.run(main())
+
+
+def test_the_release_button_during_a_load_abandons_it_without_counting_a_crash(tmp_path: Path) -> None:
+    """Load step, another way to lose the lock: Queue > Release frees a live owner while its model loads. The
+    load stops at the next health poll (no endpoint for a lock it lost), and it is not a crash of llama."""
+    table = StubTable(extra={"llama": ["--ready-delay", "20"]})
+    sup, _clock = make(tmp_path, table=table, health_timeout_s=60)
+
+    async def main() -> None:
+        loading = asyncio.create_task(sup.acquire("llama", "opencode", "code"))
+        try:
+            assert await asyncio.to_thread(wait_until, lambda: sup.services["llama"].state == "starting", 15)
+            assert await sup.release_unless_alive("opencode") == {"ok": True}
+            done, _ = await asyncio.wait({loading}, timeout=10)  # the stub would be ready after 20 s
+            assert done, "the load went on for a lock its owner no longer held"
+            ended = loading.exception()
+            assert isinstance(ended, NsError) and ended.code == "NS-E202", ended
+            llama = sup.services["llama"]
+            assert llama.proc is None and llama.state == "stopped" and len(llama.crashes) == 0
+            await asyncio.wait_for(sup.acquire("tts", "studio:nightly-1", wait=False), 15)
+            assert sup.lock.state.owner == "studio:nightly-1"
+        finally:
+            if not loading.done():
+                loading.cancel()
+            await asyncio.gather(loading, return_exceptions=True)
+            await close(sup)
+
+    asyncio.run(main())
+
+
+def test_a_swap_by_the_holder_without_a_pid_keeps_its_process_record(
+    tmp_path: Path, sleeper: Callable[[], subprocess.Popen[bytes]]
+) -> None:
+    """Granted step, run twice: the holder re-acquires another service (a swap) without a pid. It keeps the
+    record it has, so its console's close still frees the GPU."""
+    sup, _clock = make(tmp_path)
+    child = sleeper()
+
+    async def main() -> None:
+        try:
+            await sup.acquire("llama", "opencode", "code", **pid_kw(child.pid))
+            await sup.acquire("tts", "opencode")  # the same owner, no pid: a swap without leaving the lock
+            assert sup.status().get("holder_pid") == child.pid
+            kill(child)
+            await sup.tick()
+            assert sup.lock.state.owner is None
+        finally:
+            await close(sup)
+
+    asyncio.run(main())
+
+
 # ---------------------------------------------------------------- both ends of the pid, a failing probe
 
 

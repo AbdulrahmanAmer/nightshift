@@ -304,7 +304,8 @@ class Supervisor:
         async with rt.op_lock:
             await self._stop_locked(rt)
 
-    async def _start_locked(self, rt: ServiceRuntime, d: ServiceDef) -> None:
+    async def _start_locked(self, rt: ServiceRuntime, d: ServiceDef, owner: str | None = None) -> None:
+        await self._guard(owner, rt.name, "start")  # nothing is spawned for an acquire that lost the GPU
         rt.definition = d
         rt.state = "starting"
         rt.abort = False
@@ -325,6 +326,11 @@ class Supervisor:
                 while True:
                     if rt.abort:
                         raise NsError("NS-E202", f"start of {rt.name} aborted")
+                    try:
+                        await self._guard(owner, rt.name, "load")  # every health poll
+                    except NsError:
+                        rt.abort = True  # an abandoned load, not a crash of the service
+                        raise
                     if not proc.alive():
                         raise NsError("NS-E202", f"{rt.name} exited with code {proc.returncode()} at startup")
                     try:
@@ -356,9 +362,10 @@ class Supervisor:
         self.log.info("service_ready", service=rt.name, pid=proc.pid, vram_mb=rt.vram_mb)
         self._emit(rt, "ready", pid=proc.pid, vram_mb=rt.vram_mb)
 
-    async def _ensure(self, rt: ServiceRuntime, d: ServiceDef) -> None:
+    async def _ensure(self, rt: ServiceRuntime, d: ServiceDef, owner: str | None = None) -> None:
         """Make `rt` ready with definition `d`: reuse, restart on variant change, or start."""
         async with rt.op_lock:
+            await self._guard(owner, rt.name, "ensure")  # the wait for op_lock may have been long
             self._reap(rt)
             self._prune(rt)
             p = rt.proc
@@ -375,15 +382,40 @@ class Supervisor:
                     "NS-E202",
                     f"{rt.name} crashed {len(rt.crashes)}x in {self.cfg.crash_window_s:.0f}s: {rt.error}",
                 )
-            await self._start_locked(rt, d)
+            await self._start_locked(rt, d, owner)
 
-    async def _swap_to(self, service: str, d: ServiceDef) -> None:
-        """Stop every other GPU tenant, then bring `service` up (whisper has no process)."""
+    async def _swap_to(self, service: str, d: ServiceDef, owner: str | None = None) -> None:
+        """Stop every other GPU tenant, then bring `service` up (whisper has no process).
+
+        `owner` (an acquire): `_guard` runs before each stop and before `service` is brought up (and again in
+        `_ensure` and at every health poll of the load). None: a warmup, which has no owner to check.
+        """
         for other, ort in self.services.items():
             if other != service and ort.proc is not None and ort.definition.gpu:
+                await self._guard(owner, service, f"stop {other}")
                 await self._stop(ort)
+        await self._guard(owner, service, "bring up")
         if service != "whisper":
-            await self._ensure(self.services[service], d)
+            await self._ensure(self.services[service], d, owner)
+
+    async def _guard(self, owner: str | None, service: str, step: str) -> None:
+        """The GPU handover invariant: an acquire acts on the GPU only while it is the lock's recorded owner,
+        and, when it named its process, only while that process still runs (F-H47).
+
+        Called between the steps of an acquire (granted, before each stop, before the bring-up, in `_ensure`,
+        before the spawn, at every health poll, after ready). Another owner holds the lock: `NS-E202`, and
+        nothing is released (the lock is not ours). Our process is gone: the lock is freed as the monitor
+        would (`owner_released`, `holder_gone`), then `NS-E202`. None: no owner to check (a warmup).
+        """
+        if owner is None:
+            return
+        if self.lock.state.owner != owner:
+            raise NsError("NS-E202", f"{owner} no longer holds the GPU ({step}, {service})")
+        h = self._current_holder()
+        if h is not None and not self._holder_alive(h):
+            self._holder = None
+            await self.release_owner(owner, reason="holder_gone")
+            raise NsError("NS-E202", f"the process of {owner} is gone ({step}, {service})")
 
     # ------------------------------------------------------------------ API
     def _endpoint(self, service: str, d: ServiceDef | None, alias: str | None) -> dict[str, Any]:
@@ -450,7 +482,9 @@ class Supervisor:
             self._leave_if_shutting_down(owner)
             self._record_holder(owner, pid, fresh)
             try:
-                await self._swap_to("whisper", self.services["llama"].definition)
+                await self._guard(owner, "whisper", "granted")
+                await self._swap_to("whisper", self.services["llama"].definition, owner)
+                await self._guard(owner, "whisper", "ready")
             except BaseException:
                 self.lock.release(owner)
                 raise
@@ -475,9 +509,11 @@ class Supervisor:
         self._record_holder(owner, pid, fresh)
         rt.idle_since = None
         try:
-            await self._swap_to(service, d)
+            await self._guard(owner, service, "granted")  # a console closed while it waited in the queue
+            await self._swap_to(service, d, owner)
+            await self._guard(owner, service, "ready")  # the ready step awaits too (VRAM sample)
         except BaseException:
-            self.lock.release(owner)
+            self.lock.release(owner)  # changes nothing when the lock is no longer `owner`'s
             raise
         self.publish("service", {"service": service, "event": "acquired", "owner": owner})
         return self._endpoint(service, d, alias)
@@ -604,9 +640,8 @@ class Supervisor:
 
         Gone: no running process has the pid, or one runs with another creation time (pid reuse). This is how
         a Nightshift Code console closed with X (its `finally` never runs) gives the card back, while a live
-        but idle console keeps it for as long as it runs. A model still loading for it is abandoned. A probe
-        that fails (access denied) keeps the holder, with one `holder_probe_failed` WARN per holder; the
-        dashboard's Release button still frees it.
+        but idle console keeps it for as long as it runs. An acquire still running for it (stopping a tenant,
+        loading its model) stops at its next `_guard`, because the lock is no longer its own.
         """
         h = self._holder
         if h is None:
@@ -614,23 +649,27 @@ class Supervisor:
         if h.owner != self.lock.state.owner:  # released or handed on since: the record is stale
             self._holder = None
             return
+        if self._holder_alive(h):
+            return
+        self._holder = None
+        await self.release_owner(h.owner, reason="holder_gone")
+
+    def _holder_alive(self, h: _Holder) -> bool:
+        """False when the holder's process is gone: no process runs with its pid, or one with another creation
+        time (pid reuse). A probe that raises (access denied) answers True: the holder is kept until the
+        dashboard's Release button frees it, with no time bound, and one `holder_probe_failed` WARN each.
+        """
         try:
             created = self.process_probe(h.pid)
         except Exception as e:
             if not h.warned:
                 h.warned = True
                 self.log.warn("holder_probe_failed", str(e), owner=h.owner, pid=h.pid)
-            return
+            return True
         if created is not None and not h.known:  # unreadable at grant time: this is the holder as it runs
             h.created, h.known = created, True
-            return
-        if created is not None and created == h.created:
-            return
-        rt = self.services.get(self.lock.state.service or "")
-        if rt is not None and rt.state == "starting":
-            rt.abort = True  # `_start_locked` stops the load at its next health poll
-        self._holder = None
-        await self.release_owner(h.owner, reason="holder_gone")
+            return True
+        return created is not None and created == h.created
 
     async def stop_all(self, *, include_persistent: bool = False) -> None:
         """Terminate every model service and clear crash state, owners and the GPU lock holder."""
