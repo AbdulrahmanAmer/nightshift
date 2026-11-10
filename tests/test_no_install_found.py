@@ -337,7 +337,8 @@ def test_a_missing_runtime_json_in_a_named_home_stops_models_get_without_a_downl
     home.mkdir()
     r = run("ns", "models", "get", "voicedesign", env={"NIGHTSHIFT_HOME": str(home)})
     assert r.exit_code == 1, r.output
-    assert "runtime.json" in r.output and "NS-E203" in r.output
+    assert "runtime.json" in r.output and "NS-E125" in r.output
+    assert "NS-E203" not in r.output and "health check" not in r.output    # that code's text is not true here
     assert plans.calls == []                             # base: assumed the GPU profile and planned its items
     assert not (home / "models").exists()
 
@@ -351,13 +352,42 @@ def test_an_unreadable_runtime_json_stops_models_get_with_its_own_error(
     bad.write_text("{", encoding="utf-8")
     r = run("ns", "models", "get", "voicedesign", env={"NIGHTSHIFT_HOME": str(home)})
     assert r.exit_code == 1, r.output
-    assert "NS-E203" in r.output and str(bad) in r.output and "could not be read" in r.output
+    assert "NS-E125" in r.output and str(bad) in r.output and "could not be read" in r.output
+    assert "NS-E203" not in r.output and "health check" not in r.output
     assert "Traceback" not in r.output and "validation error for Runtime" in r.output   # the reason, one line
     assert plans.calls == []                             # nothing planned
     assert bad.read_text(encoding="utf-8") == "{"       # the file is still there, untouched: never dropped
     assert sorted(p.name for p in bad.parent.iterdir()) == ["runtime.json"]
     again = run("ns", "models", "get", "voicedesign", env={"NIGHTSHIFT_HOME": str(home)})
     assert again.exit_code == 1 and plans.calls == []   # the second run says the same
+
+
+def test_the_way_out_the_hint_names_works(tmp_path: Path, plans: Plans) -> None:
+    """NS-E125's hint: rename a damaged runtime.json to runtime.json.bad, then run setup again. Setup's step
+    s06 starts with `ensure_baseline`, which writes a missing runtime.json; after that `ns models get` works.
+    (`ns tune`, the obvious guess, reads the file first and cannot repair a missing or damaged one.)"""
+    from installer.stage2.runtime_cfg import ensure_baseline
+    from installer.stage2.testing import example_answers, make_test_context
+
+    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True)
+    home = ctx.paths.home
+    env = {"NIGHTSHIFT_HOME": str(home)}
+    for damage in ("missing", "torn"):
+        ctx.paths.runtime_file.unlink(missing_ok=True)
+        ctx.paths.runtime_file.with_name("runtime.json.bad").unlink(missing_ok=True)
+        if damage == "torn":
+            ctx.paths.runtime_file.parent.mkdir(parents=True, exist_ok=True)
+            ctx.paths.runtime_file.write_text("{", encoding="utf-8")
+        plans.calls.clear()
+        r = run("ns", "models", "get", "voicedesign", env=env)
+        assert r.exit_code == 1 and "NS-E125" in r.output and plans.calls == [], (damage, r.output)
+        assert "INSTALL.cmd" in r.output and "runtime.json.bad" in r.output
+        if damage == "torn":
+            # the owner's step
+            ctx.paths.runtime_file.rename(ctx.paths.runtime_file.with_name("runtime.json.bad"))
+        ensure_baseline(ctx)                                                                    # setup, again
+        r2 = run("ns", "models", "get", "voicedesign", env=env)
+        assert r2.exit_code == 0 and len(plans.calls) == 1, (damage, r2.output)
 
 
 def test_get_model_no_longer_assumes_the_gpu_profile(tmp_path: Path, plans: Plans) -> None:

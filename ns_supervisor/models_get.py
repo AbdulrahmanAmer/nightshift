@@ -161,19 +161,22 @@ class EchoReporter:
 
 
 def _read_runtime(paths: Paths) -> Runtime:
-    """`runtime.json`, or the error that says why it cannot be used (NS-E203, naming the file).
+    """`runtime.json`, or NS-E125 naming the file and why it cannot be used. The file is never touched.
 
-    A file that is missing is `load_runtime`'s own NsError. One that exists but cannot be read or parsed
-    (torn JSON, a bad key, a locked file) is turned into the same code with the file named, instead of an
-    uncoded pydantic traceback. The file is not touched either way.
+    A file that is missing is `load_runtime`'s NS-E203 ("Service health check timed out": not true of a
+    missing file), turned into NS-E125 here. One that exists but cannot be read or parsed (torn JSON, a bad
+    key, a locked file) is also NS-E125, instead of an uncoded pydantic traceback. Other callers of
+    `load_runtime` keep NS-E203.
     """
     try:
         return load_runtime(paths)
-    except NsError:
-        raise
+    except NsError as e:
+        if e.code != "NS-E203":
+            raise
+        raise NsError("NS-E125", f"{paths.runtime_file} does not exist") from e
     except (ValueError, OSError) as e:
         first = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
-        raise NsError("NS-E203", f"{paths.runtime_file} could not be read: {first}") from e
+        raise NsError("NS-E125", f"{paths.runtime_file} could not be read: {first}") from e
 
 
 def get_model(
