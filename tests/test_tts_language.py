@@ -107,7 +107,7 @@ def test_client_sends_the_language_in_single_and_batch_bodies(tmp_path: Path):
 
 def _app(tmp_path: Path, engine: FakeEngine | QwenttsEngine) -> TestClient:
     engine.load()
-    return TestClient(create_app(engine, VoiceLibrary(tmp_path / "voices")))
+    return TestClient(create_app(engine, VoiceLibrary(tmp_path / "voices")), base_url="http://127.0.0.1:18099")
 
 
 def test_the_service_maps_the_item_language_before_the_engine_sees_it(tmp_path: Path):

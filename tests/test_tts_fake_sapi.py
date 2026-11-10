@@ -107,7 +107,8 @@ def make_app(
     e = engine or FakeEngine(speech="sapi", sapi=StandInSapi(), log=log)
     if load:
         e.load()
-    return TestClient(create_app(e, VoiceLibrary(tmp_path / "voices"), log=log)), e
+    app = create_app(e, VoiceLibrary(tmp_path / "voices"), log=log)
+    return TestClient(app, base_url="http://127.0.0.1:18099"), e
 
 
 def speak(c: TestClient, text: str, **extra: Any) -> tuple[np.ndarray, int]:

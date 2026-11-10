@@ -1,0 +1,815 @@
+# ruff: noqa: E501
+"""FN-1: no web page can control the engine, the voice service or the dashboard.
+
+Every test enters through a server's real `create_app` and sends a request shaped like the caller's: Starlette's
+TestClient with a loopback `base_url` (so `Host` is what a program of this PC sends), the product's own clients
+(`SupervisorClient`, `SupervisorLink`, `TtsClient`) on top of it, and for the callers that are not Python a real
+uvicorn server on a free port (PowerShell 5.1 with the launchers' own functions; the client of release 0.1.14).
+The routes are read from `app.routes`, so a route added later is covered.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+import json
+import subprocess
+import sys
+import threading
+import types
+from collections.abc import Iterator
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+pytest.importorskip("fastapi")
+uvicorn = pytest.importorskip("uvicorn")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from ns_common.errors import NsError, describe  # noqa: E402
+from ns_common.logging import NsLogger  # noqa: E402
+from ns_common.models import Runtime  # noqa: E402
+from ns_common.paths import Paths  # noqa: E402
+from ns_common.tts_client import TtsClient  # noqa: E402
+from ns_dashboard.assistant.llm import ScriptedToolLlm, StaticProvider  # noqa: E402
+from ns_dashboard.handlers import build_state  # noqa: E402
+from ns_dashboard.supervisor_link import SupervisorLink  # noqa: E402
+from ns_supervisor import notify, pwsh  # noqa: E402
+from ns_supervisor.app import create_app as engine_app  # noqa: E402
+from ns_supervisor.client import SupervisorClient  # noqa: E402
+from ns_supervisor.core import Supervisor  # noqa: E402
+from ns_supervisor.testing import StubTable, fast_config, wait_until  # noqa: E402
+from ns_tts.engine import FakeEngine  # noqa: E402
+from ns_tts.server import create_app as voice_app  # noqa: E402
+from ns_tts.voices import VoiceLibrary  # noqa: E402
+
+try:  # the base has no shared check: there each test fails at its assertion (the request is answered)
+    from ns_common import loopback
+except ImportError:
+    loopback = None  # type: ignore[assignment]
+
+ROOT = Path(__file__).resolve().parents[1]
+PORT = 18473  # only a number in the Host header: a TestClient binds nothing
+BASE = f"http://127.0.0.1:{PORT}"
+EVIL = "https://evil.example"
+CODE = "NS-E207"
+FOREIGN_ORIGINS = (EVIL, "null", "http://127.0.0.1:8100")
+FOREIGN_HOSTS = (
+    f"rebind.example:{PORT}", "127.0.0.1.nip.io", "localhost.evil.example", "[::ffff:127.0.0.1]", "",
+    "evil.example:8099", f"192.168.1.20:{PORT}", f"0.0.0.0:{PORT}", f"[::1]x:{PORT}", "127.0.0.1:80@evil.example",
+)
+OWN_HOSTS = (f"127.0.0.1:{PORT}", f"localhost:{PORT}", f"[::1]:{PORT}", "127.0.0.1")
+BROWSER_MARKS = ("origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-fetch-user")
+#: What changes or reads the engine: none of it may run for a refused request.
+SPIED = {
+    "stop_all": {"ok": True}, "shutdown": None, "acquire": {"endpoint": "http://127.0.0.1:1", "model_alias": None},
+    "release": True, "release_owner": True, "release_unless_alive": {"ok": True}, "heartbeat": True,
+    "warmup": "ready", "note_run_finished": {"exit_scheduled": False}, "publish": None,
+    "status": {"gpu_owner": None, "services": {}},
+}
+ANY_BODY = {"service": "embed", "owner": "a page", "kind": "job", "data": {}}
+needs_powershell = pytest.mark.skipif(pwsh.find_powershell() is None, reason="powershell not on PATH")
+
+
+# ---------------------------------------------------------------------------------------------- the servers
+class Spy:
+    """Replaces the engine's own methods: `calls` is what a request reached."""
+
+    def __init__(self, sup: Supervisor, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.calls: list[str] = []
+        for name, answer in SPIED.items():
+            monkeypatch.setattr(sup, name, self._fake(name, answer, inspect.iscoroutinefunction(getattr(sup, name))))
+
+    def _fake(self, name: str, answer: Any, is_async: bool) -> Any:
+        def now(*a: Any, **k: Any) -> Any:
+            self.calls.append(name)
+            return answer
+
+        async def later(*a: Any, **k: Any) -> Any:
+            return now()
+
+        return later if is_async else now
+
+
+def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch | None = None) -> tuple[Supervisor, Any, Spy | None]:
+    """The engine's real app around a Supervisor on the fake services of tests/test_supervisor_app.py."""
+    sup = Supervisor(
+        Paths(tmp_path / "ns"), Runtime.default("gpu"), config=fast_config(idle_unload_s=60), resolver=StubTable()
+    )
+    spy = Spy(sup, monkeypatch) if monkeypatch is not None else None
+    return sup, engine_app(sup, run_monitor=False), spy
+
+
+def voice(tmp_path: Path) -> Any:
+    eng = FakeEngine()
+    eng.load()
+    return voice_app(eng, VoiceLibrary(tmp_path / "voices"), log=NsLogger("tts", tmp_path / "tts-logs"))
+
+
+def dashboard(tmp_home: Path) -> Any:
+    """The dashboard's real app on fake services (as tests/test_dashboard_api.py builds it)."""
+    static = tmp_home / "static"
+    static.mkdir(exist_ok=True)
+    (static / "index.html").write_text("<!doctype html><title>Nightshift</title>", encoding="utf-8")
+    (static / "app.js").write_text("// ui", encoding="utf-8")
+    from ns_dashboard.server import create_app
+
+    state = build_state(Paths.from_env(), fake_services=True, link=SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
+    return create_app(
+        state=state, start_worker=False, static_dir=static, heartbeat_s=0.01,
+        llm_provider=StaticProvider(ScriptedToolLlm([])),
+    )
+
+
+def client(app: Any, host: str = f"127.0.0.1:{PORT}") -> TestClient:
+    return TestClient(app, base_url=f"http://{host}")
+
+
+def routes(app: Any) -> list[tuple[str, str]]:
+    """Every (method, path) the app answers, read from the app; a path parameter becomes `x`."""
+    found: list[tuple[str, str]] = []
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        if not isinstance(path, str):
+            continue
+        import re
+
+        path = re.sub(r"\{[^}]+\}", "x", path) or "/"
+        for method in sorted(getattr(route, "methods", None) or {"GET"}):
+            found.append((method, path))
+    assert len(found) >= 5, found
+    return found
+
+
+def send(tc: TestClient, method: str, path: str, headers: dict[str, str]) -> Any:
+    once = {"limit": 1}  # where the request is answered (the base), the event stream ends after one event
+    if method in ("POST", "PUT", "PATCH", "DELETE"):
+        return tc.request(method, path, headers=headers, json=ANY_BODY, params=once)
+    return tc.request(method, path, headers=headers, params=once)
+
+
+def raw(app: Any, headers: list[tuple[bytes, bytes]], *, path: str = "/status", kind: str = "http") -> list[dict]:
+    """One ASGI call with exactly these headers (no client library adds or orders any)."""
+    sent: list[dict] = []
+
+    async def receive() -> dict[str, Any]:
+        if kind == "websocket":
+            return {"type": "websocket.connect"}
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def keep(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": kind, "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "GET", "scheme": "http",
+        "path": path, "raw_path": path.encode(), "query_string": b"", "root_path": "", "headers": headers,
+        "client": ("127.0.0.1", 50000), "server": ("127.0.0.1", PORT), "subprotocols": [],
+    }
+    asyncio.run(app(scope, receive, keep))
+    return sent
+
+
+def log_rows(folder: Path, event: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for file in sorted(folder.glob("*.jsonl")):
+        for line in file.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            if row["event"] == event:
+                rows.append(row)
+    return rows
+
+
+def settle() -> None:
+    """Wait for the note writers the refusals started (they never run on the request path)."""
+    if loopback is not None:
+        assert loopback.settle(10.0)
+
+
+class Clock:
+    def __init__(self, at: datetime) -> None:
+        self.at = at
+
+    def __call__(self) -> datetime:
+        return self.at
+
+    def step(self, **delta: float) -> None:
+        self.at += timedelta(**delta)
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
+    c = Clock(datetime(2026, 11, 10, 9, 0, 0))
+    if loopback is not None:
+        monkeypatch.setattr(loopback, "wall_clock", c)
+    return c
+
+
+class Live:
+    """An app behind a real uvicorn on a free loopback port; `seen` is the headers of each request."""
+
+    def __init__(self, app: Any) -> None:
+        self.seen: list[dict[str, str]] = []
+
+        async def recorded(scope: dict[str, Any], receive: Any, send_: Any) -> None:
+            if scope["type"] == "http":
+                self.seen.append({k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]})
+            await app(scope, receive, send_)
+
+        cfg = uvicorn.Config(recorded, host="127.0.0.1", port=0, log_level="warning", lifespan="off")
+        self.server = uvicorn.Server(cfg)
+        self.thread = threading.Thread(target=self.server.run, daemon=True)
+        self.thread.start()
+        assert wait_until(lambda: self.server.started, 15.0), "uvicorn did not start"
+        self.port = int(self.server.servers[0].sockets[0].getsockname()[1])
+        self.url = f"http://127.0.0.1:{self.port}"
+
+    def stop(self) -> None:
+        self.server.should_exit = True
+        self.thread.join(15.0)
+
+
+@pytest.fixture
+def live_engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Live, Spy]]:
+    _sup, app, spy = engine(tmp_path, monkeypatch)
+    assert spy is not None
+    live = Live(app)
+    yield live, spy
+    live.stop()
+
+
+def refused(r: Any, why: str | None = None) -> str | None:
+    """None when `r` is the engine's (or voice service's) refusal; otherwise what is wrong with it."""
+    if r.status_code != 403:
+        return f"answered {r.status_code}"
+    try:
+        body = r.json()
+    except ValueError:
+        return "403 without a JSON body" if r.request.method != "HEAD" else None
+    if set(body) != {"code", "message", "detail"} or body["code"] != CODE:
+        return f"403 with {body}"
+    if body["message"] != describe(CODE).message or (why is not None and body["detail"] != why):
+        return f"403 with {body}"
+    return None
+
+
+# ------------------------------------------------------------------------------- 1. a page's Origin, every route
+def test_every_engine_route_refuses_a_browser_origin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _sup, app, spy = engine(tmp_path, monkeypatch)
+    assert spy is not None
+    tc = client(app)
+    wrong: list[str] = []
+    for method, path in routes(app):
+        for origin in FOREIGN_ORIGINS:
+            bad = refused(send(tc, method, path, {"origin": origin}), "origin")
+            if bad:
+                wrong.append(f"{method} {path} from {origin}: {bad}")
+    assert {("POST", "/stop_all"), ("POST", "/shutdown"), ("GET", "/events")} <= set(routes(app))
+    assert wrong == [], "a web page was answered: " + "; ".join(wrong[:6])
+    assert spy.calls == []
+
+
+def test_every_voice_route_refuses_a_browser_origin(tmp_path: Path):
+    app = voice(tmp_path)
+    tc = client(app)
+    wrong: list[str] = []
+    for method, path in routes(app):
+        for origin in FOREIGN_ORIGINS:
+            bad = refused(send(tc, method, path, {"origin": origin}), "origin")
+            if bad:
+                wrong.append(f"{method} {path} from {origin}: {bad}")
+    assert ("POST", "/v1/voices/clone") in routes(app)
+    assert wrong == [], "a web page was answered: " + "; ".join(wrong[:6])
+    # the form a page can post without a preflight (multipart) never reaches the route either
+    form = tc.post("/v1/voices/clone", data={"name": "Mallory"}, files={"audio": ("a.wav", b"RIFF", "audio/wav")},
+                   headers={"origin": EVIL})
+    assert refused(form, "origin") is None
+    assert not (tmp_path / "voices" / "Mallory").exists()
+
+
+def test_a_preflight_gets_no_cors_header(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _sup, app, spy = engine(tmp_path, monkeypatch)
+    ask = {"origin": EVIL, "access-control-request-method": "POST", "access-control-request-headers": "content-type"}
+    for server in (app, voice(tmp_path), ):
+        r = client(server).options("/stop_all", headers=ask)
+        assert r.status_code == 403
+        assert not [h for h in r.headers if h.lower().startswith("access-control-")]
+    assert spy is not None and spy.calls == []
+
+
+# ------------------------------------------------------------ 2. a form POST the browser sent without an Origin
+@pytest.mark.parametrize("path", ["/stop_all", "/shutdown", "/run_finished"])
+@pytest.mark.parametrize(
+    ("headers", "why"),
+    [
+        ({"sec-fetch-site": "cross-site"}, "fetch-mark"),
+        ({"sec-fetch-site": "same-origin"}, "fetch-mark"),
+        ({"sec-fetch-mode": "no-cors"}, "fetch-mark"),
+        ({"referer": "https://evil.example/night.html"}, "referer"),
+        ({"referer": f"http://127.0.0.1:{PORT}/"}, "referer"),
+    ],
+)
+def test_a_form_post_without_origin_but_with_a_fetch_mark_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str, headers: dict[str, str], why: str
+):
+    _sup, app, spy = engine(tmp_path, monkeypatch)
+    r = client(app).post(path, content=b"", headers={"content-type": "text/plain", **headers})
+    assert refused(r, why) is None, refused(r, why)
+    assert spy is not None and spy.calls == []
+
+
+def test_a_form_post_with_only_a_foreign_referer_is_refused_by_every_server(
+    tmp_path: Path, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """No `Origin` (an old browser, or a page that strips it) but the page's address in `Referer`."""
+    form = {"content-type": "application/x-www-form-urlencoded", "referer": "https://evil.example/night.html"}
+    _sup, app, spy = engine(tmp_path, monkeypatch)
+    assert refused(client(app).post("/stop_all", content=b"a=1", headers=form), "referer") is None
+    assert spy is not None and spy.calls == []
+    assert refused(client(voice(tmp_path)).post("/v1/audio/speech/cancel", content=b"a=1", headers=form)) is None
+    dash = client(dashboard(tmp_home))
+    r = dash.post("/api/notes/clear", content=b"a=1", headers=form)
+    assert r.status_code == 403 and r.json()["error"]["code"] == CODE, r.text
+    # the dashboard's own page (its Referer is the dashboard) is answered
+    own = {"content-type": "application/json", "referer": BASE + "/", "origin": BASE, "sec-fetch-site": "same-origin"}
+    assert dash.post("/api/notes/clear", content=b"{}", headers=own).status_code == 200
+
+
+# -------------------------------------------------------------------------------- 3. a name that is not this PC
+def test_dns_rebinding_is_refused_on_every_server(tmp_path: Path, tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    _sup, eng, spy = engine(tmp_path, monkeypatch)
+    servers = [(eng, "/status"), (dashboard(tmp_home), "/api/status"), (voice(tmp_path), "/v1/voices")]
+    wrong: list[str] = []
+    for app, path in servers:
+        tc = client(app)
+        for host in FOREIGN_HOSTS:
+            r = tc.get(path, headers={"host": host})
+            said = r.text
+            if r.status_code != 403 or CODE not in said or "services" in said or "gpu" in said or "voices" in said:
+                wrong.append(f"{path} as {host!r}: {r.status_code} {said[:80]}")
+        # no Host at all, and two of them (whichever a parser would keep, a foreign one refuses)
+        own = (b"host", f"127.0.0.1:{PORT}".encode())
+        for headers in ([], [own, (b"host", b"rebind.example")], [(b"host", b"rebind.example"), own]):
+            status = raw(app, headers, path=path)[0].get("status")
+            if status != 403:
+                wrong.append(f"{path} with {headers}: {status}")
+    assert wrong == [], "; ".join(wrong[:6])
+    assert spy is not None and spy.calls == []
+
+
+def test_a_websocket_from_a_page_is_closed_before_it_opens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _sup, app, _spy = engine(tmp_path, monkeypatch)
+    for headers in ([(b"host", b"rebind.example")], [(b"host", b"127.0.0.1:8099"), (b"origin", EVIL.encode())]):
+        sent = raw(app, headers, path="/events", kind="websocket")
+        assert sent == [{"type": "websocket.close", "code": 1008}]
+
+
+# ----------------------------------------------------------------------------- 4. the programs of this PC
+@pytest.mark.parametrize("host", OWN_HOSTS)
+def test_programs_of_this_pc_are_answered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str):
+    """The product's own clients build the requests, so the headers are the product's."""
+    _sup, app, spy = engine(tmp_path, monkeypatch)
+    assert spy is not None
+    tc = client(app, host)
+    ns = SupervisorClient(f"http://{host}", client=tc)
+    assert ns.is_up() and ns.status() == SPIED["status"]
+    assert ns.warmup("embed") == "ready"
+    ns.stop_all()
+    ns.shutdown(1)
+    assert ns.heartbeat("studio:j1") is True and ns.release_owner("studio:j1") is True
+    assert ns.run_finished() is False
+    ns.publish_event("job", {"stage": "voice"})
+    assert ns.acquire("llama", "studio:j1", model_alias="code", pid=4321).base_url == "http://127.0.0.1:1"
+    ns.release("llama", "studio:j1")
+    link = SupervisorLink(f"http://{host}", client=tc)
+    assert link.status() == SPIED["status"]
+    assert set(spy.calls) >= {"status", "warmup", "stop_all", "shutdown", "heartbeat", "release_owner",
+                              "note_run_finished", "publish", "acquire", "release"}
+    assert tc.get("/health").json() == {"ok": True}                       # the readiness probe at engine start
+
+
+def test_the_event_stream_still_reaches_the_dashboard_and_the_page(tmp_path: Path, tmp_home: Path):
+    """Server-sent events: the dashboard's backend reads the engine's stream, the page reads the dashboard's."""
+    _sup, app, _ = engine(tmp_path)
+    tc = client(app)
+    stop = threading.Event()
+    first = next(iter(SupervisorLink(BASE, client=tc).events(stop)))
+    stop.set()
+    assert first["kind"] == "service" and first["data"]["event"] == "snapshot"
+    assert refused(tc.get("/events", params={"limit": 1}, headers={"origin": EVIL}), "origin") is None
+    page = {"sec-fetch-site": "same-origin", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty",
+            "accept": "text/event-stream", "referer": BASE + "/"}
+    r = client(dashboard(tmp_home)).get("/api/events", params={"limit": 1}, headers=page)
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+    assert "data:" in r.text
+
+
+def test_the_voice_clients_inside_the_studio_are_answered(tmp_path: Path):
+    app = voice(tmp_path)
+    for host in OWN_HOSTS:
+        tts = TtsClient(f"http://{host}", client=client(app, host))
+        assert tts.health() is True
+        assert isinstance(tts.voices(), list)
+    # the supervisor's readiness probe of the service
+    assert client(app).get("/health").json()["ok"] is True
+
+
+def test_a_script_with_an_origin_reads_what_to_do(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A refused program gets the engine's own error shape: SupervisorClient raises the coded error."""
+    _sup, app, spy = engine(tmp_path, monkeypatch)
+    tc = TestClient(app, base_url=BASE, headers={"origin": BASE})
+    with pytest.raises(NsError) as e:
+        SupervisorClient(BASE, client=tc).stop_all()
+    assert e.value.code == CODE and e.value.detail == "origin"
+    hint = describe(CODE).hint
+    assert "127.0.0.1" in hint and "Origin" in hint
+    assert spy is not None and spy.calls == []
+
+
+# --------------------------------------------------------------- 4b. release 0.1.14 against a new engine
+def client_of_0_1_14() -> Any:
+    """`ns_supervisor/client.py` as release 0.1.14 shipped it (from the tag); None where the tag is missing."""
+    try:
+        out = subprocess.run(
+            ["git", "show", "v0.1.14:ns_supervisor/client.py"], cwd=ROOT, capture_output=True, timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0 or b"class SupervisorClient" not in out.stdout:
+        return None
+    mod = types.ModuleType("ns_supervisor_client_0_1_14")
+    exec(compile(out.stdout.decode("utf-8"), "v0.1.14:ns_supervisor/client.py", "exec"), mod.__dict__)  # noqa: S102
+    return mod
+
+
+def as_the_updater_of_0_1_14(make: Any, live: Live, spy: Spy) -> None:
+    """`relaunch.restart` of 0.1.14 after the swap: is the engine up (`GET /status`), then `POST /warmup`."""
+    old = make(f"http://127.0.0.1:{live.port}")              # `SupervisorClient.from_runtime` builds this URL
+    assert old.is_up() is True
+    assert old.warmup("dashboard") == "ready"
+    assert old.status() == SPIED["status"]
+    old.stop_all()                                           # `control.stop` of the next update, by the old `ns`
+    old.shutdown(1)
+    assert [c for c in spy.calls if c != "status"] == ["warmup", "stop_all", "shutdown"]
+    assert len(live.seen) == 5
+    for headers in live.seen:
+        assert headers["host"] == f"127.0.0.1:{live.port}"
+        assert not [h for h in headers if h in BROWSER_MARKS or h.startswith("sec-")], headers
+        assert headers["user-agent"].startswith("python-httpx/")
+
+
+def test_the_updater_of_0_1_14_is_answered_by_a_new_engine(live_engine: tuple[Live, Spy]):
+    """The worst outcome of this item would be a refusal here: every update from 0.1.14 would end without a
+    Dashboard. The client is the code of the tag itself, over a real socket."""
+    old = client_of_0_1_14()
+    if old is None:
+        pytest.skip("the tag v0.1.14 is not in this clone (the next test sends the same requests)")
+    as_the_updater_of_0_1_14(old.SupervisorClient, *live_engine)
+
+
+def test_what_0_1_14_sends_is_answered_by_a_new_engine(live_engine: tuple[Live, Spy]):
+    """The same calls with today's client, whose requests differ from 0.1.14's only by `pid` in `/acquire`
+    (`git diff v0.1.14 -- ns_supervisor/client.py`): runs where the tag is not fetched (CI)."""
+    as_the_updater_of_0_1_14(SupervisorClient, *live_engine)
+
+
+def test_a_new_client_asks_nothing_of_a_0_1_14_engine():
+    """A rollback puts 0.1.14's servers back, which have no check: no client of ours may depend on one (no
+    header of its own, no token)."""
+    for module in ("ns_supervisor/client.py", "ns_dashboard/supervisor_link.py", "ns_common/tts_client.py"):
+        text = (ROOT / module).read_text(encoding="utf-8")
+        assert "headers=" not in text and "X-NS-" not in text, module
+    common = (ROOT / "launchers" / "_common.ps1").read_text(encoding="ascii")
+    post = common[common.index("function Invoke-NsPost"):]
+    assert "-Headers" not in post[: post.index("\n}")]
+
+
+# ------------------------------------------------------------------------------ 5. the dashboard's own rule
+def test_the_dashboard_rule_is_unchanged(tmp_home: Path):
+    assert loopback is not None, "the shared check does not exist"
+    from ns_dashboard import security
+
+    assert security.is_loopback_host is loopback.is_loopback_host
+    assert security.is_loopback_origin is loopback.is_loopback_origin
+    for host in ("127.0.0.1", "127.0.0.1:8100", "localhost", "LOCALHOST:8100", "[::1]:8100", "[::1]", "::1"):
+        assert loopback.is_loopback_host(host), host
+    for host in ("", None, "evil.example", "evil.example:8100", "127.0.0.1.evil.com", "192.168.1.5:8100", "0.0.0.0"):
+        assert not loopback.is_loopback_host(host), host
+    assert loopback.is_loopback_origin(None) and loopback.is_loopback_origin("")
+    assert loopback.is_loopback_origin("http://127.0.0.1:8100") and loopback.is_loopback_origin("http://localhost:8100")
+    for origin in ("null", "https://evil.example", "http://127.0.0.1.evil.example", "file://", "http://a@127.0.0.1"):
+        assert not loopback.is_loopback_origin(origin), origin
+    tc = client(dashboard(tmp_home))
+    for origin in (BASE, "http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:8100"):
+        page = {"origin": origin, "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors"}
+        assert tc.get("/api/status", headers=page).status_code == 200, origin
+        assert tc.post("/api/notes/clear", headers=page, json={}).status_code == 200, origin
+    for host in (f"localhost:{PORT}", f"[::1]:{PORT}", "127.0.0.1"):
+        assert tc.get("/api/status", headers={"host": host}).status_code == 200, host
+        assert tc.get("/", headers={"host": host}).status_code == 200, host
+    for origin in ("null", EVIL, "http://127.0.0.1.evil.example"):
+        r = tc.get("/api/status", headers={"origin": origin})
+        assert r.status_code == 403, origin
+        assert set(r.json()) == {"error"} and set(r.json()["error"]) == {"code", "message", "hint"}
+        assert r.json()["error"]["code"] == CODE and r.json()["error"]["hint"] == describe(CODE).hint
+
+
+def test_the_dashboard_opens_from_a_link_but_answers_no_foreign_page(tmp_home: Path):
+    tc = client(dashboard(tmp_home))
+    # typed, a bookmark, the Desktop shortcut's window, a link on another site: the page opens
+    for marks in ({}, {"sec-fetch-site": "none", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document"},
+                  {"sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document",
+                   "referer": "https://search.example/"}):
+        assert tc.get("/", headers=marks).status_code == 200, marks
+    # what a page on another site can make the browser send without an Origin: an image, a script, a form
+    for method, path, marks in (
+        ("GET", "/api/update/check", {"sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors"}),
+        ("GET", "/api/status", {"sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "image"}),
+        ("POST", "/api/engine/stop_all", {"sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate"}),
+        ("POST", "/api/engine/stop_all", {"referer": "https://evil.example/"}),
+        # a GET that does work (the update check asks GitHub, the status syncs the schedule record) cannot be
+        # set off by a link, a pop-up or a frame on another site either: nothing under /api/ is a page
+        ("GET", "/api/update/check", {"sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate"}),
+        ("GET", "/api/status", {"sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe"}),
+        ("GET", "/api/update/check", {"referer": "https://evil.example/"}),
+        ("HEAD", "/api/diagnostics/latest", {"referer": "https://evil.example/"}),
+    ):
+        r = tc.request(method, path, headers=marks)
+        assert r.status_code == 403, (method, path, marks, r.status_code)
+        assert method == "HEAD" or r.json()["error"]["code"] == CODE
+    # the page's own requests for the same routes (same origin, its own Referer or none) are answered
+    for marks in ({"sec-fetch-site": "same-origin", "sec-fetch-mode": "cors"}, {"referer": BASE + "/"},
+                  {"sec-fetch-site": "same-site", "sec-fetch-mode": "cors", "referer": "http://127.0.0.1:5173/"}, {}):
+        assert tc.get("/api/status", headers=marks).status_code == 200, marks
+
+
+# ------------------------------------------------------------------------- 6. PowerShell 5.1, the launchers
+@needs_powershell
+def test_powershell_callers_are_answered(tmp_path: Path, live_engine: tuple[Live, Spy]):
+    live, spy = live_engine
+    home = tmp_path / "home"
+    (home / "config").mkdir(parents=True)
+    (home / "config" / "runtime.json").write_text(json.dumps({"supervisor_port": live.port}), encoding="utf-8")
+    script = (
+        f". '{ROOT / 'launchers' / '_common.ps1'}'\n"
+        "$h = Invoke-RestMethod -Uri ((Get-NsSupervisorUrl) + '/health') -TimeoutSec 20\n"
+        "$up = Test-NsSupervisor\n"
+        "$w = Invoke-NsPost -Path '/warmup' -Body @{ service = 'embed' }\n"
+        "$a = Invoke-NsPost -Path '/acquire' -Body @{ service = 'llama'; owner = 'opencode'; wait = $false }\n"
+        "$r = Invoke-NsPost -Path '/release' -Body @{ service = 'llama'; owner = 'opencode' }\n"
+        "Write-Output ('health=' + $h.ok + ' up=' + $up + ' warmup=' + $w.state + ' release=' + $r.ok)\n"
+    )
+    out = pwsh.run_powershell(script, env_extra={"NIGHTSHIFT_HOME": str(home)}, timeout_s=120)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "health=True up=True warmup=ready release=True" in out.stdout
+    assert [c for c in spy.calls if c != "status"] == ["warmup", "acquire", "release"]
+    for headers in live.seen:
+        assert headers["host"] == f"127.0.0.1:{live.port}"
+        assert not [h for h in headers if h in BROWSER_MARKS], headers
+    # and the same shell with a page's header is refused with the code
+    bad = pwsh.run_powershell(
+        "try { Invoke-RestMethod -Method Post -Uri ('http://127.0.0.1:' + $env:NS_T_PORT + '/stop_all') "
+        "-Headers @{ Origin = 'https://evil.example' } -TimeoutSec 20; Write-Output 'answered' } "
+        "catch { Write-Output ([int]$_.Exception.Response.StatusCode) }\n",
+        env_extra={"NS_T_PORT": str(live.port)}, timeout_s=120,
+    )
+    assert bad.stdout.strip() == "403", bad.stdout + bad.stderr
+    assert "stop_all" not in spy.calls
+
+
+# ---------------------------------------------------------------------------------------- 7. the bind address
+def test_each_server_binds_loopback_only(tmp_path: Path, tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    import argparse
+
+    from ns_common import first_start
+    from ns_common.config import save_runtime
+    from ns_dashboard import server as dash_server
+    from ns_supervisor import app as engine_module
+    from ns_supervisor import launch_reach
+    from ns_tts import server as tts_server
+
+    binds: dict[str, Any] = {}
+
+    class Bound(Exception):
+        pass
+
+    def config(app: Any, **kw: Any) -> Any:
+        binds["engine"] = kw.get("host")
+        raise Bound
+
+    # the engine
+    fake = types.ModuleType("uvicorn")
+    fake.Config = config  # type: ignore[attr-defined]
+    fake.Server = lambda cfg: None  # type: ignore[attr-defined]
+    fake.run = lambda app, **kw: binds.setdefault("run", []).append(kw.get("host"))  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "uvicorn", fake)
+    monkeypatch.setattr(first_start, "ensure", lambda *a, **k: None)
+    monkeypatch.setattr(launch_reach, "start", lambda *a, **k: None)
+    monkeypatch.setattr(engine_module, "relock_secret_files", lambda *a, **k: 0)
+    paths = Paths.from_env()
+    paths.ensure()
+    wide = Runtime.default("cpu-dev")
+    wide.tts.engine = "fake"
+    wide.tts.host = "0.0.0.0"  # noqa: S104 - what a hand-edited runtime.json could say
+    save_runtime(paths, wide)
+    with pytest.raises(Bound):
+        engine_module._serve(argparse.Namespace(port=PORT, headless=True), paths)  # noqa: SLF001
+    assert binds["engine"] == "127.0.0.1"
+    # the dashboard
+    monkeypatch.setattr(dash_server, "create_app", lambda **kw: object())
+    monkeypatch.setattr(dash_server, "configure_tmp", lambda p: None)
+    assert dash_server.main(["--port", str(PORT)]) == 0
+    # the voice service: a runtime.json that names every address is still bound to this PC only
+    monkeypatch.setattr(sys, "argv", ["ns_tts.server", "--engine", "fake", "--port", str(PORT)])
+    real_voice_app = tts_server.create_app
+    built: list[Any] = []
+    monkeypatch.setattr(tts_server, "create_app", lambda e, lib, log=None: built.append(real_voice_app(e, lib, log=log)))
+    tts_server.main()
+    assert binds["run"] == ["127.0.0.1", "127.0.0.1"], binds
+    # and the check does not rest on the bind: a request addressed to this PC's LAN name is refused
+    r = client(built[0], f"192.168.1.20:{PORT}").get("/v1/voices")
+    assert r.status_code == 403 and r.json()["code"] == CODE
+    # the settings a new install gets name this PC only (the model servers are started with these)
+    fresh = Runtime.default("gpu")
+    assert (fresh.tts.host, fresh.llama.host, fresh.embed.host) == ("127.0.0.1",) * 3
+    # no server of ours is written to listen wider
+    for module in ("ns_supervisor/app.py", "ns_dashboard/server.py", "ns_tts/server.py", "ns_supervisor/devfake.py"):
+        text = (ROOT / module).read_text(encoding="utf-8")
+        assert "0.0.0.0" not in text and 'host=""' not in text and "host='::'" not in text, module
+
+
+# ------------------------------------------------------------------- 8 to 10. what the owner is told, and when
+def notes_of(sup: Supervisor) -> list[str]:
+    return [n["message"] for n in notify.read_notes(sup.paths)]
+
+
+def knock(tc: TestClient, origin: str, times: int = 1, *, clock: Clock | None = None, apart_s: float = 0) -> None:
+    for i in range(times):
+        if clock is not None and i:
+            clock.step(seconds=apart_s)
+        r = tc.post("/stop_all", headers={"origin": origin})
+        assert r.status_code == 403, r.text
+
+
+def test_one_refusal_is_logged_once_and_tells_the_owner_nothing(tmp_path: Path, clock: Clock):
+    sup, app, _ = engine(tmp_path)
+    knock(client(app), EVIL)
+    settle()
+    rows = log_rows(sup.paths.logs, "request_refused")
+    assert len(rows) == 1 and rows[0]["level"] == "WARN"
+    assert rows[0]["data"] == {
+        "code": CODE, "why": "origin", "host": f"127.0.0.1:{PORT}", "origin": EVIL, "method": "POST",
+        "path": "/stop_all",
+    }
+    assert notes_of(sup) == []
+    assert sup.status()["services"]["llama"]["state"] == "stopped"  # and the engine is as it was
+
+
+def test_repeated_refusals_leave_one_note_per_page_per_day(tmp_path: Path, clock: Clock):
+    sup, app, _ = engine(tmp_path)
+    tc = client(app)
+    knock(tc, EVIL, 3, clock=clock, apart_s=60)                      # 09:00, 09:01, 09:02
+    settle()
+    said = notes_of(sup)
+    assert len(said) == 1, said
+    assert said[0] == (
+        "NS-E207: A web page open in your browser tried 3 times to control Nightshift (from https://evil.example, "
+        "last at 09:02). Every request was refused and nothing was changed. If you do not know that page, close it."
+    )
+    assert notify.read_notes(sup.paths)[0]["at"] == "2026-11-10T09:02:00"
+    # it keeps trying all morning: no second note, one first line, and a count at most every ten minutes
+    for _ in range(50):
+        clock.step(minutes=1)
+        knock(tc, EVIL)
+    settle()
+    assert len(notes_of(sup)) == 1
+    assert len([r for r in log_rows(sup.paths.logs, "request_refused") if r["data"]["origin"] == EVIL]) == 1
+    again = log_rows(sup.paths.logs, "requests_refused")
+    assert 4 <= len(again) <= 5, again
+    assert all(r["level"] == "WARN" and r["data"]["code"] == CODE and r["data"]["page"] == EVIL for r in again)
+    assert [r["data"]["count"] for r in again] == [10] * len(again)
+    assert again[-1]["data"]["total"] <= 53
+    # another page the same day: its own note
+    knock(tc, "https://other.example", 3)
+    settle()
+    assert len(notes_of(sup)) == 2 and "https://other.example" in notes_of(sup)[1]
+    # the next day the first page is still open: the owner is told again, once
+    clock.step(days=1)
+    knock(tc, EVIL, 3)
+    knock(tc, EVIL, 20)
+    settle()
+    said = notes_of(sup)
+    assert len(said) == 3 and "https://evil.example" in said[2] and "tried 3 times" in said[2]
+
+
+def test_fewer_than_three_in_ten_minutes_is_not_a_page_that_keeps_trying(tmp_path: Path, clock: Clock):
+    sup, app, _ = engine(tmp_path)
+    tc = client(app)
+    knock(tc, "https://twice.example", 2, clock=clock, apart_s=60)   # two in ten minutes
+    knock(tc, "https://slow.example", 3, clock=clock, apart_s=330)   # three spread over eleven minutes
+    settle()
+    assert notes_of(sup) == []
+    knock(tc, "https://edge.example", 3, clock=clock, apart_s=300)   # the third exactly ten minutes after the first
+    settle()
+    assert len(notes_of(sup)) == 1 and "https://edge.example" in notes_of(sup)[0]
+
+
+def test_a_page_with_many_names_cannot_flood_the_notes(tmp_path: Path, clock: Clock):
+    """Each sub-domain is its own origin: three pages are named, the rest share one note."""
+    sup, app, _ = engine(tmp_path)
+    tc = client(app)
+    for i in range(12):
+        knock(tc, f"https://n{i}.evil.example", 3)
+    settle()
+    said = notes_of(sup)
+    assert len(said) == 4, said
+    assert [f"https://n{i}.evil.example" in said[i] for i in range(3)] == [True] * 3
+    assert said[3].startswith("NS-E207: Still more web pages or names tried to control Nightshift today (the latest: "
+                              "https://n3.evil.example, 3 times, last at 09:00).")
+    assert all(len(m) < 400 for m in said)
+
+
+def test_a_name_that_is_not_this_pc_is_told_in_words_that_are_true(tmp_path: Path, clock: Clock):
+    """No browser mark (a rebinding page's own requests carry none, and neither does a script that uses the
+    PC's name): the note does not claim a web page, and says what a script must do."""
+    sup, app, _ = engine(tmp_path)
+    tc = client(app, f"rebind.example:{PORT}")
+    for _ in range(3):
+        assert tc.get("/status").status_code == 403
+    settle()
+    said = notes_of(sup)
+    assert len(said) == 1 and said[0].startswith("NS-E207: Nightshift was called 3 times by the name rebind.example")
+    assert "http://127.0.0.1" in said[0] and "nothing was changed" in said[0]
+    hostile = "evil.example\x1b[31m<script>" + "a" * 300   # what a page writes into its own name
+    for _ in range(3):
+        assert client(app).get("/status", headers={"host": hostile}).status_code == 403
+    settle()
+    assert len(notes_of(sup)) == 2
+    assert "\x1b" not in notes_of(sup)[1] and len(notes_of(sup)[1]) < 500
+
+
+def test_the_dashboard_tells_the_owner_the_same_way_and_a_restart_does_not_repeat_it(tmp_home: Path, clock: Clock):
+    tc = client(dashboard(tmp_home))
+    for _ in range(3):
+        assert tc.post("/api/engine/stop_all", headers={"origin": EVIL}).status_code == 403
+    settle()
+    paths = Paths.from_env()
+    said = [n["message"] for n in notify.read_notes(paths)]
+    assert len(said) == 1 and said[0].startswith("NS-E207: A web page open in your browser tried 3 times")
+    assert tc.get("/api/notes").json()[0]["message"] == said[0]   # the bell and the Queue page read this route
+    # a restarted dashboard (its counters are at zero) meets the note that still waits: no second one that day
+    again = client(dashboard(tmp_home))
+    for _ in range(3):
+        assert again.post("/api/engine/stop_all", headers={"origin": EVIL}).status_code == 403
+    settle()
+    assert len(notify.read_notes(paths)) == 1
+
+
+def test_a_note_that_cannot_be_written_does_not_slow_the_answer(
+    tmp_path: Path, clock: Clock, monkeypatch: pytest.MonkeyPatch
+):
+    sup, app, _ = engine(tmp_path)
+    tc = client(app)
+    entered, leave = threading.Event(), threading.Event()
+    real = notify.leave_note
+
+    def stuck(*a: Any, **k: Any) -> None:
+        entered.set()
+        assert leave.wait(30)
+        real(*a, **k)
+
+    monkeypatch.setattr(notify, "leave_note", stuck)
+    knock(tc, EVIL, 3)                                   # the third answer came back while the writer waits
+    assert entered.wait(10) and not leave.is_set()
+    knock(tc, EVIL, 5)                                   # and more are answered, with no second writer
+    assert notes_of(sup) == []
+    leave.set()
+    settle()
+    assert len(notes_of(sup)) == 1
+
+    # a notes file that cannot be written: one WARN, never a 500, and another try ten minutes later
+    tries: list[int] = []
+
+    def broken(*a: Any, **k: Any) -> None:
+        tries.append(1)
+        raise OSError("the notes file is locked")
+
+    monkeypatch.setattr(notify, "leave_note", broken)
+    other = "https://other.example"
+    knock(tc, other, 3)
+    settle()
+    failed = log_rows(sup.paths.logs, "morning_note_failed")
+    assert len(failed) == 1 and failed[0]["level"] == "WARN" and "locked" in failed[0]["msg"]
+    clock.step(minutes=9)
+    knock(tc, other, 4)
+    settle()
+    assert len(tries) == 1 and len(log_rows(sup.paths.logs, "morning_note_failed")) == 1
+    monkeypatch.setattr(notify, "leave_note", real)
+    clock.step(minutes=2)
+    knock(tc, other)                                     # the file can be written again: the note is left now
+    settle()
+    said = notes_of(sup)
+    assert len(said) == 2 and other in said[1] and "tried 8 times" in said[1]

@@ -61,7 +61,7 @@ def err(resp: Any) -> dict[str, Any]:
 def test_non_loopback_host_is_refused(env):
     client, _ = env
     r = client.get("/api/status", headers={"host": "evil.example.com"})
-    assert r.status_code == 403 and err(r)["code"] == "forbidden_host"
+    assert r.status_code == 403 and err(r)["code"] == "NS-E207"
     assert client.get("/", headers={"host": "192.168.1.9:8100"}).status_code == 403
     assert client.get("/api/status", headers={"host": "localhost:8100"}).status_code == 200
     assert client.get("/api/status", headers={"host": "[::1]:8100"}).status_code == 200
