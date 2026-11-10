@@ -211,7 +211,7 @@ def test_a_run_killed_after_the_channel_was_pointed_says_the_rename_once_and_for
     assert "no voice is waiting" in again.output and "setup asked for" not in again.output
 
 
-def test_a_suggested_name_that_is_another_voice_is_refused_with_a_way_out_that_exists(paths: Paths, env: jobs.Env):
+def test_a_suggested_name_that_is_another_voice_is_refused_and_the_request_kept(paths: Paths, env: jobs.Env):
     f = queue(paths)
     channel_on(paths)
     make_voice(paths, NEW)  # the owner made it in Library > Voices on 0.1.14 and never repointed the channel
