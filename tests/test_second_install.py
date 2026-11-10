@@ -31,7 +31,7 @@ from installer.stage2.testing import FakeUi, example_answers, make_test_context
 from installer.stage2.web import answers_view, bootstrap
 from installer.stage2.web import uninstall as web_uninstall
 from ns_common import config_compat, new_fields
-from ns_common.errors import describe
+from ns_common.errors import NsError, describe
 from ns_common.paths import Paths
 from ns_supervisor import cli, pwsh, schedule
 from tests import frozen_config_models_0_1_14 as old
@@ -474,6 +474,23 @@ def test_a_second_install_leaves_the_user_variable_with_the_first_until_a_yes(tm
             alone.runner.user_env[HOME_VAR] = stale
         text = setup(alone)
         assert alone.runner.user_env[HOME_VAR] == str(alone.paths.home) and said(text, "NIGHTSHIFT_HOME:") == ""
+
+
+def test_what_setup_cannot_read_it_does_not_take(tmp_path: Path, windows: FakeWindows):
+    a, desktop, before = two(tmp_path)
+    ctx = second(tmp_path)
+    ctx.runner.user_env[HOME_VAR] = str(a)
+    ctx.runner._save_user_env()
+    ctx.runner.results["ps:get-env"] = RunResult(1, "", "Access is denied")  # Windows does not say what it holds
+    setup(ctx)
+    assert not ctx.runner.called("ps:set-env") and ctx.runner.user_env[HOME_VAR] == str(a)  # not set on a guess
+    assert ctx.flag("home_var") == "unread" and S09ShortcutsScheduler().check(ctx) is True
+    # the Desktop cannot be found: the step stops with NS-E110, as before, and nothing on it was written
+    lost = second(tmp_path, name="lost", resolve=True)
+    lost.runner.results["ps:desktop"] = RunResult(0, "")
+    with pytest.raises(NsError) as stop:
+        S09ShortcutsScheduler().run(lost)
+    assert stop.value.code == "NS-E110" and links(desktop) == before
 
 
 def test_the_setup_window_leaves_the_user_variable_with_another_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
