@@ -16,10 +16,11 @@ import pytest
 import ns_studio.text.stages_shorts  # noqa: F401  (registers the shorts stages)
 from ns_common.errors import NsError
 from ns_common.llm_client import FakeLlm
-from ns_studio.context import FIXTURES_LLM
+from ns_studio import jobs
+from ns_studio.context import FIXTURES_LLM, JobContext
 from ns_studio.orchestrator import FORMAT_STAGES, run_job
 from ns_studio.policy import final_checks as fc
-from ns_studio.policy import judge, text_checks
+from ns_studio.policy import idea_check, judge, text_checks
 from ns_studio.policy.gate import FINAL_STAGE, TEXT_STAGE, PolicyFinalStage
 from ns_studio.stages import REGISTRY
 from ns_studio.text import prompts as P
@@ -197,13 +198,14 @@ def test_expansion_without_a_text_gate_asks_nothing(tmp_home: Path, monkeypatch:
 
 
 # ---------------------------------------------------------------- F-H105 ideas, prompts, final re-check
-def _policy_on(monkeypatch: pytest.MonkeyPatch, fmt: str = "shorts_only") -> None:
-    monkeypatch.setitem(FORMAT_STAGES, fmt, [*FORMAT_STAGES[fmt], TEXT_STAGE])
+def _policy_on(home: Path) -> JobContext:
+    """A Short whose policy is on: the gates are in the stage table since the stage modules loaded."""
+    jobs.load_stage_modules()
+    return make_ctx(home, policy=True)
 
 
-def test_chosen_idea_is_classified_before_planning(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
-    _policy_on(monkeypatch)
-    ctx = make_ctx(tmp_home)
+def test_chosen_idea_is_classified_before_planning(tmp_home: Path):
+    ctx = _policy_on(tmp_home)
     ctx.services.llm = _llm([_pc(unsafe_categories=["graphic_harm"], notes="gore"), _pc()])
     REGISTRY["ideas"].run(ctx)
     calls = ctx.services.llm.calls  # type: ignore[attr-defined]
@@ -216,9 +218,8 @@ def test_chosen_idea_is_classified_before_planning(tmp_home: Path, monkeypatch: 
     assert row["premise"] == chosen["premise"]
 
 
-def test_all_ideas_unsafe_is_e601(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
-    _policy_on(monkeypatch)
-    ctx = make_ctx(tmp_home)
+def test_all_ideas_unsafe_is_e601(tmp_home: Path):
+    ctx = _policy_on(tmp_home)
     ctx.services.llm = _llm(_pc(unsafe_categories=["hate"], notes="slur"))
     with pytest.raises(NsError) as ei:
         REGISTRY["ideas"].run(ctx)
@@ -226,9 +227,8 @@ def test_all_ideas_unsafe_is_e601(tmp_home: Path, monkeypatch: pytest.MonkeyPatc
     assert not ctx.file("idea.json").exists()
 
 
-def test_banked_idea_is_classified_too(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
-    _policy_on(monkeypatch)
-    ctx = make_ctx(tmp_home)
+def test_banked_idea_is_classified_too(tmp_home: Path):
+    ctx = _policy_on(tmp_home)
     ctx.db.execute(
         "insert into ideas(channel, premise, twist, created_at, status) values (?,?,?,?,?)",
         (ctx.channel.slug, "a banked premise", "a banked twist", "2026-10-01", "approved"),
@@ -240,8 +240,10 @@ def test_banked_idea_is_classified_too(tmp_home: Path, monkeypatch: pytest.Monke
 
 
 def test_idea_is_not_classified_without_policy_gates(tmp_home: Path):
-    ctx = make_ctx(tmp_home)
-    assert TEXT_STAGE not in FORMAT_STAGES["shorts_only"]
+    """A job with its policy off: the gates are in the stage table, its own plan leaves them out."""
+    jobs.load_stage_modules()
+    ctx = make_ctx(tmp_home, policy=False)
+    assert TEXT_STAGE in FORMAT_STAGES["shorts_only"] and not idea_check.enabled(ctx)
     ctx.services.llm = _llm(_pc(unsafe_categories=["hate"]))
     REGISTRY["ideas"].run(ctx)
     assert [c["prompt_name"] for c in ctx.services.llm.calls] == ["ideas"]  # type: ignore[attr-defined]

@@ -58,11 +58,13 @@ def make_ctx(
     combo: Combo | None = None,
     fake: set[str] | None = None,
     channel_row: bool = True,
+    policy: bool = False,
 ) -> JobContext:
     """Build a JobContext on a temp home with fakes, a migrated DB and a created job directory.
 
     `channel_row=False` leaves the `channels` table empty, like a real install whose only channel was
-    written as YAML by the installer (see `yaml_only_channel`).
+    written as YAML by the installer (see `yaml_only_channel`). `policy=True` is a job that runs the policy
+    gates its plan holds (`JobContext.policy`).
     """
     del home  # NIGHTSHIFT_HOME is already set by the tmp_home fixture
     paths = Paths.from_env()
@@ -92,6 +94,7 @@ def make_ctx(
         services=services,
         log=NsLogger("studio", paths.logs, echo=False),
         prompt_versions={},
+        policy=policy,
     )
 
 

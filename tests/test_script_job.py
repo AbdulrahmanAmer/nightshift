@@ -90,11 +90,9 @@ def fitted_script() -> str:
 
 
 @pytest.fixture(autouse=True)
-def _keep_plans(monkeypatch: pytest.MonkeyPatch):
-    """`studio run` adds policy gates and Short combos to the plans in place: give each test its own copies."""
+def _stages_loaded():
+    """Every test here uses the real stages: load them (the table is complete from then on, card D-stages)."""
     jobs.load_stage_modules()
-    for key, names in list(FORMAT_STAGES.items()):
-        monkeypatch.setitem(FORMAT_STAGES, key, list(names))
 
 
 @pytest.fixture
@@ -261,18 +259,13 @@ def test_a_series_part_keeps_its_own_plan(tmp_home: Path):
     assert plan_format("shorts_only", ctx.job_dir) == "shorts_only"
 
 
-def test_the_owner_script_plans_have_no_stage_that_writes_or_rewrites_the_story(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
-    for key in ("shorts_only", "master_first", "shorts_from_owner_script", "master_from_owner_script"):
-        monkeypatch.setitem(FORMAT_STAGES, key, list(FORMAT_STAGES[key]))
-    jobs.load_stage_modules()
+def test_the_owner_script_plans_have_no_stage_that_writes_or_rewrites_the_story(tmp_home: Path):
     env, ch = _env(tmp_home)
-    jobs.prepare_plan("shorts_only", True)
-    jobs.prepare_plan("master_first", True)
-    short = run_job(jobs.make_script_job(env, ch, "shorts_only", SHORT), dry_run=True)
+    short = run_job(jobs.make_script_job(env, ch, "shorts_only", SHORT, policy=True), dry_run=True)
     assert short[0] == "script_import_short" and short[-1] == "outbox"
     assert not {"ideas", "plan", "draft", "critic_revise", "split", "hooks"} & set(short), short
     assert short.index("policy_text") > short.index("visual_plan") and "policy_final" in short
-    long = run_job(jobs.make_script_job(env, ch, "master_first", long_script(1300)), dry_run=True)
+    long = run_job(jobs.make_script_job(env, ch, "master_first", long_script(1300), policy=True), dry_run=True)
     assert long[0] == "script_import_long" and long[-1] == "outbox"
     assert not {"ideas", "long_plan", "chapters_draft", "chapters_critic", "continuity"} & set(long), long
     assert long.index("short_combos") == long.index("shorts_select") + 1  # the master gets Shorts as usual

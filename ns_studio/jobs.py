@@ -28,7 +28,7 @@ from ns_studio.context import FAKEABLE, JobContext, Services, build_services
 from ns_studio.errors import StudioError
 from ns_studio.variation.draw import draw_combo, record_combo
 
-# Imported lazily by `load_stage_modules`; each registers its stages and appends them to FORMAT_STAGES.
+# Imported lazily by `load_stage_modules`; each registers its stages (the order of a plan is FORMAT_STAGES).
 STAGE_MODULES: tuple[str, ...] = (
     "ns_studio.text.stages_shorts",
     "ns_studio.text.stages_master",
@@ -42,10 +42,11 @@ FORMATS: tuple[str, ...] = ("master_first", "shorts_only", "series_compilation")
 
 
 def load_stage_modules(modules: Collection[str] | None = None) -> list[str]:
-    """Import the C5/C6 stage modules that exist; returns the names imported.
+    """Import the C5/C6 stage modules that exist, then complete the stage table; returns the names imported.
 
     A module that is missing (not yet built) is skipped; an import error inside an existing
-    module propagates.
+    module propagates. After the imports `install_plan_extras` puts the Short combos and the policy gates into
+    the table, the same for the whole process; a job with its policy off leaves the gates out of its own plan.
     """
     loaded: list[str] = []
     for name in STAGE_MODULES if modules is None else modules:
@@ -56,7 +57,25 @@ def load_stage_modules(modules: Collection[str] | None = None) -> list[str]:
                 continue
             raise
         loaded.append(name)
+    install_plan_extras()
     return loaded
+
+
+def install_plan_extras() -> None:
+    """Put the per-Short combo stage and the two policy gates into every plan they belong to.
+
+    `install_short_combos` and `install_gates` are idempotent and write an entry only when it lacks the stage,
+    so the table is written the first time the stage modules load and never again for a job. Clip and series
+    compilation plans get neither (the clip plan is the Clipper's own, set when it is imported).
+    """
+    from ns_studio.orchestrator import COMBO_FORMATS, GATED_FORMATS
+    from ns_studio.policy import gate
+    from ns_studio.variation.stages import install_short_combos
+
+    for fmt in COMBO_FORMATS:  # first: the text gate of a master-first plan goes after `short_combos`
+        install_short_combos(fmt)
+    for fmt in GATED_FORMATS:
+        gate.install_gates(fmt)
 
 
 def parse_fake(value: str | None) -> frozenset[str]:
@@ -133,6 +152,9 @@ class Env:
     services: Services
     log: NsLogger
     fake: frozenset[str]
+    #: `--policy/--no-policy` of this invocation for the jobs it makes (None: on when the gates can run).
+    #: Only `studio run --daily` sets it: the nightly makes its jobs in `daily.py`.
+    policy: bool | None = None
 
 
 def open_env(fake: frozenset[str] = frozenset(), *, light: bool = False) -> Env:
@@ -197,12 +219,18 @@ def make_job(
     record: bool = True,
     origin: str = "manual",
     run_id: str | None = None,
+    policy: bool | None = None,
 ) -> JobContext:
     """Draw a combo, record it in the ledger unless `record` is False, create the job dir and context.
 
     `origin` says who made the job: `daily` (the nightly run, `run_id` its run row: after a kill the next
     nightly resumes it) or `manual` (`studio run`, the dashboard: offered in the Queue with Retry). The owner
-    file is written before the combos row (`ownership`), so a job the ledger knows is never unowned."""
+    file is written before the combos row (`ownership`), so a job the ledger knows is never unowned.
+
+    `policy` is the job's choice of the policy gates (None: `env.policy`, and when that is None too, on when
+    the gates are available). It is resolved here, once, and kept in `job.json`: a resume runs the same plan.
+    """
+    choice = prepare_plan(fmt, env.policy if policy is None else policy)
     now = now or datetime.now(UTC)
     rng = rng or random.Random()
     # The setup channel exists only as YAML; `ideas`, `stories`, `combos` and `outputs` reference its row.
@@ -238,6 +266,7 @@ def make_job(
         runtime=env.runtime,
         services=env.services,
         log=env.log,
+        policy=choice,
     )
     ctx.write_json(
         "job.json",
@@ -247,9 +276,12 @@ def make_job(
             "fmt": fmt,
             "combo": combo.model_dump(mode="json"),
             "created_at": now.isoformat(timespec="seconds"),
+            "policy": choice,
         },
     )
-    env.log.info("job_created", job_id=job_id, channel=channel.slug, fmt=fmt, combo_id=combo.combo_id)
+    env.log.info(
+        "job_created", job_id=job_id, channel=channel.slug, fmt=fmt, combo_id=combo.combo_id, policy=choice
+    )
     return ctx
 
 
@@ -261,6 +293,7 @@ def make_script_job(
     title: str | None = None,
     *,
     rng: random.Random | None = None,
+    policy: bool | None = None,
 ) -> JobContext:
     """`make_job` for a story the owner wrote: the text becomes the job's `script.md`, not the model's idea.
 
@@ -283,7 +316,7 @@ def make_script_job(
     fixed = {"pacing": plan.pacing}
     if plan.length_bucket is not None:
         fixed["length_bucket"] = str(plan.length_bucket)
-    ctx = make_job(env, channel, fmt, rng=rng, fixed=fixed)
+    ctx = make_job(env, channel, fmt, rng=rng, fixed=fixed, policy=policy)
     write_text(ctx.file("script.md"), plan.markdown)
     ctx.write_json(
         "script_source.json",
@@ -297,8 +330,15 @@ def make_script_job(
     return ctx
 
 
-def load_job(env: Env, job_id: str) -> JobContext:
-    """Rebuild the context of an existing job from its `job.json` (used by `--resume`)."""
+def load_job(env: Env, job_id: str, *, policy: bool | None = None) -> JobContext:
+    """Rebuild the context of an existing job from its `job.json` (used by `--resume`).
+
+    The job keeps the policy it was made with (`job.json` `policy`; a folder from before the key runs the
+    gates when they are available, `orchestrator.policy_of`). An explicit `policy` (`--resume --policy` or
+    `--no-policy`) wins for this run; `record_policy` keeps it for the next one. Nothing is written here.
+    """
+    from ns_studio.orchestrator import policy_of
+
     job_dir = env.paths.job_dir(job_id)
     f = job_dir / "job.json"
     if not f.exists():
@@ -317,29 +357,32 @@ def load_job(env: Env, job_id: str) -> JobContext:
         runtime=env.runtime,
         services=env.services,
         log=env.log,
+        policy=policy_of(data) if policy is None else policy,
     )
 
 
-def prepare_plan(fmt: str, policy: bool | None) -> bool:
-    """Add the per-Short combo stage (master-first) and the policy gates to the plan of `fmt`.
+def record_policy(ctx: JobContext, policy: bool | None) -> None:
+    """Keep an explicit `--resume --policy/--no-policy` in the job's `job.json`; None (no flag) writes none.
 
-    `policy=None` means automatic: on when C5's `policy_check` prompt exists. Returns whether the gates
-    are part of the plan.
+    Called after the last refusal of a resume and before the job runs, so a refused resume changes nothing and
+    a resume that is killed or fails keeps the choice for the next one.
+    """
+    if policy is None:
+        return
+    data = ctx.read_json("job.json")
+    if isinstance(data, dict) and data.get("policy") is not policy:
+        ctx.write_json("job.json", {**data, "policy": policy})
+        ctx.log.info("job_policy_changed", job_id=ctx.job_id, policy=policy)
+
+
+def prepare_plan(fmt: str, policy: bool | None) -> bool:
+    """The policy a new job of `fmt` runs with: `policy`, or with None, whether the gates can run.
+
+    Writes nothing: the gates and the Short combos are in the stage table since the stage modules loaded
+    (`load_stage_modules`), and a job whose policy is off leaves the gates out of its own plan
+    (`orchestrator.plan_names`). `fmt` does not change the answer; a plan without gate stages (a clip) just
+    has nothing to leave out.
     """
     from ns_studio.policy import gate
-    from ns_studio.variation.stages import install_short_combos
 
-    install_short_combos(fmt)
-    if fmt == "master_first":  # series parts run the script-import plan (CR-C11-3) with their own combos
-        install_short_combos("master_from_script")
-        install_short_combos("master_from_owner_script")
-
-    enabled = gate.available() if policy is None else policy
-    if enabled:
-        gate.install_gates(fmt)
-        if fmt == "master_first":
-            gate.install_gates("master_from_script")
-            gate.install_gates("master_from_owner_script")
-        if fmt == "shorts_only":  # the owner's own script: the same gates, after its own text stages
-            gate.install_gates("shorts_from_owner_script")
-    return enabled
+    return gate.available() if policy is None else bool(policy)

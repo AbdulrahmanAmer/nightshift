@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from itertools import groupby
 from pathlib import Path
 
+from ns_common.atomic import read_text_retry
 from ns_common.errors import NsError
 from ns_studio.context import JobContext, owner_script_of
 from ns_studio.media.job_formats import prepare_job_formats
@@ -111,6 +113,18 @@ FORMAT_STAGES: dict[str, list[str]] = {
     "series_compilation": [],
     "clip": [],
 }
+# The table above is completed once per process, when the stage modules load (`jobs.load_stage_modules`):
+# the per-Short combo stage goes into COMBO_FORMATS and the two policy gates into GATED_FORMATS. A job never
+# writes it: a job whose policy is off leaves the gates out of its own copy (`plan_names`).
+POLICY_STAGES: tuple[str, ...] = ("policy_text", "policy_final")  # `policy/gate.py` TEXT_STAGE, FINAL_STAGE
+COMBO_FORMATS: tuple[str, ...] = ("master_first", "master_from_script", "master_from_owner_script")
+GATED_FORMATS: tuple[str, ...] = (
+    "shorts_only",
+    "master_first",
+    "master_from_script",
+    "shorts_from_owner_script",
+    "master_from_owner_script",
+)
 # The plan a job of this format runs when the owner's own script is its story (`plan_format`).
 OWNER_SCRIPT_FORMATS: dict[str, str] = {
     "master_first": "master_from_owner_script",
@@ -136,9 +150,52 @@ def plan_format(fmt: str, job_dir: Path) -> str:
     return fmt
 
 
-def plan_job(fmt: str) -> list[Stage]:
-    """Resolve the ordered stages of `fmt`; NS-E306 for unknown or unimplemented formats."""
-    names = FORMAT_STAGES.get(fmt)
+def policy_of(job: object) -> bool:
+    """The policy choice a job recorded (`job.json` `policy`), else whether the gates can run now.
+
+    A job folder from before the key (0.1.14), or one whose value is not a bool, reads as "no choice
+    recorded": the gates run when they are available (`gate.available`), which is what `studio run` did then.
+    """
+    value = job.get("policy") if isinstance(job, dict) else None
+    if isinstance(value, bool):
+        return value
+    from ns_studio.policy import gate  # imported here: gate imports this module
+
+    return gate.available()
+
+
+def job_policy(job_dir: Path) -> bool:
+    """`policy_of` the `job.json` in `job_dir`; a missing or unreadable file counts as no choice recorded."""
+    try:
+        data = json.loads(read_text_retry(job_dir / "job.json"))
+    except (OSError, ValueError):
+        data = None
+    return policy_of(data)
+
+
+def plan_names(key: str, policy: bool) -> list[str]:
+    """The stage names of plan `key` for a job whose policy is `policy`: a new list, the table is not touched.
+
+    With the policy off the gate stages (`POLICY_STAGES`) are left out; nothing else changes.
+    """
+    return [n for n in FORMAT_STAGES.get(key) or () if policy or n not in POLICY_STAGES]
+
+
+def stage_names(fmt: str, job_dir: Path, policy: bool | None = None) -> list[str]:
+    """The stage names the job in `job_dir` runs: one plan for the orchestrator, progress and idea check.
+
+    `policy` is the job's choice (`JobContext.policy`); None reads it from the job's `job.json`
+    (`job_policy`), for a reader that has no context (the owner records of `ownership`).
+    """
+    return plan_names(plan_format(fmt, job_dir), job_policy(job_dir) if policy is None else policy)
+
+
+def plan_job(fmt: str, policy: bool = True) -> list[Stage]:
+    """Resolve the ordered stages of plan `fmt` (`plan_names`); NS-E306 for unknown or unimplemented formats.
+
+    `policy=False` leaves the gates out; the default is the plan as the table holds it.
+    """
+    names = plan_names(fmt, policy)
     if not names:
         raise NsError("NS-E306", f"format {fmt!r} has no stages registered")
     missing = [n for n in names if n not in REGISTRY]
@@ -168,9 +225,10 @@ def embed_lease(ctx: JobContext, stage: Stage, owner: str) -> Iterator[None]:
 def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> list[str]:
     """Run every stage of `ctx.fmt` in order and return the names that were visited.
 
-    Consecutive stages with the same GPU tenant share one acquisition; `dry_run` only lists the plan.
+    Consecutive stages with the same GPU tenant share one acquisition; `dry_run` only lists the plan. The
+    gates run only when the job's policy is on (`ctx.policy`).
     """
-    stages = plan_job(plan_format(ctx.fmt, ctx.job_dir))
+    stages = plan_job(plan_format(ctx.fmt, ctx.job_dir), ctx.policy)
     if dry_run:
         return [s.name for s in stages]
     note_job(ctx)  # a job that runs with the engine-test switch on stays marked as a test video for good

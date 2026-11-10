@@ -12,10 +12,10 @@ from ns_studio.policy.meta import unsafe_categories
 
 
 def enabled(ctx: JobContext) -> bool:
-    """True when the policy gates are part of this job's plan (so not for `--no-policy`)."""
-    from ns_studio.orchestrator import FORMAT_STAGES
+    """True when the policy gates are part of this job's plan (so not for `--no-policy`, `ctx.policy`)."""
+    from ns_studio.orchestrator import stage_names
 
-    return TEXT_STAGE in FORMAT_STAGES.get(ctx.fmt, ())
+    return TEXT_STAGE in stage_names(ctx.fmt, ctx.job_dir, ctx.policy)
 
 
 def idea_text(idea: dict[str, Any]) -> str:
