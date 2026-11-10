@@ -28,6 +28,9 @@ STATUSES = ("queued", "running", "done", "failed", "cancelled")
 GPU_KINDS = frozenset({"run", "clip", "verify", "series_part", "apply_voice"})
 JOB_OWNER = "dashboard:job"  # the owner id of the worker's heartbeat to the engine (never holds the GPU)
 PULSE_S = 60.0  # how often a running job tells the engine it is alive
+HELD_PREFIX = "Paused: "  # the message of a queued job that waits because its channel is paused (P47)
+#: Called with a queued job: the plain reason it must not start now (its channel is paused), or None.
+Hold = Callable[["JobRecord"], str | None]
 
 
 class JobCancelled(Exception):
@@ -36,6 +39,11 @@ class JobCancelled(Exception):
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
+def scheduled_text(at: datetime) -> str:
+    """The message of a job that waits for its start time (Create > Pick a time)."""
+    return f"Scheduled for {at:%a %d %b %H:%M}"
 
 
 @dataclass
@@ -249,12 +257,22 @@ class JobStore:
         at = rec.not_before()
         return at is None or at <= self.clock()
 
-    def next_queued(self, exclude: Iterable[str] = ()) -> JobRecord | None:
+    def next_queued(self, exclude: Iterable[str] = (), hold: Hold | None = None) -> JobRecord | None:
         """Oldest queued job that is due (FIFO by insertion order), skipping kinds in `exclude`.
 
-        A job with a future `schedule_at` stays queued and is passed over until its time has come.
+        A job with a future `schedule_at` stays queued and is passed over until its time has come. With
+        `hold`, a job it gives a reason for (its channel is paused) is passed over too.
         """
-        return next((r for r in self._queued(exclude) if self.is_due(r)), None)
+        for r in self._queued(exclude):
+            if hold is not None and hold(r) is not None:
+                continue
+            if self.is_due(r):
+                return r
+        return None
+
+    def queued_jobs(self) -> list[JobRecord]:
+        """Every queued job, oldest first (due or not)."""
+        return list(self._queued())
 
     def scheduled(self) -> list[JobRecord]:
         """Queued jobs that are waiting for a start time, soonest first."""
@@ -307,6 +325,30 @@ class JobStore:
             self.db.execute(
                 "UPDATE dashboard_jobs SET progress = ?, message = ? WHERE job_id = ?", (p, message, job_id)
             )
+
+    def set_queued_message(self, job_id: str, message: str) -> bool:
+        """Write the message of a job only while it is still `queued`; True when it was written.
+
+        The hold text is written from a snapshot taken a moment earlier, on the request thread (Channels pause
+        and resume) or the worker's; the job may have started or been cancelled since, and then its own
+        message and progress must stay (one UPDATE with the status in the WHERE, no read-then-write)."""
+        changed = self.db.execute(
+            "UPDATE dashboard_jobs SET progress = 0.0, message = ? WHERE job_id = ? AND status = 'queued'",
+            (message, job_id),
+        )
+        return changed > 0
+
+    def requeue(self, job_id: str, message: str) -> bool:
+        """running -> queued with `message`, as if it had never started; False when it is no longer running.
+
+        Used for a job that waited at the GPU gate and found its channel paused when it got there (P47): its
+        place in the queue (insertion order) is kept, and nothing of the aborted start stays on the row."""
+        changed = self.db.execute(
+            "UPDATE dashboard_jobs SET status = 'queued', started_at = NULL, progress = 0.0, message = ?"
+            " WHERE job_id = ? AND status = 'running'",
+            (message, job_id),
+        )
+        return changed > 0
 
     def finish(self, job_id: str, status: str, message: str, result: dict[str, Any] | None = None) -> None:
         """Terminal state; merges `result` into `params_json`."""
@@ -521,6 +563,7 @@ class JobWorker:
         on_end: dict[str, Callable[[JobRecord], None]] | None = None,
         on_done: dict[str, Callable[[JobRecord], None]] | None = None,
         sweep: Callable[[set[str], dict[str, str]], object] | None = None,
+        hold: Hold | None = None,
         recover_studio: Callable[[], object] | None = None,
         idle_poll_s: float = 30.0,
         awake: Callable[[], AbstractContextManager[None]] = keep_awake,
@@ -541,6 +584,9 @@ class JobWorker:
         self.on_done = on_done or {}
         #: Called once at start with the ids of the queued and running jobs, after interrupted ones failed.
         self.sweep = sweep
+        #: Asked about every queued job before it may start: the reason it must wait (its channel is paused),
+        #: or None. A held job stays `queued`, its message says why, and it starts once the reason is gone.
+        self.hold = hold
         #: Called once at start: the studio runs and jobs whose process is gone (a nightly killed by a power
         #: cut or a crash) are closed as interrupted and offered in the Queue with Retry (defect D-31).
         self.recover_studio = recover_studio
@@ -683,7 +729,55 @@ class JobWorker:
             return self._cv.wait_for(self._is_idle, timeout)
 
     def _is_idle(self) -> bool:
-        return self._running_id is None and self.store.next_queued() is None
+        return self._running_id is None and self.store.next_queued(hold=self._held) is None
+
+    # --- holding a paused channel's jobs ---
+    def _hold_reason(self, rec: JobRecord) -> str | None:
+        """The hold's answer for `rec`; a hold that fails to answer is logged and counts as no hold."""
+        if self.hold is None:
+            return None
+        try:
+            return self.hold(rec)
+        except Exception as e:  # a profile that cannot be read must not stop the queue: run as before
+            self.log.warn("hold_check_failed", str(e), job_id=rec.job_id)
+            return None
+
+    def _requeue_if_held(self, rec: JobRecord, ctl: JobControl) -> bool:
+        """The job holds the GPU gate: ask the hold once more (the gate can wait for hours, and a pause may
+        have come meanwhile). When it says wait, the job goes back to `queued` with the reason and True is
+        returned: nothing of it runs. A Cancel pressed meanwhile still wins (it raises `JobCancelled`)."""
+        reason = self._hold_reason(rec)
+        if reason is None:
+            return False
+        ctl.check_cancel()
+        if self.store.requeue(rec.job_id, reason):
+            self.log.info("job_held_after_gate", job_id=rec.job_id, channel=rec.channel, reason=reason)
+        return True
+
+    def _held(self, rec: JobRecord) -> str | None:
+        """Why `rec` must not start (None: it may). Keeps the job's message true: the reason while held,
+        the usual "Queued" / "Scheduled for ..." again once the reason is gone."""
+        reason = self._hold_reason(rec)
+        if reason is not None:
+            if rec.message != reason and self.store.set_queued_message(rec.job_id, reason):
+                self.log.info("job_held", job_id=rec.job_id, channel=rec.channel, reason=reason)
+                self._publish(rec.job_id)
+        elif rec.message.startswith(HELD_PREFIX):
+            at = rec.not_before()
+            later = at is not None and not self.store.is_due(rec)
+            text = scheduled_text(at) if at and later else "Queued"
+            if self.store.set_queued_message(rec.job_id, text):
+                self.log.info("job_released", job_id=rec.job_id, channel=rec.channel)
+                self._publish(rec.job_id)
+        return reason
+
+    def refresh_holds(self) -> None:
+        """Bring the message of every queued job up to date with its channel (called when a channel is
+        paused or resumed, so the Queue is right at once, also while another job runs)."""
+        if self.hold is None:
+            return
+        for rec in self.store.queued_jobs():
+            self._held(rec)
 
     # --- execution ---
     def _publish(self, job_id: str) -> None:
@@ -693,7 +787,7 @@ class JobWorker:
 
     def run_next(self) -> bool:
         """Run exactly one queued job to completion; False when the queue is empty."""
-        rec = self.store.next_queued(self.inline_kinds)
+        rec = self.store.next_queued(self.inline_kinds, hold=self._held)
         if rec is None:
             return False
         self._execute(rec)
@@ -757,6 +851,8 @@ class JobWorker:
                 raise RuntimeError(f"no handler for job kind {rec.kind!r}")
             if self.gpu_gate is not None and rec.kind in GPU_KINDS:
                 self.gpu_gate(ctl)
+            if self._requeue_if_held(rec, ctl):  # paused while it waited: no video, no hooks, back in line
+                return
             result = handler(ctl) or {}
             self.store.finish(rec.job_id, "done", "Done", result)
             self.log.info("job_done", job_id=rec.job_id, kind=rec.kind)

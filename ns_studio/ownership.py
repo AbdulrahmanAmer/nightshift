@@ -1186,9 +1186,9 @@ def recovery_message(
     """The morning note for what `recover` closed, or None when nobody needs telling.
 
     `outcomes` is what the nightly then did with a resumable job, by job id: `("resumed", None)`,
-    `("failed", <code>)`, `("waiting", None)` (the GPU was busy) or `("busy", None)` (a Retry from the Queue
-    was already running it). Without an outcome the note never claims
-    the job is being continued: it says when it will be, and how to continue it by hand.
+    `("failed", <code>)`, `("waiting", None)` (the GPU was busy), `("paused", None)` (its channel was paused
+    during the night) or `("busy", None)` (a Retry from the Queue was already running it). Without an outcome
+    the note never claims the job is being continued: it says when it will be, and how to continue it by hand.
     """
     outcomes = outcomes or {}
     lines: list[str] = []
@@ -1209,6 +1209,12 @@ def recovery_message(
             tail = f"The GPU was busy, so it waits for the next nightly run; or {_way_back(j)}."
         elif what == "busy":
             tail = "It is being continued right now from the Queue."
+        elif what == "paused":
+            tail = (
+                "Its channel was paused during the night, so it waits; resume the channel and the next "
+                f"nightly run continues it, as long as the job started no more than {RESUME_WITHIN_DAYS} "
+                f"days before that run; an older one is not continued by the night, so {_way_back(j)}."
+            )
         elif j.resumable:
             tail = f"It continues at the next nightly run, or {_way_back(j)}."
         else:

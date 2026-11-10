@@ -452,6 +452,10 @@ def _resume_interrupted(
     for rec in pending:
         job_id, slug = str(rec["id"]), str(rec.get("channel") or "")
         stage = rec.get("interrupted_at_stage")
+        if slug and _paused_now(env, slug):  # paused since the scan, or during an earlier job: leave it
+            _hold_for_pause(env, report, None, slug, 1, job_id=job_id)
+            outcomes[job_id] = ("paused", None)
+            continue
         env.log.info("daily_job_resume", job_id=job_id, channel=slug, stage=stage)
         if _no_room_to_resume(env, report, job_id, slug):
             ownership.write_record(env.paths, job_id, state="interrupted")
@@ -516,6 +520,9 @@ def _tonight(
     due = [dj for dj in due if dj.channel.slug not in failed_channels]
     report["not_due"] = why
     for dj in due:
+        if _paused_now(env, dj.channel.slug):  # paused after the plan was made: nothing of it starts
+            _hold_for_pause(env, report, why, dj.channel.slug, dj.count)  # also when the GPU stayed busy
+            continue
         if gpu_busy:  # J7: the GPU stayed busy for the whole wait; the other jobs wait for the next night
             report.setdefault("skipped", []).append({"channel": dj.channel.slug, "jobs": dj.count})
             continue
@@ -528,6 +535,9 @@ def _tonight(
              "reasons": dj.plan.reasons}
         )
         for n in range(dj.count):
+            if n and _paused_now(env, ch.slug):  # paused during the night: its remaining jobs are not started
+                _hold_for_pause(env, report, why, ch.slug, dj.count - n)
+                break
             # Less room than one job writes (D-33): nothing is created, the rest of this channel's jobs
             # would not fit either, and the morning note says why (not a failure one stage in).
             if _no_room(env, report, ch, dj.fmt, dj.count - n):
@@ -537,6 +547,45 @@ def _tonight(
                 gpu_busy = True
                 report.setdefault("skipped", []).append({"channel": ch.slug, "jobs": dj.count - n})
                 break
+
+
+PAUSED_TONIGHT = (
+    "its channel was paused during the night; resume it and the next night continues "
+    f"(a half-made job that started more than {ownership.RESUME_WITHIN_DAYS} days before that night "
+    "needs Retry in the Queue)"
+)
+
+
+def _paused_now(env: jobs.Env, slug: str) -> bool:
+    """True when the channel's profile says `paused` right now (read again: a pause can come at any time,
+    from the Dashboard, the Assistant or `studio pause` in another window). Unreadable means not paused."""
+    try:
+        return get_channel(env.paths, slug).status == "paused"
+    except StudioError:
+        return False
+
+
+def _hold_for_pause(
+    env: jobs.Env,
+    report: dict,
+    why: dict[str, str] | None,
+    slug: str,
+    jobs_left: int,
+    *,
+    job_id: str | None = None,
+) -> None:
+    """A channel paused mid-night: its remaining jobs are listed under `paused` with the reason, not started.
+
+    `skipped` keeps its old meaning (an earlier job stopped, so the others wait), which the Queue page words
+    as such; a pause has its own key. A half-made job (`job_id`) is left exactly as it was: still interrupted,
+    so the next night continues it once the channel is resumed, while it is under `RESUME_WITHIN_DAYS` old."""
+    entry: dict[str, Any] = {"channel": slug, "jobs": jobs_left, "reason": PAUSED_TONIGHT}
+    if job_id:
+        entry["job_id"] = job_id
+    report.setdefault("paused", []).append(entry)
+    if why is not None:
+        why[slug] = PAUSED_TONIGHT
+    env.log.info("daily_channel_paused", channel=slug, jobs=jobs_left, job_id=job_id)
 
 
 def nothing_due_message(report: dict) -> str:
