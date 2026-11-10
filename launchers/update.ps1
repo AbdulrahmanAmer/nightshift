@@ -25,7 +25,7 @@ Set-NsHomeLocation
 $started = @(& $py -m ns_supervisor.cli update $dlg.FileName --detach)
 $startCode = $LASTEXITCODE
 if ($startCode -ne 0) {
-    Exit-NsWithPause ('The update could not start (exit code ' + $startCode + '). Your previous version is still in place.') $startCode
+    Exit-NsWithPause ('The update could not start (exit code ' + $startCode + '): the lines above say why. Nothing was changed.') $startCode
 }
 $info = $null
 try { $info = ($started | Select-Object -Last 1) | ConvertFrom-Json } catch { $info = $null }
@@ -47,15 +47,26 @@ while ($null -eq $final -and $waited -lt 14400) {
     }
     $state = $null
     try { $state = Get-Content -LiteralPath $statusFile -Raw | ConvertFrom-Json } catch { $state = $null }
-    if ($null -ne $state -and $state.PSObject.Properties['state']) {
+    # Only a state that names this run's log counts: until the worker's first write the file still holds
+    # the result of the last update.
+    $mine = $false
+    if ($null -ne $state -and $state.PSObject.Properties['state'] -and $state.PSObject.Properties['log']) {
+        $mine = ([string]$state.log -eq $logFile)
+    }
+    if ($mine) {
         if ($state.state -eq 'done' -or $state.state -eq 'failed') {
             $final = $state
         }
         elseif ($state.state -eq 'running' -and $state.PSObject.Properties['pid']) {
-            # A worker that died without a word (killed, power loss) leaves "running" behind.
+            # A worker that died without a word (killed, power loss) leaves "running" behind, with the
+            # sentence that is true of the step it died in.
             $workerPid = [int]$state.pid
             if ($workerPid -gt 0 -and -not (Get-Process -Id $workerPid -ErrorAction SilentlyContinue)) {
-                Exit-NsWithPause 'The update process stopped before it finished. Your previous version is still in place.'
+                $left = 'The update process stopped before it finished. Its log: ' + $logFile
+                if ($state.PSObject.Properties['if_stopped_here'] -and $state.if_stopped_here) {
+                    $left = [string]$state.if_stopped_here
+                }
+                Exit-NsWithPause $left
             }
         }
     }
@@ -73,6 +84,6 @@ if (Test-Path -LiteralPath $logFile) {
     for ($i = $seen; $i -lt $lines.Count; $i++) { Write-Host $lines[$i] }
 }
 if ($final.state -eq 'failed') {
-    Exit-NsWithPause ('The update did not complete: ' + [string]$final.message + ' Your previous version is still in place unless the message says otherwise.') 1
+    Exit-NsWithPause ('The update did not complete: ' + [string]$final.message) 1
 }
 Read-Host 'Update finished. Press Enter to close' | Out-Null

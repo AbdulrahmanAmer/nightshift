@@ -210,7 +210,7 @@ def _stop_engine(paths: Paths) -> None:
 
 
 def _sync(paths: Paths, app_dir: Path) -> None:
-    update.resync_venvs(app_dir, paths)
+    update.resync_venvs(app_dir, paths, say=typer.echo)     # (a wait for a file in use is shown)
 
 
 def _reregister(paths: Paths, app_dir: Path) -> list[str]:
@@ -300,7 +300,11 @@ def cmd_update(
     """Apply a release zip (verified, with automatic rollback), go back one version, or use GitHub.
 
     The update runs in a detached worker process, so stopping the engine (or closing the dashboard that
-    started it) cannot kill it half way through the swap.
+    started it) cannot kill it half way through the swap. This command never waits for it (D-39): it runs
+    from the supervisor venv and holds `Scripts\\ns.exe` open for as long as it lives, which the worker's
+    re-sync has to replace. It checks what can be checked without changing anything, starts the worker
+    with its own pid to wait for, opens the progress window (a terminal; `--detach` and the dashboard get
+    none) and returns.
     """
     if sum([zip_path is not None, rollback, check, github, git]) != 1:
         raise _die("give exactly one of: a zip file, --rollback, --check, --github, --git", 2)
@@ -328,29 +332,39 @@ def cmd_update(
         )
         raise typer.Exit(code)
     forwarded: list[str] = []
+    what = "The update"
     if zip_path is not None:
         try:
-            update.verify_package(zip_path.resolve())     # a bad zip is reported here, nothing is started
+            new_version, _prefix = update.verify_package(zip_path.resolve())    # a bad zip: nothing started
         except NsError as e:
             raise _die(e) from e
+        what = f"The update to {new_version}"
         forwarded.append(str(zip_path.resolve()))        # the worker starts in another folder
     if rollback:
+        app_dir = control.app_path(paths)
+        nothing = update.rollback_refusal(app_dir)       # read-only, like the zip check: nothing is started
+        if nothing is not None:
+            raise _die(NsError("NS-E702", f"{nothing} {update.where_now(paths, app_dir)}"))
+        what = "The rollback"
         forwarded.append("--rollback")
     if github:
         forwarded.append("--github")
     if git:
         forwarded += ["--git", "--channel", channel]
-    background = detach or update_job.under_engine()
+    running = update_job.busy(paths)                     # one update, rollback or repair at a time
+    if running is not None:
+        raise _die(NsError("NS-E705", running))
     try:
-        pid, log_file = update_job.launch(paths, forwarded, wait_pid=os.getpid() if background else None)
+        pid, log_file = update_job.launch(paths, forwarded, wait_pid=os.getpid())
     except NsError as e:
         raise _die(e) from e
-    if background:
+    if detach or update_job.under_engine():
         typer.echo(f"The update runs in the background; Nightshift will close. Progress: {log_file}")
         status = str(update_job.status_file(paths))
         typer.echo(json.dumps({"started": True, "log": str(log_file), "status": status}))
         return
-    raise typer.Exit(update_job.follow(paths, pid, log_file, typer.echo))
+    window = update_job.start_follower(paths, pid, log_file)
+    typer.echo(update_job.handover_sentence(what, log_file, window=window))
 
 
 def _update_check(current: str) -> None:

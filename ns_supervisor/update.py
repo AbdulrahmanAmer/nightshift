@@ -34,8 +34,10 @@ import time
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 
+import psutil
 import yaml
 
 # (imported here, never inside a function: after the swap `<app>` holds another release's files, and an
@@ -50,6 +52,7 @@ from ns_common.models import Channel, InstallState, Runtime
 from ns_common.paths import Paths
 from ns_common.uv import find_uv, home_uv, uv_env
 from ns_common.venv_extras import DEV_VENV_EXTRAS, NO_DEPS, VENV_EXTRAS, extras_suffix
+from ns_supervisor import update_job
 from ns_supervisor.childenv import child_env, window_flags
 
 PRESERVE = (".git", "config", "answers.json")
@@ -101,6 +104,50 @@ SETTINGS_BACKUP_HINT = (
 )
 
 
+#: D-39. After the engine was stopped, how long an update waits for every program that runs from this
+#: install's Python environments to end before it refuses (NS-E706): an engine process still exiting ends
+#: within seconds; a Studio window, a terminal command or a Python prompt does not, and is named.
+HOLDER_WAIT_S = 60.0
+#: A venv whose refresh failed on a file in use is tried SYNC_TRIES times, SYNC_PAUSE_S apart (the holder
+#: check ran before, so this is a program started since); then the update stops and says what is left.
+SYNC_TRIES = 3
+SYNC_PAUSE_S = 10.0
+HELD_SIGNS = ("os error 32", "os error 5", "being used by another process", "access is denied")
+ROLLBACK_TWICE = (
+    "run 'ns update --rollback' twice (the first run goes to {new} again, the second comes back to {old} "
+    "and fills every environment)."
+)
+UPDATE_AGAIN = "run the update again; if you then want {old} back, run 'ns update --rollback'."
+SWAP_STOPPED = (
+    "The update to {new} stopped while it was swapping the program folders. If Nightshift does not open "
+    "because the program folder is missing, run INSTALL.cmd from the Nightshift {old} zip (or a newer one) "
+    "and choose this folder."
+)
+SYNC_STOPPED = (
+    "The update to {new} stopped after {new}'s program was put in place, while it was refreshing or "
+    "checking the Python environments. Run the update again, so that every environment is filled."
+)
+RESTORE_STOPPED = (
+    "The update to {new} failed, and its process stopped while it was putting {old} back. Open Nightshift "
+    "from a Desktop shortcut; if it does not open, run INSTALL.cmd from the Nightshift {old} zip (or a newer "
+    "one) and choose this folder."
+)
+ROLLBACK_PREPARE_STOPPED = (
+    "The rollback stopped before the program was changed. Open Nightshift: it puts your settings back."
+)
+ROLLBACK_SWAP_STOPPED = (
+    "The rollback stopped while it was swapping the program folders. Open Nightshift from a Desktop "
+    "shortcut: the program in place starts with settings it can read, and a version from 0.1.15 on finishes "
+    "or undoes the rollback at its start. If the shortcut says the program folder is missing, run "
+    "INSTALL.cmd from the Nightshift zip (this version or newer) and choose this folder, then open "
+    "Nightshift."
+)
+ROLLBACK_SYNC_STOPPED = (
+    "The rollback to {old} stopped while it was refreshing the Python environments: {old}'s program is in "
+    "place, and the environments may still hold {new}'s packages. To finish it: "
+)
+
+
 @dataclass
 class UpdateEnv:
     """Side effects of an update; replaced in tests."""
@@ -112,6 +159,8 @@ class UpdateEnv:
     untracked: Callable[[Path], list[str]] = field(default=lambda app: git_untracked(app))
     #: Called before a rollback renames folders: waits until the processes `verify` started have exited.
     settle: Callable[[], object] = field(default=lambda: None)
+    #: The bound of the wait for programs that run from the Python environments (`wait_no_holders`).
+    holder_wait_s: float = HOLDER_WAIT_S
 
 
 @dataclass
@@ -907,8 +956,200 @@ def _voice_notes(paths: Paths) -> list[str]:
         return []
 
 
+# --------------------------------------------------------------------------------------------------------
+# D-39: nothing rewrites a Python environment a program runs from, and every failure says what is in place
+# --------------------------------------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Holder:
+    """A running program that keeps files of a Python environment of this install in use."""
+
+    pid: int
+    program: str
+    started: str
+
+    def __str__(self) -> str:
+        return f"{self.program} (process {self.pid}, started {self.started})"
+
+
+def holders(paths: Paths, venv: str | None = None) -> list[Holder]:
+    """The programs on this PC that run from `<home>\\venvs` (or from one venv of it).
+
+    A program counts when its image is in there (a venv's `python.exe`, `ns.exe`, `studio.exe`) or when a
+    path in there is on its command line. The second is how the process that really holds the file is
+    found: a console command runs as `<the base interpreter> <venv>\\Scripts\\ns.exe ...`, an image outside
+    the venvs, and keeps that `ns.exe` open without delete sharing for as long as it lives (pydantic's
+    plugin lookup opens every `sys.path` entry as a zip through `importlib.metadata`; found on QA's route,
+    D-39). The update worker itself is not exempt: its copy lives under `run\\updater`, and one that had to
+    fall back to the venv's own interpreter must not rewrite that venv. A process that cannot be read
+    (another user's) is not ours and is skipped."""
+    root = os.path.normcase(os.path.abspath(paths.venvs / venv if venv else paths.venvs)) + os.sep
+    found: list[Holder] = []
+    for proc in psutil.process_iter(["pid", "exe", "cmdline", "create_time"]):
+        exe = str(proc.info.get("exe") or "")
+        args = [str(a) for a in proc.info.get("cmdline") or []]
+        inside = [t for t in (exe, *args) if t and os.path.normcase(os.path.abspath(t)).startswith(root)]
+        if not inside:
+            continue
+        image = Path(exe or (args[0] if args else "a program")).name
+        script = Path(inside[0]).name
+        try:
+            started = datetime.fromtimestamp(float(proc.info.get("create_time") or 0)).strftime("%H:%M:%S")
+        except (OSError, ValueError, OverflowError):
+            started = "at an unknown time"
+        program = image if script.lower() == image.lower() else f"{image} running {script}"
+        found.append(Holder(int(proc.info["pid"]), program, started))
+    return sorted(found, key=lambda h: h.pid)
+
+
+def wait_no_holders(
+    paths: Paths,
+    wait_s: float = HOLDER_WAIT_S,
+    *,
+    earlier: Iterable[str] = (),
+    find: Callable[[], list[Holder]] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """Return once no program runs from this install's Python environments; `NS-E706`, naming each one,
+    when some still do after `wait_s`. Called after the engine was stopped and before anything on disk is
+    changed, so the refusal is true as written: nothing was changed (`earlier`: what an interrupted
+    rollback's recovery already said in this run)."""
+    look = find or (lambda: holders(paths))
+    try:
+        own = {os.getpid(), *(p.pid for p in psutil.Process().parents())}
+    except psutil.Error:
+        own = {os.getpid()}
+    deadline = clock() + wait_s
+    while True:
+        found = look()
+        if not found:
+            return
+        if any(h.pid in own for h in found):    # waiting cannot help: it is this process (or its starter)
+            raise NsError(
+                "NS-E706",
+                " ".join([
+                    *earlier,
+                    "The update's own process runs from Nightshift's Python environments, so it cannot "
+                    "replace their files: its private copy of the supervisor environment could not be made "
+                    f"({'; '.join(str(h) for h in found if h.pid in own)}). Nothing was changed. Free disk "
+                    "space on the drive of the Nightshift folder, close other Nightshift windows and run "
+                    "the update again.",
+                ]),
+                holders=[h.pid for h in found],
+            )
+        if clock() >= deadline:
+            break
+        sleep(0.25)
+    raise NsError(
+        "NS-E706",
+        " ".join([
+            *earlier,
+            "These programs still run from Nightshift's Python environments, and Windows would not let the "
+            f"update replace their files: {'; '.join(str(h) for h in found)}. Nothing was changed. Close "
+            "them and run the update again.",
+        ]),
+        holders=[h.pid for h in found],
+    )
+
+
+def installed(paths: Paths) -> dict[str, list[str]]:
+    """venv -> the versions of the `nightshift` package installed in it (one, unless a sync broke off)."""
+    out: dict[str, list[str]] = {}
+    for venv in UPDATE_VENVS:
+        folder = paths.venvs / venv
+        if not (folder / "Scripts" / "python.exe").exists():
+            continue
+        out[venv] = []
+        for info in sorted((folder / "Lib" / "site-packages").glob("nightshift-*.dist-info")):
+            version = info.name[len("nightshift-"):-len(".dist-info")]
+            try:
+                for line in (info / "METADATA").read_text(encoding="utf-8", errors="replace").splitlines():
+                    if line.lower().startswith("version:"):
+                        version = line.split(":", 1)[1].strip()
+                        break
+            except OSError:
+                pass
+            out[venv].append(version)
+    return out
+
+
+def where_now(paths: Paths, app: Path) -> str:
+    """One sentence, read from the disk at this moment: which program is in `app`, and what each Python
+    environment has installed. It closes every NS-E702 of an update or rollback and describes a worker
+    that died without a word (`update_job.where`), so no message has to claim an outcome from memory."""
+    if not app.is_dir():
+        return f"In place now: no program folder at {app}."
+    here = _shown_version(app)
+    have = installed(paths)
+    odd: list[str] = []
+    for venv, versions in have.items():
+        if not versions:
+            odd.append(f"the Python environment '{venv}' has no Nightshift package installed")
+        elif [deplock.version_key(v) for v in versions] != [deplock.version_key(here)]:
+            odd.append(f"the Python environment '{venv}' has Nightshift {' and '.join(versions)} installed")
+    if odd:
+        return f"In place now: the program of Nightshift {here}, but {'; '.join(odd)}."
+    return f"In place now: Nightshift {here}" + (", program and Python environments." if have else ".")
+
+
+def _sentence(text: str) -> str:
+    """`text` ending as a sentence does (a cause quoted in front of what happened next)."""
+    text = text.rstrip()
+    return text if text.endswith((".", "!", "?", ")")) else text + "."
+
+
+def _closed(run: Callable[[], UpdateResult], paths: Paths, app: Path) -> UpdateResult:
+    """Run an update or rollback; an NS-E702 that does not end with what is in place yet gets `where_now`
+    (the one place: whatever raised it, and wherever, the owner reads the state of the disk)."""
+    try:
+        return run()
+    except NsError as e:
+        if e.code != "NS-E702" or e.data.get("where"):
+            raise
+        where = where_now(paths, app.absolute())
+        said = f"{_sentence(e.detail)} {where}" if e.detail.strip() else where
+        raise NsError(e.code, said, **{**e.data, "where": where}) from (e.__cause__ or e)
+
+
+def _unfinished(
+    lead: str, cause: Exception, *, target: str, other: str, way_out: str, paths: Paths
+) -> NsError:
+    """The NS-E702 of a re-sync that failed with `target`'s program already in place: which environments
+    are left, uv's own last line, that Nightshift was not started on them, and the way out. `venvs_left`
+    in its data keeps the worker from starting Nightshift (`update_job.run_worker`)."""
+    data = cause.data if isinstance(cause, NsError) else {}
+    names = [str(v) for v in data.get("left") or []] or list(installed(paths))
+    tail = " ".join(str(data.get("tail") or (cause.detail if isinstance(cause, NsError) else cause)).split())
+    using = [str(h) for h in data.get("holders") or []]
+    one = len(names) == 1
+    which = "the Python environment" if one else "the Python environments"
+    quoted = " " + ", ".join(f"'{n}'" for n in names) if names else ""
+    closing = (
+        f"{which}{quoted} could not be refreshed for {target} ({tail.rstrip('.')}); "
+        f"{'it' if one else 'they'} may still hold {other}'s packages. {update_job.NOT_STARTED} To finish "
+        f"it: close {', '.join(using) if using else 'every Nightshift window, terminal and Python prompt'}, "
+        f"then {way_out}"
+    )
+    return NsError("NS-E702", f"{lead}{closing}", where=closing, venvs_left=names or ["unknown"])
+
+
+def rollback_refusal(app: Path) -> str | None:
+    """Read-only: why `ns update --rollback` has nothing to go back to; None when it may start (a previous
+    version, or a record or folder of an interrupted rollback that it would finish)."""
+    app = app.absolute()
+    prev = _sibling(app, ".prev")
+    if prev.is_dir() or rollback_intent.path_for(app).exists() or rollback_intent.swap_waits(app):
+        return None
+    return f"no previous version at {prev}. Nothing was changed."
+
+
 def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
-    """Apply a release zip to `app`. `NS-E701` before any change, `NS-E702` (rolled back) after."""
+    """Apply a release zip to `app`. `NS-E701` before any change; `NS-E706` when a program still runs from
+    the Python environments (nothing changed); `NS-E702` after, ending with what is in place."""
+    return _closed(lambda: _update_app(zip_path, app, env, paths=paths), paths, app)
+
+
+def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     zip_path, app = zip_path.resolve(), app.absolute()
     log = NsLogger("update", paths.logs)
     first_start.settled(paths.config)  # this process makes the settings copy itself
@@ -925,6 +1166,8 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
     replaced = current_version(prev) if prev.is_dir() else ""
     log.info("update_start", old=old_version, new=new_version, zip=str(zip_path))
     env.stop()
+    wait_no_holders(paths, env.holder_wait_s, earlier=earlier)
+    names = {"old": old_version, "new": new_version}
     saved: _UpdateCopy | None = None
 
     def drop_copy() -> None:  # only a copy this update wrote goes with it; a kept one stays with its program
@@ -942,6 +1185,7 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
         notes += [f"kept {n}" for n in carry_over(app, new, env.untracked(app))]
         write_app_marker(new, log)
         saved = _save_settings_copy(app, prev, paths, log)  # last step before <app>.prev is replaced
+        update_job.step(paths, f"Putting {new_version}'s program in place.", SWAP_STOPPED.format(**names))
         shutil.rmtree(prev, ignore_errors=True)
         rename_with_retry(app, prev)
     except NsError:
@@ -961,15 +1205,20 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
             raise NsError("NS-E702", f"could not swap directories: {e}; {RESTORE_HINT}") from e2
         drop_copy()
         raise NsError("NS-E702", f"could not swap directories: {e}") from e
+    update_job.step(paths, "Refreshing the Python environments.", SYNC_STOPPED.format(**names))
+    at = "the refresh of the Python environments"
     try:
         env.sync(app)
+        at = "the check of the new version"
         if not env.verify(app):
             raise NsError("NS-E702", "ns verify --quick failed on the new version")
+        at = "the re-registration of the nightly task"
         notes += env.reregister(app)
         notes += _voice_notes(paths)
-    except Exception as e:  # any step failing after the swap rolls back
+    except Exception as e:  # any step failing after the swap puts the previous version back
         log.error("update_failed", str(e))
         detail = e.detail if isinstance(e, NsError) else f"{type(e).__name__}: {e}"
+        update_job.step(paths, f"Putting {old_version} back.", RESTORE_STOPPED.format(**names))
         try:
             _restore(app, prev, log, env.settle)
         except OSError as e3:   # keep the cause of the failure: it is what the owner has to report
@@ -978,11 +1227,17 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
         if saved is not None:  # (a copy this update did not write is not its to discard: None keeps it)
             copy_path = config_snapshot.path_for(app) if saved.wrote else None
             put_back = _put_settings_back(paths, saved.files, log, copy_path)
+        failed = f"The update to {new_version} failed at {at}: {_sentence(detail)}{put_back} "
         try:
             env.sync(app)
-        except Exception as e2:  # best effort: report, the old tree is already back
+        except Exception as e2:  # the program is back, an environment is not: said, and nothing is started
             log.error("rollback_sync_failed", str(e2))
-        raise NsError("NS-E702", detail.rstrip(".") + "." + put_back if put_back else detail) from e
+            raise _unfinished(
+                f"{failed}{old_version}'s program is back, but ", e2, target=old_version, other=new_version,
+                way_out=UPDATE_AGAIN.format(old=old_version), paths=paths,
+            ) from e
+        back = f"{old_version}'s program is in place again, with its Python environments."
+        raise NsError("NS-E702", failed + back, where=back) from e
     had_copy = False
     if saved is not None:
         notes += saved.notes
@@ -998,6 +1253,11 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
 
 
 def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
+    """`_rollback_app`, with every NS-E702 ending in what is in place (`_closed`)."""
+    return _closed(lambda: _rollback_app(app, env, paths=paths), paths, app)
+
+
+def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     """Swap `<app>` and `<app>.prev` (so a second rollback rolls forward), put the settings copy back with the
     program (F-10a: the older version gets the files it wrote) and re-sync the venvs.
 
@@ -1012,15 +1272,22 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     rollback code at all); then the programs are swapped; then the copy for going forward is kept and the
     record goes. Interrupted anywhere, the program then in `<app>` finds settings it loads, and the next start
     of a program with this code (or this command run again) finishes or undoes the rest.
+
+    D-39: nothing starts while a program runs from the Python environments (`wait_no_holders`, NS-E706), and
+    a re-sync that fails after the swap is said as it is: the older program is in place, which environment
+    is left, Nightshift not started, the way to finish (`_unfinished`). It never swaps back: that would need
+    a second re-sync against the same held file.
     """
     app = app.absolute()
     first_start.settled(paths.config)  # the rollback manages the copy itself (see first_start.settled)
     leave_app(app, paths)
     log = NsLogger("update", paths.logs)
     prev, tmp = _sibling(app, ".prev"), rollback_intent.swap_for(app)
-    if not (prev.is_dir() or rollback_intent.path_for(app).exists() or rollback_intent.swap_waits(app)):
-        raise NsError("NS-E702", f"no previous version at {prev}")
+    nothing = rollback_refusal(app)
+    if nothing is not None:
+        raise NsError("NS-E702", nothing)
     env.stop()
+    wait_no_holders(paths, env.holder_wait_s)
     zip_path = config_snapshot.path_for(app)
     with config_snapshot.locked(zip_path) as held:
         if not held:
@@ -1053,7 +1320,19 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             # stops here and says so; the owner decides whether to go back. (The interrupted run never
             # synced the venvs for the program now in place: that is done here, still under the lock.)
             here, back = _shown_version(app), _shown_version(prev)
-            env.sync(app)
+            twice = ROLLBACK_TWICE.format(new=back, old=here)
+            update_job.step(
+                paths, "Refreshing the Python environments.",
+                ROLLBACK_SYNC_STOPPED.format(old=here, new=back) + twice,
+            )
+            try:
+                env.sync(app)
+            except Exception as e:
+                log.error("rollback_sync_failed", str(e))
+                raise _unfinished(
+                    f"An interrupted rollback had put {here}'s program in place, but ", e, target=here,
+                    other=back, way_out=twice, paths=paths,
+                ) from e
             log.info("rollback_finished_only", now=here, backup=back)
             return UpdateResult(
                 here,
@@ -1109,6 +1388,9 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             raise NsError(
                 "NS-E702", f"could not record the rollback before starting it ({e}). {SETTINGS_REFUSED}"
             ) from e
+        update_job.step(
+            paths, f"Preparing your settings files for {restored_version}.", ROLLBACK_PREPARE_STOPPED
+        )
         prepared = _prepare_settings(
             paths, copy, why_not, live, live_error,
             slot=slot, zip_path=zip_path, restored_version=restored_version, left_version=old_version,
@@ -1130,6 +1412,7 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
                 "NS-E702",
                 f"could not record the rollback ({e}). {_undo_settings(app, paths, intent, log)}",
             ) from e
+        update_job.step(paths, f"Putting {restored_version}'s program in place.", ROLLBACK_SWAP_STOPPED)
         try:
             _swap_programs(app, prev, tmp)
         except OSError as e:
@@ -1158,9 +1441,21 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             left_version=old_version,
             log=log,
         )
-    env.sync(app)
     # (the result line: a program whose VERSION is missing or empty is not named after the running code)
     now = _shown_version(app)
+    twice = ROLLBACK_TWICE.format(new=old_version, old=now)
+    update_job.step(
+        paths, "Refreshing the Python environments.",
+        ROLLBACK_SYNC_STOPPED.format(old=now, new=old_version) + twice,
+    )
+    try:
+        env.sync(app)
+    except Exception as e:  # the older program and its settings are in place: finish forward, never swap back
+        log.error("rollback_sync_failed", str(e))
+        raise _unfinished(
+            f"The rollback to {now} is not finished. {prepared.sentence} {now}'s program is in place, but ",
+            e, target=now, other=old_version, way_out=twice, paths=paths,
+        ) from e
     log.info("rollback_done", old=old_version, restored=now)
     return UpdateResult(old_version, now, ["rolled back", *notes], settings=prepared.sentence)
 
@@ -1244,8 +1539,17 @@ def resync_venvs(
     uv: str | None = None,
     run: Callable[[list[str]], tuple[int, str]] | None = None,
     free: Callable[[Path], list[tuple[Path, Path]]] | None = None,
+    tries: int = SYNC_TRIES,
+    pause_s: float = SYNC_PAUSE_S,
+    sleep: Callable[[float], None] = time.sleep,
+    say: Callable[[str], None] | None = None,
 ) -> list[str]:
     """Fill every venv that exists with the packages of the program in `app`; `NS-E702` on failure.
+
+    A venv whose install fails on a file in use (uv's text says so, or a program runs from that venv:
+    `holders`) is tried `tries` times, `pause_s` apart, each wait told through `say` with the programs
+    named; any other failure is not retried. The NS-E702 carries `left` (that venv and the ones after it),
+    `done`, `tail` (uv's last lines) and `holders` in its data, for the caller's sentence.
 
     By the rule of the program in `app` (`deplock.follows_lock`), which need not be this updater's own:
 
@@ -1301,13 +1605,34 @@ def resync_venvs(
         else:
             cmd = [exe, "pip", "install", "-e", f"{app}{extras_suffix(venv, dev=dev)}", "--python", str(py)]
             cmds = [[*cmd, "--no-deps"] if venv in NO_DEPS else cmd]
-        moved = free_up(paths.venvs / venv)
-        for cmd in cmds:
-            rc, tail = runner(cmd)
-            if rc != 0:
-                restore_entry_points(moved)
-                raise NsError("NS-E702", f"uv pip install failed for venv {venv}: {tail}")
-        finish_entry_points(moved)
+        for attempt in range(1, max(1, tries) + 1):
+            moved = free_up(paths.venvs / venv)
+            failed: str | None = None
+            for cmd in cmds:
+                rc, tail = runner(cmd)
+                if rc != 0:
+                    restore_entry_points(moved)
+                    failed = tail
+                    break
+            if failed is None:
+                finish_entry_points(moved)
+                break
+            using = [str(h) for h in holders(paths, venv)]
+            in_use = bool(using) or any(sign in failed.lower() for sign in HELD_SIGNS)
+            if attempt >= tries or not in_use:
+                raise NsError(
+                    "NS-E702", f"uv pip install failed for venv {venv}: {failed}",
+                    left=venvs[venvs.index(venv):], done=list(done), tail=failed, holders=using,
+                )
+            who = "; ".join(using) or "a file in it is held open"
+            line = (
+                f"The Python environment '{venv}' is in use ({who}): trying again in {pause_s:g} s "
+                f"(try {attempt} of {tries})."
+            )
+            NsLogger("update", paths.logs).warn("sync_retry", line, venv=venv, attempt=attempt)
+            if say is not None:
+                say(line)
+            sleep(pause_s)
         done.append(venv)
     return done
 
@@ -1374,6 +1699,23 @@ def git_update(
     latest_tag: Callable[[], str] | None = None,
     git: GitRun | None = None,
 ) -> UpdateResult:
+    """`_git_update`, with every NS-E702 ending in what is in place (`_closed`)."""
+    return _closed(
+        lambda: _git_update(app, env, paths=paths, channel=channel, latest_tag=latest_tag, git=git),
+        paths,
+        app,
+    )
+
+
+def _git_update(
+    app: Path,
+    env: UpdateEnv,
+    *,
+    paths: Paths,
+    channel: str = "stable",
+    latest_tag: Callable[[], str] | None = None,
+    git: GitRun | None = None,
+) -> UpdateResult:
     """Update a cloned-repo install: fetch, move to the newest release tag (`stable`) or `origin/main`
     (`main`), re-sync the venvs, verify, and go back to the previous commit if any step fails (`NS-E702`).
 
@@ -1407,6 +1749,7 @@ def git_update(
     leave_app(app, paths)
     log.info("git_update_start", channel=channel, old=old_version, head=head[:12])
     env.stop()
+    wait_no_holders(paths, env.holder_wait_s)
     try:        # a failed update puts these back (a git install has no program backup to pair a copy with)
         before = config_snapshot.capture(paths.config)
     except config_snapshot.SnapshotError as e:
@@ -1417,21 +1760,36 @@ def git_update(
     code, out = run(target)
     if code != 0:
         raise NsError("NS-E702", f"git {' '.join(target)} failed: {out}")
+    update_job.step(
+        paths, "Refreshing the Python environments.",
+        "The update stopped after the newer program was checked out, while it was refreshing or checking "
+        "the Python environments. Run 'ns update --git' again, so that every environment is filled.",
+    )
+    at = "the refresh of the Python environments"
     try:
         env.sync(app)
+        at = "the check of the new version"
         if not env.verify(app):
             raise NsError("NS-E702", "ns verify --quick failed on the new version")
+        at = "the re-registration of the nightly task"
         notes = env.reregister(app) + _voice_notes(paths)
     except Exception as e:  # any step failing after the move goes back to the previous commit
         log.error("git_update_failed", str(e))
         run(["checkout", "--detach", head])
         put_back = _put_settings_back(paths, before, log, None)
+        detail = e.detail if isinstance(e, NsError) else f"{type(e).__name__}: {e}"
+        failed = f"The update failed at {at}: {_sentence(detail)}{put_back} "
         try:
             env.sync(app)
-        except Exception as e2:  # best effort: the old tree is back
+        except Exception as e2:  # the commit is back, an environment is not: said, and nothing is started
             log.error("rollback_sync_failed", str(e2))
-        detail = e.detail if isinstance(e, NsError) else f"{type(e).__name__}: {e}"
-        raise NsError("NS-E702", detail.rstrip(".") + "." + put_back) from e
+            raise _unfinished(
+                f"{failed}The previous commit ({old_version}) is checked out again, but ", e2,
+                target=old_version, other="the newer version", way_out="run 'ns update --git' again.",
+                paths=paths,
+            ) from e
+        back = f"The previous commit ({old_version}) is checked out again, with its Python environments."
+        raise NsError("NS-E702", failed + back, where=back) from e
     new_version = current_version(app)
     log.info("git_update_done", old=old_version, new=new_version)
     return UpdateResult(

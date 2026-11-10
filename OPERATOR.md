@@ -506,6 +506,19 @@ A cloned-repo install updates with `ns update --git` (newest release) or `ns upd
 needs Git for Windows (setup does not install it: without Git the command says "install Git for this"). The
 update installs exactly the packages setup installed. The old version is kept next to it as `<folder>.prev`;
 run `ns update --rollback` to go back. If a step fails, the old version is put back and the message names the step.
+In a terminal (from 0.1.15): `ns update <zip>`, `ns update --github`, `ns update --git` and `ns update --rollback`
+return at once and open a window, **Nightshift update**, that shows each step and the result. Closing the terminal
+or that window stops nothing. With `--detach` no window opens (for scripts: read `run/update_state.json`). Only one
+update, rollback or repair runs at a time; a second one stops with `NS-E705` and names the one that runs. Nothing
+starts while a program still runs from Nightshift's Python environments (a Studio window, a terminal that runs `ns`
+or `studio`, Nightshift Code, a Python prompt): after a wait of up to a minute the message `NS-E706` names each
+program and nothing is changed; close them and run it again. If the Python environments cannot be refreshed after
+the program was changed, the message says which program is in place, which environment is left and how to finish,
+and Nightshift is not started by the update. A failed update or rollback never says more than what is on the disk.
+From 0.1.14 and the 0.1.15 candidates up to rc3, update or go back with Settings > Updates, the Update shortcut or
+`ns update ... --detach`: their own `ns update` typed in a terminal without `--detach` fails on its own `ns.exe`
+(0.1.14's `ns update <zip>` then puts 0.1.14 back; rc3's `ns update --rollback` leaves one environment on the newer
+version: update again from Settings > Updates, then run `ns update --rollback --detach`).
 Locked packages: from the first release that carries `uv.lock`, setup, a repair (`INSTALL.cmd` again) and every
 update install the exact package versions that release was tested with (each download is checked against its
 SHA256), not the newest ones on the internet that day. The lists are kept as `logs/pins-<environment>.txt`. One

@@ -388,7 +388,8 @@ def test_ns_update_git_hint_is_for_a_clone_without_git(tmp_path, monkeypatch):
     clone = make_app(tmp_path / "clone")
     with pytest.raises(NsError) as no_git:
         update.git_update(clone, Env().env(), paths=Paths(tmp_path / "ns2"), latest_tag=lambda: "v0.2.0")
-    assert no_git.value.detail == update.NO_GIT_HINT
+    # (D-39: every NS-E702 of an update ends with what is in place; the hint itself is unchanged)
+    assert no_git.value.detail.startswith(update.NO_GIT_HINT + " In place now: ")
     para = next(ln for ln in section("## 5. Installer").splitlines() if ln.startswith("**`ns update`**"))
     for text in (numbered_line(section("### A.3"), 2), para, decision("Git"), section("### 21.1")):
         assert "clone" in text and "NS-E702" in text
