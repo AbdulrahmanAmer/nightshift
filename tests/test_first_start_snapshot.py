@@ -228,7 +228,8 @@ def test_the_first_start_after_an_older_updater_takes_the_copy_and_the_rollback_
     snap = config_snapshot.read(inst.copy)
     assert (snap.taken_by, snap.version) == ("first-start", "0.1.14")
     assert snap.fingerprint == config_snapshot.program_fingerprint(inst.home / "app.prev")
-    assert snap.files == {n: b for n, b in before.items() if n != "secrets.dpapi"}  # as 0.1.14 left them
+    left_alone = ("secrets.dpapi", "schedule.json")  # the keys, and the record of the Windows task
+    assert snap.files == {n: b for n, b in before.items() if n not in left_alone}  # as 0.1.14 left them
     assert read_config(inst.paths) != before  # the new version did rewrite files
 
     res = inst.rollback()
@@ -535,8 +536,7 @@ WRITERS: dict[str, tuple[Callable[[Paths], object], Callable[[Paths], object] | 
     "setup window: dev mode switch": (lambda p: devmode.reset_for_mode_switch(p.home, True), None),
     "dashboard: Settings": (lambda p: save_dashboard_settings(p, {"notifications": False}), None),
     "dashboard: Library > Formats": (lambda p: formats._write(p, "mine", {**FORMAT, "name": "Mine 2"}), None),
-    "ns schedule install": (lambda p: schedule_cfg.write_run_time(p, "04:00"), None),
-    "ns schedule uninstall": (lambda p: schedule_cfg.clear_run_time(p), None),
+    "ns schedule remove (keeps the time)": (lambda p: schedule_cfg.remember_run_time(p, "04:00"), None),
     "ns restore": (lambda p: backup.restore_backup(p, p.home.parent / "backup.zip"), _backup_prepare),
 }
 
@@ -1538,13 +1538,11 @@ def test_every_writer_of_a_settings_file_calls_the_guard_first() -> None:
     # the scan is not blind: it finds the writers we know (the PR lists them)
     assert {
         "ns_common/config.py:load_install_state",
-        "ns_supervisor/schedule_cfg.py:write_run_time",
-        "ns_supervisor/schedule_cfg.py:clear_run_time",
         "ns_dashboard/state.py:save_dashboard_settings",
         "ns_dashboard/formats.py:_write",
         "installer/stage2/state.py:save_flags",
         "installer/stage2/devmode.py:reset_for_mode_switch",
-        "installer/stage2/steps/s09_shortcuts_scheduler.py:remember_run_time",
+        "ns_supervisor/schedule_cfg.py:remember_run_time",
         "installer/stage2/web/controller.py:reset_install_times",
         "installer/stage2/web/controller.py:write_step",
     } <= set(found.flagged)
@@ -1554,7 +1552,7 @@ def test_every_writer_of_a_settings_file_calls_the_guard_first() -> None:
         "installer.stage2.answers.blank_secrets_in_file",
         "installer.stage2.web.answers_view.write_answers",
     } <= found.guarded_writers
-    assert {"runtime_file", "channel_file", "flags_path", "schedule_file", "settings_file", "user_dir"} <= (
+    assert {"runtime_file", "channel_file", "flags_path", "settings_file", "user_dir"} <= (
         found.locators
     )
 

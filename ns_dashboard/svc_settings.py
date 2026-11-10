@@ -23,10 +23,9 @@ from ns_dashboard.state import (
     AppState,
     load_dashboard_settings,
     load_ui_prefs,
-    refresh_schedule_record,
     save_dashboard_settings,
     schedule_is_registered,
-    scheduled_mode,
+    status_schedule_mode,
 )
 from ns_dashboard.svc_engine import EngineService
 from ns_dashboard.templates import load_templates
@@ -102,7 +101,9 @@ class SettingsService:
 
     def get_settings(self) -> dict[str, Any]:
         """`{schedule_time, home, profile, flags, keys, key_warnings, notifications, ...}`."""
-        refresh_schedule_record(self.s.paths)
+        refresh = getattr(self.s.adapters.schedule, "refresh", None)
+        if refresh is not None:     # the real adapter looks at the Windows task; a fake has none
+            refresh()
         stored = load_dashboard_settings(self.s.paths)
         runtime = self.engine.runtime_summary()
         flags = runtime_flags.flatten(runtime or {})
@@ -110,12 +111,12 @@ class SettingsService:
         prefs = load_ui_prefs(self.s.paths)
         return {
             "schedule_time": stored["run_time"],
-            # True when a 'Nightshift Daily' task the owner has exists (registered, interactive-only, or
-            # switched off by the owner in Task Scheduler: then `next_run` is None and the time is the
-            # task's own). False when Windows has none (NS-W206) or a dev install left it disabled; the time
-            # is then only a preference. `schedule_mode` tells registered from interactive_only (NS-W205)
+            # Automatic runs: True only while Windows has an enabled 'Nightshift Daily' task (the switch on
+            # the page shows this, never the click). False is off: no task, one disabled in Task Scheduler,
+            # or a dev install; `schedule_time` is then the time kept for switching on. `schedule_mode`
+            # tells registered from interactive_only (NS-W205: only while signed in)
             "schedule_registered": schedule_is_registered(self.s.paths),
-            "schedule_mode": scheduled_mode(self.s.paths),
+            "schedule_mode": status_schedule_mode(self.s.paths),
             "home": str(self.s.paths.home),
             "profile": (runtime or {}).get("profile"),
             "dev_mode": bool((runtime or {}).get("dev_mode")),
@@ -139,16 +140,28 @@ class SettingsService:
 
     @staticmethod
     def check_settings(body: dict[str, Any]) -> None:
-        """Refuse a schedule time or notifications value `put_settings` would refuse (also the Assistant's card gate)."""
+        """Refuse a schedule time, switch or notifications value `put_settings` would refuse (also the Assistant's card gate)."""
         if "schedule_time" in body and not TIME_RE.match(str(body["schedule_time"])):
             raise ApiError(422, "bad_time", "Use a 24-hour time like 03:00.")
+        if "automatic_runs" in body and not isinstance(body["automatic_runs"], bool):
+            raise ApiError(422, "invalid_options", "'automatic_runs' must be true or false.")
         if "notifications" in body and not isinstance(body["notifications"], bool):
             raise ApiError(422, "invalid_options", "'notifications' must be true or false.")
 
     def put_settings(self, body: dict[str, Any], unlock: bool = False) -> dict[str, Any]:
-        """Save the schedule, notifications and (only when unlocked) runtime flags."""
+        """Save Automatic runs (the switch and the time), notifications and (only when unlocked) runtime flags.
+
+        `schedule_result` in the answer is what the page says about the switch or the time: `applied`, a
+        `note` in words and the `code` (NS-W205, NS-E204) when there is one. `schedule_registered`,
+        `schedule_time` and `next_run` beside it are read after the change, from the record of what Windows has.
+        """
         unlocked = unlock or body.get("unlock") is True
         schedule_result: dict[str, Any] | None = None
+        if body.get("automatic_runs") is True and (self.engine.runtime_summary() or {}).get("dev_mode"):
+            raise ApiError(     # before anything is saved: a refusal changes nothing
+                409, "dev_mode", "Automatic runs cannot be switched on in a dev install.",
+                hint="A dev install's nightly task is registered disabled and never runs (docs/DEV_MODE.md).",
+            )
         if "flags" in body or "profile" in body:
             if not unlocked:
                 raise ApiError(
@@ -162,10 +175,13 @@ class SettingsService:
             updates["run_time"] = str(body["schedule_time"])
         if "notifications" in body:
             updates["notifications"] = body["notifications"]
-        if "run_time" in updates:  # the task first: a time Windows refused must not be remembered as the schedule
+        if "automatic_runs" in body:
+            # the switch (and the time with it): Windows first, and the answer is what Windows then has
+            schedule_result = self.s.adapters.schedule.switch(body["automatic_runs"], updates.get("run_time"))
+        elif "run_time" in updates:  # the task first: a time Windows refused must not be remembered as the schedule
             schedule_result = self.s.adapters.schedule.apply(updates["run_time"])
-            if schedule_result.get("applied") is False:
-                del updates["run_time"]
+        if schedule_result is not None and schedule_result.get("applied") is False:
+            updates.pop("run_time", None)
         if updates:
             save_dashboard_settings(self.s.paths, updates)
         out = self.get_settings()

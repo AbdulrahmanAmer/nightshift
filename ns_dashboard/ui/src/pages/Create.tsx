@@ -189,7 +189,7 @@ export default function Create() {
           <Card as="section" aria-labelledby="c-now">
             <CardHeader id="c-now" title="Working now" adornment={running.length ? <StatusDot tone="accent" label="Running" /> : undefined} />
             {running.length ? <ul className="flex flex-col gap-3">{running.map((j) => <JobRow key={j.job_id} j={j} channelName={channelName} onCancel={cancel} />)}</ul>
-              : <p className="text-ds-sm text-ds-text-2">Nothing running. Tonight's run starts at <span className="ds-num">{fmtClock(status?.next_run) || "03:00"}</span></p>}
+              : <p className="text-ds-sm text-ds-text-2">Nothing running. {status?.next_run ? <>Tonight's run starts at <span className="ds-num">{fmtClock(status.next_run)}</span></> : status?.schedule_registered ? "No channel is active, so nothing runs tonight" : "Automatic runs are off"}</p>}
           </Card>
           <Card as="section" aria-labelledby="c-earlier">
             <CardHeader id="c-earlier" title="Earlier" />

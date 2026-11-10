@@ -26,6 +26,7 @@ from typing import Any
 from ns_common.embed_client import approx_tokens
 from ns_dashboard.assistant.redact import has_mark, redact_text
 from ns_dashboard.errors import ApiError
+from ns_dashboard.state import schedule_is_registered
 
 DEFAULT_CTX = 16384
 SAFETY = 1.1  # on top of approx_tokens
@@ -439,6 +440,9 @@ def live_state(dash: Any) -> str:
     nxt = dash.engine.next_run()
     if nxt is not None:
         parts.append(f"next nightly run: {nxt:%Y-%m-%d %H:%M}")
+    elif not schedule_is_registered(dash.state.paths):
+        # true words for "when does it run": nothing does, and only the owner can switch it on
+        parts.append("automatic runs: off (the owner switches them on in Settings > Schedule > Automatic runs)")
     chans = [f"{c.slug}({c.status})" for c in dash.channels.load_all()]
     if chans:
         parts.append("channels: " + ", ".join(chans[:8]) + (f" +{len(chans) - 8}" if len(chans) > 8 else ""))

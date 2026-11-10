@@ -15,7 +15,7 @@ export const DEMO: any = {
   status: {
     version: "0.9.2",
     engine: { state: "idle", detail: "Idle", elapsed_s: null, vram_owner: null },
-    next_run: tonight(), schedule_time: "03:00",
+    next_run: tonight(), schedule_time: "03:00", schedule_registered: true, schedule_mode: "registered",
     outbox: { pending: 0, approved: 0, rejected: 0 },
     channels: [
       { slug: "after-dark", display_name: "After Dark Stories", status: "active", niche: "Original short horror fiction set in everyday places", voice: "Ryan", masters_per_week: 2, publish_window: "18:00-21:00", format: "master_first" },
@@ -68,7 +68,7 @@ export const DEMO: any = {
     { name: "Vivian", mode: "preset", description: "Clear, quick, good for Shorts" },
     { name: "Hollow Porch", mode: "design", description: "Deep, calm, slightly raspy older man" },
   ],
-  settings: { schedule_time: "03:00", home: "D:\\Nightshift", profile: "gpu", version: "0.9.2", flags: { ctx: 16384, kv_type: "f16", n_gpu_layers: 99, encoder: "h264_nvenc", tts_engine: "qwentts" }, keys: { pexels: true, pixabay: false }, notifications: true, wake_pc: true },
+  settings: { schedule_time: "03:00", schedule_registered: true, schedule_mode: "registered", home: "D:\\Nightshift", profile: "gpu", version: "0.9.2", flags: { ctx: 16384, kv_type: "f16", n_gpu_layers: 99, encoder: "h264_nvenc", tts_engine: "qwentts" }, keys: { pexels: true, pixabay: false }, notifications: true, wake_pc: true },
   learn: {
     imported_at: at(5, 9, 12), matched: 41, unmatched: 3,
     summary: ["Shorts that open mid-scene are watched 23% longer than ones that open with a question", "50-second Shorts keep more viewers than 75-second ones on After Dark Stories", "Yellow and clean white captions perform the same, so both stay in rotation"],

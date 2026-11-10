@@ -243,7 +243,7 @@ In **Create**, the **When** step lets you choose **Pick a time** instead of **No
 (Queue shows "Scheduled for ...") and starts at that time or as soon as Nightshift is running after it.
 You can cancel it any time before. A waiting job does not keep Nightshift awake: if the PC is asleep or Nightshift
 was closed at that time, the job starts the next time the Dashboard opens or the nightly run begins. Nothing wakes a closed Nightshift at that time, and **Quit Nightshift** warns you when jobs are waiting.
-The nightly run itself is unchanged: **Settings -> Run time**.
+The nightly run itself is unchanged: **Settings -> Schedule** (the **Automatic runs** switch and the run time).
 
 ## Every night
 
@@ -258,6 +258,16 @@ it tries again the next night.
 When the run ends you get a Windows notification ("1 master + 5 Shorts ready for review", or "run failed
 (NS-E203), open Dashboard"). Switch it off in **Settings -> Notifications**. Right after the run Nightshift shuts
 its engine down by itself, unless the Dashboard is open.
+
+**Automatic runs are a switch.** Settings -> Schedule -> **Automatic runs** adds the Windows task "Nightshift Daily"
+(on) or removes it (off); the run time beside it is kept either way. The top bar, the Queue and the Assistant say
+which it is: "Next run ...", "Runs at ... only while you are signed in", or "Automatic runs off". The page shows
+what Windows has, not what you clicked: if you delete or disable the task in Task Scheduler, Nightshift reads that
+as off within a minute, tells you once (`NS-W207`) and leaves the task as you set it; switch Automatic runs on in
+Settings to get the nightly run back. An update and a rollback never switch it on or off. Setup does, for now:
+a Repair or a reinstall that keeps your data registers the task again, so Automatic runs are on afterwards even
+if you had switched them off; switch them off again in Settings. A backup restore leaves them as they are. If Windows
+refuses the change, the switch stays where it was and the message says so (`NS-E204`).
 
 If Windows will not let Nightshift register the task for unattended runs, it registers it for "only while you are
 logged on" and says so at the end of setup (`NS-W205`). Then keep the PC logged in overnight (lock the screen, do not

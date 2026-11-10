@@ -14,6 +14,7 @@ from ns_common.paths import Paths
 from ns_supervisor import pwsh, schedule
 from ns_supervisor.schedule_cfg import read_schedule_mode, schedule_file, write_run_time
 from tests.test_dashboard_api import make_env
+from tests.test_schedule_keeps_state import install_fake
 
 SRC = Path(__file__).resolve().parents[1] / "ns_dashboard" / "ui" / "src"
 
@@ -36,15 +37,14 @@ def test_ns_schedule_install_records_whether_windows_refused_the_unattended_mode
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     paths = Paths(tmp_path / "ns")
-    monkeypatch.setattr(pwsh, "run_powershell", lambda script, **kw: done("registered:s4u\n"))
+    fake = install_fake(monkeypatch, None)
     schedule.install(paths, "03:00", tmp_path)
     assert read_schedule_mode(paths) == "registered"
-    monkeypatch.setattr(pwsh, "run_powershell", lambda script, **kw: done("registered:interactive\n"))
+    fake.refuse_s4u = True
     msg = schedule.install(paths, "03:00", tmp_path)
     assert "only while you are logged on" in msg
     assert read_schedule_mode(paths) == "interactive_only"
     # removing the task clears the file, so the mode goes back to none
-    monkeypatch.setattr(pwsh, "run_powershell", lambda script, **kw: done("removed"))
     schedule.remove(paths)
     assert read_schedule_mode(paths) == "none"
 
@@ -62,8 +62,9 @@ def test_status_and_settings_carry_the_mode_and_the_contract_accepts_it(tmp_home
     assert Status.model_validate(body).schedule_mode == "interactive_only"  # the contract (and its schema)
 
 
-# F-E11: `schedule_registered` is "an enabled task exists", not "schedule.json exists"; interactive-only
-# is a task that exists (the UI keeps saying so) and `schedule_mode` carries the difference.
+# F-E11: `schedule_registered` is "an enabled task exists" (Automatic runs on), not "schedule.json exists";
+# interactive-only is a task that exists (the UI keeps saying so) and `schedule_mode` carries the difference.
+# Off is every other shape, also the `switched_off` record 0.1.15-rc2 wrote for a task disabled by hand.
 SHAPES: list[tuple[str, object | None, str, bool]] = [
     # (case, schedule.json content (dict is dumped, str written raw, None = no file), mode, registered)
     ("no file", None, "none", False),
@@ -76,7 +77,7 @@ SHAPES: list[tuple[str, object | None, str, bool]] = [
     ("disabled (dev install)", {"run_time": "03:00", "task_name": "x", "mode": "disabled"},
      "disabled", False),
     ("switched off by the owner (D-28)", {"run_time": "03:00", "task_name": "x", "mode": "switched_off"},
-     "switched_off", True),
+     "switched_off", False),
     ("bad time", {"run_time": "25:99", "task_name": "x", "mode": "registered"}, "none", False),
 ]
 
@@ -90,8 +91,8 @@ def test_settings_report_a_task_as_registered_only_when_an_enabled_task_exists(
     mode: str,
     registered: bool,
 ):
-    # a `switched_off` record makes the page look at the task: Windows has none here, so nothing changes
-    monkeypatch.setattr(pwsh, "run_powershell", lambda script, **kw: done("not registered\n"))
+    # the fake services' schedule adapter never looks at Windows: only the record speaks here
+    monkeypatch.setattr(pwsh, "run_powershell", lambda script, **kw: pytest.fail("asked the Task Scheduler"))
     client, state = make_env(tmp_home)
     if content is not None:
         state.paths.config.mkdir(parents=True, exist_ok=True)
@@ -99,12 +100,12 @@ def test_settings_report_a_task_as_registered_only_when_an_enabled_task_exists(
         schedule_file(state.paths).write_text(text, encoding="utf-8")
     settings = client.get("/api/settings").json()
     assert settings["schedule_registered"] is registered
-    assert settings["schedule_mode"] == mode
+    shown = "none" if mode in ("disabled", "switched_off") else mode  # the contract has no off spellings
+    assert settings["schedule_mode"] == shown
     assert read_schedule_mode(state.paths) == mode
     status = client.get("/api/status").json()
     assert status["schedule_registered"] is registered
-    # the Status contract has no `disabled`; a task that never fires reads as no task there
-    assert status["schedule_mode"] == ("none" if mode in ("disabled", "switched_off") else mode)
+    assert status["schedule_mode"] == shown
     assert Status.model_validate(status).schedule_registered is registered
 
 

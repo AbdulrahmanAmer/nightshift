@@ -216,9 +216,18 @@ class BackupAdapter(Protocol):
 
 
 class ScheduleAdapter(Protocol):
-    """Applies the nightly run time to the scheduled task."""
+    """Automatic runs: the switch and the nightly run time, applied to the Windows task.
+
+    Both answer `{applied, note}` and, when there is one, the `code` of what happened (NS-W205, NS-E204).
+    """
 
     def apply(self, run_time: str) -> dict[str, Any]: ...
+
+    def switch(self, on: bool, run_time: str | None = None) -> dict[str, Any]: ...
+
+    def refresh(self) -> None:
+        """Let the record follow the Windows task (at most one look a minute). The fake has no task: no-op."""
+        ...
 
 
 @dataclass
@@ -1017,25 +1026,66 @@ class RealFolderOpener:
 
 
 class RealScheduleAdapter:
-    """Re-registers the 'Nightshift Daily' task at the new time (`ns_supervisor.schedule.install`).
+    """Automatic runs on the real Windows task (`ns_supervisor.schedule.set_automatic`).
 
-    A task the owner switched off in Task Scheduler gets the new time and stays switched off (D-28).
-    A task registered with `ns schedule install --disabled` (record mode `disabled`) is registered enabled.
+    The note is what the page shows; every refusal says which state Automatic runs are in now and what to do.
     """
 
     def __init__(self, paths: Paths) -> None:
         self.paths = paths
 
     def apply(self, run_time: str) -> dict[str, Any]:
-        """Register the task at `run_time`; if Windows refuses, the time stays saved and the note says why."""
+        """Move the time. On: the task is registered at it. Off: it is kept for switching on, no task."""
+        return self._set(None, run_time)
+
+    def switch(self, on: bool, run_time: str | None = None) -> dict[str, Any]:
+        """Switch Automatic runs on (register the task) or off (remove it, keep the time)."""
+        return self._set(on, run_time)
+
+    def refresh(self) -> None:
+        """One look at the Windows task when a minute has passed (`state.refresh_schedule_record`)."""
+        from ns_dashboard.state import refresh_schedule_record
+
+        refresh_schedule_record(self.paths)
+
+    def _set(self, on: bool | None, run_time: str | None) -> dict[str, Any]:
+        from ns_common.errors import describe
         from ns_supervisor.control import app_path
-        from ns_supervisor.schedule import ScheduleError, install
+        from ns_supervisor.schedule import ScheduleError, ScheduleFileError, set_automatic
+        from ns_supervisor.schedule_cfg import is_on
 
         try:
-            message = install(self.paths, run_time, app_path(self.paths), keep_state=True)
+            out = set_automatic(self.paths, app_path(self.paths), on=on, run_time=run_time)
+        except ScheduleFileError as e:
+            # Nightshift's own lock or record, not Windows: the elevated-PowerShell hint would be untrue
+            shown = "on" if is_on(self.paths) else "off"
+            return {
+                "applied": False, "code": "NS-E204",
+                "note": f"Not saved (NS-E204): {e}. This page shows Automatic runs {shown}.",
+            }
         except ScheduleError as e:
-            return {"applied": False, "note": f"Not saved: Windows refused to change the nightly task ({e})"}
-        return {"applied": True, "note": f"Scheduled task updated. {message}"}
+            still = "on" if is_on(self.paths) else "off"
+            hint = describe("NS-E204").hint
+            return {
+                "applied": False, "code": "NS-E204",
+                "note": f"Not saved: Windows did not change the nightly task ({e}). Automatic runs are still "
+                        f"{still}. NS-E204: {hint}",
+            }
+        if not out.on:
+            note = (
+                "Automatic runs are off: the task 'Nightshift Daily' was removed, nothing runs by itself"
+                if out.changed else "Automatic runs are off"
+            )
+            if run_time:
+                note += f". {run_time} is kept for when you switch them on"
+            return {"applied": True, "note": note}
+        if out.mode == "interactive_only":
+            w = describe("NS-W205")
+            return {
+                "applied": True, "code": "NS-W205",
+                "note": f"Automatic runs are on at {out.run_time}. NS-W205: {w.message} {w.hint}",
+            }
+        return {"applied": True, "note": f"Automatic runs are on: every night at {out.run_time}"}
 
 
 def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters:

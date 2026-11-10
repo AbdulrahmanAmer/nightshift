@@ -21,9 +21,7 @@ from ns_dashboard.events import iter_sse
 from ns_dashboard.state import (
     AppState,
     load_dashboard_settings,
-    refresh_schedule_record,
     schedule_is_registered,
-    scheduled_mode,
     status_schedule_mode,
 )
 from ns_dashboard.svc_channels import ChannelsService
@@ -99,14 +97,11 @@ class EngineService:
 
     # --- schedule ---
     def next_run(self) -> datetime | None:
-        """Next occurrence of the nightly run time (local time), or None without active channels.
-
-        Also None while the owner has the task switched off (D-28): no run is coming, so the page must not
-        show one.
-        """
-        if not any(c.status == "active" for c in self.channels.load_all()):
+        """Next occurrence of the nightly run time (local time); None unless Automatic runs are on (an
+        enabled Windows task) and a channel is active: no run is coming, so no page may show one."""
+        if not schedule_is_registered(self.s.paths):
             return None
-        if scheduled_mode(self.s.paths) == "switched_off":
+        if not any(c.status == "active" for c in self.channels.load_all()):
             return None
         hh, mm = (int(x) for x in str(load_dashboard_settings(self.s.paths)["run_time"]).split(":"))
         now = self.clock()
@@ -160,7 +155,9 @@ class EngineService:
     # --- /api/status ---
     def status(self) -> dict[str, Any]:
         """The object behind `GET /api/status` and every `status` event."""
-        refresh_schedule_record(self.s.paths)
+        refresh = getattr(self.s.adapters.schedule, "refresh", None)
+        if refresh is not None:     # the real adapter looks at the Windows task; a fake has none
+            refresh()
         st = self.s.link.status()
         engine = self.engine(st)
         cards = self.channels.load_all()
@@ -179,6 +176,7 @@ class EngineService:
         if recent is not None and recent["status"] == "failed":
             last_error = {"job_id": recent["job_id"], "message": recent["message"], "kind": recent["kind"]}
         settings = load_dashboard_settings(self.s.paths)
+        on = schedule_is_registered(self.s.paths)
         pending = {r["channel"]: int(r["n"]) for r in self.s.db.query(
             "SELECT channel, COUNT(*) AS n FROM outputs WHERE status = 'pending' GROUP BY channel"
         )}
@@ -188,7 +186,8 @@ class EngineService:
             "next_run": nxt.isoformat(timespec="minutes") if nxt else None,
             "next_run_in_s": int((nxt - self.clock()).total_seconds()) if nxt else None,
             "schedule_time": settings["run_time"],
-            "schedule_registered": schedule_is_registered(self.s.paths),
+            # Automatic runs: on only while Windows has an enabled task (F-E11); off is a normal state
+            "schedule_registered": on,
             "schedule_mode": status_schedule_mode(self.s.paths),
             "outbox": counts,
             "channels": [
@@ -202,7 +201,7 @@ class EngineService:
                     "publish_window": c.publish_window,
                     "format": c.format,
                     "pending": pending.get(c.slug, 0),
-                    "tonight": self._tonight(c.status, c.format, settings["run_time"]),
+                    "tonight": self._tonight(c.status, c.format, settings["run_time"] if on else None),
                 }
                 for c in cards
             ],
@@ -231,9 +230,11 @@ class EngineService:
             return None
 
     @staticmethod
-    def _tonight(status: str, fmt: str, run_time: str) -> str:
+    def _tonight(status: str, fmt: str, run_time: str | None) -> str:
         if status == "paused":
             return "Paused - nothing will be made"
+        if run_time is None:
+            return "Nothing tonight: automatic runs are off"
         return f"Makes {FORMAT_LABELS.get(fmt, fmt)} at {run_time}"
 
     def _run_row(self, row: Any) -> dict[str, Any]:

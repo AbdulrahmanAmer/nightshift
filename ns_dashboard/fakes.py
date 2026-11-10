@@ -410,15 +410,28 @@ class FakeFolderOpener:
 
 
 class FakeScheduleAdapter:
-    """Records applied run times."""
+    """Records applied run times and switch clicks. There is no Windows task behind it, so the switch is
+    refused with the reason and Automatic runs stay off, as every page then says."""
 
     def __init__(self) -> None:
         self.applied: list[str] = []
+        self.switched: list[bool] = []
 
     def apply(self, run_time: str) -> dict[str, Any]:
         """Record and report success."""
         self.applied.append(run_time)
         return {"applied": True, "note": "fake"}
+
+    def refresh(self) -> None:
+        """Nothing to look at: no test and no fake-services dashboard asks the real Task Scheduler."""
+
+    def switch(self, on: bool, run_time: str | None = None) -> dict[str, Any]:
+        """Record the click; nothing is registered."""
+        self.switched.append(on)
+        if not on:
+            return {"applied": True, "note": "Automatic runs are off"}
+        return {"applied": False, "note": "Not saved: this dashboard runs on fake services, which have no "
+                                           "Windows task. Automatic runs are still off"}
 
 
 class FakeUpdateAdapter:

@@ -688,11 +688,6 @@ def _prepare_settings(
     older = _for_older_sentence(restored_version, dropped, failed, restored=True)
     if older:
         sentence += " " + older
-    if "schedule.json" in done.changed:
-        notes.append(
-            "the nightly run time in schedule.json is back to the old value, but the Windows task keeps "
-            "the time it has now: set the time again in Settings if you changed it after the update"
-        )
     bad = _unreadable(paths.config, done.written)
     if bad:
         log.warn("settings_unreadable_after_restore", files=bad)

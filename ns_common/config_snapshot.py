@@ -87,10 +87,6 @@ FILES: dict[str, str] = {
         "The saved setup choices (the strict Answers form); a setup re-run, repair or reinstall rewrites it."
     ),
     "wizard_flags.json": "Setup's own flags, saved beside the install state by the same re-runs.",
-    "schedule.json": (
-        "The update itself rewrites it: its re-register step runs `ns schedule install`, which saves the run "
-        "time and mode again."
-    ),
     "dashboard.json": "The Settings page saves it (notifications and the like); a newer one may add keys.",
 }
 
@@ -119,6 +115,11 @@ SETUP_TOUCHES: tuple[str, ...] = (
 #: Files under `<home>\config` the code names and the copy does NOT hold, with why (a test keeps this list and
 #: FILES covering every name the code mentions, so a file added in a later release has to be decided here).
 LEFT_ALONE: dict[str, str] = {
+    "schedule.json": (
+        "The record of what Windows has for the nightly task (Automatic runs on or off). A rollback never "
+        "changes the task, so an older copy could only say on for a task that is gone, or off for one that "
+        "runs. A plain dict; 0.1.14 reads every mode that is still written."
+    ),
     "secrets.dpapi": (
         "The owner's API keys, encrypted to this Windows user: never duplicated into a second file, and a "
         "key added after the update must survive a rollback."
@@ -222,6 +223,11 @@ def install_stamp(program: Path) -> str:
     return f"{program_fingerprint(program)}@{written}"
 
 
+#: Names a copy made by 0.1.15-rc1 or rc2 holds that are LEFT_ALONE now: such a copy still reads (it is not
+#: "damaged"), and the file in it is skipped, so a restore leaves the live one as it is.
+IN_OLDER_COPIES = frozenset({"schedule.json"})
+
+
 def valid_name(name: str) -> bool:
     """True for a name a copy may hold: a listed file or `<tree>/<file>.yaml` (nothing that leaves config)."""
     if not name or "\\" in name or ":" in name or name.startswith("/"):
@@ -319,6 +325,8 @@ def parse(data: bytes) -> Snapshot:
                 raise _damaged("its file list does not match the zip")
             files: dict[str, bytes] = {}
             for name, meta in listed.items():
+                if name in LEFT_ALONE and name in IN_OLDER_COPIES:
+                    continue  # read past, never restored
                 if not valid_name(name):
                     raise _damaged(f"{name!r} is not a settings file name")
                 content = z.read(MEMBER_ROOT + name)

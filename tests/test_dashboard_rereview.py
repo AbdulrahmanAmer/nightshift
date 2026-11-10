@@ -781,7 +781,7 @@ def test_a_time_the_task_accepts_is_saved(tmp_home: Path):
 
 def test_the_refusal_note_says_not_saved():
     src = (Path(__file__).resolve().parents[1] / "ns_dashboard" / "adapters.py").read_text(encoding="utf-8")
-    assert "Saved, but Windows did not update the nightly task" not in src and "Not saved: Windows refused" in src
+    assert "Saved, but Windows did not update the nightly task" not in src and "Not saved: Windows did not change the nightly task" in src
 
 
 # ---------------------------------------------------------------- row 11: never two workers
@@ -1159,16 +1159,6 @@ def test_try_again_registers_the_task_through_the_schedule_adapter(tmp_home: Pat
     r = client.put("/api/settings", json={"schedule_time": "03:00"})
     assert r.json()["schedule_result"]["applied"] is True
     assert state.adapters.schedule.applied == ["03:00"]  # type: ignore[attr-defined]
-
-
-def test_the_pages_show_the_no_task_message_and_a_try_again_button():
-    lib = (SRC / "lib" / "format.ts").read_text(encoding="utf-8")
-    assert 'export const NO_TASK = "No nightly task; videos are made only while Nightshift is open"' in lib
-    shell = (SRC / "shell" / "Shell.tsx").read_text(encoding="utf-8")
-    assert 'status?.schedule_registered === false' in shell and "No nightly task" in shell and "NO_TASK" in shell
-    settings = page("Settings.tsx")
-    assert "s.schedule_registered === false" in settings and ">Try again</Button>" in settings
-    assert "put({ schedule_time: s.schedule_time }" in settings
 
 
 def test_the_update_reconnect_cap_starts_when_the_state_leaves_running_not_at_the_click():
