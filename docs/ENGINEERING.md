@@ -277,6 +277,17 @@ Rules: no test depends on wall-clock timing, GPU, the real home folder or the in
 
 **Versioning.** SemVer. Single source: `pyproject.toml` `version`; `ns_common.__version__` must equal it (a unit test asserts this); the bundle writes `VERSION` at the zip root from the tag. Milestones map to minors (`0.1.0` M0, `0.2.0` M1, `0.3.0` M2, `0.4.0` M3, `1.0.0` M4); fix passes are patches (`0.1.1`). Tags `v*` are created by the orchestrator only, on a green `main` commit.
 
+**The dependency lock.** `uv.lock` (repository root, in the bundle) pins every package of every extra with
+its hashes; setup and `ns update` install from it (`installer/stage2/web/deplock.py`) and refuse with NS-E124
+when it is missing or was not made for `pyproject.toml`. It must be made again whenever `pyproject.toml`
+changes its dependencies, its extras OR its `version` (uv writes the project version into the lock, so every
+release bump needs it): `python dev/lock_deps.py` on any machine with internet. The script runs `uv lock` with
+the uv version `manifest.json` pins (the uv that reads the lock on the target) and downloads package metadata
+only, no wheels. `python dev/lock_deps.py --check` checks without the network. CI checks every push without
+uv: `tests/test_dependency_lock.py` compares the lock with `pyproject.toml` (project version, requirements,
+extras) and fails with that command in its message; where the pinned uv is present the same file also runs
+the product's own `uv export --locked --offline` calls against the committed lock.
+
 **Changelog.** `CHANGELOG.md` in Keep a Changelog format. Each builder puts one line per `feat` or `fix` batch in its report; the orchestrator adds them under `## Unreleased`, and moves them under the new version heading before tagging. The `bundle` job fails when the heading for the tag is missing.
 
 **Branch protection for a solo-orchestrator repo.** Pull requests are not required (builders push to `main` directly when file sets are disjoint). Settings: `main` forbids force-push and deletion; required status checks `lint`, `types` and `test` gate merges of `feat/*` branches; tags `v*` and `contracts-m*` are protected by a tag ruleset so only the owner creates or moves them; `contents: write` permission only in the `bundle` job; no secrets in the repo (the Drive upload is manual).

@@ -27,10 +27,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def make_source(root: Path, version: str = "0.1.4", **extra: str) -> Path:
     """A folder shaped like the extracted zip (plus junk that must not be copied)."""
+    from tests.test_dependency_lock import program_files  # (that module imports this one)
+
+    lock = program_files(version)
     files = {
         "INSTALL.cmd": "@echo off", "VERSION": version + "\n",
         "manifest.json": json.dumps({"version": version}),
-        "pyproject.toml": "[project]\nname='x'", "installer/stage1.ps1": "# ps", "ns_common/__init__.py": "",
+        "pyproject.toml": lock["pyproject.toml"], "uv.lock": lock["uv.lock"],
+        "installer/stage1.ps1": "# ps", "ns_common/__init__.py": "",
         "bin/webview2/WebView2Loader.dll": "MZ", "bin/llama/llama-server.exe": "MZ",
         "venvs/studio/Scripts/python.exe": "MZ", "models/llm/big.gguf": "x" * 10,
         "node_modules/pkg/index.js": "x", "ns_common/__pycache__/a.pyc": "x", ".git/HEAD": "ref: main",
@@ -457,7 +461,10 @@ def test_b03_installs_from_the_copy_not_from_the_extracted_folder(tmp_path: Path
     boot.cmd = cmd
     bootstrap.B03SetupEnv().run(boot)
     installs = [argv for argv, _cwd in seen if "pip" in argv]
-    assert installs and installs[0][-1] == f"{boot.home / 'app'}[studio]"
+    # (P29a: the locked packages first, then the program itself, both from the copy)
+    assert installs and installs[-1][-3:] == ["--no-deps", "-e", str(boot.home / "app")]
+    exports = [argv for argv, _cwd in seen if argv[1] == "export"]
+    assert exports and exports[0][exports[0].index("--project") + 1] == str(boot.home / "app")
     assert all(cwd == boot.home / "app" for _argv, cwd in seen)
     assert boot.venv_marker.read_text("utf-8").startswith(str(boot.home / "app"))
 
@@ -469,7 +476,10 @@ def fake_zip_folder(root: Path, version: str = "0.1.4") -> Path:
     manifest = (ROOT / "manifest.json").read_text(encoding="utf-8")
     (root / "manifest.json").write_text(manifest, encoding="utf-8")
     (root / "VERSION").write_text(version + "\n", encoding="utf-8")
-    (root / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    from tests.test_dependency_lock import program_files  # (that module imports this one)
+
+    for name in ("pyproject.toml", "uv.lock"):
+        (root / name).write_text(program_files(version)[name], encoding="utf-8")
     (root / "launchers").mkdir()
     (root / "launchers" / "nightshift-dashboard.ps1").write_text("# ps", encoding="utf-8")
     return root
@@ -510,7 +520,7 @@ def test_a_whole_run_puts_the_program_under_home_and_hands_that_folder_to_the_wi
     assert recorded["app_path"] == str(app)         # what ns update, the task and the shortcuts read
     assert state["appPath"] == str(app) and state["result"]["appPath"] == str(app)
     pips = [c for c in s.cmd.calls if len(c) > 2 and c[1:3] == ["pip", "install"]]
-    assert pips and pips[0][-1] == f"{app}[studio]"
+    assert pips and pips[-1][-3:] == ["--no-deps", "-e", str(app)]      # (P29a: the program, from the copy)
     shutil.rmtree(extracted)                                                # delete the folder from Downloads
     assert (app / "VERSION").is_file() and s.ctl.run_app_path == app
 

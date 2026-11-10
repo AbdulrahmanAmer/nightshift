@@ -506,6 +506,14 @@ A cloned-repo install updates with `ns update --git` (newest release) or `ns upd
 needs Git for Windows (setup does not install it: without Git the command says "install Git for this"). The
 update installs exactly the packages setup installed. The old version is kept next to it as `<folder>.prev`;
 run `ns update --rollback` to go back. If a step fails, the old version is put back and the message names the step.
+Locked packages: from the first release that carries `uv.lock`, setup, a repair (`INSTALL.cmd` again) and every
+update install the exact package versions that release was tested with (each download is checked against its
+SHA256), not the newest ones on the internet that day. The lists are kept as `logs/pins-<environment>.txt`. One
+update is the exception: the update FROM 0.1.14 (or a 0.1.15 candidate up to rc3) to a locked release is done by
+the old updater, which installs the newest versions inside the allowed ranges, as it always did. The next
+update after that one is done by the new updater and installs the locked versions.
+A package whose `uv.lock` is missing or does not belong to it is refused with NS-E124 before anything is changed:
+download it again. `ns update --rollback` to a version from before the lock installs that version its own way.
 An update also keeps a copy of your settings files (engine settings, setup answers, the nightly time, dashboard
 settings, channels and formats) as `<folder>.prev-config.zip`, and `ns update --rollback` puts them back with the old
 version, because an older version cannot always read a file a newer one saved. What you changed in those settings

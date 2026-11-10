@@ -28,7 +28,7 @@ from typing import NamedTuple
 
 import ns_common.testguard as testguard
 import ns_common.vcruntime as vcruntime
-from installer.stage2.web import appcopy, filesdir, pathcheck
+from installer.stage2.web import appcopy, deplock, filesdir, pathcheck
 from ns_common.atomic import copy_atomic, write_stream_atomic
 from ns_common.avblock import is_blocked_error, looks_blocked
 from ns_common.uv import looks_full, uv_env, venv_args
@@ -875,9 +875,16 @@ class B02Home:
 
 
 class B03SetupEnv:
-    """``venvs\\studio`` with the app installed in it, as stage 1 used to do."""
+    """``venvs\\studio`` with the app installed in it, as stage 1 used to do.
+
+    The packages are the ``studio`` extra as the program's ``uv.lock`` pins it (P29a, ``deplock``): exported
+    with hashes, installed with ``--require-hashes``, then the program with ``--no-deps``. A lock that is
+    missing or was not made for this ``pyproject.toml`` is NS-E124 before the venv is created.
+    """
 
     id = "b03_setup_env"
+    #: The extra the setup environment gets (s04 then fills the studio venv with its whole set, same lock).
+    EXTRAS = ("studio",)
     title = "Setup helper"
 
     def check(self, boot: Boot) -> bool:
@@ -894,6 +901,7 @@ class B03SetupEnv:
         """Create the venv when it is missing, then install the studio extra."""
         env = uv_env(boot.home)             # copy mode, and uv's cache on the install drive
         boot.on_row("setup_env", "active", "installing")
+        pins = self._export_pins(boot, env)     # NS-E124 here, before the venv is created or changed
         if not boot.venv_python.is_file():
             boot.say("Creating the setup environment")
             venv_dir = boot.home / "venvs" / "studio"
@@ -904,17 +912,39 @@ class B03SetupEnv:
                 raise BootstrapError(classify(text, "NS-E105"), text)
         boot.checkpoint()
         boot.say("Installing the Python packages for setup")
-        res = boot.cmd(
-            [boot.uv_exe, "pip", "install", "--python", str(boot.venv_python), "-e",
-             f"{boot.run_app}[studio]"],
-            env, boot.run_app, 3600,
-        )
-        if res.returncode != 0:
-            text = last_lines(res.stdout + "\n" + res.stderr)
-            boot.on_row("setup_env", "failed", None)
-            raise BootstrapError(classify(text, "NS-E105"), text)
+        for args in (
+            deplock.install_args(boot.venv_python, pins),       # the locked versions, hash-checked
+            deplock.app_args(boot.venv_python, boot.run_app),   # the program itself, no dependencies
+        ):
+            res = boot.cmd([boot.uv_exe, *args], env, boot.run_app, 3600)
+            if res.returncode != 0:
+                text = last_lines(res.stdout + "\n" + res.stderr)
+                boot.on_row("setup_env", "failed", None)
+                raise BootstrapError(classify(text, "NS-E105"), text)
+            boot.checkpoint()
         boot.venv_marker.write_text(boot.venv_stamp(), encoding="utf-8")
         boot.on_row("setup_env", "done", "installed")
+
+    def _export_pins(self, boot: Boot, env: Mapping[str, str]) -> Path:
+        """``logs/pins-setup.txt`` from the program's ``uv.lock``; NS-E124 when the lock is missing or stale
+        (checked without uv) or uv refuses it; any other failed export keeps the code of a failed uv call."""
+        why = deplock.problem(boot.run_app)
+        if why is None:
+            out = deplock.pins_file(boot.home / "logs", "setup")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            res = boot.cmd(
+                [boot.uv_exe, *deplock.export_args(boot.run_app, self.EXTRAS, out)], env, boot.run_app, 600
+            )
+            if res.returncode == 0:
+                return out
+            text = last_lines(res.stdout + "\n" + res.stderr)
+            code = classify(text, "NS-E105")        # a full disk or a blocked program keeps its own code
+            if code != "NS-E105" or not deplock.blames_lock(text):
+                boot.on_row("setup_env", "failed", None)
+                raise BootstrapError(code, text)
+            why = f"uv could not read the locked packages. uv said:\n{text}"
+        boot.on_row("setup_env", "failed", None)
+        raise BootstrapError("NS-E124", f"{why}\n{deplock.NO_VENV_CHANGED}")
 
     def verify(self, boot: Boot) -> None:
         """The interpreter exists."""

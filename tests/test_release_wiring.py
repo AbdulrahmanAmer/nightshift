@@ -227,6 +227,8 @@ def test_a_bundle_dry_run_puts_the_version_file_number_in_the_zip_manifest():
     version = read("VERSION").strip()
     assert f"manifest.json version: {version}" in proc.stdout
     assert f"verified: manifest.json version {version} = VERSION" in proc.stdout
+    # P29a: the zip holds the dependency lock setup and ns update install from (an entry of the file list)
+    assert re.search(r"(?m)^\s+\d+\s+uv\.lock\s*$", proc.stdout), "uv.lock is not in the bundle"
 
 
 def test_a_rerun_refreshes_the_venvs_and_the_smoke_test_when_the_manifest_version_changes(tmp_path):
