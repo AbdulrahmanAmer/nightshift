@@ -12,13 +12,20 @@ if (-not (Test-Path -LiteralPath $opencode)) {
 
 # D-34: OpenCode's first request is about half of a 16384-token context (installer s07_configs MIN_CODE_CONTEXT).
 # With less, the first question would fail after the model has been loaded, so say so now and take nothing.
+# The number that counts is the one llama-server runs with, which the running engine reports in /status; the
+# engine read config\runtime.json only when it started (see Get-NsCodeContextRefusal for the cases).
 $minCtx = 16384
-$llamaCfg = $null
-try { $llamaCfg = Read-NsLlamaConfig }
-catch { Write-Host ('Could not read runtime.json to check the context: ' + $_.Exception.Message) }
-if ($null -ne $llamaCfg -and $llamaCfg.Ctx -lt $minCtx) {
-    Exit-NsWithPause ('Nightshift Code needs ' + $minCtx + ' tokens of context; this install has ' + $llamaCfg.Ctx + '. Set llama.flags.ctx in config\runtime.json to 16384 or more (it needs more memory), then start Nightshift Code again.')
+$fileCtx = $null
+try {
+    $llamaCfg = Read-NsLlamaConfig
+    if ($null -ne $llamaCfg) { $fileCtx = $llamaCfg.Ctx }
 }
+catch { Write-Host ('Could not read runtime.json to check the context: ' + $_.Exception.Message) }
+$engineUp = Test-NsSupervisor
+$engineCtx = $null
+if ($engineUp) { $engineCtx = Get-NsEngineLlamaCtx -Status (Get-NsStatus) }
+$refusal = Get-NsCodeContextRefusal -MinCtx $minCtx -FileCtx $fileCtx -EngineUp $engineUp -EngineCtx $engineCtx
+if ($refusal) { Exit-NsWithPause $refusal }
 
 if (-not (Test-NsSupervisor)) {
     Start-NsSupervisor -Headless
@@ -37,7 +44,12 @@ if ($null -ne $ep -and ($ep.PSObject.Properties.Name -contains 'endpoint')) {
     $endpoint = [string]$ep.endpoint
     if ($endpoint -match '^https?://') { $baseUrl = $endpoint.TrimEnd('/') + '/v1' }
 }
-Sync-NsOpenCodePort -BaseUrl $baseUrl
+# OpenCode is told the context llama-server runs with now (the engine started it from its own copy of the
+# settings), not what the file says; 0 = the engine did not say, the file's number is used.
+$runningCtx = Get-NsEngineLlamaCtx -Status (Get-NsStatus)
+$syncCtx = 0
+if ($null -ne $runningCtx) { $syncCtx = $runningCtx }
+Sync-NsOpenCodePort -BaseUrl $baseUrl -Ctx $syncCtx
 
 try {
     $env:OPENCODE_CONFIG = Join-Path (Get-NsHome) 'config\opencode.json'

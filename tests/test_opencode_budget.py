@@ -78,3 +78,21 @@ def test_the_prompt_is_ascii_and_the_same_text_the_launcher_carries() -> None:
     start = launcher.index("$script:NsOpenCodePrompt = @'")
     body = launcher[launcher.index("\n", start) + 1 : launcher.index("\n'@", start)]
     assert body.replace("\r\n", "\n") == prompt
+
+
+def test_the_engine_status_says_the_context_llama_runs_with(tmp_path: Path) -> None:
+    """D-34 review: Nightshift Code asks the running engine (GET /status), not runtime.json, which the engine
+    read only when it started."""
+    from ns_common.models import Runtime
+    from ns_common.paths import Paths
+    from ns_supervisor.core import Supervisor
+    from ns_supervisor.gpu import NullGpuProbe
+    from ns_supervisor.testing import StubTable, fast_config
+
+    rt = Runtime.default("gpu")
+    rt.llama.flags.ctx = 8192
+    sup = Supervisor(Paths(tmp_path / "ns"), rt, config=fast_config(), resolver=StubTable(),
+                     gpu_probe=NullGpuProbe())
+    services = sup.status()["services"]
+    assert services["llama"].get("ctx") == 8192
+    assert services["embed"].get("ctx", "missing") is None

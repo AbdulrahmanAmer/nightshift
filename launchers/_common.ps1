@@ -407,7 +407,7 @@ function Set-NsJsonProp {
     # -OnlyIfMissing a property that is already there (whatever its value) stays as the owner set it.
     param($Object, [string]$Name, $Value, [switch]$OnlyIfMissing)
     if ($Object.PSObject.Properties.Name -contains $Name) {
-        if ($OnlyIfMissing) { return $false }
+        if ($OnlyIfMissing -and $null -ne $Object.$Name) { return $false }   # JSON null counts as missing
         if ($Object.$Name -ceq $Value) { return $false }
         $Object.$Name = $Value
         return $true
@@ -435,6 +435,45 @@ function Read-NsLlamaConfig {
         Ctx       = $(if ($null -ne $ctx) { [int]$ctx } else { 16384 })
         ModelPath = $(if ($null -ne $modelPath) { [string]$modelPath } else { '' })
     }
+}
+
+function Get-NsEngineLlamaCtx {
+    # The context the running engine starts llama-server with: services.llama.ctx of its /status answer
+    # (supervisor core.py status). $null when there is no answer or an older engine does not report it.
+    param($Status)
+    $llama = Get-NsJsonProp (Get-NsJsonProp $Status 'services') 'llama'
+    $ctx = Get-NsJsonProp $llama 'ctx'
+    if ($null -eq $ctx) { return $null }
+    return [int]$ctx
+}
+
+function Get-NsCodeContextRefusal {
+    # D-34: the text that stops Nightshift Code, or '' when it may go on. It is shown to the person who
+    # started Nightshift Code, in its console, before the engine is asked for the graphics card.
+    #   The number that counts is the one llama-server runs with. A running engine says it (-EngineCtx); it
+    #   read config\runtime.json only when it started, so an edit of the file is not seen until it restarts.
+    #   No engine running: the engine this launcher starts will read the file, so the file's number counts.
+    #   Running engine that does not say (older, or its answer failed): the file's number is the best there is.
+    #   No readable runtime.json and no engine answer: nothing to compare, no refusal.
+    param([int]$MinCtx, $FileCtx, [bool]$EngineUp, $EngineCtx)
+    $more = ' This context is also the one the nightly run uses, so it needs more memory for every job.'
+    if ($EngineUp -and $null -ne $EngineCtx) { $ctx = [int]$EngineCtx; $fromEngine = $true }
+    else { $ctx = $FileCtx; $fromEngine = $false }
+    if ($null -eq $ctx) { return '' }
+    if ($ctx -ge $MinCtx) {
+        if ($EngineUp -and $null -eq $EngineCtx) {
+            Write-Host ('The running engine does not say which context it uses; using the ' + $ctx + ' in config\runtime.json.')
+        }
+        return ''
+    }
+    $head = 'Nightshift Code needs ' + $MinCtx + ' tokens of context; '
+    if (-not $fromEngine) {
+        return ($head + 'this install has ' + $ctx + '. Set llama.flags.ctx in config\runtime.json to ' + $MinCtx + ' or more, then start Nightshift Code again.' + $more)
+    }
+    if ($null -ne $FileCtx -and [int]$FileCtx -ge $MinCtx) {
+        return ($head + 'the running engine has ' + $ctx + ' (config\runtime.json says ' + $FileCtx + ', but the engine reads it only when it starts). Restart Nightshift: run Nightshift - Stop All, then start Nightshift Code again.' + $more)
+    }
+    return ($head + 'this install has ' + $ctx + '. Set llama.flags.ctx in config\runtime.json to ' + $MinCtx + ' or more, then run Nightshift - Stop All and start Nightshift Code again.' + $more)
 }
 
 # D-34: OpenCode's own prompt and tools come to about 15,300 tokens; the first request of a one-line question
@@ -478,7 +517,10 @@ function Sync-NsOpenCodePort {
     # baseURL, limit.context and the model name are set; every other key, including a limit.output, a tool
     # switch or a prompt the owner changed, stays as it is. The file is left alone when everything matches or
     # when it does not exist, and a problem here is a note, never a reason to stop the launcher.
-    param([string]$BaseUrl = '')
+    # -Ctx is the context llama-server really runs with (the engine's answer, see Get-NsEngineLlamaCtx); without
+    # it runtime.json says (an engine reads that file only when it starts, so the two can differ).
+    # A key the owner set to null counts as missing.
+    param([string]$BaseUrl = '', [int]$Ctx = 0)
     $file = Join-Path (Get-NsHome) 'config\opencode.json'
     try {
         if (-not (Test-Path -LiteralPath $file)) { return }
@@ -514,12 +556,14 @@ function Sync-NsOpenCodePort {
                 if ($stem) { $name = $stem + ' (local)' }
             }
             if (Set-NsJsonProp $code 'name' $name) { $changed = $true }
+            $codeCtx = $llama.Ctx
+            if ($Ctx -gt 0) { $codeCtx = $Ctx }
             $limit = Get-NsJsonProp $code 'limit'
             if ($limit -is [System.Management.Automation.PSCustomObject]) {
-                if (Set-NsJsonProp $limit 'context' $llama.Ctx) { $changed = $true }
+                if (Set-NsJsonProp $limit 'context' $codeCtx) { $changed = $true }
                 if (Set-NsJsonProp $limit 'output' 4096 -OnlyIfMissing) { $changed = $true }
             }
-            elseif ($null -eq $limit -and (Set-NsJsonProp $code 'limit' ([pscustomobject][ordered]@{ context = $llama.Ctx; output = 4096 }) -OnlyIfMissing)) {
+            elseif ($null -eq $limit -and (Set-NsJsonProp $code 'limit' ([pscustomobject][ordered]@{ context = $codeCtx; output = 4096 }) -OnlyIfMissing)) {
                 $changed = $true
             }
         }

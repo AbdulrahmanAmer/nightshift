@@ -181,7 +181,8 @@ def current_opencode_json() -> dict:
 
 
 def run_sync(
-    tmp_path: Path, runtime: str | None, opencode: str | None, base_url: str | None = None
+    tmp_path: Path, runtime: str | None, opencode: str | None, base_url: str | None = None,
+    ctx: int | None = None,
 ) -> tuple[str, Path]:
     """Run Sync-NsOpenCodePort against a throwaway home; returns the helper's output and opencode.json."""
     import os
@@ -197,6 +198,8 @@ def run_sync(
     if opencode is not None:
         target.write_bytes(opencode.encode("utf-8"))   # as given: no newline translation
     call = "Sync-NsOpenCodePort" if base_url is None else f"Sync-NsOpenCodePort -BaseUrl '{base_url}'"
+    if ctx is not None:
+        call += f" -Ctx {ctx}"
     script = f". '{LAUNCHERS / '_common.ps1'}'\n{call}\n"
     env = {k: v for k, v in os.environ.items() if k.lower() != "psmodulepath"}
     env["NIGHTSHIFT_HOME"] = str(home)
@@ -408,11 +411,15 @@ class FakeEngine:
 
     def __init__(self) -> None:
         self.posts: list[tuple[str, object]] = []
+        self.engine_ctx: int | None = None    # what GET /status says llama runs with (None: not reported)
         engine = self
 
         class Handler(BaseHTTPRequestHandler):
             def _reply(self) -> None:
                 body = b'{"state": "running"}'
+                if self.path == "/status" and engine.engine_ctx is not None:
+                    llama = {"state": "stopped", "ctx": engine.engine_ctx}
+                    body = json.dumps({"services": {"llama": llama}}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -537,6 +544,84 @@ def test_code_launcher_refuses_a_context_under_16384_before_taking_the_gpu(
     ok = code_launcher_run(eng, env, tmp_path, 16384)
     assert ok.returncode == 0 and "needs 16384" not in ok.stdout, ok.stdout + ok.stderr
     assert [p for p, _ in eng.posts] == ["/acquire", "/release"], eng.posts
+
+
+@needs_powershell
+def test_code_launcher_refuses_on_the_context_the_engine_runs_not_the_one_in_the_file(
+    engine: tuple[FakeEngine, dict[str, str]], tmp_path: Path
+) -> None:
+    """D-34 review: the engine read runtime.json when it started. The owner raised the file to 16384 as the
+    refusal said, but the running engine still loads 8192: the launcher must not pass, and must say so."""
+    eng, env = engine
+    eng.engine_ctx = 8192
+    refused = code_launcher_run(eng, env, tmp_path, 16384)       # the file says 16384, the engine runs 8192
+    out = refused.stdout
+    assert "Nightshift Code needs 16384 tokens of context; the running engine has 8192" in out, out
+    assert "config\\runtime.json says 16384" in out and "Stop All" in out and "nightly" in out, out
+    assert refused.returncode != 0 and eng.posts == [], (refused.stdout, eng.posts)
+    # file and engine both too small: the way out names the file edit AND the restart
+    both = code_launcher_run(eng, env, tmp_path, 8192)
+    assert "this install has 8192" in both.stdout and "llama.flags.ctx" in both.stdout, both.stdout
+    assert "Stop All" in both.stdout and "nightly" in both.stdout and eng.posts == [], both.stdout
+
+
+@needs_powershell
+def test_code_launcher_passes_when_the_engine_runs_16384_and_tells_opencode_that_number(
+    engine: tuple[FakeEngine, dict[str, str]], tmp_path: Path
+) -> None:
+    eng, env = engine
+    eng.engine_ctx = 16384
+    old = tmp_path / "config" / "opencode.json"
+    old.write_text(json.dumps(OPENCODE_JSON_0114), encoding="utf-8")
+    ok = code_launcher_run(eng, env, tmp_path, 8192)             # file lower than the engine: engine counts
+    assert ok.returncode == 0 and "needs 16384" not in ok.stdout, ok.stdout + ok.stderr
+    assert [p for p, _ in eng.posts] == ["/acquire", "/release"], eng.posts
+    limit = json.loads(old.read_text(encoding="utf-8"))["provider"]["local"]["models"]["code"]["limit"]
+    assert limit == {"context": 16384, "output": 4096}
+    eng.posts.clear()
+    eng.engine_ctx = 32768                                       # a bigger engine: OpenCode is told 32768
+    ok2 = code_launcher_run(eng, env, tmp_path, 16384)
+    assert ok2.returncode == 0, ok2.stdout + ok2.stderr
+    limit = json.loads(old.read_text(encoding="utf-8"))["provider"]["local"]["models"]["code"]["limit"]
+    assert limit["context"] == 32768
+
+
+@needs_powershell
+def test_code_launcher_with_no_engine_running_refuses_on_the_file_and_starts_nothing(
+    engine: tuple[FakeEngine, dict[str, str]], tmp_path: Path
+) -> None:
+    """No engine: the one this launcher would start reads the file, so the file's number counts. No restart
+    is asked for (there is nothing to restart) and nothing is started."""
+    eng, env = engine
+    eng.close()
+    refused = code_launcher_run(eng, env, tmp_path, 8192)
+    assert "Nightshift Code needs 16384 tokens of context; this install has 8192" in refused.stdout, (
+        refused.stdout + refused.stderr)
+    assert "llama.flags.ctx" in refused.stdout and "Stop All" not in refused.stdout
+    assert "nightly" in refused.stdout and refused.returncode != 0
+
+
+@needs_powershell
+def test_the_old_json_with_a_null_limit_still_gets_the_context(tmp_path: Path) -> None:
+    """An owner's `"limit": null` (or tools or agent set to null) counts as missing; the sync goes on."""
+    cfg = json.loads(json.dumps(OPENCODE_JSON_0114))
+    cfg["provider"]["local"]["models"]["code"]["limit"] = None
+    cfg["tools"] = None
+    cfg["agent"] = {"build": None}
+    _out, target = run_sync(tmp_path, json.dumps({"llama": {"flags": {"ctx": 32768}}}), json.dumps(cfg))
+    got = json.loads(target.read_text(encoding="utf-8"))
+    assert got["provider"]["local"]["models"]["code"]["limit"] == {"context": 32768, "output": 4096}
+    assert got["tools"]["webfetch"] is False
+    assert got["agent"]["build"]["prompt"].startswith("You are Nightshift Code")
+
+
+@needs_powershell
+def test_sync_takes_the_context_the_engine_runs_over_the_file(tmp_path: Path) -> None:
+    runtime = json.dumps({"llama": {"flags": {"ctx": 16384}}})
+    text = json.dumps(OPENCODE_JSON_0114)
+    _out, target = run_sync(tmp_path, runtime, text, ctx=32768)
+    limit = json.loads(target.read_text(encoding="utf-8"))["provider"]["local"]["models"]["code"]["limit"]
+    assert limit["context"] == 32768
 
 
 @needs_powershell
