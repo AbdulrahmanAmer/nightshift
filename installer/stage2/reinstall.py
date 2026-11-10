@@ -273,11 +273,12 @@ def _runtime(ctx: StepContext, keys: set[str], compared: bool) -> list[str]:
     until s03 has verified the new one. The old file stays in models\\llm either way.
     """
     try:
-        rt = inspect_runtime(ctx.paths)[0]
+        found = inspect_runtime(ctx.paths)
     except OSError:
-        rt = None   # held by another program: s06 (ensure_baseline) refuses by name when it gets there
+        return []   # held by another program: s06 (ensure_baseline) refuses by name when it gets there
+    rt = found.runtime if found.state == "ok" else None
     if rt is None:
-        return []   # missing or damaged: s06 writes the baseline from the answers (and sets it aside)
+        return []   # missing, damaged or newer: s06 deals with it (ensure_baseline) and tells the owner
     fresh = build_runtime(ctx)
     owed: dict[str, bool] = dict(ctx.flag(PENDING_FLAG) or {})
     lines: list[str] = []

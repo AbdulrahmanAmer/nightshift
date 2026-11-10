@@ -17,7 +17,8 @@ from typing import Any
 import pytest
 
 from installer.stage2 import runtime_cfg
-from installer.stage2.runtime_cfg import build_runtime
+from installer.stage2.base import Step
+from installer.stage2.runtime_cfg import build_runtime, update_runtime
 from installer.stage2.steps.s06_tune import S06Tune
 from installer.stage2.testing import FakeUi, example_answers, make_test_context
 from installer.stage2.wizard import EXIT_FAILED, EXIT_OK, Wizard
@@ -29,7 +30,7 @@ SENTENCE = (
     "settings that were only in the old file are not carried over."
 )
 TORN = '{"profile": "gpu", "llama": {'            # a write that stopped half way
-NOT_THE_MODEL = '{"profile": "gpu", "no_such_setting": 1}'     # JSON, but Runtime is strict
+NOT_THE_MODEL = '{"profile": "gpu", "supervisor_port": "not a port"}'     # JSON, a known field, bad value
 
 
 class RowUi(FakeUi):
@@ -276,3 +277,163 @@ def test_s01_over_kept_data_does_not_crash_on_the_damaged_file(tmp_path: Path) -
         raised = e
     assert raised is None and lines == [], repr(raised)
     assert ctx.paths.runtime_file.read_text(encoding="utf-8") == TORN       # s01 does not move it: s06 does
+
+
+# ------------------------------------------------------------------------- a file a NEWER Nightshift wrote
+def newer_file(ctx: Any, **top: Any) -> tuple[str, dict[str, Any]]:
+    """runtime.json as a newer Nightshift would leave it: this version's file with the owner's own port and
+    model, plus fields this version does not have (one at the top, one nested). Returns its text and dict."""
+    data = json.loads(ctx.paths.runtime_file.read_text(encoding="utf-8"))
+    data["supervisor_port"] = 8123
+    data["llama"]["model_path"] = "D:/models/owners-own.gguf"
+    data["future_setting"] = {"a": 1}
+    data["llama"]["flags"]["future_flag"] = 3
+    data.update(top)
+    text = json.dumps(data, indent=2)
+    ctx.paths.runtime_file.write_text(text, encoding="utf-8")
+    return text, data
+
+
+def newer_kept(ctx: Any) -> list[str]:
+    return sorted(p.name for p in ctx.paths.config.glob("runtime.json.newer*"))
+
+
+def test_newer_file_only_unknown_fields_keeps_every_known_value_and_the_original(tmp_path: Path) -> None:
+    ctx, _ = finished_install(tmp_path)
+    text, _data = newer_file(ctx)
+    ui = RowUi()
+    again = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=ui)
+    assert setup_again(again) == EXIT_OK
+    now = load_runtime(again.paths)
+    assert now.supervisor_port == 8123 and now.llama.model_path == "D:/models/owners-own.gguf"   # kept
+    on_disk = json.loads(again.paths.runtime_file.read_text(encoding="utf-8"))
+    assert "future_setting" not in on_disk and "future_flag" not in on_disk["llama"]["flags"]   # only those
+    assert newer_kept(again) == ["runtime.json.newer"] and kept(again) == []
+    assert (again.paths.config / "runtime.json.newer").read_text(encoding="utf-8") == text
+    said = ui.last()
+    assert said[:2] == ("s06_tune", "warning") and said[2] is not None
+    for part in ("written by a newer Nightshift", "future_setting", "llama.flags.future_flag",
+                 "kept every other setting", "runtime.json.newer"):
+        assert part in said[2], part
+    assert "could not be read" not in said[2]
+    assert report(again)["steps"]["s06_tune"]["note"] == said[2]
+
+
+def test_newer_file_with_a_nested_unknown_field_only(tmp_path: Path) -> None:
+    ctx, _ = finished_install(tmp_path)
+    data = json.loads(ctx.paths.runtime_file.read_text(encoding="utf-8"))
+    data["llama"]["flags"]["future_flag"] = 3
+    ctx.paths.runtime_file.write_text(json.dumps(data), encoding="utf-8")
+    ui = RowUi()
+    again = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=ui)
+    assert setup_again(again) == EXIT_OK
+    said = ui.last()[2] or ""
+    assert "llama.flags.future_flag" in said and "future_setting" not in said
+    del data["llama"]["flags"]["future_flag"]
+    assert json.loads(again.paths.runtime_file.read_text(encoding="utf-8"))["llama"] == data["llama"]
+
+
+def test_newer_file_a_second_run_changes_nothing_and_a_second_newer_file_is_kept_beside_the_first(
+    tmp_path: Path,
+) -> None:
+    ctx, _ = finished_install(tmp_path)
+    first_text, _ = newer_file(ctx)
+    once = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=RowUi())
+    assert setup_again(once) == EXIT_OK
+    after = once.paths.runtime_file.read_bytes()
+    ui = RowUi()
+    twice = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=ui)
+    assert setup_again(twice) == EXIT_OK
+    assert twice.paths.runtime_file.read_bytes() == after and newer_kept(twice) == ["runtime.json.newer"]
+    assert ui.last() == ("s06_tune", "done", "already complete")
+    newer_file(twice)       # a newer Nightshift writes it again
+    third = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=RowUi())
+    assert setup_again(third) == EXIT_OK
+    assert newer_kept(third) == ["runtime.json.newer", "runtime.json.newer.1"]
+    assert (third.paths.config / "runtime.json.newer").read_text(encoding="utf-8") == first_text
+
+
+def test_both_kinds_of_complaint_is_damaged_and_the_message_names_both(tmp_path: Path) -> None:
+    ctx, _ = finished_install(tmp_path)
+    text, _ = newer_file(ctx, supervisor_port="not a port")
+    ui = RowUi()
+    again = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=ui)
+    assert setup_again(again) == EXIT_OK
+    assert kept(again) == ["runtime.json.bad"] and newer_kept(again) == []
+    assert (again.paths.config / "runtime.json.bad").read_text(encoding="utf-8") == text
+    assert load_runtime(again.paths).supervisor_port == build_runtime(again).supervisor_port    # the baseline
+    said = ui.last()[2] or ""
+    assert said.startswith(SENTENCE.format(name="runtime.json.bad")[:-1])
+    for part in ("future_setting", "llama.flags.future_flag", "supervisor_port"):
+        assert part in said, part
+
+
+def test_a_file_that_cannot_be_opened_is_ns_e125_not_a_bare_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = context(tmp_path)
+    damage(ctx, TORN)
+
+    def held(path: Any, encoding: str = "utf-8") -> str:
+        raise PermissionError(13, "The process cannot access the file")
+
+    monkeypatch.setattr(runtime_cfg, "read_text_retry", held)
+    seen: Exception | None = None
+    try:
+        runtime_cfg.ensure_baseline(ctx)
+    except Exception as e:      # noqa: BLE001 - the assertion below names what was raised
+        seen = e
+    assert isinstance(seen, NsError) and seen.code == "NS-E125", repr(seen)
+    assert "Close any program" in seen.detail and str(ctx.paths.runtime_file) in seen.detail
+    assert ctx.paths.runtime_file.read_text(encoding="utf-8") == TORN and kept(ctx) == []
+
+
+# ------------------------------------------------------- a fresh file is never called tuned (derived state)
+class S02Fallback(Step):
+    """What s02 does on the voice fallback (s02_download_bins.py): ``update_runtime``, BEFORE the tuning."""
+
+    id = "s02_download_bins"
+    title = "Download programs"
+
+    def check(self, ctx: Any) -> bool:
+        return False
+
+    def run(self, ctx: Any) -> None:
+        update_runtime(ctx, lambda rt: setattr(rt.tts, "engine", "reference"))
+
+    def verify(self, ctx: Any) -> None:
+        return None
+
+
+def tuned_calls(ctx: Any) -> int:
+    return len(ctx.runner.called("ns tune"))
+
+
+def test_s02_fallback_writing_a_missing_file_is_followed_by_a_real_tuning(tmp_path: Path) -> None:
+    ctx, _ = finished_install(tmp_path)
+    ctx.paths.runtime_file.unlink()     # the flag still says tuned; the file it described is gone
+    again = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=RowUi())
+    assert Wizard(again, [S02Fallback(), S06Tune()], backoff=()).run() == EXIT_OK
+    assert tuned_calls(again) == 1 and again.flag("tuned") == "tuned"
+    assert load_runtime(again.paths).tts.engine == "reference"
+
+
+def test_s02_fallback_after_a_damaged_file_is_followed_by_a_real_tuning(tmp_path: Path) -> None:
+    ctx, _ = finished_install(tmp_path)
+    damage(ctx, TORN)
+    ui = RowUi()
+    again = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, ui=ui)
+    assert Wizard(again, [S02Fallback(), S06Tune()], backoff=()).run() == EXIT_OK
+    assert tuned_calls(again) == 1 and again.flag("tuned") == "tuned"
+    assert kept(again) == ["runtime.json.bad"]
+    said = SENTENCE.format(name="runtime.json.bad")
+    assert ("s02_download_bins", "warning", said) in ui.rows        # said on the row of the step that did it
+
+
+def test_a_baseline_written_by_any_step_forgets_what_said_it_was_tuned(tmp_path: Path) -> None:
+    ctx, _ = finished_install(tmp_path)
+    ctx.set_flag("smoke", "passed")
+    ctx.set_flag("smoke_version", "x")
+    ctx.paths.runtime_file.unlink()
+    runtime_cfg.ensure_baseline(ctx)
+    assert (ctx.flag("tuned"), ctx.flag("smoke"), ctx.flag("smoke_version")) == (None, None, None)
