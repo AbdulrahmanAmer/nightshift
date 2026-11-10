@@ -76,7 +76,8 @@ def pc(tmp_path_factory: pytest.TempPathFactory) -> SimpleNamespace:
     assert made.returncode == 0, made.stdout + made.stderr
     python = venv / "Scripts" / "python.exe" if os.name == "nt" else venv / "bin" / "python"
     assert python.is_file()
-    assert paths_mod.home_of_place(ROOT, str(python)) == a      # what the child will find about itself
+    place = getattr(paths_mod, "home_of_place", None)      # (a base without the place rule has none)
+    assert place is None or place(ROOT, str(python)) == a   # what the child will find about itself
     return SimpleNamespace(root=root, a=a, b=b, python=python)
 
 
@@ -286,7 +287,7 @@ def in_a(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     plain = tmp_path / "not-an-install"
     plain.mkdir()
     monkeypatch.setattr(paths_mod, "repo_root", lambda: a / "app")
-    monkeypatch.setattr(paths_mod, "_said_place", [])
+    monkeypatch.setattr(paths_mod, "_said_place", [], raising=False)
     for name in OURS:
         monkeypatch.delenv(name, raising=False)
 
