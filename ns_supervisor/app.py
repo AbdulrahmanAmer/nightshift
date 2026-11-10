@@ -204,8 +204,8 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
         LoopbackGuard,
         rule=NO_BROWSER,
         log=sup.log,
-        tell=lambda message, at: notify.leave_note(sup.paths, "Nightshift", message, now=at),
-        waiting=lambda: notify.read_notes(sup.paths),
+        # the day's count and the note are one step under the notes lock (`notify.leave_chosen_note`)
+        tell=lambda choose, at: notify.leave_chosen_note(sup.paths, "Nightshift", choose, now=at),
     )
     return app
 

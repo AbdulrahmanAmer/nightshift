@@ -158,19 +158,24 @@ _RETRY_S = 0.05
 _spool_counter = itertools.count(1)
 
 #: THE definition of a routine note (the one place; the launch script reads the `routine` mark this module
-#: writes): news that something went as planned, which asks nothing of the owner. Each `; `-separated part
-#: of the message must be one of these, so the nightly summary "1 master + 5 Shorts ready for review" is
-#: routine and "1 master ready for review; 1 job failed (NS-E203)" is not.
+#: writes): news that asks nothing of the owner. Each `; `-separated part of the message must be one of
+#: these, so the nightly summary "1 master + 5 Shorts ready for review" is routine and "1 master ready for
+#: review; 1 job failed (NS-E203)" is not ...
 ROUTINE_PARTS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\d+ masters?( \+ \d+ Shorts?)? ready for review"),
     re.compile(r"\d+ Shorts? ready for review"),
     re.compile(r"\d+ jobs? finished, open Dashboard to review"),
 )
+#: ... and the codes whose notes are routine: `NS-E207`, requests the loopback check refused (nothing was
+#: changed; the owner is told a pattern, at most four notes a day, `ns_common.loopback`).
+ROUTINE_CODES = ("NS-E207",)
 
 
 def is_routine(message: str) -> bool:
-    """True when a note with this message is routine (`ROUTINE_PARTS`): at the bound it goes first, and it
-    never makes room by pushing out a note that is not routine."""
+    """True when a note with this message is routine (`ROUTINE_PARTS`, `ROUTINE_CODES`): at the bound it
+    goes first, and it never makes room by pushing out a note that is not routine."""
+    if any(message.startswith(f"{code}:") for code in ROUTINE_CODES):
+        return True
     parts = message.split("; ")
     return bool(message) and all(any(p.fullmatch(part) for p in ROUTINE_PARTS) for part in parts)
 
@@ -333,21 +338,27 @@ Entries = list[dict[str, Any]]
 def _add(paths: Paths, entries: Entries, new: dict[str, Any]) -> tuple[Entries, bool]:
     """`entries` with `new` added and the bound kept; and whether `new` is among them.
 
-    The rule, while more than `NOTES_FULL` notes would wait: the oldest routine note other than `new` goes;
-    when none waits, a routine `new` is the one not kept (a routine note never pushes out one that is not),
-    and otherwise the oldest note goes (a failure makes room for a newer failure). So the newest note that
-    matters is never the one lost. Every removed note is logged with its text (`morning_note_dropped`), and
-    one note (`removed: <n>`, first in the file, so the bell lists it last) says how many went; it is
-    replaced, never repeated, and goes only when the owner dismisses it.
+    The rule, while more than `NOTES_FULL` notes would wait: the oldest routine note goes; when none is
+    left, the oldest note goes (a failure makes room for a newer failure). A routine `new` never pushes out
+    a note that is not routine: when the routine notes that wait cannot make its room, it is not added and
+    nothing changes (logged with its text). So the newest note that matters is never the one lost. Every
+    removed note is logged with its text (`morning_note_dropped`), and one note (`removed: <n>`, first in the
+    file, so the bell lists it last) says how many went; it is replaced, never repeated, and goes only when
+    the owner dismisses it.
     """
     count = next((e for e in entries if _is_count(e)), None)
     kept = [e for e in entries if not _is_count(e)]
+    over = len(kept) + 1 - NOTES_FULL
+    if over > 0 and _routine(new) and sum(1 for e in kept if _routine(e)) < over:
+        _say(
+            paths, "WARN", "morning_note_dropped", f"a routine note was not added: {NOTES_FULL} notes wait",
+            notes=[{k: new.get(k) for k in ("at", "title", "message")}],
+        )
+        return entries, False
     kept.append(new)
     gone: list[dict[str, Any]] = []
     while len(kept) > NOTES_FULL:
-        drop = next((i for i, e in enumerate(kept[:-1]) if _routine(e)), None)
-        if drop is None:
-            drop = len(kept) - 1 if _routine(kept[-1]) and kept[-1] is new else 0
+        drop = next((i for i, e in enumerate(kept[:-1]) if _routine(e)), 0)
         gone.append(kept.pop(drop))
     if not gone:
         return ([count] if count else []) + kept, True
@@ -358,7 +369,7 @@ def _add(paths: Paths, entries: Entries, new: dict[str, Any]) -> tuple[Entries, 
         notes=[{k: e.get(k) for k in ("at", "title", "message")} for e in gone], removed_in_all=total,
     )
     said = {"at": at, "title": "Nightshift", "message": removed_message(paths, total), "removed": total}
-    return [said, *kept], not any(e is new for e in gone)
+    return [said, *kept], True
 
 
 # --- the spool: notes that could not be written when they were left ----------------------------------------
@@ -486,6 +497,34 @@ def read_notes(paths: Paths) -> list[Note]:
     return [_as_note(n) for n in entries]
 
 
+def _leave(
+    paths: Paths, title: str, decide: Callable[[list[Note]], str | None], at: str, wait_s: float
+) -> tuple[str | None, bool]:
+    """One locked step: read (mending a damaged file), move the spool in, `decide` on the waiting notes,
+    add what it chose, keep the bound, write. Returns what `decide` chose and whether it was added."""
+    with _locked(paths, wait_s):
+        entries = _waiting(paths)
+        entries, taken = _drain(paths, entries)
+        message = decide([_as_note(n) for n in entries])
+        if message is None:
+            if taken:
+                try:
+                    _store(note_path(paths), entries)
+                except OSError as e:  # the spooled notes stay spooled for the next holder
+                    _say(paths, "WARN", "morning_note_spool_kept", f"{type(e).__name__}: {e}")
+                else:
+                    _remove(taken)
+            return None, False
+        entry: dict[str, Any] = {"at": at, "title": title, "message": message}
+        if is_routine(message):
+            entry["routine"] = True
+        entries, added = _add(paths, entries, entry)
+        if added or taken:  # a routine note the bound kept out changes nothing on disk
+            _store(note_path(paths), entries)
+            _remove(taken)
+    return message, added
+
+
 def leave_note(
     paths: Paths,
     title: str,
@@ -506,34 +545,52 @@ def leave_note(
     `wait_s`: how long to wait for the lock (default `NOTES_WAIT_S`; a web request passes
     `NOTES_REQUEST_WAIT_S`). When the note cannot be written (the lock or the file held past the waits, a full
     disk, a folder that cannot be written, the copy of a damaged file failing) it is logged with its text
-    (`morning_note_failed`) and spooled (`_spool`), and the next writer delivers it; True. `spool=False` is
-    for a caller whose `once` is more than "the same words" (a count), which the spool cannot ask again: the
+    (`morning_note_failed`) and spooled (`_spool`), and the next writer delivers it; True. `spool=False`: the
     log line, then the `OSError`. An `OSError` is raised only when neither the file nor the spool could take
-    the note; the notes that waited are still there in every case.
+    the note; the notes that waited are still there in every case. A caller whose rule is more than "said
+    once" (a count, a text that depends on what waits) uses `leave_chosen_note`.
     """
-    entry: dict[str, Any] = {"at": (now or datetime.now()).isoformat(timespec="seconds"), "title": title,
-                             "message": message}
-    if is_routine(message):
-        entry["routine"] = True
+    at = (now or datetime.now()).isoformat(timespec="seconds")
+
+    def decide(notes: list[Note]) -> str | None:
+        return None if once is not None and once(notes) else message
+
     try:
-        with _locked(paths, NOTES_WAIT_S if wait_s is None else wait_s):
-            entries = _waiting(paths)
-            entries, taken = _drain(paths, entries)
-            if once is not None and once([_as_note(n) for n in entries]):
-                if taken:
-                    try:
-                        _store(note_path(paths), entries)
-                    except OSError as e:  # the spooled notes stay spooled for the next holder
-                        _say(paths, "WARN", "morning_note_spool_kept", f"{type(e).__name__}: {e}")
-                    else:
-                        _remove(taken)
-                return False
-            entries, added = _add(paths, entries, entry)
-            _store(note_path(paths), entries)
-            _remove(taken)
-        return added
+        _, added = _leave(paths, title, decide, at, NOTES_WAIT_S if wait_s is None else wait_s)
     except OSError as e:
+        entry: dict[str, Any] = {"at": at, "title": title, "message": message}
+        if is_routine(message):
+            entry["routine"] = True
         return _not_written(paths, entry, once is not None, spool, e)
+    return added
+
+
+def leave_chosen_note(
+    paths: Paths,
+    title: str,
+    choose: Callable[[list[Note]], str | None],
+    *,
+    now: datetime | None = None,
+    wait_s: float | None = None,
+) -> str | None:
+    """Leave the note `choose` picks from the waiting notes, in ONE locked step: `choose` is called under the
+    notes lock (which every writer of every process takes) with the notes that wait, and answers the message
+    to add or None. So a count of the waiting notes and the note it allows cannot be split by another writer:
+    two servers that refuse at the same moment do not both pass a daily cap. Returns the message when it was
+    added; None when `choose` chose none or the bound kept a routine note out (`_add`).
+
+    Never spooled (the spool could not ask `choose` again): a note that cannot be written is logged
+    (`morning_note_failed`) and the `OSError` is raised, so the caller keeps it owed. Waits `NOTES_WAIT_S` by
+    default: call it off the request path.
+    """
+    at = (now or datetime.now()).isoformat(timespec="seconds")
+    try:
+        message, added = _leave(paths, title, choose, at, NOTES_WAIT_S if wait_s is None else wait_s)
+    except OSError as e:
+        reason = f"{type(e).__name__}: {e}"
+        _say(paths, "WARN", "morning_note_failed", reason, title=title, at=at, spooled=None)
+        raise
+    return message if added else None
 
 
 def drain_spool(paths: Paths) -> int:

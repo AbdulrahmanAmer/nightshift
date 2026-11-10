@@ -747,10 +747,10 @@ def test_at_the_bound_of_failures_the_newest_is_kept_and_a_routine_note_moves_no
     assert notify.leave_note(paths, "Nightshift", "run failed (NS-E204), open Dashboard") is True
     got = messages(paths)
     assert got[0] == notify.removed_message(paths, 1) and got[1:] == [*failures[1:], "run failed (NS-E204), open Dashboard"]
-    # a routine note never makes room by pushing out a failure: it is the one not kept, and it is counted
+    # a routine note never makes room by pushing out a failure: it is not added, and the file is not touched
+    before = notes_file(paths).read_bytes()
     assert notify.leave_note(paths, "Nightshift", ROUTINE) is False
-    after = messages(paths)
-    assert after[1:] == got[1:] and after[0] == notify.removed_message(paths, 2)
+    assert notes_file(paths).read_bytes() == before
     last = [r for r in log_records(paths) if r["event"] == "morning_note_dropped"][-1]
     assert [n["message"] for n in last["data"]["notes"]] == [ROUTINE]
 

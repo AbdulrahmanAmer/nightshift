@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -334,7 +335,7 @@ def test_a_form_post_with_only_a_foreign_referer_is_refused_by_every_server(
     assert r.status_code == 403 and r.json()["error"]["code"] == CODE, r.text
     # the dashboard's own page (its Referer is the dashboard) is answered
     own = {"content-type": "application/json", "referer": BASE + "/", "origin": BASE, "sec-fetch-site": "same-origin"}
-    assert dash.post("/api/notes/clear", content=b"{}", headers=own).status_code == 200
+    assert dash.post("/api/notes/clear", content=b'{"ids": []}', headers=own).status_code == 200
 
 
 # -------------------------------------------------------------------------------- 3. a name that is not this PC
@@ -506,7 +507,7 @@ def test_the_dashboard_rule_is_unchanged(tmp_home: Path):
     for origin in (BASE, "http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:8100"):
         page = {"origin": origin, "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors"}
         assert tc.get("/api/status", headers=page).status_code == 200, origin
-        assert tc.post("/api/notes/clear", headers=page, json={}).status_code == 200, origin
+        assert tc.post("/api/notes/clear", headers=page, json={"ids": []}).status_code == 200, origin
     for host in (f"localhost:{PORT}", f"[::1]:{PORT}", "127.0.0.1"):
         assert tc.get("/api/status", headers={"host": host}).status_code == 200, host
         assert tc.get("/", headers={"host": host}).status_code == 200, host
@@ -774,14 +775,14 @@ def test_a_note_that_cannot_be_written_does_not_slow_the_answer(
     sup, app, _ = engine(tmp_path)
     tc = client(app)
     entered, leave = threading.Event(), threading.Event()
-    real = notify.leave_note
+    real = notify.leave_chosen_note
 
-    def stuck(*a: Any, **k: Any) -> None:
+    def stuck(*a: Any, **k: Any) -> Any:
         entered.set()
         assert leave.wait(30)
-        real(*a, **k)
+        return real(*a, **k)
 
-    monkeypatch.setattr(notify, "leave_note", stuck)
+    monkeypatch.setattr(notify, "leave_chosen_note", stuck)
     knock(tc, EVIL, 3)                                   # the third answer came back while the writer waits
     assert entered.wait(10) and not leave.is_set()
     knock(tc, EVIL, 5)                                   # and more are answered, with no second writer
@@ -797,7 +798,7 @@ def test_a_note_that_cannot_be_written_does_not_slow_the_answer(
         tries.append(1)
         raise OSError("the notes file is locked")
 
-    monkeypatch.setattr(notify, "leave_note", broken)
+    monkeypatch.setattr(notify, "leave_chosen_note", broken)
     other = "https://other.example"
     knock(tc, other, 3)
     settle()
@@ -807,7 +808,7 @@ def test_a_note_that_cannot_be_written_does_not_slow_the_answer(
     knock(tc, other, 4)
     settle()
     assert len(tries) == 1 and len(log_rows(sup.paths.logs, "morning_note_failed")) == 1
-    monkeypatch.setattr(notify, "leave_note", real)
+    monkeypatch.setattr(notify, "leave_chosen_note", real)
     clock.step(minutes=2)
     knock(tc, other)                                     # the file can be written again: the note is left now
     settle()
@@ -931,7 +932,9 @@ def test_a_body_that_is_not_json_is_never_read_as_json(tmp_home: Path):
         r = post_form(tc, "POST", "/api/jobs/verify", kind, b"{}", None)        # a program: JSON, no Origin
         assert r.status_code == 201, (kind, r.text)
     assert tc.post("/api/jobs/verify").status_code == 201                       # no body at all
-    assert tc.post("/api/notes/clear").status_code == 200
+    # no body reaches the route, which wants the ids of the notes shown (FN-2): its own 422, not the check's
+    r = tc.post("/api/notes/clear")
+    assert r.status_code == 422 and r.json()["error"]["code"] == "invalid_options", r.text
 
 
 def test_the_programs_that_post_without_a_body_or_with_json_still_pass(
@@ -966,7 +969,9 @@ def test_the_programs_that_post_without_a_body_or_with_json_still_pass(
     TtsClient(BASE, client=client(voices)).cancel_batch()
     # the dashboard for a program (dev/prove_ctx.py sends JSON through urllib; `ns` posts no body)
     dash = client(dashboard(tmp_home))
-    assert dash.post("/api/notes/clear").status_code == 200
+    r = dash.post("/api/notes/clear")                                 # reaches the route (FN-2: ids wanted)
+    assert r.status_code == 422 and r.json()["error"]["code"] == "invalid_options", r.text
+    assert dash.post("/api/notes/clear", json={"ids": []}).status_code == 200
     assert dash.post("/api/jobs/verify", json={}).status_code == 201
     # the page's file uploads: multipart and a chunk with no content type, both with the page's Origin
     page = {"origin": BASE, "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors"}
@@ -1007,6 +1012,11 @@ def other_note(sup: Supervisor, i: int) -> None:
     notify.leave_note(sup.paths, "Nightshift", f"NS-W209: the nightly run could not start ({i})")
 
 
+def read_all(sup: Supervisor) -> None:
+    """The owner presses Mark all read: every note the bell showed goes."""
+    notify.dismiss(sup.paths, [n["id"] for n in notify.read_notes(sup.paths)])
+
+
 def kinds_of(sup: Supervisor) -> tuple[int, int]:
     said = notes_of(sup)
     return len([m for m in said if m.startswith("NS-E207:")]), len([m for m in said if m.startswith("NS-W209:")])
@@ -1034,7 +1044,7 @@ def test_the_notes_of_a_day_are_bounded_across_servers_and_restarts(tmp_path: Pa
     assert [("https://a0." in said[0]), ("https://a1." in said[1]), ("https://b0." in said[2])] == [True] * 3
     assert said[3].startswith("NS-E207: Still more web pages or names tried to control Nightshift today")
     # the owner read them (the bell clears the file): the same day gets at most the same four again
-    notify.clear_notes(sup.paths)
+    read_all(sup)
     for i in range(6):
         knock(client(first), f"https://c{i}.evil.example", 3)
     settle()
@@ -1042,9 +1052,10 @@ def test_the_notes_of_a_day_are_bounded_across_servers_and_restarts(tmp_path: Pa
 
 
 def test_a_refusal_note_never_pushes_another_note_out(tmp_path: Path, clock: Clock):
-    """The file keeps its newest 20. Unread for days, refusal notes take at most 8 places, and none is written
-    into a full file: the night's own notes stay."""
-    assert loopback is not None and loopback.NOTES_KEPT == notify.NOTE_KEEP
+    """Unread for days, refusal notes take at most 8 places; and a file full of the night's own notes (the
+    owner's bound, `notify.NOTES_FULL`) is not touched by a refusal note, which is routine there."""
+    assert loopback is not None and not hasattr(loopback, "NOTES_KEPT"), "the bound is the notes' owner's"
+    assert notify.is_routine("NS-E207: A web page open in your browser tried 3 times to control Nightshift")
     sup, app, _ = engine(tmp_path)
     for i in range(6):
         other_note(sup, i)
@@ -1057,27 +1068,88 @@ def test_a_refusal_note_never_pushes_another_note_out(tmp_path: Path, clock: Clo
     held = log_rows(sup.paths.logs, "morning_note_held")
     assert held and held[0]["level"] == "WARN" and "already wait unread" in held[0]["msg"]
     # a file that is full of the night's notes: no refusal note goes in, and none of them goes out
-    notify.clear_notes(sup.paths)
-    for i in range(19):
+    read_all(sup)
+    for i in range(notify.NOTES_FULL):
         other_note(sup, i)
+    before = notify.note_path(sup.paths).read_bytes()
     for i in range(6):
         knock(client(app), f"https://e{i}.evil.example", 3)
     settle()
-    assert kinds_of(sup) == (1, 19)
+    assert notify.note_path(sup.paths).read_bytes() == before and kinds_of(sup) == (0, notify.NOTES_FULL)
+    full = [r for r in log_rows(sup.paths.logs, "morning_note_held") if "not routine" in r["msg"]]
+    assert full and full[0]["data"]["code"] == CODE
     clock.step(minutes=11)
     for i in range(6):
         knock(client(app), f"https://e{i}.evil.example", 3)
     settle()
-    assert kinds_of(sup) == (1, 19)
-    assert [n["message"] for n in notify.read_notes(sup.paths)][:19] == [
-        f"NS-W209: the nightly run could not start ({i})" for i in range(19)
-    ]
+    assert notify.note_path(sup.paths).read_bytes() == before
     # the owner reads them: the page that still tries is told then (the note stayed owed)
-    notify.clear_notes(sup.paths)
+    read_all(sup)
     clock.step(minutes=11)
     knock(client(app), "https://e1.evil.example")
     settle()
     assert kinds_of(sup) == (1, 0) and "https://e1.evil.example" in notes_of(sup)[0]
+
+
+#: One server of the install in a process of its own: a guard that tells through the notes' owner, with the
+#: step between its count and its write slowed (0.2 s) so the other process meets it there.
+REFUSING_PROCESS = r"""
+import sys, time
+from datetime import datetime
+from pathlib import Path
+from ns_common import loopback
+from ns_common.paths import Paths
+from ns_supervisor import notify
+
+home, go, tag = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+paths = Paths(home)
+
+def tell(choose, at):
+    def slow(waits):
+        got = choose(waits)
+        time.sleep(0.2)
+        return got
+    return notify.leave_chosen_note(paths, "Nightshift", slow, now=at)
+
+guard = loopback.LoopbackGuard(None, rule=loopback.NO_BROWSER, tell=tell, clock=lambda: datetime(2026, 11, 10, 9, 0, 0))
+pages = [f"https://{tag}{i}.evil.example" for i in range(6)]
+while not go.exists():
+    time.sleep(0.005)
+for page in pages:
+    headers = [(b"host", b"127.0.0.1:8099"), (b"origin", page.encode())]
+    refusal = loopback.decide(headers, loopback.NO_BROWSER, "POST", "/stop_all")
+    for _ in range(3):
+        guard.record(refusal, "POST", "/stop_all")
+assert loopback.settle(120)
+"""
+
+
+def test_two_processes_refusing_at_once_stay_within_the_days_cap(tmp_path: Path):
+    """The engine and the dashboard are two processes: each counts today's NS-E207 notes and writes in one
+    step under the notes lock, so together they leave three that name a page and one "more", not more."""
+    home = tmp_path / "home"
+    go = tmp_path / "go"
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(ROOT), os.environ.get("PYTHONPATH", "")])}
+    procs = [
+        subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", REFUSING_PROCESS, str(home), str(go), tag], cwd=str(ROOT), env=env,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        for tag in ("a", "b")
+    ]
+    try:
+        go.write_text("go", encoding="ascii")
+        outs = [p.communicate(timeout=180) for p in procs]
+        assert [p.returncode for p in procs] == [0, 0], outs
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
+                p.communicate(timeout=30)
+    said = [n["message"] for n in notify.read_notes(Paths(home)) if n["message"].startswith(f"{CODE}:")]
+    assert len(said) == 4, said
+    assert sum(1 for m in said if "Still more web pages" in m) == 1 and said[-1].startswith(
+        "NS-E207: Still more web pages or names tried to control Nightshift today")
 
 
 # ======================================================== round 2: a new server cannot forget the check
