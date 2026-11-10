@@ -717,8 +717,17 @@ def test_a_stalled_transfer_is_aborted_and_retried_with_range_as_a_network_error
     finally:
         stop_server(server, state)
     assert dest.read_bytes() == data and dl.is_verified(dest, sha)
-    assert state["ranges"] == [None, f"bytes={3 * chunk}-"]  # resumed where the stall began
-    assert sleeps == [2] and retries == [(1, "stall", 2.0)]       # it counted as an attempt and waited
+    # The server stalls the FIRST request only. On a loaded CI runner the second request's first byte can take
+    # longer than the 0.3 s stall timeout too, and the downloader then, rightly, asks once more from the same
+    # place (two CI runs of 2026-11-10 saw three requests). So the count of requests is not asserted: every
+    # request after the first resumes where the stall began, and each one followed a counted, waited stall.
+    resume = f"bytes={3 * chunk}-"
+    assert state["ranges"][0] is None and len(state["ranges"]) >= 2
+    assert all(r == resume for r in state["ranges"][1:]), state["ranges"]
+    assert retries[0] == (1, "stall", 2.0)  # it counted as an attempt and waited
+    assert len(retries) == len(state["ranges"]) - 1 and all(reason == "stall" for _, reason, _ in retries)
+    assert [attempt for attempt, _, _ in retries] == list(range(1, len(retries) + 1))
+    assert sleeps == [wait for _, _, wait in retries]
 
 
 def test_a_server_that_always_stalls_ends_in_e105_after_the_retries(tmp_path: Path):
