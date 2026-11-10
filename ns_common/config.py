@@ -8,7 +8,6 @@ import yaml
 from ns_common import first_start
 from ns_common.atomic import BACKUP_SUFFIX, quarantine, read_text_retry, write_text_atomic
 from ns_common.config_compat import disk_dict
-from ns_common.errors import NsError
 from ns_common.models import Channel, EmbedCfg, InstallState, Manifest, Runtime
 from ns_common.paths import Paths, repo_root
 
@@ -34,9 +33,17 @@ def embed_server_args(cfg: EmbedCfg) -> list[str]:
 
 
 def load_runtime(paths: Paths) -> Runtime:
-    if not paths.runtime_file.exists():
-        raise NsError("NS-E203", f"{paths.runtime_file} missing; run ns tune or the installer")
-    return Runtime.model_validate_json(read_text_retry(paths.runtime_file))
+    """`runtime.json`'s settings, or NS-E125 naming the file and what is wrong with it.
+
+    Every route reads through the one reader (`runtime_read.read_runtime`), so `studio run`, the voice
+    commands and the engine say the same as `ns doctor` about a missing or damaged file. Until block D's
+    integration a missing file answered NS-E203 ("Service health check timed out", untrue here) and a damaged
+    one an uncoded error that named no file. What is refused is unchanged: only a file that loads as it is
+    gets used.
+    """
+    from ns_common.runtime_read import read_runtime  # runtime_read imports nothing from this module
+
+    return read_runtime(paths)
 
 
 def save_runtime(paths: Paths, rt: Runtime) -> Path:

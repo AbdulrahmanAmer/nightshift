@@ -19,6 +19,14 @@ def invoke(home: Path, *args: str):  # type: ignore[no-untyped-def]
     return runner.invoke(cli.app, list(args), env={"NIGHTSHIFT_HOME": str(home)})
 
 
+def verify_home(tmp_path: Path) -> Path:
+    """A home whose runtime.json loads: `ns verify` starts nothing on settings it cannot read (NS-E125)."""
+    home = tmp_path / "home"
+    Paths(home).ensure()
+    save_runtime(Paths(home), Runtime.default("gpu"))
+    return home
+
+
 def down_client(paths: Paths) -> SupervisorClient:
     def refuse(req: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused")
@@ -61,7 +69,7 @@ def test_tune_dry_run_prints_matrix_and_writes_nothing(tmp_path: Path) -> None:
 
 def test_tune_without_runtime_json_fails_with_code(tmp_path: Path) -> None:
     r = invoke(tmp_path / "home", "tune")
-    assert r.exit_code == 1 and "NS-E203" in r.output
+    assert r.exit_code == 1 and "NS-E125" in r.output and "NS-E203" not in r.output
 
 
 def test_update_needs_zip_or_rollback(tmp_path: Path) -> None:
@@ -133,7 +141,7 @@ def test_notify_is_silent_without_powershell(tmp_path: Path, monkeypatch: pytest
 def test_verify_exit_code_follows_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, passed: bool, code: int
 ) -> None:
-    home = tmp_path / "home"
+    home = verify_home(tmp_path)
     monkeypatch.setattr(cli, "_client", down_client)
     monkeypatch.setattr(cli, "ensure_running", lambda *a, **k: None)
     seen: dict[str, object] = {}
@@ -192,7 +200,7 @@ def test_verify_stops_the_headless_engine_it_started(tmp_path: Path, monkeypatch
     monkeypatch.setattr(cli, "_client", lambda paths: fake)
     monkeypatch.setattr(cli, "ensure_running", lambda *a, **k: setattr(fake, "up", True))
     monkeypatch.setattr(verify, "run_verify", _passing_report)
-    r = invoke(tmp_path / "home", "verify", "--quick")
+    r = invoke(verify_home(tmp_path), "verify", "--quick")
     assert r.exit_code == 0 and fake.shutdowns == [30] and fake.up is False
 
 
@@ -207,7 +215,7 @@ def test_verify_stops_the_engine_it_started_even_when_the_run_crashes(
     monkeypatch.setattr(cli, "_client", lambda paths: fake)
     monkeypatch.setattr(cli, "ensure_running", lambda *a, **k: setattr(fake, "up", True))
     monkeypatch.setattr(verify, "run_verify", boom)
-    r = invoke(tmp_path / "home", "verify")
+    r = invoke(verify_home(tmp_path), "verify")
     assert r.exit_code != 0 and fake.shutdowns == [30]
 
 
@@ -218,7 +226,7 @@ def test_verify_leaves_an_engine_that_was_already_running(
     monkeypatch.setattr(cli, "_client", lambda paths: fake)
     monkeypatch.setattr(cli, "ensure_running", lambda *a, **k: None)
     monkeypatch.setattr(verify, "run_verify", _passing_report)
-    r = invoke(tmp_path / "home", "verify", "--quick")
+    r = invoke(verify_home(tmp_path), "verify", "--quick")
     assert r.exit_code == 0 and fake.shutdowns == [] and fake.up is True
 
 
@@ -226,3 +234,13 @@ def test_the_dead_gate_command_is_gone(tmp_path: Path) -> None:
     """`ns gate m1..m4` looked for dev/gate_m1.py ... that never existed; the command is removed."""
     assert "gate" not in invoke(tmp_path, "--help").output.split()
     assert invoke(tmp_path / "home", "gate", "m0").exit_code == 2       # "No such command"
+
+
+def test_verify_on_a_home_without_runtime_json_starts_nothing_and_names_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[str] = []
+    monkeypatch.setattr(cli, "ensure_running", lambda *a, **k: started.append("engine"))
+    r = invoke(tmp_path / "home", "verify", "--quick")
+    assert r.exit_code == 1 and "NS-E125" in r.output and "runtime.json" in r.output, r.output
+    assert started == [] and "NS-E203" not in r.output
