@@ -28,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -174,6 +175,10 @@ class ProofHome:
         for key in PROXY_VARIABLES:
             if key in env:
                 self.monkeypatch.setenv(key, env[key])
+        # urllib builds its default opener (proxy, CA) once per process from the environment: a second proof
+        # run in this process, with a new fake endpoint, must not reuse the first one's. A real dashboard
+        # process starts fresh; this process has to be told.
+        self.monkeypatch.setattr(urllib.request, "_opener", None, raising=False)
         app = self._app(self.state)
         app.state.dashboard.settings.key_check = live_key_check
         self.proof_server = _Server(app)

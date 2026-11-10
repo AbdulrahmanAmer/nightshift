@@ -20,18 +20,37 @@ import shutil
 import sys
 import types
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from dev import prove
 from tests.proofhome import ProofHome, proof_home  # noqa: F401  (`proof_home` is the fixture, used by name)
 
-#: proof id -> the test in this file that runs it against the fake-services home
+#: proof id -> {"passes": the test that runs it to a pass, "fails": the tests that put one fault it exists to
+#: catch into the home and assert it FAILS at the named check}. A proof needs both.
 COVERED = {
-    "f-b7-review-reject": "test_f_b7_passes_on_the_fake_services_home",
-    "f-b13-b14-footage-429": "test_f_b13_b14_passes_against_the_fake_footage_endpoint",
-    "f-b18-studio-status": "test_f_b18_passes_on_the_fake_services_home",
-    "f-c1-status-events": "test_f_c1_passes_on_the_fake_services_home",
+    "f-b7-review-reject": {
+        "passes": "test_f_b7_passes_on_the_fake_services_home",
+        "fails": ["test_f_b7_fails_when_a_rejected_output_leaves_a_file_in_the_outbox"],
+    },
+    "f-b13-b14-footage-429": {
+        "passes": "test_f_b13_b14_passes_against_the_fake_footage_endpoint",
+        "fails": [
+            "test_f_b13_fails_when_a_fetched_clip_is_not_the_fakes_bytes",
+            "test_f_b13_fails_when_library_does_not_list_a_fetched_clip",
+            "test_f_b14_fails_when_a_fetch_ignores_retry_after",
+            "test_f_b14_fails_when_an_endless_429_does_not_end_in_ns_e501",
+        ],
+    },
+    "f-b18-studio-status": {
+        "passes": "test_f_b18_passes_on_the_fake_services_home",
+        "fails": ["test_f_b18_fails_when_status_prints_a_wrong_outputs_count"],
+    },
+    "f-c1-status-events": {
+        "passes": "test_f_c1_passes_on_the_fake_services_home",
+        "fails": ["test_f_c1_fails_when_an_events_frame_differs_from_the_status"],
+    },
 }
 
 
@@ -45,6 +64,15 @@ def assert_passed(result: prove.Result, *, at_least_checks: int = 3) -> None:
 
 def step_names(result: prove.Result) -> list[str]:
     return [str(s["name"]) for s in result.steps]
+
+
+def assert_fails_at(result: prove.Result, check: str) -> None:
+    """The runner's verdict is a FAIL, and the failing check is the named one (its text), not some other
+    failure (a crash, a skip, an earlier check)."""
+    assert result.result == "fail", f"{result.proof.id} did not fail: {result.result} {result.reason}"
+    assert result.reason.startswith(check), f"failed at {result.reason!r}, wanted {check!r}"
+    failed = [s["name"] for s in result.steps if s.get("ok") is False]
+    assert failed and str(failed[-1]).startswith(check), failed
 
 
 # --------------------------------------------------------------------------------------------- F-B7
@@ -79,8 +107,7 @@ def test_f_b7_fails_when_a_rejected_output_leaves_a_file_in_the_outbox(
     with monkeypatch.context() as patched:  # the reject route COPIES the files (`review.reject`'s move)
         patched.setattr(review, "shutil", types.SimpleNamespace(move=copy_not_move))
         broken = proof_home.run("f_b7_review_reject")
-    assert broken.result == "fail", f"a copy instead of a move passed: {broken.result}"
-    assert "the files MOVED to rejected/" in broken.reason, broken.reason
+    assert_fails_at(broken, "the files MOVED to rejected/")
     # failed, then retried: with the route as the product has it, the same proof on the same home passes
     assert_passed(proof_home.run("f_b7_review_reject"), at_least_checks=15)
 
@@ -106,15 +133,17 @@ def ffmpeg_for_the_fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     return "stand-in"
 
 
+def allow_footage_proof(proof_home: ProofHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """FFmpeg for the fake endpoint, and `ctx.spawn` allowed for this test only (the fixture is per test)."""
+    ffmpeg_for_the_fake(tmp_path, monkeypatch)
+    proof_home.allow_spawn = True
+
+
 def test_f_b13_b14_passes_against_the_fake_footage_endpoint(
     proof_home: ProofHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    ffmpeg_for_the_fake(tmp_path, monkeypatch)
-    proof_home.allow_spawn = True
-    try:
-        result = proof_home.run("f_b13_b14_footage_429")
-    finally:
-        proof_home.allow_spawn = False
+    allow_footage_proof(proof_home, tmp_path, monkeypatch)
+    result = proof_home.run("f_b13_b14_footage_429")
     assert_passed(result, at_least_checks=30)
     names = step_names(result)
     assert any("Library > Footage (GET /api/library/footage) lists the fetched" in n for n in names)
@@ -124,6 +153,69 @@ def test_f_b13_b14_passes_against_the_fake_footage_endpoint(
     # the fake endpoint was a real child with its pid recorded, and the runner stopped it
     assert [p["name"] for p in result.extra["pids"]] == ["footage-fake"]
     assert any(s["name"] == "runner stopped" for s in result.steps)
+
+
+def test_f_b13_fails_when_a_fetched_clip_is_not_the_fakes_bytes(
+    proof_home: ProofHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_studio.media import clip_sources
+
+    real = clip_sources._HttpSource._fetch_file
+
+    def corrupt(self, url: str, dest: Path) -> Path:  # the download lands, but not as the endpoint sent it
+        out = real(self, url, dest)
+        out.write_bytes(out.read_bytes() + b"corrupted in transit")
+        return out
+
+    monkeypatch.setattr(clip_sources._HttpSource, "_fetch_file", corrupt)
+    allow_footage_proof(proof_home, tmp_path, monkeypatch)
+    result = proof_home.run("f_b13_b14_footage_429")
+    assert_fails_at(result, "pexels clip ")
+    assert "the fake's bytes" in result.reason
+
+
+def test_f_b13_fails_when_library_does_not_list_a_fetched_clip(
+    proof_home: ProofHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_dashboard.svc_library import LibraryService
+
+    monkeypatch.setattr(LibraryService, "footage", lambda self, q=None, limit=60: [])
+    allow_footage_proof(proof_home, tmp_path, monkeypatch)
+    result = proof_home.run("f_b13_b14_footage_429")
+    assert_fails_at(result, "Library > Footage (GET /api/library/footage) lists the fetched Pexels clips")
+
+
+def test_f_b14_fails_when_a_fetch_ignores_retry_after(
+    proof_home: ProofHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_studio.media import clip_sources
+
+    monkeypatch.setattr(clip_sources, "retry_wait_s", lambda resp, wall_now: 0.0)  # a 429 is retried at once
+    allow_footage_proof(proof_home, tmp_path, monkeypatch)
+    result = proof_home.run("f_b13_b14_footage_429")
+    assert_fails_at(result, "the fetch waited out 3 Retry-After periods")
+
+
+def test_f_b14_fails_when_an_endless_429_does_not_end_in_ns_e501(
+    proof_home: ProofHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_common.errors import NsError
+    from ns_studio.media import clip_sources
+
+    real = clip_sources._HttpSource._get
+
+    def other_code(self, *args, **kwargs):  # giving up on a 429 is reported as an outage, not NS-E501
+        try:
+            return real(self, *args, **kwargs)
+        except NsError as err:
+            if "rate limited" in str(err):
+                raise NsError("NS-E503", str(err)) from err
+            raise
+
+    monkeypatch.setattr(clip_sources._HttpSource, "_get", other_code)
+    allow_footage_proof(proof_home, tmp_path, monkeypatch)
+    result = proof_home.run("f_b13_b14_footage_429")
+    assert_fails_at(result, "endless 429: the fetch fails with the coded NS-E501")
 
 
 def has_ffmpeg(folder: Path) -> bool:
@@ -183,14 +275,48 @@ def test_f_b18_passes_on_the_fake_services_home(proof_home: ProofHome):
 
 def test_f_c1_passes_on_the_fake_services_home(proof_home: ProofHome):
     result = proof_home.run("f_c1_status_events")
-    assert_passed(result, at_least_checks=7)
-    assert "the frame carries the same status object" in step_names(result)
+    assert_passed(result, at_least_checks=9)
+    names = step_names(result)
+    assert "the frame carries the same status object" in names
+    assert "the frame's status equals GET /api/status (version, schedule flag, channels)" in names
+
+
+def test_f_b18_fails_when_status_prints_a_wrong_outputs_count(
+    proof_home: ProofHome, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_dashboard.fakes import seed_output
+    from ns_studio.learn import status
+
+    seed_output(proof_home.state.db, proof_home.paths, kind="short", k=1, title="Floor 13")
+    real = status.format_status
+
+    def off_by_one(st, cadence_line=""):
+        return [line.replace("outputs: pending=1", "outputs: pending=2") for line in real(st, cadence_line)]
+
+    monkeypatch.setattr(status, "format_status", off_by_one)
+    result = proof_home.run("f_b18_studio_status")
+    assert_fails_at(result, "channel after-dark: the printed outputs line equals the outputs table")
+
+
+def test_f_c1_fails_when_an_events_frame_differs_from_the_status(
+    proof_home: ProofHome, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_dashboard import svc_engine
+
+    real = svc_engine.iter_sse
+
+    def other_status(sub, status_fn, **kw):  # the stream's status loses the channels the status route has
+        return real(sub, lambda: {**status_fn(), "channels": []}, **kw)
+
+    monkeypatch.setattr(svc_engine, "iter_sse", other_status)
+    result = proof_home.run("f_c1_status_events")
+    assert_fails_at(result, "the frame's status equals GET /api/status")
 
 
 # ------------------------------------------------------------------------------------------ the rule
 
 
-def uncovered(covered: dict[str, str]) -> list[str]:
+def uncovered(covered: dict[str, dict[str, Any]]) -> list[str]:
     """What is wrong with a COVERED table, one sentence each (empty: nothing)."""
     found = {p.id: p for p in prove.discover()}
     problems = [f"proof {pid} is invalid: {'; '.join(p.problems)}" for pid, p in found.items() if p.problems]
@@ -202,12 +328,21 @@ def uncovered(covered: dict[str, str]) -> list[str]:
     for pid in sorted(set(covered) - set(found)):
         problems.append(f"COVERED names {pid}, which is not a proof any more")
     me = sys.modules[__name__]
-    for pid, name in covered.items():
-        test = getattr(me, name, None)
-        if not (inspect.isfunction(test) and name.startswith("test_")):
-            problems.append(f"{pid}: {name} is not a test in this file")
-        elif pid in found and f'run("{found[pid].stem}")' not in inspect.getsource(test):
-            problems.append(f"{pid}: {name} does not run {found[pid].stem} through proof_home.run")
+    for pid, row in covered.items():
+        stem = found[pid].stem if pid in found else ""
+        if not row.get("fails"):
+            problems.append(f"{pid} has no negative case: a test that asserts FAIL with its fault")
+        for kind, names in (("passes", [row.get("passes")]), ("fails", row.get("fails") or [])):
+            for name in names:
+                test = getattr(me, str(name), None)
+                if not (inspect.isfunction(test) and str(name).startswith("test_")):
+                    problems.append(f"{pid}: {name} is not a test in this file")
+                    continue
+                source = inspect.getsource(test)
+                if kind == "passes" and stem and f'run("{stem}")' not in source:
+                    problems.append(f"{pid}: {name} does not run {stem} through proof_home.run")
+                if kind == "fails" and "assert_fails_at(" not in source:
+                    problems.append(f"{pid}: {name} does not assert the proof FAILS at a named check")
     return problems
 
 
@@ -216,9 +351,15 @@ def test_every_proof_script_has_a_fake_home_test():
     assert uncovered(COVERED) == []
 
 
-def test_the_rule_names_a_proof_without_a_test_and_a_test_that_runs_nothing():
+def test_the_rule_names_a_proof_without_a_test_without_a_negative_and_a_test_that_runs_nothing():
+    c1 = COVERED["f-c1-status-events"]
     without = {k: v for k, v in COVERED.items() if k != "f-b7-review-reject"}
     assert any("f-b7-review-reject has no test" in p for p in uncovered(without))
-    names_nothing = {**COVERED, "f-c1-status-events": "test_every_proof_script_has_a_fake_home_test"}
-    assert any("does not run f_c1_status_events" in p for p in uncovered(names_nothing))
-    assert any("no longer" in p or "not a proof" in p for p in uncovered({**COVERED, "f-gone": "test_x"}))
+    names_nothing = {**COVERED, "f-c1-status-events": {**c1, "passes": "test_x"}}
+    assert any("test_x is not a test" in p for p in uncovered(names_nothing))
+    no_negative = {**COVERED, "f-c1-status-events": {"passes": c1["passes"], "fails": []}}
+    assert any("f-c1-status-events has no negative case" in p for p in uncovered(no_negative))
+    only_passing = {**COVERED, "f-c1-status-events": {**c1, "fails": [c1["passes"]]}}
+    assert any("does not assert the proof FAILS" in p for p in uncovered(only_passing))
+    gone = {**COVERED, "f-gone": {"passes": "t", "fails": ["t"]}}
+    assert any("not a proof any more" in p for p in uncovered(gone))

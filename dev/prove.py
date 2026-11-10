@@ -46,6 +46,9 @@ the FFmpeg lookup is `ns_common.ffmpeg`), so run it from a Python that has the r
 example the repository test venv; it finds FFmpeg the way the product does (`NS_FFMPEG`, PATH,
 `<home>/bin/ffmpeg`), not by that Python's PATH alone. Every proof has a test in `tests/test_proof_scripts.py`
 that runs it against a fake-services home (`tests/proofhome.py`), and CI runs it.
+The release rule (`--all --strict`) is run on a dev install with fake services, FFmpeg and openssl found and
+NO real stock-footage key stored: F-B13/F-B14 skip over a real key by design, and a skip is exit 3
+(proofs/README.md).
 Never global input, nothing on C:, one proof at a time.
 """
 

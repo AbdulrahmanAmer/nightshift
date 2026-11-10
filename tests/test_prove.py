@@ -936,6 +936,7 @@ def test_worked_dashboard_proof_passes_against_a_stub_dashboard(env, monkeypatch
     assert [u[1] for u in urls] == [
         "http://127.0.0.1:8100/api/status",
         "http://127.0.0.1:8100/api/events?limit=1",
+        "http://127.0.0.1:8100/api/status",  # again: the frame's status is compared with it
     ]
     assert all(s.get("ok", True) for s in ctx.steps)
 

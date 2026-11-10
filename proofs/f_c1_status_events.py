@@ -63,3 +63,20 @@ def run(ctx):
         "the frame carries the same status object",
         frame_version=payload.get("version"),
     )
+    # The same object, not just its version: the fields that do not change between two looks at an idle
+    # install (the version, the schedule flag, and each channel's slug, state and format) must be equal.
+    code, again = ctx.api("GET", "/api/status")
+    ctx.check(code == 200 and isinstance(again, dict), "GET /api/status answers again", code=code)
+    fields = {
+        "version": lambda o: o.get("version"),
+        "schedule_registered": lambda o: o.get("schedule_registered"),
+        "channels": lambda o: sorted(
+            (c.get("slug"), c.get("status"), c.get("format")) for c in (o.get("channels") or [])
+        ),
+    }
+    differing = {k: [get(payload), get(again)] for k, get in fields.items() if get(payload) != get(again)}
+    ctx.check(
+        not differing,
+        "the frame's status equals GET /api/status (version, schedule flag, channels)",
+        differing=differing,
+    )
