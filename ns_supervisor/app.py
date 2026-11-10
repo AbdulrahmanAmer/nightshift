@@ -231,6 +231,9 @@ def main(argv: list[str] | None = None) -> int:
         # a crash between a write and its swap leaves a ~ns*.tmp in config/ (with every key blob, for
         # secrets.dpapi); the next key write sweeps them too, this catches the ones nothing writes again
         sweep_stale_tmp(paths.config)
+        # notes that could not be written when they were left (a writer that hung, a full disk) wait in the
+        # spool: the start moves them into the notes the bell shows, each once (never raises)
+        notify.drain_spool(paths)
         return _serve(args, paths)
     finally:
         lock.release()
@@ -283,8 +286,8 @@ def _note_once(paths: Paths, log: Any, message: str, code: str, about: str) -> N
 
     try:
         notify.leave_note(paths, "Nightshift", message, once=waits)
-    except OSError as e:  # a note must never stop an engine start
-        log.warn("morning_note_failed", str(e))
+    except OSError as e:  # neither the notes nor their spool took it (notify logged it); never stop a start
+        log.warn("morning_note_failed", str(e), message=message)
 
 
 def _serve(args: argparse.Namespace, paths: Paths) -> int:

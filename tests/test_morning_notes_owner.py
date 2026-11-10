@@ -20,7 +20,9 @@ STUB = "installer/launch.ps1"
 STUB_FUNCTION = "Add-NsMorningNote"
 FILE_NAME = "morning_note.json"
 #: The owner's own names for the file, its lock and its limit: nobody else has a use for them.
-OWNER_NAMES = frozenset({"NOTE_FILE", "NOTE_LOCK", "NOTE_KEEP", "NOTES_FULL", "note_path", "clear_notes"})
+OWNER_NAMES = frozenset({
+    "NOTE_FILE", "NOTE_LOCK", "NOTE_KEEP", "NOTE_SPOOL", "NOTES_FULL", "note_path", "spool_dir", "clear_notes",
+})
 #: Callers that used to read the notes to decide "already said" and then write: they pass `once=` now.
 ONCE_CALLERS = (
     "ns_supervisor/schedule.py", "ns_supervisor/app.py", "ns_supervisor/update_check.py",

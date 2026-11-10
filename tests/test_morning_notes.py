@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +48,19 @@ def lock_file(paths: Paths) -> Path:
 
 def notes_file(paths: Paths) -> Path:
     return paths.home / "run" / "morning_note.json"
+
+
+def spooled(paths: Paths) -> list[Path]:
+    """The notes waiting in the spool (complete files only)."""
+    folder = paths.home / "run" / "morning_note.spool"
+    return sorted(folder.glob("*.json")) if folder.is_dir() else []
+
+
+def log_records(paths: Paths) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for f in sorted(paths.logs.glob("*.jsonl")) if paths.logs.is_dir() else []:
+        out += [json.loads(line) for line in f.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return out
 
 
 def messages(paths: Paths) -> list[str]:
@@ -278,7 +291,7 @@ def test_a_held_lock_never_hides_the_notes_and_a_dismiss_then_says_busy(
     paths = state.paths
     notify.leave_note(paths, "Nightshift", "readable while locked")
     before = notes_file(paths).read_bytes()
-    monkeypatch.setattr(notify, "NOTES_WAIT_S", 0.3, raising=False)
+    monkeypatch.setattr(notify, "NOTES_REQUEST_WAIT_S", 0.3, raising=False)
     held = FileLock(lock_file(paths))
     held.acquire()
     try:
@@ -402,6 +415,9 @@ def test_a_writer_that_fails_inside_its_write_releases_the_lock(tmp_path: Path) 
     with pytest.raises(OSError):
         notify.leave_note(other, "Nightshift", "nowhere to go")
     assert notify.read_notes(other) == [] and (other.home / "run").read_text(encoding="ascii") == "not a folder"
+    # neither the notes nor their spool can take it: the log line, level ERROR, keeps its text
+    (line,) = [r for r in log_records(other) if r["event"] == "morning_note_failed"]
+    assert line["level"] == "ERROR" and line["data"]["message"] == "nowhere to go" and line["data"]["spooled"] is None
 
 
 # --------------------------------------------------------------- 4, 5: the launch script and Python
@@ -451,7 +467,7 @@ def test_the_stub_and_python_agree_on_the_lock(tmp_path: Path) -> None:
         wait_for(held, "the PowerShell holder never took the lock", proc)
         began = time.monotonic()
         with pytest.raises(NotesBusy):
-            notify.leave_note(paths, "Nightshift", "refused", wait_s=0.5)  # pyright: ignore[reportCallIssue]
+            notify.leave_note(paths, "Nightshift", "refused", wait_s=0.5, spool=False)  # pyright: ignore[reportCallIssue]
         assert 0.4 <= time.monotonic() - began < 3 and notes_file(paths).read_bytes() == before
         assert [n["message"] for n in notify.read_notes(paths)] == ["before"]      # a reader takes no lock
         release.write_text("go", encoding="ascii")
@@ -474,7 +490,7 @@ def test_a_writer_killed_while_it_holds_the_lock_blocks_nobody(tmp_path: Path) -
     with started(holder_argv(script, paths, held, tmp_path / "never")) as proc:
         wait_for(held, "the PowerShell holder never took the lock", proc)
         with pytest.raises(NotesBusy):
-            notify.leave_note(paths, "Nightshift", "refused", wait_s=0.2)  # pyright: ignore[reportCallIssue]
+            notify.leave_note(paths, "Nightshift", "refused", wait_s=0.2, spool=False)  # pyright: ignore[reportCallIssue]
         proc.kill()
         proc.wait(timeout=30)
         began = time.monotonic()
@@ -486,7 +502,7 @@ def test_a_writer_killed_while_it_holds_the_lock_blocks_nobody(tmp_path: Path) -
     with started([sys.executable, "-c", PY_STUCK, str(home), str(inside)]) as proc:
         wait_for(inside, "the Python writer never got inside its write", proc)
         with pytest.raises(NotesBusy):
-            notify.leave_note(paths, "Nightshift", "refused", wait_s=0.2)  # pyright: ignore[reportCallIssue]
+            notify.leave_note(paths, "Nightshift", "refused", wait_s=0.2, spool=False)  # pyright: ignore[reportCallIssue]
         proc.kill()
         proc.wait(timeout=30)
         assert stub_cleanup(home, desk) == "cleared" and not record.exists()
@@ -618,11 +634,15 @@ def test_a_damaged_file_found_by_a_writer_is_not_overwritten(tmp_path: Path, mon
         raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(notify, "write_text_atomic", no_room)
-    with pytest.raises(OSError, match="No space left"):
-        notify.leave_note(paths, "Nightshift", "the summary of the night")
+    # the note is not lost: logged with its text and spooled (one small file, written without the lock)
+    assert notify.leave_note(paths, "Nightshift", "the summary of the night") is True
     assert notes_file(paths).read_bytes() == torn                    # not emptied, not replaced
+    assert len(spooled(paths)) == 1
+    (line,) = [r for r in log_records(paths) if r["event"] == "morning_note_failed"]
+    assert "No space left" in line["msg"] and line["data"]["message"] == "the summary of the night"
     monkeypatch.setattr(notify, "write_text_atomic", real)
-    assert notify.leave_note(paths, "Nightshift", "the summary of the night") in (True, None)
+    assert notify.drain_spool(paths) == 1                            # the engine's start
+    assert spooled(paths) == [] and notify.drain_spool(paths) == 0
     assert len(kept_aside(paths)) == 1, "the torn file was overwritten: its bytes are nowhere"
     assert kept_aside(paths)[0].read_bytes() == torn
     said, last = messages(paths)
@@ -658,22 +678,227 @@ def test_the_stub_sets_a_damaged_file_aside_and_says_so(tmp_path: Path) -> None:
     assert len(kept_aside(paths)) == 1
 
 
-# --------------------------------------------------------------------- the limit drops no waiting note
-def test_no_waiting_note_is_dropped_to_make_room(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+
+
+# ------------------------------------------------- the bound: the newest note that matters is never lost
+ROUTINE = "1 master + 5 Shorts ready for review"
+FAILED = "run failed (NS-E203), open Dashboard"
+
+
+def full_file(paths: Paths, texts: list[str], *, mark_every: int = 2) -> list[str]:
+    """`texts` as waiting notes, a minute apart; every `mark_every`-th routine one carries the mark this
+    version writes, the others are as rc3 left them (the rule reads the words too). Returns their `at`."""
+    start = datetime(2026, 5, 1, 3, 0, 0)
+    notes: list[dict[str, Any]] = []
+    for i, text in enumerate(texts):
+        note: dict[str, Any] = {"at": (start + timedelta(minutes=i)).isoformat(), "title": "Nightshift", "message": text}
+        if i % mark_every == 0 and notify.is_routine(text):
+            note["routine"] = True
+        notes.append(note)
+    notes_file(paths).parent.mkdir(parents=True, exist_ok=True)
+    notes_file(paths).write_text(json.dumps({"notes": notes}, indent=2) + "\n", encoding="utf-8")
+    return [n["at"] for n in notes]
+
+
+def raw_notes(paths: Paths) -> list[dict[str, Any]]:
+    return json.loads(notes_file(paths).read_text(encoding="utf-8"))["notes"]
+
+
+def test_routine_is_defined_once_and_a_failure_is_never_routine() -> None:
+    from ns_studio.notifications import failure_message, nightly_message
+
+    assert notify.is_routine(nightly_message({"jobs": [{}]}, 1, 5) or "") and notify.is_routine(ROUTINE)
+    assert notify.is_routine(nightly_message({"jobs": [{}, {}]}, 0, 0) or "")       # "2 jobs finished, open ..."
+    assert not notify.is_routine(nightly_message({"jobs": [{}], "failures": [{"code": "NS-E203"}]}, 1, 0) or "")
+    assert not notify.is_routine(failure_message("NS-E203")) and not notify.is_routine(stub_said("2026-11-08"))
+    assert not notify.is_routine("NS-W207: Automatic runs were switched off outside Nightshift.")
+    assert not notify.is_routine(notify.damaged_message(Path("x"))) and not notify.is_routine("")
+
+
+def test_at_the_bound_a_failure_pushes_out_the_oldest_routine_note(tmp_home: Path) -> None:
+    """Six months of "ready for review" nobody dismissed (200 notes): the night that fails is still told."""
+    client, state = make_env(tmp_home)
+    paths = state.paths
+    ats = full_file(paths, [ROUTINE] * 200)
+    assert notify.leave_note(paths, "Nightshift", FAILED) is True
+    got = raw_notes(paths)
+    assert len(got) == 201 and got[-1]["message"] == FAILED
+    assert got[0] == {"at": got[0]["at"], "title": "Nightshift", "message": notify.removed_message(paths, 1), "removed": 1}
+    assert [n["at"] for n in got[1:200]] == ats[1:], "not the oldest routine note went"
+    assert all(n.get("routine") is True for n in got[1:200]), "the launch script reads the mark: every routine note has it"
+    # the next one: the same one note counts both, updated in place, never a second one
+    assert notify.leave_note(paths, "Nightshift", FAILED + " again") is True
+    got = raw_notes(paths)
+    assert len(got) == 201 and [n for n in got if "removed" in n] == [got[0]] and got[0]["removed"] == 2
+    assert got[0]["message"] == notify.removed_message(paths, 2) and str(paths.logs) in got[0]["message"]
+    assert [n["message"] for n in got[-2:]] == [FAILED, FAILED + " again"]
+    dropped = [r for r in log_records(paths) if r["event"] == "morning_note_dropped"]
+    assert [n["at"] for r in dropped for n in r["data"]["notes"]] == ats[:2]
+    # the bell: the count first in the answer (the file's order) and last on screen (the page reverses it)
+    shown = client.get("/api/notes").json()
+    assert shown[0]["message"] == got[0]["message"] and shown[-1]["message"] == FAILED + " again"
+    assert notify.dismiss(paths, [shown[0]["id"]]) == 1 and not [n for n in raw_notes(paths) if "removed" in n]
+
+
+def test_at_the_bound_of_failures_the_newest_is_kept_and_a_routine_note_moves_none(tmp_path: Path) -> None:
     paths = Paths(tmp_path / "home")
-    for i in range(25):                                     # more nights than the old cap of 20, nobody looked
-        notify.leave_note(paths, "Nightshift", f"note {i}", now=datetime(2026, 11, 3, 3, 0, i))
-    assert messages(paths) == [f"note {i}" for i in range(25)]
-    # the bound: a runaway writer cannot grow the file for ever, and what it refuses is said in the file, once
-    monkeypatch.setattr(notify, "NOTES_FULL", 27, raising=False)
-    notify.leave_note(paths, "Nightshift", "note 25")
-    notify.leave_note(paths, "Nightshift", "note 26")       # the last one that fits
-    for i in (27, 28):
-        with pytest.raises(OSError, match="27 notes"):
-            notify.leave_note(paths, "Nightshift", f"note {i}")
+    failures = [f"{FAILED} (night {i})" for i in range(200)]
+    full_file(paths, failures)
+    assert notify.leave_note(paths, "Nightshift", "run failed (NS-E204), open Dashboard") is True
     got = messages(paths)
-    assert got[:27] == [f"note {i}" for i in range(27)] and len(got) == 28
-    assert got[27].startswith("Nightshift keeps 27 notes") and "Mark all read" in got[27] and str(paths.logs) in got[27]
-    # the owner reads them: room again
-    assert notify.dismiss(paths, [n["id"] for n in notify.read_notes(paths)]) == 28
-    assert notify.leave_note(paths, "Nightshift", "note 29") is True and messages(paths) == ["note 29"]
+    assert got[0] == notify.removed_message(paths, 1) and got[1:] == [*failures[1:], "run failed (NS-E204), open Dashboard"]
+    # a routine note never makes room by pushing out a failure: it is the one not kept, and it is counted
+    assert notify.leave_note(paths, "Nightshift", ROUTINE) is False
+    after = messages(paths)
+    assert after[1:] == got[1:] and after[0] == notify.removed_message(paths, 2)
+    last = [r for r in log_records(paths) if r["event"] == "morning_note_dropped"][-1]
+    assert [n["message"] for n in last["data"]["notes"]] == [ROUTINE]
+
+
+@needs_powershell
+def test_the_launch_stub_keeps_the_same_bound(tmp_path: Path) -> None:
+    """The missed-night note of the launch script at 200 waiting notes (Windows PowerShell 5.1): written,
+    the oldest routine note goes, then the oldest failure; one count note in the program's words."""
+    home, desk = stub_home(tmp_path)
+    paths = Paths(home)
+    texts = [f"{FAILED} (night {i})" for i in range(200)]
+    texts[3] = ROUTINE
+    full_file(paths, texts, mark_every=1)
+    missed(home, "2026-11-08")
+    assert stub_cleanup(home, desk) == "cleared"
+    got = raw_notes(paths)
+    assert len(got) == 201 and got[0]["message"] == notify.removed_message(paths, 1) and got[0]["removed"] == 1
+    assert [n["message"] for n in got[1:]] == [*texts[:3], *texts[4:], stub_said("2026-11-08")]
+    launch_log = [
+        json.loads(line) for f in sorted(paths.logs.glob("launch-*.jsonl"))
+        for line in f.read_text(encoding="utf-8").splitlines() if line
+    ]
+    (dropped,) = [r for r in launch_log if r["event"] == "morning_note_dropped"]
+    assert [n["message"] for n in dropped["data"]["notes"]] == [ROUTINE]
+    # no routine note left: the oldest failure goes, the newest is kept, the count is replaced in place
+    missed(home, "2026-10-01")
+    assert stub_cleanup(home, desk) == "cleared"
+    got = raw_notes(paths)
+    assert len(got) == 201 and [n for n in got if "removed" in n] == [got[0]] and got[0]["removed"] == 2
+    assert got[0]["message"] == notify.removed_message(paths, 2)
+    assert [n["message"] for n in got[1:]] == [*texts[1:3], *texts[4:], stub_said("2026-11-08"), stub_said("2026-10-01")]
+    # and the program goes on from what the script wrote
+    assert notify.leave_note(paths, "Nightshift", FAILED) is True
+    assert raw_notes(paths)[0]["removed"] == 3 and messages(paths)[-1] == FAILED
+
+
+# --------------------------------------- a note that cannot be written waits in the spool, then comes once
+def test_the_waits_are_longer_than_the_longest_hold() -> None:
+    from ns_common.atomic import REPLACE_WAIT_S
+
+    assert notify.NOTES_HOLD_MAX_S >= REPLACE_WAIT_S + notify.NOTES_SWAP_WAIT_S + notify.NOTES_DRAIN_S
+    assert notify.NOTES_WAIT_S > notify.NOTES_HOLD_MAX_S and notify.NOTES_REQUEST_WAIT_S <= 5
+
+
+def test_a_writer_slowed_past_five_seconds_makes_nobody_spool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paths = Paths(tmp_path / "home")
+    one = Paused(monkeypatch, paths, "a slow writer").start()
+    two = threading.Thread(target=lambda: notify.leave_note(paths, "Nightshift", "waits its turn"), daemon=True)
+    try:
+        two.start()
+        two.join(6.0)
+        assert two.is_alive() and spooled(paths) == [], "a writer gave up on a holder that was only slow"
+    finally:
+        one.finish()
+    two.join(60)
+    assert messages(paths) == ["a slow writer", "waits its turn"] and spooled(paths) == []
+
+
+def test_a_writer_blocked_past_its_wait_spools_and_the_next_write_delivers_it_once(tmp_path: Path) -> None:
+    paths = Paths(tmp_path / "home")
+    notify.leave_note(paths, "Nightshift", "before")
+    before = notes_file(paths).read_bytes()
+    held = FileLock(lock_file(paths))
+    held.acquire()                                             # a holder that hangs
+    try:
+        began = time.monotonic()
+        assert notify.leave_note(paths, "Nightshift", FAILED, wait_s=0.3) is True  # pyright: ignore[reportCallIssue]
+        assert time.monotonic() - began < 3 and notes_file(paths).read_bytes() == before
+        (kept,) = spooled(paths)
+        assert json.loads(kept.read_text(encoding="utf-8"))["message"] == FAILED
+        (line,) = [r for r in log_records(paths) if r["event"] == "morning_note_failed"]
+        assert line["level"] == "WARN" and "held by another program" in line["msg"]
+        assert line["data"]["message"] == FAILED and line["data"]["spooled"] == str(kept)
+    finally:
+        held.release()
+    copy = kept.read_bytes()
+    assert notify.leave_note(paths, "Nightshift", "next") is True
+    assert messages(paths) == ["before", FAILED, "next"] and spooled(paths) == []
+    # a holder killed after its write and before it removed the spool file: the note is not added again
+    kept.write_bytes(copy)
+    assert notify.leave_note(paths, "Nightshift", "and next") is True
+    assert messages(paths) == ["before", FAILED, "next", "and next"] and spooled(paths) == []
+    # the same leftover while the owner dismisses that note: the dismiss drains first, so it never comes back
+    kept.write_bytes(copy)
+    ids = [n["id"] for n in notify.read_notes(paths) if n["message"] == FAILED]
+    assert notify.dismiss(paths, ids) == 1 and spooled(paths) == []
+    notify.leave_note(paths, "Nightshift", "last")
+    assert messages(paths) == ["before", "next", "and next", "last"]
+
+
+def test_the_nightly_result_is_never_lost_and_never_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`toast_or_note` is how the night's result reaches the notes in session 0."""
+    paths = Paths(tmp_path / "home")
+    monkeypatch.setattr(notify, "NOTES_WAIT_S", 0.3, raising=False)
+    held = FileLock(lock_file(paths))
+    held.acquire()
+    try:
+        assert notify.toast_or_note("Nightshift", FAILED, paths=paths, interactive=lambda: False) is False
+        assert len(spooled(paths)) == 1 and not notes_file(paths).exists()
+    finally:
+        held.release()
+    assert notify.drain_spool(paths) == 1 and messages(paths) == [FAILED] and spooled(paths) == []
+    assert "notify.drain_spool(paths)" in (ROOT / "ns_supervisor" / "app.py").read_text(encoding="utf-8")
+    # neither the notes nor the spool can be written: the log keeps the text, nothing reaches the job
+    other = Paths(tmp_path / "blocked")
+    other.home.mkdir()
+    (other.home / "run").write_text("not a folder", encoding="ascii")
+    assert notify.toast_or_note("Nightshift", FAILED, paths=other, interactive=lambda: False) is False
+    (line,) = [r for r in log_records(other) if r["event"] == "morning_note_failed"]
+    assert line["level"] == "ERROR" and line["data"]["message"] == FAILED
+    # the spool is bounded: a holder that hangs for days cannot fill the disk
+    monkeypatch.setattr(notify, "SPOOL_MAX", 2, raising=False)
+    held.acquire()
+    try:
+        assert notify.leave_note(paths, "Nightshift", "one", wait_s=0.1) is True  # pyright: ignore[reportCallIssue]
+        assert notify.leave_note(paths, "Nightshift", "two", wait_s=0.1) is True  # pyright: ignore[reportCallIssue]
+        with pytest.raises(OSError):
+            notify.leave_note(paths, "Nightshift", "three", wait_s=0.1)  # pyright: ignore[reportCallIssue]
+    finally:
+        held.release()
+    assert [r["data"]["message"] for r in log_records(paths) if r["event"] == "morning_note_failed"][-1] == "three"
+
+
+def test_a_damaged_spool_file_is_set_aside_once_and_never_read_again(tmp_path: Path) -> None:
+    paths = Paths(tmp_path / "home")
+    folder = paths.home / "run" / "morning_note.spool"
+    folder.mkdir(parents=True)
+    note = {"at": "2026-11-10T03:00:00", "title": "Nightshift", "message": "spooled", "once": False}
+    (folder / "20261110T030000000001-1-1-1.json").write_text(json.dumps(note), encoding="utf-8")
+    (folder / "20261110T030000000002-1-1-2.json").write_text('{"at": "2026-11-10T03:00:01", "title": "Nigh', encoding="utf-8")
+    (folder / "20261110T030000000003-1-1-3.json").write_text('["not", "a note"]', encoding="utf-8")
+    (folder / "~ns123-1-1.tmp").write_text('{"at"', encoding="utf-8")          # a writer killed mid-file
+    assert notify.drain_spool(paths) == 1 and messages(paths) == ["spooled"]
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "20261110T030000000002-1-1-2.json.bad", "20261110T030000000003-1-1-3.json.bad", "~ns123-1-1.tmp"]
+    said = [r for r in log_records(paths) if r["event"] == "morning_note_spool_damaged"]
+    assert len(said) == 2 and notify.drain_spool(paths) == 0
+    assert len([r for r in log_records(paths) if r["event"] == "morning_note_spool_damaged"]) == 2
+    # a note spooled with once= is not added while the same words wait
+    again = {**note, "at": "2026-11-10T03:05:00", "once": True}
+    (folder / "20261110T030500000000-1-1-4.json").write_text(json.dumps(again), encoding="utf-8")
+    assert notify.leave_note(paths, "Nightshift", "after") is True
+    assert messages(paths) == ["spooled", "after"] and spooled(paths) == []
+
+
+def test_the_bell_shows_newest_first_and_says_busy() -> None:
+    shell = (ROOT / "ns_dashboard" / "ui" / "src" / "shell" / "Shell.tsx").read_text(encoding="utf-8")
+    assert ".then((l) => [...l].reverse())" in shell
+    assert 'e?.code === "notes_busy" ? "Nightshift is writing a note right now; try again"' in shell
+    bundle = (ROOT / "ns_dashboard" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "Nightshift is writing a note right now; try again" in bundle

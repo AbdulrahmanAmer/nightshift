@@ -199,14 +199,22 @@ function Add-NsMorningNote {
     # The only place this script touches the Dashboard's notes (the program's side is ns_supervisor/notify.py,
     # which owns the file; tests/test_morning_notes_owner.py fails on any other writer). One read-modify-write
     # under the notes lock: read, skip when a waiting note already says it (its message starts with -OnceStart
-    # and contains -OnceHas), add, swap the file. No waiting note is dropped to make room. The file keeps the
-    # format 0.1.14 reads: UTF-8 without a byte order mark, { notes: [ { at, title, message } ] }.
+    # and contains -OnceHas), add, keep the bound, swap the file. The file keeps the format 0.1.14 reads:
+    # UTF-8 without a byte order mark, { notes: [ { at, title, message } ] }, plus the program's two marks
+    # (routine = true on a routine note, removed = <n> on the note that counts the removed ones).
+    # The bound is the program's rule (notify._add): while more than 200 notes would wait, the oldest note
+    # marked routine goes; when none is, the oldest note goes (this script's notes are never routine). Each
+    # removed note is logged with its text (morning_note_dropped) and one note, first in the file, says how
+    # many went in all (notify.removed_message's words), replaced and never repeated. The newest is kept.
     # A damaged file is never emptied: it is first copied to a file of the same name plus .bad-<its time>,
     # then replaced by what could be read of it plus a note that says so (notify.damaged_message's words).
     # Returns true when the note was added and false when it was said already; throws when it could not be
-    # written (the lock not free in 5 seconds, the notes full, the file not readable or writable): then
-    # nothing was changed and the caller keeps what it wanted to say for the next start.
+    # written (the lock not free in 5 seconds, the file not readable or writable): then nothing was changed
+    # and the caller keeps what it wanted to say for the next start (its own spool: the missed-night count).
+    # 5 seconds and not the program's longer wait: a person may be waiting for a window to open, and giving up
+    # loses nothing.
     param([Parameter(Mandatory = $true)][string]$Message, [string]$OnceStart = '', [string]$OnceHas = '')
+    $notesFull = 200    # notify.NOTES_FULL
     $run = Join-Path $nsHome 'run'
     $notesFile = Join-Path $run 'morning_note.json'
     $lock = Open-NsNotesLock -RunDir $run
@@ -236,9 +244,48 @@ function Add-NsMorningNote {
                 $OnceStart -and ($_ -is [System.Management.Automation.PSCustomObject]) -and $_.PSObject.Properties['message'] -and ([string]$_.message).StartsWith($OnceStart) -and ([string]$_.message).Contains($OnceHas)
             })
         $add = ($said.Count -eq 0)
-        # the program refuses new notes at 200 waiting and says so in the notes; this script stops one short
-        if ($add -and @($notes).Count -ge 199) { throw 'the notes are full (199 or more wait unread); nothing was changed' }
-        if ($add) { $notes += [ordered]@{ at = $now; title = 'Nightshift'; message = $Message } }
+        if ($add) {
+            $count = $null
+            $kept = New-Object System.Collections.ArrayList
+            foreach ($n in $notes) {
+                if (($n -is [System.Management.Automation.PSCustomObject]) -and $n.PSObject.Properties['removed'] -and ($n.removed -is [ValueType]) -and -not ($n.removed -is [bool])) { $count = $n }
+                else { [void]$kept.Add($n) }
+            }
+            [void]$kept.Add([ordered]@{ at = $now; title = 'Nightshift'; message = $Message })
+            $gone = New-Object System.Collections.ArrayList
+            while ($kept.Count -gt $notesFull) {
+                $drop = 0
+                for ($i = 0; $i -lt ($kept.Count - 1); $i++) {
+                    $n = $kept[$i]
+                    if (($n -is [System.Management.Automation.PSCustomObject]) -and $n.PSObject.Properties['routine'] -and ($n.routine -eq $true)) { $drop = $i; break }
+                }
+                [void]$gone.Add($kept[$drop])
+                $kept.RemoveAt($drop)
+            }
+            if ($gone.Count -gt 0) {
+                $total = $gone.Count
+                if ($null -ne $count) { $total += [int]$count.removed }
+                $many = [string]$total + ' unread notes were'
+                if ($total -eq 1) { $many = '1 unread note was' }
+                $logs = Join-Path $nsHome 'logs'
+                $words = $many + ' removed to keep at most ' + $notesFull + ' notes here: routine news such as "ready for review" goes first, and a failure or a note that asks something of you only makes room for a newer one. Each removed note is in the log files in ' + $logs + ' (morning_note_dropped). Press Mark all read once you have read the notes, so that nothing more is removed.'
+                try {
+                    $stamp = [DateTime]::UtcNow
+                    $list = @(foreach ($g in $gone) { [ordered]@{ at = [string]$g.at; title = [string]$g.title; message = [string]$g.message } })
+                    $rec = [ordered]@{ ts = $stamp.ToString('o', $inv); level = 'WARN'; component = 'launch'; event = 'morning_note_dropped'
+                        msg = [string]$gone.Count + ' unread note(s) removed, bound ' + $notesFull; data = [ordered]@{ notes = $list; removed_in_all = $total } }
+                    [void][IO.Directory]::CreateDirectory($logs)
+                    $bytes = $utf8.GetBytes((ConvertTo-Json -InputObject $rec -Compress -Depth 6) + "`n")
+                    $fs = New-Object System.IO.FileStream((Join-Path $logs ('launch-' + $stamp.ToString('yyyyMMdd', $inv) + '.jsonl')), [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+                    try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush($true) }
+                    finally { $fs.Dispose() }
+                } catch { }
+                $count = [ordered]@{ at = $now; title = 'Nightshift'; message = $words; removed = $total }
+            }
+            $notes = @()
+            if ($null -ne $count) { $notes += $count }
+            $notes += @($kept)
+        }
         if ($add -or $damaged) {
             Write-NsFileSwap -Path $notesFile -Text ((ConvertTo-Json -InputObject ([ordered]@{ notes = @($notes) }) -Depth 5) + "`n")
         }

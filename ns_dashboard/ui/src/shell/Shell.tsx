@@ -100,13 +100,13 @@ function Notifications() {
   const [readAt, setReadAt] = useState(() => store.get<string>("ns-notif-read", ""));
   // Waits for the first status so the demo switch has happened (no stray request to a missing backend).
   const jobs = useLoad<Job[]>(() => (status ? api.get("/jobs") : Promise.resolve([])), [status?.engine?.state], []);
-  const { channelName } = useApp();
+  const { channelName, toast } = useApp();
   useDismiss(open, () => setOpen(false), ref);
-  // Notes Nightshift left while nobody was at the screen. Mark all read removes the ones listed here, by id: a note that arrives while the list is open waits for the next look.
-  const notes = useLoad<MorningNote[]>(() => (status ? api.get("/notes") : Promise.resolve([])), [status?.engine?.state, open], []);
+  // Notes Nightshift left while nobody was at the screen, newest first (the file keeps them in the order they came). Mark all read removes the ones listed here, by id: a note that arrives while the list is open waits for the next look.
+  const notes = useLoad<MorningNote[]>(() => (status ? api.get<MorningNote[]>("/notes").then((l) => [...l].reverse()) : Promise.resolve([])), [status?.engine?.state, open], []);
   const events = jobs.data.filter((j) => !["queued", "running"].includes(j.status)).slice(0, 6);
   const unread = events.filter((j) => (j.created_at || "") > readAt);
-  const markRead = () => { const t = new Date().toISOString(); setReadAt(t); store.set("ns-notif-read", t); if (notes.data.length) api.post("/notes/clear", { ids: notes.data.map((n) => n.id) }).then(() => notes.reload()).catch(() => notes.reload()); };
+  const markRead = () => { const t = new Date().toISOString(); setReadAt(t); store.set("ns-notif-read", t); if (notes.data.length) api.post("/notes/clear", { ids: notes.data.map((n) => n.id) }).then(() => notes.reload()).catch((e: any) => toast(e?.code === "notes_busy" ? "Nightshift is writing a note right now; try again" : (e?.message || "The notes could not be marked read; try again"), "warn")); };
   const label = unread.length ? `Notifications, ${unread.length} unread` : "Notifications";
   return (
     <div ref={ref} className="relative">
