@@ -196,6 +196,8 @@ Spec §12 slices map onto milestones as follows. The spec's slice gates become C
 
 ## 5. Workflow for builders
 
+**Superseded since 2026-11-10 by the block process.** Work moves in blocks as `OPERATING.md` says (a file kept outside the repository, on the build machine), and `BUILDER_RULES.md` (also outside the repository) says how one item is built. A builder builds, tests and commits locally in its worktree and never pushes or opens a pull request. The Head integrates a block, and CI on the block's one pull request is the verification of record. The commit trailer names the model that wrote the commit. Where the text below disagrees, those two files win; the rest of this section is kept as it was.
+
 **Who builds.** Builders are Sonnet agents at effort `high`. Opus only for tasks a plan marks `opus` (prompt design, policy logic, orchestrator design). Haiku for mechanical sweeps. **Never run an agent on Fable**: no `fork` subagents, always an explicit `model`. The orchestrator is the only session that edits `ns_common/` and `contracts/`.
 
 **Loop per task:**

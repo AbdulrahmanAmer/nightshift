@@ -103,7 +103,7 @@ the first-run checklist with every line still open until the first real night; s
 
 ## F. Partner GPU PC first run (V-gpu; hand this section over with the release)
 
-- [ ] F-F1 `Nightshift-Setup-0.1.12.zip` installs on the RTX 5060 Ti PC from the window: PC check green (driver, CUDA, 16 GB), downloads with hashes, `ns tune` on the GPU, smoke test all ok; `verify-report.json` and the diagnostics zip sent back. partner
+- [ ] F-F1 The Setup zip of the newest final release installs on the RTX 5060 Ti PC from the window: PC check green (driver, CUDA, 16 GB), downloads with hashes, `ns tune` on the GPU, smoke test all ok; `verify-report.json` and the diagnostics zip sent back. partner
 - [ ] F-F2 Voice engine: qwentts.cpp binary runs (DLLs present), `engine_kind: qwentts`, no NS-W301; if NS-W301 appears, the PyTorch fallback venv installs and speaks. partner
 - [ ] F-F3 Whisper on CUDA (no NS-W404), captions `drift_ms` on the first Shorts well under 120 (raise the gate only with numbers). partner
 - [ ] F-F4 NVENC probe ok, idle VRAM under the target after unload, GPU lease contention between studio and Assistant (busy refusal). partner
@@ -120,7 +120,7 @@ the first-run checklist with every line still open until the first real night; s
 
 ## G. Programmatic gates (must all be green before "done")
 
-- [ ] F-G1 `main` CI green: lint, types, test, powershell-parse, scope-check, ui-build (`gh run list --branch main --limit 1`). CI
+- [ ] F-G1 `main` CI green: lint, types, test, powershell-parse, scope-check, ui-build (`gh run list --branch main --limit 1`). `scope-check` runs only on pull requests, so its green comes from the pull request's run; the other five come from the run on `main`. CI
 - [ ] F-G2 `python dev/verification_inventory.py --check` passes and the inventory has zero U rows in sections A to E's scope (`grep -c "| U |" docs/VERIFICATION_INVENTORY.md` is 0 or every remaining U is a V-gpu line). CI
 - [ ] F-G3 `python dev/finalization_status.py --check` passes: every ticked box carries evidence; sections A to E and G report 0 open. CI
 - [ ] F-G4 `tests/test_models.py` schema equality and `tests/test_release_wiring.py` pass on the tagged commit. CI
