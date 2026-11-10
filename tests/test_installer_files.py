@@ -138,6 +138,7 @@ STDLIB_ONLY_NS_COMMON = {
 # installer.stage2.shortcut_owner (card launcher-reach) reads Desktop shortcuts for setup and the engine.
 STDLIB_ONLY_INSTALLER = {
     "installer.stage2.devmode", "installer.stage2.sysinfo", "installer.stage2.shortcut_owner",
+    "installer.stage2.commands",    # card FN-3: the ns and studio command files and the user PATH rule
 }
 
 

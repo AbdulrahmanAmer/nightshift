@@ -857,7 +857,8 @@ def test_a_failed_switch_on_still_names_ns_schedule_install(tmp_home: Path, wind
     windows.refuse_all = True
     moved = result(put(client, schedule_time="05:00"))   # a time change that Windows refuses is a registration too
     assert moved.get("code") == "NS-E204" and "Settings > Schedule > Automatic runs" in moved["note"]
-    assert '\\venvs\\supervisor\\Scripts\\ns.exe" schedule install' in moved["note"]   # ns is not on the PATH
+    # since FN-3 a plain `ns` works in any new terminal: the same form as NS-W205 and NS-W206
+    assert "run 'ns schedule install' from an elevated PowerShell" in moved["note"]
 
 
 def test_ns_schedule_remove_that_windows_refuses_is_ns_e206(tmp_home: Path, windows: FakeWindows):

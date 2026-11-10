@@ -19,7 +19,9 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 
-from ns_common import __version__, config_snapshot, ffmpeg, first_start, rollback_intent
+import installer.stage2.commands as commands
+import installer.stage2.shortcut_owner as so
+from ns_common import __version__, config_snapshot, ffmpeg, first_start, rollback_intent, testguard
 from ns_common.atomic import read_text_retry, retry_busy, write_zip_atomic
 from ns_common.config import load_install_state, load_runtime
 from ns_common.devmode import is_dev
@@ -245,8 +247,52 @@ def diagnose(
     have_ffmpeg = ffmpeg.available()
     rows.append(("ffmpeg", have_ffmpeg, "on PATH" if have_ffmpeg else "ffmpeg/ffprobe not found"))
     rows.append(launch_reach.doctor_row(paths))
+    rows.append(commands_row(paths))
     rows.append(program_folders(paths, Path(st.app_path) if st.app_path else repo_root(), on_wait))
     return rows
+
+
+#: A row that is not a failure but needs the owner: printed as `[WARN]` by `ns doctor`.
+WARN = "WARN: "
+
+
+def commands_row(
+    paths: Paths,
+    *,
+    read_user: Callable[[], tuple[str, str] | None] = commands.registry_user_path,
+    read_machine: Callable[[], str] = commands.registry_machine_path,
+) -> tuple[str, bool, str]:
+    """The row "commands" (card FN-3): which install a bare `ns` and `studio` open in a new terminal, read
+    from the command files and the PATH as Windows has it (read only; a test run reads its stand-ins)."""
+    row, home = "commands", paths.home
+    shims = commands.shim_paths(home)
+    unfit = commands.shim_problem(home)
+    if unfit is not None:               # (a hand-set folder: setup refuses such a name) no Repair changes it
+        return (row, True, f"{WARN}none: {unfit} ({commands.CODE}); start Nightshift from its shortcuts")
+    if not all(p.is_file() for p in shims):
+        missing = f"{shims[0]} or {shims[1].name} is missing ({commands.CODE})"
+        return (row, True, f"{WARN}{missing}: run INSTALL.cmd and choose Repair")
+    for _, venv, exe, _ in commands.SHIMS:
+        if not (home / "venvs" / venv / "Scripts" / exe).is_file():
+            return (row, False, commands.missing_line(home))
+    if is_dev(paths):
+        return (row, True, commands.dev_line(home))
+    now = read_user()
+    if now is None:
+        return (row, True, f"{WARN}Windows did not say what your PATH holds; run ns doctor again")
+    known = [] if testguard.under_test() else so.read_list(so.default_list())
+    found = commands.plan(now[0], home, False, known)
+    if found.state in (so.OTHER, so.UNREACHABLE):
+        kept = commands.kept_line(home, str(found.other), found.state == so.UNREACHABLE)
+        return (row, True, WARN + kept.split(" This install")[0].removeprefix("Commands: "))
+    if found.state != so.MINE:
+        return (row, True, f"{WARN}not on your PATH ({commands.CODE}): run INSTALL.cmd and choose Repair")
+    directories = commands.split(read_machine()) + commands.split(now[0])
+    for name in ("ns", "studio"):
+        hit = commands.first_found(name, directories)
+        if hit is None or not so.same_folder(hit.parent, commands.folder(home)):
+            return (row, True, f"{WARN}'{name}' runs {hit} first: rename or remove it from your PATH")
+    return (row, True, "'ns' and 'studio' open this install")
 
 
 #: The log events that say the start check, an update or a rollback changed something beside the program.

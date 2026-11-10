@@ -92,7 +92,9 @@ def cmd_doctor(
         typer.echo("Waiting for another Nightshift program (an update or a rollback) to finish, up to 60 s")
 
     for name, ok, detail in doctor.diagnose(paths, _client(paths), on_wait=waiting):
-        typer.echo(f"[{'ok' if ok else 'FAIL'}] {name}: {detail}")
+        warn = ok and detail.startswith(doctor.WARN)    # not a failure, but the owner has something to do
+        mark = "WARN" if warn else ("ok" if ok else "FAIL")
+        typer.echo(f"[{mark}] {name}: {detail.removeprefix(doctor.WARN) if warn else detail}")
         bad += 0 if ok else 1
     if bad:
         raise typer.Exit(1)

@@ -12,7 +12,12 @@ newly placed program folder does it too, in a thread that never delays or stops 
    never touched: another install that exists, one that was deleted, a drive that is not there (or whose
    letter another drive took). Nothing is created and nothing is taken over;
 3. the nightly task, when it is this install's and enabled, gets the action that runs through the script;
-   its time, logon type and settings stay (`schedule.refresh_action`).
+   its time, logon type and settings stay (`schedule.refresh_action`);
+4. the `ns` and `studio` command files in `<home>/cmd` and that folder on the user PATH (card FN-3, the rule
+   of `installer.stage2.commands`): another existing install's commands are never taken here (that needs
+   the owner's yes in setup). Recorded as `commands` in the marker and tried again at each start until it
+   is settled (`mine`, `other:<folder>`, `dev`, or `unfit` for a folder name a command file cannot hold);
+   `ns doctor` says it in its row "commands".
 
 Before all that, at EVERY engine start (also when the three steps are done): a night the launch script
 counted as missed is cleared (`_clear_missed`: one morning note, the Desktop note removed, the count
@@ -47,7 +52,7 @@ from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.singleton import AlreadyRunning, FileLock
 from ns_supervisor import schedule
-from ns_supervisor.testguard import RealMachineUnderTest, refuse_real_shortcut
+from ns_supervisor.testguard import RealMachineUnderTest, refuse_real_shortcut, under_test
 
 MARKER_NAME = "launch-reach.json"
 ROW = "launch script"
@@ -56,6 +61,8 @@ MISSED_NAME = "launch-missed.json"
 #: The script format that knows `-Cleanup`.
 CLEANUP_SCHEMA = 3
 FAILED = "failed: "
+#: The command files cannot name this install's folder (its name): settled, not tried again at each start.
+UNFIT = "unfit: "
 
 
 def marker_file(paths: Paths) -> Path:
@@ -94,7 +101,15 @@ def run(
     stamp = first_start.install_stamp(app)
     old = read_marker(paths)
     current = so.stub_schema(paths.home / so.STUB_NAME) >= so.stub_schema(app / so.STUB_SOURCE)
-    if old.get("stamp") == stamp and not old.get("failed") and current:
+    done = old.get("stamp") == stamp and not old.get("failed") and current
+    from installer.stage2 import commands
+
+    settled = str(old.get("commands") or "")
+    commands_done = (
+        (settled in (so.MINE, "dev") or settled.startswith("other:"))
+        and commands.shims_current(paths.home, app)
+    ) or (settled.startswith(UNFIT) and commands.shim_problem(paths.home, app) is not None)
+    if done and commands_done:
         return old
     marker_file(paths).parent.mkdir(parents=True, exist_ok=True)
     lock = FileLock(paths.home / "run" / "shortcuts.lock")
@@ -104,7 +119,11 @@ def run(
         log.info("launch_reach_busy", "another start is doing it")
         return old
     try:
-        marker = _reach(paths, app, stamp, desktop, runner, so)
+        marker = dict(old) if done else _reach(paths, app, stamp, desktop, runner, so)
+        # step 4 (card FN-3): the `ns` and `studio` command files and this install's PATH entry, by the same
+        # rule as setup but never with a yes: another install's commands are left. Not one of the failures
+        # above (the "commands" row of `ns doctor` says it); a state that is not settled is tried each start.
+        marker["commands"] = settled if commands_done else _commands(paths, app, runner)
         write_text_atomic(marker_file(paths), json.dumps(marker, indent=2) + "\n")
     finally:
         with contextlib.suppress(OSError):
@@ -134,6 +153,26 @@ def _clear_missed(paths: Paths, app: Path, desktop: Path | None, runner: Any, so
     res = runner.run(argv, tag="ps:launch-cleanup", timeout=120)
     said = _why(res.text)
     (log.info if res.ok and said == "cleared" else log.warn)("launch_missed_cleanup", said)
+
+
+def _commands(paths: Paths, app: Path, runner: Any) -> str:
+    """Write the command files (each only when it differs) and put `<home>/cmd` on the user PATH when no
+    other existing install's commands come first there: `mine`, `other:<folder>`, `dev`, `unfit: why`,
+    `refused`, `unread` or `failed[: why]`. A dev install never changes the PATH."""
+    from installer.stage2 import commands, winenv
+    from installer.stage2 import shortcut_owner as so
+
+    unfit = commands.shim_problem(paths.home, app)
+    if unfit is not None:               # the folder's own name: no later start can change that
+        return UNFIT + unfit
+    problem = commands.write_shims(paths.home, app)
+    if problem is not None:
+        return FAILED + problem
+    if is_dev(paths):
+        return "dev"
+    known = [] if under_test() else so.read_list(so.default_list())
+    owner, _line = winenv.put_commands_on_path(runner, paths.home, False, known)
+    return owner
 
 
 def _reach(paths: Paths, app: Path, stamp: str, desktop: Path | None, runner: Any, so: Any) -> dict[str, Any]:

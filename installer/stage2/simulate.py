@@ -22,6 +22,7 @@ import httpx
 from installer.stage2.downloader import DownloadItem, ProgressFn, write_marker
 from installer.stage2.errors import make_error
 from installer.stage2.runner import RunResult
+from installer.stage2.winenv import CHANGED_EXIT, user_path_output
 from ns_common.logging import NsLogger
 from ns_supervisor import check_names as names
 
@@ -51,6 +52,8 @@ SITE_PACKAGES = Path("Lib") / "site-packages"
 PRODUCT_DIST_INFO = "nightshift-0-editable.dist-info"
 #: The simulated user environment variables, in the simulated desktop folder (the registry outlives a run).
 USER_ENV_FILE = "_simulated_user_env.json"
+#: Where the simulated user environment keeps the kind of its PATH (`ExpandString` or `String`).
+PATH_KIND = "Path:kind"
 
 
 @dataclass
@@ -140,6 +143,16 @@ class FakeRunner:
             return RunResult(0, ps_b64(self.user_env.get(call.meta["name"], "")) + "\n")
         if tag == "ps:desktop":
             return RunResult(0, ps_b64(str(self.desktop)) + "\n")
+        if tag == "ps:userpath-read":       # the simulated user PATH (`winenv.user_path`)
+            kind = self.user_env.get(PATH_KIND, "ExpandString" if "Path" in self.user_env else "none")
+            return RunResult(0, user_path_output(self.user_env.get("Path", ""), kind))
+        if tag == "ps:userpath-write":      # written only while it still holds what was read
+            if call.env.get("NS_PATH_OLD", "") != self.user_env.get("Path", ""):
+                return RunResult(CHANGED_EXIT, "changed\n")
+            self.user_env["Path"] = call.env.get("NS_PATH_NEW", "")
+            self.user_env[PATH_KIND] = call.env.get("NS_PATH_KIND", "ExpandString")
+            self._save_user_env()
+            return RunResult(0, "written\n")
         if tag == "ps:shortcut":
             lnk = Path(call.meta["lnk"])
             lnk.parent.mkdir(parents=True, exist_ok=True)

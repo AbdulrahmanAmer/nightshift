@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from installer.stage2 import reinstall
+from installer.stage2 import commands, reinstall
 from installer.stage2.answers import (
     AnswersError,
     InstallerAnswers,
@@ -41,7 +41,7 @@ from installer.stage2.sysinfo import (
 )
 from installer.stage2.web import shortcuts_view
 from installer.stage2.web.pathcheck import FOLDER_FOREIGN, folder_kind, foreign_warning, layout_problem
-from installer.stage2.winenv import HOME_VAR, run_ps, set_user_env
+from installer.stage2.winenv import HOME_VAR, run_ps, set_user_env, user_path
 from ns_common import diskneed
 from ns_common.errors import NsError
 from ns_common.pathrules import ascii_problem
@@ -495,11 +495,15 @@ class S01Questions(Step):
         # A second Nightshift on this PC: the Desktop shortcuts of another install are kept unless the owner
         # says yes here (Enter is no), in the window (its switch) or in the answers file (`shortcuts_here`).
         # A no is not written down. Asked whenever the questions run and another install holds the Desktop.
-        # The same yes moves NIGHTSHIFT_HOME, so the question is asked when either is another install's.
+        # The same yes moves NIGHTSHIFT_HOME and the `ns` and `studio` commands (card FN-3), so the question
+        # is asked when any of them is another install's.
         if raw.get("shortcuts_here") is None and ctx.ui.interactive and not ctx.ui.bridge:
             theirs = desktop_of_another(ctx)
             var_named = var_name if var_state in shortcuts_view.KEPT else None
-            if (theirs or var_named) and ctx.ui.confirm(shortcuts_view.question(theirs, var_named), False):
+            now = None if ctx.dev_mode else user_path(ctx.runner)  # a dev install never takes the commands
+            cmds = commands.others_commands(now.value if now else None, home)
+            asked = shortcuts_view.question(theirs, var_named, cmds)
+            if (theirs or var_named or cmds) and ctx.ui.confirm(asked, False):
                 merged["shortcuts_here"] = True
 
         if "install_code" in raw and raw["install_code"] is not None:

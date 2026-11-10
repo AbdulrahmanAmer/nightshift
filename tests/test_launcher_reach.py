@@ -83,9 +83,15 @@ class Shell:
 
     def __init__(self, desktop: Path | None = None) -> None:
         self.desktop, self.calls = desktop, []  # type: ignore[var-annotated]
+        self.user_path = ""                     # the user PATH this stand-in Windows holds (card FN-3)
 
     def run(self, argv: Any, *, tag: str = "", meta: Any = None, **kw: Any) -> RunResult:
         self.calls.append((tag, dict(meta or {})))
+        if tag == "ps:userpath-read":
+            return RunResult(0, winenv.user_path_output(self.user_path))
+        if tag == "ps:userpath-write":
+            self.user_path = meta["new"]
+            return RunResult(0, "written\n")
         if tag == "ps:launch-cleanup":       # the launch script itself, for real (it is under a test run)
             done = subprocess.run(list(argv), capture_output=True, text=True, timeout=120)
             return RunResult(done.returncode, done.stdout, done.stderr)

@@ -7,10 +7,13 @@ This is the only module that names the home environment variable literally. Scri
 from __future__ import annotations
 
 import base64
-from collections.abc import Sequence
+import json
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import ns_common.testguard as testguard
+from installer.stage2 import commands
 from installer.stage2.runner import Runner, RunResult, SubprocessRunner
 
 HOME_VAR = "NIGHTSHIFT_HOME"
@@ -74,6 +77,111 @@ def get_user_env(runner: Runner, name: str) -> str | None:
     expr = f"[Environment]::GetEnvironmentVariable('{ps_quote(name)}', 'User')"
     value = eval_ps_text(runner, expr, tag="ps:get-env", meta={"name": name})
     return value or None
+
+
+@dataclass(frozen=True)
+class UserPath:
+    """The user PATH as HKCU\\Environment stores it: unexpanded, with its kind (`ExpandString`, `String`,
+    or `none` when there is no value), and the length of the machine PATH as programs get it."""
+
+    value: str
+    kind: str
+    machine: int = 0
+
+
+#: Reads the user PATH unexpanded (`DoNotExpandEnvironmentNames`), so `%VAR%` entries stay as they are.
+_READ_USER_PATH = "\n".join([
+    "$ErrorActionPreference = 'Stop'",
+    "$v = ''; $kind = 'none'",
+    "$k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')",
+    "$raw = $null",
+    "if ($null -ne $k) {",
+    "  try {",
+    "    $raw = $k.GetValue('Path', $null, 'DoNotExpandEnvironmentNames')",
+    "    if ($null -ne $raw) { $v = [string]$raw; $kind = [string]$k.GetValueKind('Path') }",
+    "  } finally { $k.Close() }",
+    "}",
+    "$m = [string][Environment]::GetEnvironmentVariable('Path', 'Machine')",
+    "$out = @{ value = $v; kind = $kind; machine = $m.Length } | ConvertTo-Json -Compress",
+    "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($out))",
+])
+
+
+def user_path_output(value: str, kind: str = "ExpandString", machine: int = 0) -> str:
+    """What the read script prints for a user PATH (the simulated runner answers with it)."""
+    data = json.dumps({"value": value, "kind": kind, "machine": machine})
+    return base64.b64encode(data.encode("utf-8")).decode("ascii") + "\n"
+
+
+def user_path(runner: Runner) -> UserPath | None:
+    """The user PATH (`UserPath`); None when Windows did not say (nothing is then changed on a guess)."""
+    res = run_ps(runner, _READ_USER_PATH, tag="ps:userpath-read", timeout=60)
+    text = decode_utf8_b64(res.stdout) if res.ok else ""
+    try:
+        data = json.loads(text) if text else None
+    except ValueError:
+        data = None
+    if not isinstance(data, dict) or not isinstance(data.get("value"), str):
+        return None
+    machine = data.get("machine")
+    kind = str(data.get("kind") or "none")
+    return UserPath(data["value"], kind, machine if isinstance(machine, int) else 0)
+
+
+#: Writes the user PATH when it still holds what was read (`NS_PATH_OLD`; another program may have changed
+#: it since: exit 3, nothing written), with its kind kept, then tells running programs (WM_SETTINGCHANGE).
+#: The values travel in the environment, not on the command line, so a PATH of any length fits.
+_WRITE_USER_PATH = "\n".join([
+    "$ErrorActionPreference = 'Stop'",
+    "$p = 'HKCU:\\Environment'",
+    "$now = [string](Get-Item -LiteralPath $p).GetValue('Path', '', "
+    "[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)",
+    f"if ($now -cne [string]$env:NS_PATH_OLD) {{ Write-Output 'changed'; exit {commands.CHANGED_EXIT} }}",
+    "$type = 'ExpandString'",
+    "if ($env:NS_PATH_KIND -eq 'String') { $type = 'String' }",
+    "Set-ItemProperty -LiteralPath $p -Name 'Path' -Value ([string]$env:NS_PATH_NEW) -Type $type",
+    "try {",
+    "  $sig = '[DllImport(\"user32.dll\", CharSet = CharSet.Unicode)] public static extern IntPtr "
+    "SendMessageTimeout(IntPtr h, uint m, UIntPtr w, string l, uint f, uint t, out UIntPtr r);'",
+    "  Add-Type -Namespace NsEnv -Name Win -MemberDefinition $sig",
+    "  $r = [UIntPtr]::Zero",
+    "  $null = [NsEnv.Win]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, "
+    "5000, [ref]$r)",
+    "} catch { Write-Output ('not told: ' + $_.Exception.Message) }",
+    "Write-Output 'written'",
+])
+CHANGED_EXIT = commands.CHANGED_EXIT
+
+
+def set_user_path(runner: Runner, old_value: str, old_kind: str, new_value: str) -> RunResult:
+    """Write `new_value` as the user PATH, keeping its kind, only while it still holds `old_value` (exit
+    `CHANGED_EXIT` otherwise). A test run never reaches the real one: refused here for the real runner, and
+    the script's registry write is refused by the runner's own guard as well."""
+    if isinstance(runner, SubprocessRunner):
+        testguard.refuse_real(
+            "the user's PATH (HKCU, Environment)", "Pass FakeRunner; it keeps a simulated user PATH."
+        )
+    kind = "String" if old_kind in ("String", "REG_SZ") else "ExpandString"
+    env = {"NS_PATH_OLD": old_value, "NS_PATH_NEW": new_value, "NS_PATH_KIND": kind}
+    return runner.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+         base64.b64encode(_WRITE_USER_PATH.encode("utf-16-le")).decode("ascii")],
+        env=env, tag="ps:userpath-write", meta={"old": old_value, "new": new_value, "kind": kind}, timeout=60,
+    )
+
+
+def put_commands_on_path(
+    runner: Runner, home: Path, yes: bool, known: Sequence[str] = (), *, taking: str | None = None,
+    note: Callable[[str], None] = lambda _folder: None,
+) -> tuple[str, str]:
+    """`commands.put_on_path` with this runner's read and write of the user PATH: (owner, sentence)."""
+    def read() -> UserPath | None:
+        return user_path(runner)
+
+    def write(old: commands.PathNow, new: str) -> RunResult:
+        return set_user_path(runner, old.value, old.kind, new)
+
+    return commands.put_on_path(read, write, home, yes, known, taking=taking, note=note)
 
 
 def desktop_dir(runner: Runner) -> Path | None:

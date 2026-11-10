@@ -153,6 +153,9 @@ def build(name: str, app_path: Path | None = None) -> dict[str, Any]:
                 "runTime": "03:00", "scheduled": True, "nightly": "on",
                 "nightlyLine": "Automatic runs: on at 03:00, every night (the PC wakes itself for it).",
                 "shortcutsLine": "Desktop shortcuts: they open this install.", "homeVarLine": None,
+                "commandsLine": "Commands: 'ns' and 'studio' work in any PowerShell or Command Prompt window "
+                "you open from now on, and open this install (their folder D:\\Nightshift\\cmd is on your "
+                "PATH).",
                 "diagnosticsZip": "C:\\Users\\Abdo\\Desktop\\nightshift-diagnostics-20261102.zip",
                 "stockKeyMissing": True, "durationS": 3480, "warnings": [],
             }

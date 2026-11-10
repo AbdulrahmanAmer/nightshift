@@ -150,7 +150,7 @@ def test_a_second_install_from_an_answers_file_keeps_the_first_installs_shortcut
     assert all(so.is_stub_form(so.read_lnk(p).arguments, ctx.paths.home) for p in own.glob("*.lnk"))
     line = said(text, "Desktop shortcuts:")
     assert f"kept for the Nightshift at {a} (NS-W119)" in line and str(own) in line
-    assert "shortcuts_here" in line and "Make the Desktop shortcuts open this install" in line  # the way out
+    assert "shortcuts_here" in line and "Make the Desktop shortcuts and the ns and studio commands open this install" in line  # the way out
     assert text.count(line) == 2  # the scheduler step and the summary: once each
     assert ("NS-W119", str(a)) in ctx.warnings and describe("NS-W119").hint
     assert done_line(ctx, desktop) == line
@@ -447,7 +447,7 @@ def test_the_window_rereads_both_lines_when_another_folder_is_picked(tmp_path: P
     assert "nightlySeen: r.nightlySeen" in page and "setShortcutsNow(r.shortcutsNow" in page
     assert 'set("shortcutsHere", v)' in page and "shortcutsHere: boolean" in types
     built = "".join(p.read_text(encoding="utf-8") for p in (ROOT / "installer" / "ui" / "static").rglob("*.js"))
-    assert "Make the Desktop shortcuts open this install" in built
+    assert "Make the Desktop shortcuts and the ns and studio commands open this install" in built
 
 
 # ------------------------------------------------------------------------------------ NIGHTSHIFT_HOME
@@ -459,7 +459,8 @@ def test_a_second_install_leaves_the_user_variable_with_the_first_until_a_yes(tm
     text = setup(ctx)
     assert ctx.runner.user_env[HOME_VAR] == str(a)
     line = said(text, "NIGHTSHIFT_HOME:")
-    assert line.startswith(f"NIGHTSHIFT_HOME: left naming the Nightshift at {a}") and "terminal" in line
+    # (since FN-3 the variable no longer decides what a plain 'ns' runs: the line says what does not use it)
+    assert line.startswith(f"NIGHTSHIFT_HOME: left naming the Nightshift at {a}") and "commands name their own folder" in line
     assert text.count(line) == 2 and ctx.flag("home_var") == f"other:{a}"
     assert S09ShortcutsScheduler().check(ctx) is True
     yes = second(tmp_path, {**saved_answers(ctx.paths), "shortcuts_here": True})
@@ -802,7 +803,7 @@ def test_the_yes_is_offered_when_only_the_variable_is_another_installs(tmp_path:
     b = first.paths.home
     assert desktop_opens(desktop) == {str(b)} and first.runner.user_env[HOME_VAR] == str(a)
     kept = said(text, "NIGHTSHIFT_HOME:")
-    assert "switch 'Make the Desktop shortcuts open this install' on" in kept and '"shortcuts_here": true' in kept
+    assert "switch 'Make the Desktop shortcuts and the ns and studio commands open this install' on" in kept and '"shortcuts_here": true' in kept
     assert "that yes moves NIGHTSHIFT_HOME and the Desktop shortcuts here" in kept  # exactly what it moves
     # the window: the switch is there for the variable alone, and its line says what on does
     now = answers_view.folder_now(b, ROOT, desktop, str(a))["shortcutsNow"]
@@ -819,7 +820,8 @@ def test_the_yes_is_offered_when_only_the_variable_is_another_installs(tmp_path:
     other.runner.user_env[HOME_VAR] = str(a)
     other.runner._save_user_env()
     text = setup(other)
-    assert f"NIGHTSHIFT_HOME names the Nightshift at {a} ('ns' typed in a terminal runs that one). Make it name this install instead?" in ui.asked
+    # (no word on what a plain 'ns' runs: since FN-3 the command files decide that, not this variable)
+    assert f"NIGHTSHIFT_HOME names the Nightshift at {a}. Make it name this install instead?" in ui.asked
     assert other.runner.user_env[HOME_VAR] == str(other.paths.home)
     assert said(text, "NIGHTSHIFT_HOME:").startswith(f"NIGHTSHIFT_HOME: it named the Nightshift at {a}; now it names this install, as you chose.")
 

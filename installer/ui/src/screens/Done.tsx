@@ -46,6 +46,7 @@ export function Done() {
           {r.nightlyLine && <p className="mt-4 text-ds-xs leading-ds-normal text-ds-text-2">{r.nightlyLine}</p>}
           {r.shortcutsLine && <p className="mt-2 text-ds-xs leading-ds-normal text-ds-text-2">{r.shortcutsLine}</p>}
           {r.homeVarLine && <p className="mt-2 text-ds-xs leading-ds-normal text-ds-text-2">{r.homeVarLine}</p>}
+          {r.commandsLine && <p className="mt-2 text-ds-xs leading-ds-normal text-ds-text-2">{r.commandsLine}</p>}
           {r.stockKeyMissing && <p className="mt-4 flex items-center gap-2 text-ds-sm font-medium"><StatusDot tone="attention" size={7} />{t.keyReminder}</p>}
           {warnings.length > 0 && (
             <ul className="mt-4 flex flex-col gap-2.5">

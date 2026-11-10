@@ -23,6 +23,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+import installer.stage2.commands as commands
 import installer.stage2.devmode as devmode
 import ns_common.config_snapshot as config_snapshot
 import ns_common.diskneed as diskneed
@@ -350,6 +351,7 @@ class Effects:
     fetch_file: Callable[..., None] = bootstrap.download_file                    # pinned direct downloads
     run_elevated: Callable[..., bootstrap.CmdResult] = bootstrap.run_elevated_exe
     add_user_path: Callable[[str], bool] = bootstrap.add_user_path_entry
+    user_path: Callable[[], tuple[str, str] | None] = commands.registry_user_path   # read only
     copy_app: Callable[..., appcopy.CopyResult] = appcopy.install_app
     desktop: Callable[[], Path | None] = seen_desktop                            # whose shortcuts are on it
     set_execution_state: Callable[[int], int] = keepawake._set_execution_state    # keep the PC awake
@@ -475,7 +477,10 @@ class SetupController:
         """Automatic runs and the Desktop shortcuts as they are for the install folder `home` (the window
         shows both under their switches, for the folder picked: `answers_view.folder_now`)."""
         app = appcopy.app_dir(home) if self.installs_app else self.cfg.app_path
-        return answers_view.folder_now(home, app, self.fx.desktop(), self.fx.get_home_var(bootstrap.HOME_VAR))
+        path = self.fx.user_path()      # whose the `ns` and `studio` commands are (the same yes moves them)
+        return answers_view.folder_now(
+            home, app, self.fx.desktop(), self.fx.get_home_var(bootstrap.HOME_VAR), path[0] if path else None,
+        )
 
     # ---- construction ----
     def _read_settings_before(self) -> dict[str, bytes] | None:
@@ -1974,7 +1979,8 @@ class SetupController:
         night = nightly_view.summary(self.home, flags)
         shortcuts = shortcuts_view.summary(self.home, self.run_app_path, self.fx.desktop(), flags)
         var_line = flags.get("home_var_line")
-        sizes = {g["id"]: g for g in state["plan"]["groups"]}
+        commands_line = flags.get("commands_line")
+        sizes ={g["id"]: g for g in state["plan"]["groups"]}
         models = {i["label"]: i for i in sizes["models"]["items"]}
         llm = next((i for i in sizes["models"]["items"] if i["label"].startswith("Story model")), None)
 
@@ -2030,6 +2036,8 @@ class SetupController:
             # whose the Desktop shortcuts and NIGHTSHIFT_HOME are, in the scheduler step's own sentences
             "shortcutsLine": shortcuts["line"],
             "homeVarLine": var_line if isinstance(var_line, str) else None,
+            # whose the `ns` and `studio` commands are (card FN-3), in the scheduler step's own sentence
+            "commandsLine": commands_line if isinstance(commands_line, str) and commands_line else None,
             "devMode": self.dev,
             "diagnosticsZip": self._bundle or flags.get("bundle"),
             "durationS": duration, "warnings": warnings, "stockKeyMissing": not self._stock_key_stored(),
