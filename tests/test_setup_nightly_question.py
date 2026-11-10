@@ -49,11 +49,18 @@ from tests.test_nightly_optional import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def fake_task_scheduler() -> None:
+    """Refuse to go on unless PowerShell is the fake: nothing in this file may reach the real Task Scheduler."""
+    assert isinstance(pwsh.run_powershell, FakeWindows), "the fake Task Scheduler is not in place"
+
+
 class SetupRunner(FakeRunner):
     """`FakeRunner`, except that what setup asks Windows about the task reaches the fake Task Scheduler:
     `ns schedule ...` runs the real command in this process, and setup's own look runs the read script."""
 
     def _default(self, call: Call) -> RunResult:
+        if call.tag.startswith("ns schedule ") or call.tag == "ps:task-read":
+            fake_task_scheduler()
         if call.tag.startswith("ns schedule "):
             args = call.argv[call.argv.index("schedule"):]
             res = CliRunner().invoke(cli.app, args, env={"NIGHTSHIFT_HOME": call.env["NIGHTSHIFT_HOME"]})
@@ -110,6 +117,7 @@ def saved_answers(paths: Paths) -> dict[str, Any]:
 
 def settings(ctx: Any, *, on: bool | None = None, run_time: str | None = None) -> None:
     """The owner's change in Settings > Schedule (the switch or the time)."""
+    fake_task_scheduler()
     schedule.set_automatic(ctx.paths, ctx.app_path, on=on, run_time=run_time)
 
 
@@ -615,10 +623,12 @@ def test_a_kill_between_the_flags_and_the_consume_does_not_deny_setups_own_chang
     def die(path: Path) -> bool:
         raise KeyboardInterrupt  # the process is gone after the flags, before the answers are removed
 
+    real = s09.forget_setup_input
     monkeypatch.setattr(s09, "forget_setup_input", die)
     with pytest.raises(KeyboardInterrupt):
         setup(wizard)
-    monkeypatch.undo()
+    # only this one name goes back: `monkeypatch.undo()` would also take the fake Task Scheduler away
+    monkeypatch.setattr(s09, "forget_setup_input", real)
     assert windows.has == ("Ready", "03:00") and saved_answers(wizard.paths)["nightly_seen"] == "off"
     said_then = summary(wizard.ui.text)
     assert said_then == "Automatic runs: on at 03:00, as you chose in setup."
