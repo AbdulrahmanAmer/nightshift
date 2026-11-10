@@ -15,7 +15,9 @@ file measures the seams themselves, on the file a person plays:
   chapters' parts are `-an`, the master encodes one assembled WAV), so the sound has no seam by design and
   these checks cannot see a join today. They protect against someone later cutting the sound per part: the
   audio packets must run on without a gap, overlap or repeat (independent of the encoder), and a least-squares
-  fit of the 440 Hz tone over 20 ms either side of each join must leave a small residual (no click).
+  fit of the 440 Hz tone over 20 ms either side of each join must leave a small residual (no click): at most
+  0.05 for the Short, and for the master (whose 24 kHz chapter tones leave a steady 0.036 of their own after
+  `assemble_audio`) at most twice the median of the same chapter's windows away from joins, and 0.2.
 
 The checkers are plain functions (`shot_defects`, `clock_defects`, `click_defects`) that return what is
 wrong, so the last test can feed them a hand-made bad join and see them speak. These tests need FFmpeg:
@@ -200,13 +202,9 @@ def clock_defects(times: list[float], count: int, fps: int = FPS, tol: float = 0
 TONE_HZ = 440.0
 
 
-def click_defects(sound: np.ndarray, at_s: float, hz: float = TONE_HZ) -> list[str]:
-    """A click, gap or jump in the continuous tone within 20 ms of `at_s`.
-
-    A least-squares fit of the tone (a sin + b cos + c at `hz`) is taken over the window and what it cannot
-    explain is the click: the peak residual must be at most 5 % of the tone's amplitude. A clean tone, even
-    after AAC, leaves about 0.002 of it; a 5 ms piece cut out of the tone leaves about 0.74.
-    """
+def tone_residual(sound: np.ndarray, at_s: float, hz: float = TONE_HZ) -> float:
+    """What a 440 Hz tone cannot explain within 20 ms of `at_s`: a least-squares fit (a sin + b cos + c) is
+    taken over the window and the peak of what is left is returned as a share of the tone's amplitude."""
     centre = round(at_s * SR)
     lo, hi = max(0, centre - SR // 50), min(len(sound), centre + SR // 50)
     window = sound[lo:hi]
@@ -215,10 +213,30 @@ def click_defects(sound: np.ndarray, at_s: float, hz: float = TONE_HZ) -> list[s
     coef, *_ = np.linalg.lstsq(basis, window, rcond=None)
     amplitude = float(np.hypot(coef[0], coef[1]))
     if amplitude < 1e-3:
-        return [f"at {at_s:.3f} s there is no {hz:.0f} Hz tone (amplitude {amplitude:.5f})"]
-    residual = float(np.abs(window - basis @ coef).max()) / amplitude
-    if residual > 0.05:
-        return [f"at {at_s:.3f} s the tone leaves a residual of {residual:.3f} of its amplitude (limit 0.05)"]
+        return float("inf")  # no tone there at all: a gap
+    return float(np.abs(window - basis @ coef).max()) / amplitude
+
+
+def click_defects(
+    sound: np.ndarray, at_s: float, hz: float = TONE_HZ, *, away: list[float] | None = None
+) -> list[str]:
+    """A click, gap or jump in the continuous tone within 20 ms of `at_s`.
+
+    Alone (the Short: its tone is 48 kHz from the start) the peak residual of `tone_residual` must be at most
+    0.05: a clean tone, even after AAC, leaves about 0.002, a 5 ms piece cut out of it about 0.74.
+    With `away` (residuals of the same tone's windows far from any join: the master's chapters are 24 kHz
+    voice resampled by `assemble_audio`, which leaves a steady 0.036 of its own in every window, before
+    loudnorm and the encoder) the join may leave at most twice their median and, whatever they are, 0.2.
+    """
+    got = tone_residual(sound, at_s, hz)
+    if away is None:
+        limit = 0.05
+    else:
+        limit = min(2 * float(np.median(away)), 0.2)
+    if got > limit:
+        return [
+            f"at {at_s:.3f} s the tone leaves a residual of {got:.4f} of its amplitude (limit {limit:.4f})"
+        ]
     return []
 
 
@@ -511,8 +529,20 @@ def test_a_master_in_parts_joins_its_chapters_and_parts_without_a_gap(
     sound = pcm(master)
     assert abs(len(sound) - round(timeline[-1].end * SR)) <= 1024
     assert audio_packet_defects(master, timeline[-1].end) == []
-    for at in joins_s:  # a part join inside a chapter's own sound: a continuous tone
-        assert click_defects(sound, at) == [], at
+    for t, lengths in zip(timeline, segment_joins, strict=True):
+        cursor, mine = round(t.seg_start * FPS), []
+        for n in lengths[:-1]:
+            cursor += n
+            mine.append(cursor / FPS)
+        # the same chapter's windows 0.1 s apart, 0.2 s inside its tone and 0.1 s clear of every join
+        far = [
+            tone_residual(sound, x)
+            for x in np.arange(t.audio_start + 0.2, t.end - 0.2, 0.1)
+            if all(abs(x - j) > 0.1 for j in mine)
+        ]
+        assert len(far) >= 20, (t.n, len(far))
+        for at in mine:  # a part join inside a chapter's own sound: a continuous tone like the rest of it
+            assert click_defects(sound, at, away=far) == [], at
     # each chapter's sound starts where its title card ends, and the card before it is silent
     peak = float(np.abs(sound).max())
     for t in timeline:
@@ -681,6 +711,12 @@ def test_the_seam_checks_catch_a_repeated_and_a_dropped_frame(tmp_path: Path):
     assert click_defects(clean, 0.5) == []
     cut = np.concatenate([clean[: SR // 2], clean[SR // 2 + 240 :]])
     assert click_defects(cut, 0.5) != []
+    # the master's relative form: a join as noisy as the chapter's own windows passes; a cut does not
+    assert click_defects(clean, 0.5, away=[0.036] * 30) == []
+    assert click_defects(cut, 0.5, away=[0.036] * 30) != []  # 0.74 against min(0.072, 0.2)
+    noisy = clean + 0.0125 * np.sin(2 * np.pi * 4440 * np.arange(len(clean)) / SR)  # 10 % of the tone
+    assert tone_residual(noisy, 0.5) == pytest.approx(0.10, abs=0.02)
+    assert click_defects(noisy, 0.5) != [] and click_defects(noisy, 0.5, away=[0.10] * 30) == []
     # a caption that blinks off for a frame, or moves two pixels: the caption check reports each
     flat = np.zeros((20, 40, 40), dtype=bool)
     flat[:, 15:25, 10:30] = True
