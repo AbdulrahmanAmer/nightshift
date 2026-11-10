@@ -147,9 +147,24 @@ function Get-NsHome {
     # The resolved home is exported to this process so every child (engine, dashboard, studio job) that reads
     # NIGHTSHIFT_HOME (ns_common.paths.Paths.from_env) uses the same folder; without that the engine ran with
     # %LOCALAPPDATA%\Nightshift as its home (no channels, wrong disk, version 0.1.0 in Settings).
+    # A PC can hold several Nightshift folders and has one NIGHTSHIFT_HOME, which may name another of them: a
+    # launcher that is inside an install (<home>\app\launchers) runs THAT install, whatever the variable names,
+    # and says so once when the variable names another install. Only a launcher that is in no install (a dev install's, in a
+    # repository) follows the variable, which its launch script sets to the install it was started for.
+    # This is stricter than 'ns' and 'studio' on purpose (ns_common.paths.Paths.from_env follows a variable
+    # that was set FOR its process, such as $env:NIGHTSHIFT_HOME typed in a terminal): a launcher starts the
+    # programs of an install and belongs to that install's version, and nothing in the product hands a
+    # launcher inside one install the home of another. To start another install, use its own launchers.
     $fromEnv = $env:NIGHTSHIFT_HOME
-    if (Test-NsHomeFolder $fromEnv) { return $fromEnv }
     $fromHere = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    if ((Split-Path -Leaf (Split-Path -Parent $PSScriptRoot)) -ieq 'app' -and (Test-NsHomeFolder $fromHere)) {
+        if ((Test-NsHomeFolder $fromEnv) -and ($fromEnv.TrimEnd('\') -ine $fromHere.TrimEnd('\'))) {
+            Write-Host "Nightshift: using the install in $fromHere (this launcher is in it); NIGHTSHIFT_HOME names $fromEnv, which is another folder."
+        }
+        $env:NIGHTSHIFT_HOME = $fromHere
+        return $fromHere
+    }
+    if (Test-NsHomeFolder $fromEnv) { return $fromEnv }
     if (Test-NsHomeFolder $fromHere) { $env:NIGHTSHIFT_HOME = $fromHere; return $fromHere }
     if ($fromEnv) { return $fromEnv }
     return (Join-Path $env:LOCALAPPDATA 'Nightshift')

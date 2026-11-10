@@ -25,6 +25,7 @@
   "masters_per_week": 1,
   "run_time": "03:00",
   "nightly": false,
+  "shortcuts_here": false,
   "install_code": true,
   "include_voicedesign": false,
   "allow_cpu": false,

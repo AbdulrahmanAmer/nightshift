@@ -501,7 +501,9 @@ def test_s09_points_every_shortcut_at_the_brand_icon_when_the_build_ships_it(tmp
     )
     S09ShortcutsScheduler().run(ctx)
     calls = runner.called("ps:shortcut")
-    assert len(calls) == 2
+    assert len(calls) == 4      # each of the two: this install's own folder, then the Desktop
+    where = [Path(c.meta["lnk"]).parent.name for c in calls]
+    assert where == ["Shortcuts", "Shortcuts", "desktop", "desktop"]
     for call in calls:
         assert call.meta["icon"] == str(icon)
         assert f"$s.IconLocation = '{icon},0'" in _script_of(call)

@@ -11,6 +11,7 @@ from installer.stage2.web import answers_view, controller, preflight, samples
 from installer.stage2.web.controller import Config, SetupController
 from installer.stage2.web.fakes import ScriptedEngine, fake_effects, sample_handover
 from installer.stage2.web.model import ENGINE_STEPS, STEP_ORDER
+from ns_common.new_fields import plain_disk_dict
 from ns_common.paths import Paths
 from ns_common.secret_file import store_secret
 
@@ -465,7 +466,9 @@ def test_a_second_run_resumes_what_the_first_one_finished(tmp_path, monkeypatch)
     assert second.ctl.do_action("start")[0] == 200                   # no new answers needed
     state = second.until(lambda st: st["run"] == "finished")
     assert state["phase"] == "done"
-    assert json.loads((cfg_dir / "answers.json").read_text(encoding="utf-8")) == saved      # left alone
+    # left alone: what the window wrote (an answer added after 0.1.14 is written only when it is in use)
+    on_disk = plain_disk_dict("answers.json", dict(saved))
+    assert json.loads((cfg_dir / "answers.json").read_text(encoding="utf-8")) == on_disk
 
 
 # ------------------------------------------------------------------- INSTALL.cmd over a finished install

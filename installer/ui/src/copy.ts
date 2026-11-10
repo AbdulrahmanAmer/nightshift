@@ -199,6 +199,8 @@ export const choices = {
     caption: "The PC wakes itself at this time, makes a video and goes back to sleep",
     nightly: "Run Nightshift by itself every night",
     nightlyHint: "You can turn this on later in Settings.",
+    shortcutsHere: "Make the Desktop shortcuts open this install",
+    shortcutsHint: "Off keeps them as they are; this install's own shortcuts are then in its Shortcuts folder",
     captionOff: "Nothing runs by itself. The time is kept for when you switch this on",
     now: (seen: string) => (seen.startsWith("on@") ? `Now: on at ${seen.slice(3)} (set in Settings)` : "Now: off"),
     hours: "h",

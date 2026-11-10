@@ -94,13 +94,22 @@ def moved_app(tmp_path: Path, name: str) -> Path:
 
 
 def setup(ctx: Any, *, only: tuple[str, ...] = ("s01", "s09", "s10")) -> str:
-    """Run s01, s09 and s10 the way the wizard does (check, clear the step's flags, run); what was said."""
+    """Run s01, s09 and s10 the way the wizard does (`wizard.run_steps`: check, clear the step's flags, run,
+    and then ALWAYS the step's own `verify`, also after a true check); what was said. The steps this helper
+    does not run count as done, as they are when the wizard reaches the summary."""
+    from installer.stage2.steps import bridge_steps, default_steps
+
     for step in (S01Questions(), S09ShortcutsScheduler(), S10Summary()):
         if step.id[:3] not in only:
             continue
         if not step.check(ctx):
             ctx.clear_flags(*step.clears_on_run)
             step.run(ctx)
+        if step.id.startswith("s10"):
+            for other in (bridge_steps() if ctx.ui.bridge else default_steps()):
+                if other.id != step.id and ctx.state.status(other.id) not in ("done", "skipped"):
+                    ctx.state.mark(other.id, "skipped")
+        step.verify(ctx)
         ctx.state.mark(step.id, "done")
     return ctx.ui.text
 

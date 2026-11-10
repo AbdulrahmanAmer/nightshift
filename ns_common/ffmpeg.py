@@ -11,12 +11,16 @@ from typing import Literal
 
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
+from ns_common.paths import Paths
 
 
 def home_bin() -> Path | None:
     """``bin/ffmpeg`` under the install folder: where setup unpacks the pinned build if winget fails."""
-    home = os.environ.get("NIGHTSHIFT_HOME")
-    return Path(home) / "bin" / "ffmpeg" if home else None
+    if not os.environ.get("NIGHTSHIFT_HOME"):
+        return None
+    # through `Paths.from_env`: a program inside an install uses that install's folder also when the
+    # variable names another Nightshift folder on this PC
+    return Paths.from_env().home / "bin" / "ffmpeg"
 
 
 def _find(name: str, env_var: str) -> str | None:
