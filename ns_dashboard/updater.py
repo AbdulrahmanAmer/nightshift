@@ -194,21 +194,39 @@ def ns_command(paths: Paths, *args: str) -> list[str]:
 WRITTEN_RE = re.compile(r"Backup written to (.+)")
 
 
+def failure_hint(text: str, limit: int = 400) -> str:
+    """What the owner reads when `ns backup` / `ns restore` failed.
+
+    A coded failure (`NS-E120: message` then `Hint: ...`) is kept from its first character, so the code and
+    the message survive and only a very long hint is cut. Anything else (a traceback) keeps its last
+    characters, where the error is.
+    """
+    text = text.strip()
+    if re.match(r"NS-[EW]\d+", text):
+        return text if len(text) <= limit else text[: limit - 1].rstrip() + "..."
+    return text[-300:]
+
+
 class RealBackupAdapter:
     """Export / import of settings through `ns backup` and `ns restore`, and the place of UNINSTALL.cmd."""
 
     def __init__(self, paths: Paths, runner: Runner = default_runner) -> None:
         self.paths = paths
         self.runner = runner
+        #: the lines `ns backup` printed after `Backup written to`: what it left out on purpose (the keys file,
+        #: for a zip on a drive without permissions, NS-W116); Settings > Export shows them
+        self.last_notes: list[str] = []
 
     def export(self) -> Path:
         """`ns backup`: settings, voices, the database and exemplars into a zip on the Desktop; returns its path."""
         from ns_dashboard.errors import ApiError
 
+        self.last_notes = []
         code, out, err = self.runner(ns_command(self.paths, "backup"), 600)
         m = WRITTEN_RE.search(out)
         if code != 0 or m is None:
-            raise ApiError(500, "backup_failed", "The backup could not be made.", hint=(err or out).strip()[-300:])
+            raise ApiError(500, "backup_failed", "The backup could not be made.", hint=failure_hint(err or out))
+        self.last_notes = [ln.strip() for ln in out.splitlines() if ln.strip() and WRITTEN_RE.search(ln) is None]
         return Path(m.group(1).strip())
 
     def restore(self, zip_path: Path) -> list[str]:
@@ -217,7 +235,7 @@ class RealBackupAdapter:
 
         code, out, err = self.runner(ns_command(self.paths, "restore", str(zip_path)), 600)
         if code != 0:
-            raise ApiError(422, "restore_failed", "That file could not be restored.", hint=(err or out).strip()[-300:])
+            raise ApiError(422, "restore_failed", "That file could not be restored.", hint=failure_hint(err or out))
         return [ln for ln in out.splitlines() if ln.strip()]
 
     def uninstall_path(self) -> Path:

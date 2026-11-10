@@ -20,7 +20,7 @@ from typing import Any
 from ns_common import ffmpeg
 from ns_common.atomic import write_text_atomic
 from ns_common.config import load_runtime
-from ns_common.db import Db, new_job_id
+from ns_common.db import Db, claim_dir, claim_job_id
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import (
@@ -130,7 +130,9 @@ def create_clip_job(
     db = Db(paths.db_path)
     db.migrate()
     sync_channel_row(db, channel)
-    jid = job_id or new_job_id(channel.slug)
+    # A given id is the caller's own job (a rerun, a test): its folder may exist. A new job takes its id by
+    # making the folder, so it never lands in another job's folder (D-ids).
+    jid = job_id or claim_job_id(channel.slug, claim_dir(paths.job_dir))
     job_dir = paths.job_dir(jid)
     job_dir.mkdir(parents=True, exist_ok=True)
     params.save(job_dir)

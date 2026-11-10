@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -33,3 +34,28 @@ def _network_is_up(monkeypatch: pytest.MonkeyPatch) -> None:
     from installer.stage2 import downloader
 
     monkeypatch.setattr(downloader, "network_is_up", lambda url, timeout=5.0: True)
+
+
+@pytest.fixture(autouse=True)
+def _stage_table_is_restored() -> Iterator[None]:
+    """Put `FORMAT_STAGES` back after every test.
+
+    `jobs.prepare_plan` writes the policy gates and the Short combos into the module-level stage table
+    (`policy/gate.py` `install_gates`, `variation/stages.py` `install_short_combos`), so a test that
+    prepares a plan left the table changed for every later test in the same process. Which tests share a
+    process depends on the shard split: `test_job_disk_room` then `test_policy_p04` failed on PR 206 and
+    not on main. The product fix (card D-stages: the table is never written after the stage modules are
+    loaded) is under way; until it lands this keeps one test from failing another.
+    """
+    import sys
+
+    orch = sys.modules.get("ns_studio.orchestrator")
+    before = {k: list(v) for k, v in orch.FORMAT_STAGES.items()} if orch is not None else None
+    yield
+    orch = sys.modules.get("ns_studio.orchestrator")
+    if orch is None:
+        return
+    if before is None:  # loaded during this test: nothing older to go back to
+        return
+    orch.FORMAT_STAGES.clear()
+    orch.FORMAT_STAGES.update({k: list(v) for k, v in before.items()})

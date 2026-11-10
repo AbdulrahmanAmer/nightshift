@@ -19,6 +19,11 @@ both. A rollback swaps the pair like it swaps the programs: the settings as they
 become the copy for the program that goes to `<app>.prev`, so a second `ns update --rollback` (going forward)
 gets back exactly what the newer version had, including what the owner changed after the update.
 
+Who makes the copy: `ns update` (`taken_by` update), INSTALL.cmd's setup window (installer), a rollback (the
+copy for going forward again), and since F-10c the first start of a version that an OLDER updater installed
+(first-start, `ns_common.first_start`): 0.1.14's `ns update` takes no copy, so the new version takes it
+itself before it changes any settings file. The first start follows the same rules as the updater below.
+
 A copy that reads back complete is written over only together with its own program (an update replacing
 `<app>.prev`, a rollback that has just put it back), with one more case: a copy that belongs to the program
 leaving `<app>` is replaced too, UNLESS a rollback recorded that its restore never finished (a marker beside
@@ -30,24 +35,35 @@ damaged one may be replaced, and the result says so. A fingerprint alone proves 
 normal rollback, or an older updater that ignores the zip, also leaves a copy that carries the fingerprint of
 the program now in `<app>`.
 
-Standard library plus `ns_common.atomic`, so the installer's bare Python can use it (`appcopy.install_app`).
+Standard library plus `ns_common.atomic` and `ns_common.singleton`, so the installer's bare Python can use it
+(`appcopy.install_app`).
+It lives in `ns_common` (F-10c; it was `ns_supervisor/config_snapshot.py` in F-10a) because every process
+that writes a settings file needs it, and `ns_common` cannot import `ns_supervisor`.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
+import time
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from ns_common.atomic import read_bytes_retry, sweep_stale_tmp, write_bytes_atomic
+from ns_common.singleton import AlreadyRunning, FileLock
 
 SUFFIX = ".prev-config.zip"
 UNRESTORED_SUFFIX = ".unrestored"  # `<app>.prev-config.zip.unrestored`: see mark_unrestored
+LOCK_SUFFIX = ".lock"  # `<app>.prev-config.zip.lock`: see locked
+#: How long a process waits for another one that holds the copy's lock (a first start saving the copy takes
+#: well under a second; a rollback holds it while it renames the program folders, with retries).
+LOCK_WAIT_S = 60.0
+LOCK_POLL_S = 0.05
 MANIFEST = "snapshot.json"
 MEMBER_ROOT = "config/"
 FORMAT = 1
@@ -114,6 +130,14 @@ LEFT_ALONE: dict[str, str] = {
     "ui_prefs.json": "Owner name and theme from the setup window, read as a plain dict (extra keys skipped).",
     "answers.kept.json": "The old answers a setup window keeps until the new choices are applied.",
     "pending_voice.json": "A voice setup queued for the first start; deleted once it is made.",
+    ".ns-first-start.json": (
+        "Where the first start records that it could not save the copy when the program folder cannot be "
+        "written (`first_start.write_state`); not a setting."
+    ),
+    "keys_unprotected.json": (
+        "The mark that the one-time NS-W116 was given for this home (F-9b): never removed, and an update "
+        "does not rewrite it, so a rollback has nothing to put back."
+    ),
 }
 
 
@@ -134,8 +158,11 @@ class Snapshot:
     files: dict[str, bytes]
     version: str  # the program the copy belongs to (the one in `<app>.prev`)
     fingerprint: str  # that program's version|manifest|pyproject fingerprint (what pairs the two)
-    taken_by: str  # update | rollback | installer
+    taken_by: str  # update | rollback | installer | first-start
     created: str
+    #: first-start copies only: `first_start.install_stamp` of the program that made it (which install of the
+    #: newer program saw the settings as the older one left them); empty for every other copy.
+    for_program: str = ""
 
 
 @dataclass
@@ -150,6 +177,49 @@ class Restored:
 def path_for(app: Path) -> Path:
     """`<app>.prev-config.zip`."""
     return app.with_name(app.name + SUFFIX)
+
+
+def _digest16(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return "-"
+
+
+def program_version(folder: Path) -> str:
+    """The `VERSION` file of a program folder, `-` when it has none."""
+    try:
+        return (folder / "VERSION").read_text(encoding="utf-8-sig").strip() or "-"
+    except OSError:
+        return "-"
+
+
+def program_fingerprint(folder: Path) -> str:
+    """Version plus short hashes of manifest.json and pyproject.toml: what pairs a copy with its program.
+
+    The same text as `ns_supervisor.update.app_fingerprint` and `installer.stage2.web.appcopy.fingerprint`
+    (a test keeps the three equal).
+    """
+    manifest, project = _digest16(folder / "manifest.json"), _digest16(folder / "pyproject.toml")
+    return f"{program_version(folder)}|{manifest}|{project}"
+
+
+#: Written into a finished program folder by every updater, INSTALL.cmd and the rollback (update.APP_MARKER).
+APP_MARKER = ".ns-app.done"
+
+
+def install_stamp(program: Path) -> str:
+    """Which install of `program` this is: its fingerprint and when its completion marker was written.
+
+    Every updater, INSTALL.cmd and every rollback write the marker again, so a program folder put in place
+    again (a second try of a failed update, a roll forward by an older version's rollback, the same build
+    installed again) has a new stamp although its fingerprint is the same.
+    """
+    try:
+        written = str((program / APP_MARKER).stat().st_mtime_ns)
+    except OSError:
+        written = "0"
+    return f"{program_fingerprint(program)}@{written}"
 
 
 def valid_name(name: str) -> bool:
@@ -199,10 +269,16 @@ def capture(config: Path, only: Iterable[str] | None = None) -> dict[str, bytes]
 
 
 def build(
-    files: dict[str, bytes], *, version: str, fingerprint: str, taken_by: str, now: datetime | None = None
+    files: dict[str, bytes],
+    *,
+    version: str,
+    fingerprint: str,
+    taken_by: str,
+    now: datetime | None = None,
+    for_program: str = "",
 ) -> bytes:
     """The zip for `files`, read back and checked before it is returned: only a good one can be published."""
-    manifest = {
+    manifest: dict[str, object] = {
         "format": FORMAT,
         "created": (now or datetime.now()).isoformat(timespec="seconds"),
         "taken_by": taken_by,
@@ -210,6 +286,8 @@ def build(
         "program_fingerprint": fingerprint,
         "files": {n: {"sha256": _sha(d), "size": len(d)} for n, d in files.items()},
     }
+    if for_program:
+        manifest["for_program"] = for_program
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for name, data in files.items():
@@ -253,6 +331,7 @@ def parse(data: bytes) -> Snapshot:
                 str(manifest["program_fingerprint"]),
                 str(manifest.get("taken_by", "")),
                 str(manifest.get("created", "")),
+                str(manifest.get("for_program", "")),
             )
     except SnapshotError:
         raise
@@ -412,6 +491,36 @@ def is_unrestored(path: Path) -> bool:
         return bool(marked == _sha(read_bytes_retry(path)))
     except Exception:  # no marker, a torn one, an unreadable zip: nothing says the restore failed
         return False
+
+
+@contextlib.contextmanager
+def locked(path: Path, *, wait_s: float | None = None) -> Iterator[bool]:
+    """Hold `<path>.lock` (`path` is the copy's zip) across processes for the block: yields True when it is
+    held, False when another process kept it for `wait_s` seconds (the caller then does not touch the copy).
+
+    Two processes of a newer version can start at once (the engine and a CLI): without it, one could look at
+    the copy's place before the other published its first-start copy and then capture the settings after the
+    other had already changed them, publishing them as the older version's copy. Whoever holds the lock looks
+    at the copy again inside it. A rollback holds it from its record to its end (`rollback_intent`).
+    """
+    lock = FileLock(path.with_name(path.name + LOCK_SUFFIX))
+    deadline = time.monotonic() + (LOCK_WAIT_S if wait_s is None else wait_s)
+    while True:
+        try:
+            lock.acquire()
+            break
+        except AlreadyRunning:
+            if time.monotonic() >= deadline:
+                yield False
+                return
+            time.sleep(LOCK_POLL_S)
+        except OSError:  # the home cannot hold a lock file (read-only): nobody else can write the copy either
+            yield True
+            return
+    try:
+        yield True
+    finally:
+        lock.release()
 
 
 def discard(path: Path) -> None:

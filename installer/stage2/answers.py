@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_message
+from ns_common import first_start
 from ns_common.atomic import read_text_retry, write_text_atomic
+from ns_common.config_compat import disk_dict
 from ns_common.models import VOICE_NAME_PATTERN, VOICE_NAME_RULE, Answers
 from ns_common.paths import Paths
 from ns_common.secrets_names import KEY_NAMES
@@ -153,9 +155,12 @@ def dump_blanked(ans: InstallerAnswers) -> dict[str, Any]:
 
 
 def write_answers(path: Path, ans: InstallerAnswers) -> Path:
-    """Write answers with blank secrets."""
+    """Write answers with blank secrets. An answer added after 0.1.14 is written only when it is in use, so
+    an older setup can read the file after a rollback (`config_compat.disk_dict`, F-10c)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_text_atomic(path, json.dumps(dump_blanked(ans), indent=2, ensure_ascii=False) + "\n")
+    first_start.guard(path)
+    data = disk_dict(ans, dump_blanked(ans))
+    write_text_atomic(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     return path
 
 
@@ -175,6 +180,7 @@ def blank_secrets_in_file(path: Path) -> bool:
             data[key] = ""
             changed = True
     if changed:
+        first_start.guard(path)
         write_text_atomic(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     return changed
 

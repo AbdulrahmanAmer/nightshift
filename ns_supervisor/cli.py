@@ -346,8 +346,16 @@ def cmd_backup(
     out: Annotated[Path | None, typer.Option("--out", help="Target zip (default: Desktop).")] = None,
 ) -> None:
     """Back up settings, voices, the database and exemplars (never models or videos)."""
-    f = backup.make_backup(Paths.from_env(), out)
+    notes: list[str] = []
+    try:
+        f = backup.make_backup(Paths.from_env(), out, notes=notes)
+    except NsError as e:  # NS-E120 (the keys copy could not be locked), NS-E119: code, message and hint
+        raise _die(e) from e
+    except OSError as e:  # a full disk, a folder that refuses files: a sentence, not a traceback
+        raise _die(f"The backup could not be written: {e}") from e
     typer.echo(f"Backup written to {f}")
+    for line in notes:
+        typer.echo(line)
 
 
 @app.command("restore")

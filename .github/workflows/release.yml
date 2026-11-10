@@ -27,7 +27,7 @@ jobs:
     # About 8 minutes of tests plus about 3 of setup per shard (dev/ci_shards.py plan); the same timeout as ci.yml,
     # which tests/test_ci_workflow.py keeps at least twice the prediction of every shard. SHARDS in dev/ci_shards.py
     # is the count; tests/test_ci_workflow.py fails when this file and ci.yml disagree on it or on the proof.
-    timeout-minutes: 25
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

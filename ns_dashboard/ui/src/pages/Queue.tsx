@@ -21,7 +21,15 @@ import {
 } from "../components/ref12";
 
 type Tab = "ready" | "posted" | "rejected";
-const STATUS: Record<Tab, string> = { ready: "pending", posted: "approved,uploaded", rejected: "rejected" };
+// Ready is what still needs the owner: a video to review, or an approved one that is not posted yet. An approved
+// video used to leave this tab when the list reloaded (within about ten seconds), and its posting checklist
+// (copy the title, the description and the tags, paste the YouTube link) could not be opened again (F-H143, F-H164).
+const STATUS: Record<Tab, string> = { ready: "pending,approved", posted: "approved,uploaded", rejected: "rejected" };
+// A test output can be approved but never posted, so it has no checklist to finish.
+export const needsOwner = (x: Pick<Output, "status" | "profile">) => x.status === "pending" || (x.status === "approved" && !x.profile);
+// The video on screen: the one the owner picked, else the first to review, else the first to finish posting.
+export const pickOutput = <T extends Pick<Output, "output_id" | "status">>(items: T[], current: string | null) =>
+  items.find((x) => x.output_id === current) || items.find((x) => x.status === "pending") || items[0];
 
 export function Poster({ o, className, portrait }: { o: Pick<Output, "title" | "kind" | "output_id">; className?: string; portrait?: boolean }) {
   const p = portrait ?? o.kind !== "long";
@@ -47,8 +55,8 @@ export default function Queue() {
   // Job history for the events and render cards: loaded again whenever the engine changes state or the running job moves on
   // (its progress or stage), so the bars follow the job instead of freezing at the value read when it started.
   const jobs = useLoad<Job[]>(() => api.get("/jobs"), [status?.engine?.state, status?.job?.job_id, status?.job?.progress, status?.job?.message, status?.queue?.queued], []);
-  const items = list.data;
-  const o = items.find((x) => x.output_id === current) || items[0];
+  const items = tab === "ready" ? list.data.filter(needsOwner) : list.data;
+  const o = pickOutput(items, current);
   const counts = status?.outbox;
   const chans = status?.channels || [];
   const newest = items.reduce<string | null>((m, x) => (!m || x.created_at > m ? x.created_at : m), null);
@@ -84,7 +92,7 @@ export default function Queue() {
           <Card as="section" aria-labelledby="q-list" className={SPAN["6/4"]}>
             <CardHeader id="q-list" title={tab === "ready" ? "Ready to review" : tab === "posted" ? "Approved and posted" : "Rejected"} actions={<QueueTabs tab={tab} onTab={pick} />} />
             {list.loading && !items.length ? <div aria-busy="true" className="h-[320px] rounded-ds-lg bg-ds-sunken" />
-              : tab === "ready" ? <EmptyState icon="film" title="Nothing to review" action={<LinkButton href="#/create" variant="primary">Make something now</LinkButton>}>Everything made so far is approved or posted. New videos appear here after tonight's run</EmptyState>
+              : tab === "ready" ? <EmptyState icon="film" title="Nothing to review" action={<LinkButton href="#/create" variant="primary">Make something now</LinkButton>}>Everything made so far is posted or rejected. New videos appear here after tonight's run</EmptyState>
               : <ListView items={items} tab={tab} onResume={(id) => { setTab("ready"); setCurrent(id); location.hash = `#/?id=${encodeURIComponent(id)}`; }} channelName={channelName} />}
           </Card>
         )}
@@ -156,7 +164,8 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
     try { await navigator.clipboard.writeText(text); toast(`${label} copied`, "ok"); mark(key); }
     catch { toast("Copy was blocked. Select the text and press Ctrl+C", "warn"); }
   };
-  const approve = async () => { try { await api.post(`/outputs/${api.enc(o.output_id)}/approve`); mark("approved"); toast("Approved", "ok"); } catch (e: any) { toast(e.message, "bad"); } };
+  // the approved video stays on screen for its checklist: without the pick, the reloaded list showed the next one to review
+  const approve = async () => { try { await api.post(`/outputs/${api.enc(o.output_id)}/approve`); mark("approved"); onPick(o.output_id); toast("Approved", "ok"); } catch (e: any) { toast(e.message, "bad"); } };
   const reject = async () => {
     const reason = await confirm({ title: "Reject this video?", body: "A short reason helps Nightshift do better next time", ok: "Reject", danger: true, input: { label: "Reason", placeholder: "The ending made no sense" } });
     if (reason === null) return;
@@ -209,7 +218,7 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
   return (
     <>
       <Card as="section" aria-labelledby="q-review" className={cx("flex flex-col gap-5", SPAN["4/4"])}>
-        <CardHeader id="q-review" title="Ready to review" className="!mb-0" adornment={<Badge tone="accent" className="ds-num">{idx + 1} of {items.length}</Badge>} actions={<QueueTabs tab={tab} onTab={onTab} />} />
+        <CardHeader id="q-review" title={o.status === "approved" ? "Finish posting" : "Ready to review"} className="!mb-0" adornment={<Badge tone="accent" className="ds-num">{idx + 1} of {items.length}</Badge>} actions={<QueueTabs tab={tab} onTab={onTab} />} />
         {/* the player: the one rich surface on the page */}
         <div className="relative overflow-hidden rounded-ds-lg bg-ds-media">
           <div className={cx("relative", portrait ? "aspect-[16/10]" : "aspect-video")}>

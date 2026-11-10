@@ -3,7 +3,8 @@
 `Runtime` (and `InstallState`, `Channel`, ...) are strict, and a newer version re-saves `runtime.json` with
 every field it knows. After a rollback the older program then meets a file with a key it has never heard of
 and refuses to load its own config. So the updater keeps a copy of the config files an update may rewrite
-(`ns_supervisor/config_snapshot.py`) beside the program backup, and the rollback restores both.
+(`ns_common/config_snapshot.py`) beside the program backup, and the rollback restores both. Without a usable
+copy the rollback takes out what the older version does not know (F-10c; tests/test_first_start_snapshot.py).
 
 Everything runs on fakes: a temporary home, a fake program folder, fake side effects (no engine, no uv, no
 network). The "older version" is `tests/frozen_models_0_1_14.py`, the 0.1.14 models as they were tagged.
@@ -22,11 +23,12 @@ import yaml
 from pydantic import ValidationError
 
 from installer.stage2.web import appcopy
+from ns_common import config_snapshot
 from ns_common.config import load_channel, load_install_state, load_runtime
 from ns_common.errors import NsError
 from ns_common.models import Runtime
 from ns_common.paths import Paths
-from ns_supervisor import config_snapshot, update
+from ns_supervisor import update
 from tests.frozen_models_0_1_14 import Channel as OldChannel
 from tests.frozen_models_0_1_14 import InstallState as OldInstallState
 from tests.frozen_models_0_1_14 import Runtime as OldRuntime
@@ -115,6 +117,16 @@ def snapshot_file(app: Path) -> Path:
     return app.with_name(app.name + ".prev-config.zip")
 
 
+def without_new_keys(config: dict[str, bytes]) -> dict[str, bytes]:
+    """`config` as a rollback without a usable copy leaves it (F-10c): runtime.json without the keys the
+    older version never had (`tiny_story`, which `NewVersion` writes), every other file as it was."""
+    out = dict(config)
+    data = json.loads(out["runtime.json"])
+    if data.pop("tiny_story", None) is not None:
+        out["runtime.json"] = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    return out
+
+
 def old_models_load(paths: Paths) -> None:
     """Load every config file with the 0.1.14 models (the rolled back program's) and the current ones."""
     text = (paths.config / "runtime.json").read_text(encoding="utf-8")
@@ -170,15 +182,18 @@ def test_the_snapshot_is_taken_before_the_new_program_runs_and_lives_next_to_the
     assert any("rollback" in n and "runtime.json" in n for n in res.notes)
 
 
-def test_without_the_snapshot_the_old_failure_is_real(tmp_path: Path) -> None:
-    """The control: with the copy gone (an update by an older updater) the older models refuse the file."""
+def test_without_the_snapshot_the_rollback_removes_what_the_older_version_lacks(tmp_path: Path) -> None:
+    """With the copy gone (an update by an older updater) the file the new version saved is refused by the
+    older models; since F-10c the rollback removes the keys they never had, and they load it."""
     paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
     seed_config(paths)
     update.update_app(make_zip(tmp_path), app, NewVersion(paths).env(), paths=paths)
-    snapshot_file(app).unlink()
-    update.rollback_app(app, Env().env(), paths=paths)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError):  # the control: what the new version saved, as it is
         OldRuntime.model_validate_json((paths.config / "runtime.json").read_text(encoding="utf-8"))
+    snapshot_file(app).unlink()
+    res = update.rollback_app(app, Env().env(), paths=paths)
+    OldRuntime.model_validate_json((paths.config / "runtime.json").read_text(encoding="utf-8"))
+    assert "runtime.json (tiny_story)" in res.settings
 
 
 # --------------------------------------------------------------------------------------- owner changes
@@ -265,7 +280,7 @@ def test_a_rollback_without_a_snapshot_swaps_the_program_as_before_and_says_the_
 
     assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
     assert e.calls == ["stop", "sync"]
-    assert read_config(paths) == now  # untouched: nothing to restore from
+    assert read_config(paths) == without_new_keys(now)  # nothing to restore from; only what 0.1.0 lacks goes
     assert "could not be restored" in res.settings and "no copy" in res.settings
     assert "ns restore" in res.settings  # and what to do if the program will not start
 
@@ -281,7 +296,7 @@ def test_a_damaged_snapshot_is_never_applied(tmp_path: Path) -> None:
     res = update.rollback_app(app, Env().env(), paths=paths)
 
     assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
-    assert read_config(paths) == now
+    assert read_config(paths) == without_new_keys(now)
     assert "could not be restored" in res.settings and "damaged" in res.settings
 
 
@@ -313,7 +328,7 @@ def test_a_snapshot_that_belongs_to_another_program_is_not_applied(tmp_path: Pat
     res = update.rollback_app(app, Env().env(), paths=paths)
 
     assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.0.9"
-    assert read_config(paths) == now
+    assert read_config(paths) == without_new_keys(now)
     assert "could not be restored" in res.settings and "belongs to 0.1.0" in res.settings
 
 
@@ -376,7 +391,8 @@ def test_a_rollback_whose_restore_fails_leaves_the_original_copy_in_the_zip(
         res = update.rollback_app(app, Env().env(), paths=paths)
 
     assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"  # the program did go back
-    assert read_config(paths) == after_update  # the restore was all or nothing
+    assert read_config(paths) == without_new_keys(after_update)  # the restore was all or nothing (F-10c:
+    # then what 0.1.0 does not know is taken out, so it can start)
     assert "could not be restored" in res.settings and "wizard_flags.json" in res.settings
     kept = config_snapshot.read(snapshot_file(app))  # still readable, still the 0.1.0 files
     assert kept.files == original.files == {n: b for n, b in before.items() if n in kept.files}
@@ -577,11 +593,11 @@ def test_a_failed_restore_then_two_more_rollbacks_never_give_the_older_program_t
 
     first = rollback_with_a_locked_file(app, paths, monkeypatch)
     assert version_of(app) == "0.1.0" and "could not be restored" in first.settings
-    assert read_config(paths) == after_update
+    assert read_config(paths) == without_new_keys(after_update)  # (F-10c: what 0.1.0 lacks is taken out)
 
     second = update.rollback_app(app, Env().env(), paths=paths)  # the owner goes forward to 0.2.0 again
     assert version_of(app) == "0.2.0"
-    assert read_config(paths) == after_update  # 0.2.0's own files, untouched
+    assert read_config(paths) == without_new_keys(after_update)  # 0.2.0's own files, untouched since
     assert snapshot_file(app).read_bytes() == original  # the only copy of 0.1.0's files is still whole
     assert "could not be restored" in second.settings
     kept = next(n for n in second.notes if str(snapshot_file(app)) in n)  # and the owner is told where
@@ -603,7 +619,7 @@ def test_a_rollback_never_writes_over_a_whole_copy_that_belongs_to_another_progr
 
     res = update.rollback_app(app, Env().env(), paths=paths)
 
-    assert version_of(app) == "0.1.0" and read_config(paths) == now
+    assert version_of(app) == "0.1.0" and read_config(paths) == without_new_keys(now)
     assert "could not be restored" in res.settings and "belongs to 0.0.5" in res.settings
     assert snapshot_file(app).read_bytes() == theirs
     note = next(n for n in res.notes if str(snapshot_file(app)) in n)
@@ -621,7 +637,7 @@ def test_a_rollback_replaces_a_damaged_copy_and_says_so(tmp_path: Path) -> None:
 
     res = update.rollback_app(app, Env().env(), paths=paths)
 
-    assert read_config(paths) == now and "damaged" in res.settings
+    assert read_config(paths) == without_new_keys(now) and "damaged" in res.settings
     forward = config_snapshot.read(snap)  # whole again: 0.2.0's settings, for going forward
     assert forward.version == "0.2.0" and forward.files == {n: now[n] for n in forward.files}
     assert any("damaged" in n and "replaced" in n and str(snap) in n for n in res.notes)
@@ -1087,6 +1103,9 @@ def test_the_uninstallers_remove_the_settings_copy_with_the_program_backup(tmp_p
     assert str(tmp_path / "ns" / "app.prev-config.zip.unrestored").replace("'", "''") in script
     ps1 = (ROOT / "installer" / "uninstall.ps1").read_text(encoding="utf-8")
     assert "'app.prev-config.zip'" in ps1 and "'app.prev-config.zip.unrestored'" in ps1
+    # F-10c: the copy's lock file and the record of a rollback in progress go too
+    for name in ("app.prev-config.zip.lock", "app.rollback-pending.json"):
+        assert str(tmp_path / "ns" / name).replace("'", "''") in script and f"'{name}'" in ps1
 
 
 # --------------------------------------------------------------------------------------- the file list
@@ -1107,7 +1126,7 @@ def test_every_config_file_the_code_names_is_either_snapshotted_or_left_alone_fo
     known = set(config_snapshot.FILES) | set(config_snapshot.LEFT_ALONE)
     unknown = sorted(written_config_names() - known)
     assert not unknown, (
-        f"{unknown} are named in the code but not in ns_supervisor/config_snapshot.py: add each to FILES "
+        f"{unknown} are named in the code but not in ns_common/config_snapshot.py: add each to FILES "
         "(a strict model or a file the update rewrites: the rollback must put it back) or to LEFT_ALONE "
         "(with the reason the older version can read it as it is)."
     )
