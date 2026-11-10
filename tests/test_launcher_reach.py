@@ -11,11 +11,13 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import datetime
 import importlib
 import json
 import os
 import stat
 import struct
+import subprocess
 import sys
 import threading
 import types
@@ -84,6 +86,9 @@ class Shell:
 
     def run(self, argv: Any, *, tag: str = "", meta: Any = None, **kw: Any) -> RunResult:
         self.calls.append((tag, dict(meta or {})))
+        if tag == "ps:launch-cleanup":       # the launch script itself, for real (it is under a test run)
+            done = subprocess.run(list(argv), capture_output=True, text=True, timeout=120)
+            return RunResult(done.returncode, done.stdout, done.stderr)
         if tag == "ps:desktop":
             return RunResult(0, __import__("base64").b64encode(str(self.desktop or "").encode()).decode())
         if tag == "ps:shortcut-update":
@@ -178,6 +183,7 @@ def test_an_install_updated_by_0_1_14_gets_the_stub_its_shortcuts_and_the_task_a
     task = inst.windows.task
     assert task is not None and (task["state"], task["at"], task["logon"]) == ("Ready", "05:30", "S4U")
     assert task["args"] == schedule.action_arguments(inst.paths) and schedule.is_stub_action(task["args"])
+    assert inst.windows.changes() == ["set"]                  # only the action was set: nothing registered again
     assert marker["stamp"] == first_start.install_stamp(inst.app) and marker["failed"] == []
     file = reach.marker_file(inst.paths)
     assert json.loads(file.read_text(encoding="utf-8")) == marker
@@ -234,25 +240,67 @@ def test_a_shortcut_of_another_existing_install_is_never_touched(inst: Inst, tmp
     assert notify.read_notes(inst.paths) == []
 
 
-def test_a_shortcut_of_a_deleted_install_is_taken_and_said(inst: Inst, tmp_path: Path):
+def test_a_shortcut_of_a_deleted_install_is_never_taken(inst: Inst, tmp_path: Path):
+    """The Desktop holds shortcuts of three homes: this one, another that exists, one that was deleted.
+    Only this home's change; nothing is taken over and nothing is said."""
     assert reach is not None, NEW
-    gone = tmp_path / "Deleted Nightshift"
-    write_lnk(inst.desktop / "Old Dashboard.lnk", direct(gone, "nightshift-dashboard.ps1"), str(gone), str(gone / "x.ico"))
-    write_lnk(inst.desktop / "Old Code.lnk", direct(gone, "nightshift-code.ps1"), str(gone))    # not in this build
-    code = (inst.desktop / "Old Code.lnk").read_bytes()
-    inst.run()
-    taken = so.read_lnk(inst.desktop / "Old Dashboard.lnk")
-    assert taken.arguments == through_stub(inst.home, "nightshift-dashboard.ps1")
-    assert (taken.working_dir, taken.icon) == (str(inst.home), str(inst.icon))
-    assert (inst.desktop / "Old Code.lnk").read_bytes() == code
-    said = (
-        f"The Desktop shortcuts Old Dashboard opened a Nightshift folder that no longer exists ({gone}); "
-        f"they now open this Nightshift ({inst.home})."
-    )
-    assert [n["message"] for n in notify.read_notes(inst.paths)] == [said]
+    other, gone = tmp_path / "Other Nightshift", tmp_path / "Deleted Nightshift"
+    (other / "app" / "launchers").mkdir(parents=True)
+    theirs = {}
+    for home, tag in ((other, "other"), (gone, "gone")):
+        for name, script in SIX:
+            lnk = inst.desktop / f"{name} ({tag}).lnk"
+            write_lnk(lnk, direct(home, script), str(home), str(home / "n.ico"), f"Nightshift: {name}")
+            theirs[lnk.name] = lnk.read_bytes()
+    marker = inst.run()
+    assert {name: (inst.desktop / name).read_bytes() for name in theirs} == theirs
+    assert all(inst.args(name) == through_stub(inst.home, script) for name, script in SIX)
+    assert sorted(inst.shell.updates()) == sorted(f"{name}.lnk" for name, _ in SIX)
+    states = marker["shortcuts"]
+    assert {states[f"{name} (other).lnk"] for name, _ in SIX} == {"other"}
+    assert {states[f"{name} (gone).lnk"] for name, _ in SIX} == {"gone"}
+    assert marker["failed"] == [] and notify.read_notes(inst.paths) == []
+    assert sorted(p.name for p in inst.desktop.iterdir()) == sorted([*theirs, *(f"{name}.lnk" for name, _ in SIX)])
+    # a shortcut of this home whose launcher this program no longer has is left too
+    write_lnk(inst.desktop / "Code.lnk", direct(inst.home, "nightshift-code.ps1"), str(inst.home))
     inst.new_stamp()
-    inst.run()
-    assert len(notify.read_notes(inst.paths)) == 1          # said once
+    assert inst.run()["shortcuts"]["Code.lnk"] == "left"
+
+
+def test_a_dev_install_never_changes_the_desktop(inst: Inst):
+    assert reach is not None, NEW
+    inst.paths.runtime_file.write_text(json.dumps({"dev_mode": True}), encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in inst.desktop.iterdir()}
+    marker = inst.run()
+    assert {p.name: p.read_bytes() for p in inst.desktop.iterdir()} == before and inst.shell.calls == []
+    assert marker["failed"] == [] and marker["stub"] == "ok" and marker["desktop"].startswith("dev install")
+
+
+def test_no_test_reaches_the_real_desktop_through_the_lowest_calls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """`winenv` refuses under a test run before anything is started, whatever a test did with its fakes."""
+    folders = getattr(winenv, "real_shell_folders", None)
+    assert folders is not None, NEW
+
+    def reached(*a: Any, **k: Any) -> Any:
+        raise AssertionError("the real PowerShell was started")
+
+    monkeypatch.setattr("installer.stage2.runner.subprocess.run", reached)
+    real = SubprocessRunner()
+    with pytest.raises(RealMachineUnderTest, match="Desktop"):
+        winenv.desktop_dir(real)
+    assert len(folders()) >= 2                                # the Desktop and the common Desktop, at least
+    for folder in folders():
+        lnk = folder / "Nightshift Dashboard.lnk"
+        for call in (
+            lambda lnk=lnk: winenv.create_shortcut(real, lnk, "powershell.exe", "-File x", tmp_path, "d"),
+            lambda lnk=lnk: winenv.update_shortcut(real, lnk, "-File x"),
+            lambda lnk=lnk: winenv.set_shortcut_aumid(real, lnk, "Nightshift"),
+        ):
+            with pytest.raises(RealMachineUnderTest, match="real Desktop or Start menu"):
+                call()
+    monkeypatch.delenv("NS_UNDER_TEST")                      # no environment change lifts it in this process
+    with pytest.raises(RealMachineUnderTest):
+        winenv.update_shortcut(real, folders()[0] / "x.lnk", "-File x")
 
 
 def test_a_shortcut_whose_drive_is_not_there_is_left(inst: Inst):
@@ -308,6 +356,17 @@ def test_a_hard_home_round_trips_through_a_real_shortcut(tmp_path: Path):
     assert again.icon.startswith(str(home / "n.ico")) and so.is_stub_form(again.arguments, home)
     kept = winenv.run_ps(runner, winenv.get_shortcut_aumid_script(lnk), tag="ps:aumid-read")
     assert kept.stdout.strip() == "Nightshift", kept.text    # the toast identity survives the rewrite
+    # the change went through a temp file and a rename: nothing is left beside the shortcut ...
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("~")] == []
+    # ... and a shortcut that cannot be replaced is whole and unchanged, with the reason
+    whole = lnk.read_bytes()
+    os.chmod(lnk, stat.S_IREAD)
+    try:
+        refused = winenv.update_shortcut(runner, lnk, args)
+    finally:
+        os.chmod(lnk, stat.S_IWRITE | stat.S_IREAD)
+    assert not refused.ok and refused.text and lnk.read_bytes() == whole
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("~")] == []
 
 
 def test_a_failed_reach_is_retried_at_the_next_start_and_shown_by_doctor(inst: Inst):
@@ -374,7 +433,8 @@ def test_a_task_that_is_not_this_installs_enabled_one_is_not_touched(inst: Inst,
         inst.paths.runtime_file.parent.mkdir(parents=True, exist_ok=True)
         inst.paths.runtime_file.write_text(json.dumps({"dev_mode": True}), encoding="utf-8")
     marker = inst.run()
-    assert inst.windows.changes() == [] and marker["failed"] == [] and len(inst.shell.updates()) == 6
+    assert inst.windows.changes() == [] and marker["failed"] == []
+    assert len(inst.shell.updates()) == (0 if case == "dev" else 6)      # a dev install leaves the Desktop
 
 
 def test_the_engine_start_hands_the_reach_to_a_thread(inst: Inst, monkeypatch: pytest.MonkeyPatch):
@@ -430,7 +490,126 @@ def test_a_rollback_to_a_version_without_the_reach_and_forward_again_keeps_worki
     inst.new_stamp()
     inst.run()
     assert (inst.home / "nightshift-launch.ps1").read_bytes() == newer
-    assert so.stub_schema(source) == so.STUB_SCHEMA == 2
+    assert so.stub_schema(source) == so.STUB_SCHEMA == 3
+
+
+@pytest.mark.parametrize("logon", ["Interactive", "S4U", "Password"])
+def test_the_task_keeps_its_logon_type_and_time(inst: Inst, logon: str):
+    """Only the action is set. A task that runs only while signed in is not made to run signed out, and one
+    the owner gave a password in Task Scheduler is not registered again without it."""
+    assert reach is not None, NEW
+    assert inst.windows.task is not None
+    inst.windows.task.update(logon=logon, at="04:45")
+    write_run_time(inst.paths, "04:45", "interactive_only" if logon == "Interactive" else "registered")
+    assert inst.run()["task"] == "done"
+    task = inst.windows.task
+    assert (task["state"], task["at"], task["logon"]) == ("Ready", "04:45", logon)
+    assert schedule.is_stub_action(task["args"]) and "register" not in inst.windows.calls
+
+
+def test_a_task_whose_logon_changed_with_the_action_is_said(inst: Inst):
+    assert reach is not None, NEW
+    inst.windows.set_changes_logon = True                    # type: ignore[attr-defined]
+    marker = inst.run()
+    assert marker["failed"] == ["task"]
+    assert "the logon type was S4U and is Interactive" in marker["task"]
+    ok, detail = launch_row(inst.paths)
+    assert not ok and "the logon type was S4U and is Interactive" in detail
+
+
+# --------------------------------------------------------------- a missed night is cleared by every start
+def missed(inst: Inst, first: str, nights: int = 2) -> Path:
+    """What the launch script left after nights without the program: its count and its Desktop note."""
+    record = inst.home / "run" / "launch-missed.json"
+    record.parent.mkdir(exist_ok=True)
+    record.write_text(json.dumps({"first": first, "last": first, "nights": nights, "what": "folder"}), encoding="ascii")
+    note = inst.desktop / "Nightshift did not run.txt"
+    note.write_text(f"Nightshift could not start its nightly run on {first} (2 nights so far ...\n", encoding="utf-8-sig")
+    return record
+
+
+def stub_start(inst: Inst, *args: object) -> subprocess.CompletedProcess[str]:
+    """A start through the launch script in the home (a Desktop shortcut, the nightly task)."""
+    exe = pwsh.find_powershell()
+    assert exe is not None
+    argv = [exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(inst.home / "nightshift-launch.ps1")]
+    argv += [str(a) for a in args] + ["-DesktopDir", str(inst.desktop)]
+    return subprocess.run(argv, input="\n", capture_output=True, text=True, timeout=120)
+
+
+def notes_about(inst: Inst) -> list[str]:
+    return [n["message"] for n in notify.read_notes(inst.paths) if n["message"].startswith("Nightshift did not run")]
+
+
+@needs_powershell
+def test_an_engine_start_clears_a_missed_night_once_whatever_started_it(inst: Inst):
+    """Setup's Open dashboard, `ns up`, the restart after an update: all start the engine without the launch
+    script, and the engine's start clears the night, also when the reach itself has nothing left to do."""
+    assert reach is not None, NEW
+    assert inst.run()["failed"] == []                        # the reach is done for this program folder
+    today = datetime.date.today().isoformat()
+    record = missed(inst, "2026-11-08")
+    marker_bytes = reach.marker_file(inst.paths).read_bytes()
+    inst.run()                                               # the next engine start (the gate says: done)
+    said = f"Nightshift did not run on 2 nights, from 2026-11-08 to 2026-11-08: its program folder was missing until it was put back on {today}."
+    assert notes_about(inst) == [said]
+    assert not record.exists() and not (inst.desktop / "Nightshift did not run.txt").exists()
+    assert reach.marker_file(inst.paths).read_bytes() == marker_bytes
+    calls = len(inst.shell.calls)
+    inst.run()                                               # a second engine start: nothing left, no PowerShell
+    assert notes_about(inst) == [said] and len(inst.shell.calls) == calls
+    # each order of the two kinds of start clears one night once
+    record = missed(inst, "2026-11-01")
+    assert stub_start(inst, "-Launcher", inst.app / "launchers" / "update.ps1").returncode == 0     # a shortcut
+    inst.run()                                               # then the engine it started
+    assert len(notes_about(inst)) == 2 and not record.exists()
+    record = missed(inst, "2026-10-20")
+    inst.run()                                               # the engine first (Open dashboard from setup)
+    assert stub_start(inst, "-Launcher", inst.app / "launchers" / "update.ps1").returncode == 0     # then a shortcut
+    studio = inst.desktop.parent / "studio.cmd"
+    studio.write_bytes(b"@echo off\r\nexit /b 0\r\n")
+    (inst.app / "ns_studio").mkdir()
+    (inst.app / "ns_studio" / "cli.py").write_text("", encoding="ascii")
+    assert stub_start(inst, "-Nightly", "-Studio", studio).returncode == 0                          # then the night
+    assert len(notes_about(inst)) == 3 and not record.exists()
+    assert not (inst.desktop / "Nightshift did not run.txt").exists()
+
+
+@needs_powershell
+def test_two_starters_at_once_clear_a_missed_night_once(inst: Inst):
+    """The step is slowed for real: another starter holds the count while this one arrives."""
+    assert reach is not None, NEW
+    assert inst.run()["failed"] == []
+    record = missed(inst, "2026-11-08")
+    import ctypes
+
+    open_existing, read, share_delete = 3, 0x80000000, 4
+    create = ctypes.windll.kernel32.CreateFileW
+    create.restype = ctypes.c_void_p
+    handle = create(str(record), read, share_delete, None, open_existing, 0, None)   # as the script holds it
+    assert handle and handle != ctypes.c_void_p(-1).value
+    try:
+        assert stub_start(inst, "-Cleanup").stdout.strip() == "busy"
+        inst.run()
+        assert notes_about(inst) == [] and record.exists()    # the holder does it; nobody did it twice
+    finally:
+        ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
+    inst.run()
+    assert len(notes_about(inst)) == 1 and not record.exists()
+
+
+@needs_powershell
+def test_a_missed_night_that_cannot_be_noted_keeps_its_count_and_the_reach_goes_on(inst: Inst):
+    assert reach is not None, NEW
+    record = missed(inst, "2026-11-08")
+    blocked = inst.home / "run" / "morning_note.json"
+    blocked.mkdir()                                          # the Dashboard's notes cannot be written
+    marker = inst.run()
+    assert record.exists() and (inst.desktop / "Nightshift did not run.txt").exists()
+    assert marker["failed"] == [] and len(inst.shell.updates()) == 6
+    blocked.rmdir()
+    inst.run()
+    assert len(notes_about(inst)) == 1 and not record.exists()
 
 
 # ------------------------------------------------------------------------------- the task's own home

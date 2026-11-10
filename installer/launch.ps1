@@ -1,9 +1,10 @@
-# STUB_SCHEMA: 2
+# STUB_SCHEMA: 3
 param(
     [string]$Launcher = '',
     [switch]$Nightly,
     [string]$Studio = '',
-    [string]$DesktopDir = ''
+    [string]$DesktopDir = '',
+    [switch]$Cleanup
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -21,7 +22,12 @@ $ErrorActionPreference = 'Stop'
 #                 Desktop as 'Nightshift did not run.txt', shown as a toast when there is a session to show
 #                 it in, and logged as one NS-W209 line in <home>\logs\launch-<yyyymmdd>.jsonl.
 # The first start that finds the program again leaves one morning note for the Dashboard, removes the
-# Desktop note and the count. The line above the param block is this file's format number: a copy in the
+# Desktop note and the count: a shortcut and the nightly task do it here before they run anything, and the
+# engine does it at every start by running this file with -Cleanup (setup's Open dashboard, ns up and the
+# restart after an update start the engine without this file). Whoever comes first holds the count's file
+# open while it works; the others find it taken or gone, so one night is cleared once.
+# A dev install and a test run never touch the real Desktop: no note is written or removed there unless
+# -DesktopDir names the folder. The line above the param block is this file's format number: a copy in the
 # home is only replaced by one with the same or a higher number.
 $nsHome = $PSScriptRoot
 if ($Launcher) { $app = Split-Path -Parent (Split-Path -Parent $Launcher) } else { $app = Join-Path $nsHome 'app' }
@@ -34,6 +40,12 @@ $noteName = 'Nightshift did not run.txt'
 $noteStart = 'Nightshift could not start its nightly run on '
 # A test run never shows a toast and never names the real Desktop: only -DesktopDir counts there.
 $underTest = [bool]($env:NS_UNDER_TEST -or $env:PYTEST_CURRENT_TEST)
+# A dev install (config\runtime.json says dev_mode) never names the real Desktop either.
+$devInstall = $false
+try {
+    $rt = [IO.File]::ReadAllText((Join-Path (Join-Path $nsHome 'config') 'runtime.json')) | ConvertFrom-Json
+    $devInstall = [bool]($rt.PSObject.Properties['dev_mode'] -and $rt.dev_mode -eq $true)
+} catch { $devInstall = $false }
 
 function Get-MoveBack {
     # With a rollback's record and no app.swap, somebody moved the folder: setup would start a fresh one.
@@ -86,8 +98,12 @@ function Write-NsFileSwap {
 }
 
 function Read-Missed {
+    # -Stream: the count's file as its holder has it open (Restore-AfterMiss); else read by its path.
+    param($Stream = $null)
     try {
-        $r = [IO.File]::ReadAllText($missedFile) | ConvertFrom-Json
+        if ($null -ne $Stream) { $text = (New-Object System.IO.StreamReader($Stream)).ReadToEnd() }
+        else { $text = [IO.File]::ReadAllText($missedFile) }
+        $r = $text | ConvertFrom-Json
         $m = @{ first = [string]$r.first; last = [string]$r.last; nights = [int]$r.nights; what = [string]$r.what }
         $day = '^\d{4}-\d\d-\d\d$'
         if ($m.first -match $day -and $m.last -match $day -and $m.nights -ge 1 -and @('folder', 'environment') -contains $m.what) { return $m }
@@ -97,7 +113,7 @@ function Read-Missed {
 
 function Get-NoteFolder {
     if ($DesktopDir) { return $DesktopDir }
-    if ($underTest) { return $null }
+    if ($underTest -or $devInstall) { return $null }
     return [Environment]::GetFolderPath('Desktop')
 }
 
@@ -158,17 +174,23 @@ function Show-Toast {
 
 function Restore-AfterMiss {
     # The program is back. One morning note, then the Desktop note, then the count: a failure keeps the
-    # count for the next start, and never stops what this start was asked to run.
+    # count for the next start, and never stops what this start was asked to run. The count's file is held
+    # open, sharing nothing but its deletion, from before the note until the count is gone: a second
+    # starter (a shortcut, the nightly task, the engine's -Cleanup) cannot open it and leaves the work to
+    # the first. Says what it did: nothing, busy, waiting, cleared, or kept: <why>.
     param([bool]$EnvironmentKnown)
+    $held = $null
     try {
-        if (-not (Test-Path -LiteralPath $missedFile -PathType Leaf)) { return }
-        $m = Read-Missed
+        if (-not (Test-Path -LiteralPath $missedFile -PathType Leaf)) { return 'nothing' }
+        try { $held = New-Object System.IO.FileStream($missedFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Delete) }
+        catch { return 'busy' }
+        $m = Read-Missed -Stream $held
         if ($null -ne $m) {
             $thing = 'program folder'
             if ($m.what -eq 'environment') {
                 $thing = 'program environment'
                 $exe = Join-Path $nsHome 'venvs\studio\Scripts\studio.exe'
-                if (-not $EnvironmentKnown -and -not (Test-Path -LiteralPath $exe -PathType Leaf)) { return }
+                if (-not $EnvironmentKnown -and -not (Test-Path -LiteralPath $exe -PathType Leaf)) { return 'waiting' }
             }
             $notesFile = Join-Path (Join-Path $nsHome 'run') 'morning_note.json'
             $notes = @()
@@ -192,8 +214,10 @@ function Restore-AfterMiss {
             $file = Join-Path $desk $noteName
             if ((Test-Path -LiteralPath $file -PathType Leaf) -and (Test-OurNote $file)) { Remove-Item -LiteralPath $file -Force }
         }
-        Remove-Item -LiteralPath $missedFile -Force
-    } catch { }
+        [System.IO.File]::Delete($missedFile)
+        return 'cleared'
+    } catch { return ('kept: ' + $_.Exception.Message) }
+    finally { if ($null -ne $held) { $held.Dispose() } }
 }
 
 function Write-Miss {
@@ -220,7 +244,8 @@ function Write-Miss {
                 Write-NsFileSwap -Path $file -Text (((Get-NoteLines $m) -join "`r`n") + "`r`n") -Bom
                 $note = 'written'
             }
-        } elseif (-not $underTest) { $note = 'failed: Windows named no Desktop folder for this session' }
+        } elseif ($devInstall) { $note = 'dev-install' }
+        elseif (-not $underTest) { $note = 'failed: Windows named no Desktop folder for this session' }
     } catch { $note = 'failed: ' + $_.Exception.Message }
     $thing = 'program folder'
     if ($What -eq 'environment') { $thing = 'program environment' }
@@ -252,18 +277,24 @@ if ($Nightly) {
         Write-Miss $what
         exit 1
     }
-    Restore-AfterMiss $true
+    [void](Restore-AfterMiss $true)
     $global:LASTEXITCODE = 0
     & $Studio run --daily
     exit $LASTEXITCODE
 }
 
+if ($Cleanup) {
+    # the engine's start: the program runs, so a counted night is over (ns_supervisor/launch_reach.py)
+    Write-Output (Restore-AfterMiss $false)
+    exit 0
+}
+
 if (-not $Launcher) {
-    Write-Host 'nightshift-launch.ps1: pass -Launcher <script>, or -Nightly -Studio <studio.exe>.'
+    Write-Host 'nightshift-launch.ps1: pass -Launcher <script>, -Nightly -Studio <studio.exe>, or -Cleanup.'
     exit 2
 }
 if (Test-Path -LiteralPath $Launcher -PathType Leaf) {
-    Restore-AfterMiss $false
+    [void](Restore-AfterMiss $false)
     $global:LASTEXITCODE = 0
     & $Launcher
     exit $LASTEXITCODE

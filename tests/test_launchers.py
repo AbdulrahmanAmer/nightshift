@@ -1266,6 +1266,14 @@ def test_under_a_test_run_the_stub_shows_no_toast_and_writes_no_real_desktop(tmp
     assert _stub(home, "-Nightly", "-Studio", _studio(tmp_path)).returncode == 1
     (line,) = _lines(home)
     assert line["data"]["toast"] == line["data"]["desktop_note"] == "test-run"
+    # a dev install never names the real Desktop either: said as that, with or without a test run
+    (home / "config" / "runtime.json").write_text(json.dumps({"dev_mode": True}), encoding="utf-8")
+    assert _stub(home, "-Nightly", "-Studio", _studio(tmp_path)).returncode == 1
+    assert _lines(home)[-1]["data"]["desktop_note"] == "dev-install"
+    desk = tmp_path / "Desk"
+    desk.mkdir()                                         # the folder a proof hands it is still written
+    assert _stub(home, "-Nightly", "-Studio", _studio(tmp_path), "-DesktopDir", desk).returncode == 1
+    assert _lines(home)[-1]["data"]["desktop_note"] == "written" and (desk / NOTE).exists()
 
 
 @needs_powershell

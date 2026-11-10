@@ -34,7 +34,7 @@ from ns_common.tts_timeout import save_rtf
 from ns_supervisor import check_names as names
 from ns_supervisor import procs
 from ns_supervisor.benchmark import measure_tok_s
-from ns_supervisor.childenv import child_env
+from ns_supervisor.childenv import child_env, window_flags
 
 OWNER = "verify"
 TTS_SENTENCE = "Nightshift verification sentence. The quick brown fox jumps over the lazy dog."
@@ -126,7 +126,10 @@ def whisper_probe(paths: Paths, rt: Runtime) -> float:
     model = str(local) if local.is_dir() else rt.whisper.model
     cmd = [str(py), "-c", WHISPER_SNIPPET, model, rt.whisper.device, rt.whisper.compute_type]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=False, env=child_env())
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=600, check=False, env=child_env(),
+            creationflags=window_flags(),
+        )
     except (OSError, subprocess.SubprocessError) as e:
         raise NsError("NS-E202", f"whisper probe could not run: {e}") from e
     if r.returncode != 0:
@@ -186,6 +189,7 @@ def fake_job(paths: Paths) -> float | None:
             timeout=1800,
             check=False,
             env=child_env(),
+            creationflags=window_flags(),
         )
     except (OSError, subprocess.SubprocessError) as e:
         raise NsError("NS-E202", f"fake-services job could not run: {e}") from e

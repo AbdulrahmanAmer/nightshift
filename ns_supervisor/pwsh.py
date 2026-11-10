@@ -6,7 +6,7 @@ import base64
 import shutil
 import subprocess
 
-from ns_supervisor.childenv import child_env
+from ns_supervisor.childenv import child_env, window_flags
 from ns_supervisor.testguard import refuse_task_scheduler
 
 
@@ -46,4 +46,5 @@ def run_powershell(
         env=env,
         timeout=timeout_s,
         check=False,
+        creationflags=window_flags(),   # the engine has no console: no window per PowerShell
     )

@@ -27,7 +27,7 @@ from ns_common.errors import NsError
 from ns_common.paths import Paths, repo_root
 from ns_common.uv import find_uv
 from ns_supervisor import launch_reach, procs
-from ns_supervisor.childenv import child_env
+from ns_supervisor.childenv import child_env, window_flags
 from ns_supervisor.client import SupervisorClient
 
 MEDIA_SUFFIXES = frozenset(
@@ -70,6 +70,7 @@ def freeze_venv(paths: Paths, venv: str) -> str | None:
             timeout=120,
             check=False,
             env=child_env(),
+            creationflags=window_flags(),
         )
     except (OSError, subprocess.SubprocessError):
         return None

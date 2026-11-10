@@ -7,9 +7,11 @@ This is the only module that names the home environment variable literally. Scri
 from __future__ import annotations
 
 import base64
+import os
 from pathlib import Path
 
-from installer.stage2.runner import Runner, RunResult
+from installer.stage2.runner import Runner, RunResult, SubprocessRunner
+from ns_supervisor.testguard import RealMachineUnderTest, under_test
 
 HOME_VAR = "NIGHTSHIFT_HOME"
 
@@ -74,8 +76,49 @@ def get_user_env(runner: Runner, name: str) -> str | None:
     return value or None
 
 
+#: CSIDL numbers of the folders a shortcut of the product can land in: the user's and the common Desktop
+#: and Start menu.
+_SHELL_FOLDERS = (0x10, 0x19, 0x0B, 0x16)
+
+
+def real_shell_folders() -> list[Path]:
+    """This PC's real Desktop and Start menu folders, asked of the shell (a read; OneDrive's move is
+    followed). Empty when not on Windows."""
+    found: list[Path] = []
+    try:
+        import ctypes
+
+        get = ctypes.windll.shell32.SHGetFolderPathW  # type: ignore[attr-defined]
+        for csidl in _SHELL_FOLDERS:
+            buf = ctypes.create_unicode_buffer(1024)
+            if get(None, csidl, None, 0, buf) == 0 and buf.value:
+                found.append(Path(buf.value))
+    except (AttributeError, OSError, ImportError):
+        pass
+    return found
+
+
+def refuse_real_desktop(runner: Runner, target: Path | None, what: str) -> None:
+    """A test run never asks Windows for the real Desktop and never writes a shortcut on it or in the Start
+    menu, whatever fakes it removed: the lowest calls that would (`desktop_dir`, `create_shortcut`,
+    `update_shortcut`, `set_shortcut_aumid` with the real runner) raise instead. `target` None: any use;
+    else only a path in one of `real_shell_folders`. A stand-in runner starts nothing and is let through."""
+    if not under_test() or not isinstance(runner, SubprocessRunner):
+        return
+    if target is not None:
+        full = Path(os.path.normcase(os.path.abspath(target)))
+        inside = any(full.is_relative_to(os.path.normcase(os.path.abspath(f))) for f in real_shell_folders())
+        if not inside:
+            return
+    raise RealMachineUnderTest(
+        f"a test tried to {what} on this PC's real Desktop or Start menu; this is refused under pytest and "
+        "cannot be switched off. Hand the code a folder under tmp_path, or a stand-in runner."
+    )
+
+
 def desktop_dir(runner: Runner) -> Path | None:
     """The current user's Desktop folder (follows OneDrive redirection); exact for non-ASCII paths."""
+    refuse_real_desktop(runner, None, "ask Windows for the Desktop folder")
     text = eval_ps_text(runner, "[Environment]::GetFolderPath('Desktop')", tag="ps:desktop")
     return Path(text) if text else None
 
@@ -150,30 +193,46 @@ public static class NsLink
 
     public static void Update(string lnk, string args, string workdir, string icon)
     {
+        // The changed link is saved beside the shortcut and then swapped over it (File.Replace): a power
+        // cut leaves the old shortcut or the new one, never a torn file. The temp file is removed on failure.
+        string tmp = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(lnk),
+            "~nslnk-" + System.Diagnostics.Process.GetCurrentProcess().Id + ".tmp");
         IShellLinkW link = (IShellLinkW)new ShellLinkObject();
         try
         {
-            ((IPersistFile)link).Load(lnk, 2);
+            ((IPersistFile)link).Load(lnk, 0);
             link.SetArguments(args);
             if (!string.IsNullOrEmpty(workdir)) { link.SetWorkingDirectory(workdir); }
             if (!string.IsNullOrEmpty(icon)) { link.SetIconLocation(icon, 0); }
-            ((IPersistFile)link).Save(lnk, true);
+            ((IPersistFile)link).Save(tmp, false);
+            System.IO.File.Replace(tmp, lnk, null);
         }
-        finally { Marshal.ReleaseComObject(link); }
+        finally
+        {
+            Marshal.ReleaseComObject(link);
+            if (System.IO.File.Exists(tmp)) { System.IO.File.Delete(tmp); }
+        }
     }
 }
 """
+
+
+#: The temp file `update_shortcut` saves beside a shortcut before the swap (left only by a power cut).
+LNK_TEMP_GLOB = "~nslnk-*.tmp"
 
 
 def update_shortcut(
     runner: Runner, lnk: Path, arguments: str, *, workdir: Path | None = None, icon: Path | None = None
 ) -> RunResult:
     """Change the arguments of an existing .lnk (and its working folder and icon when given); everything
-    else it holds stays: its name, target, description and toast identity. The result says why not.
+    else it holds stays: its name, target, description and toast identity. The result says why not. The
+    file is swapped in whole (a temp file beside it, then a rename over it); a read-only or held shortcut
+    is refused and stays as it was.
 
     Only through IShellLinkW: WScript.Shell goes through the ANSI code page and would save a path with other
     characters wrong, which is worse than leaving the shortcut as it is.
     """
+    refuse_real_desktop(runner, lnk, "change a shortcut")
     script = "\n".join([
         "$ErrorActionPreference = 'Stop'",
         "Add-Type -TypeDefinition @'",
@@ -199,6 +258,7 @@ def create_shortcut(
 
     Unicode-safe through IShellLinkW; falls back to WScript.Shell when the compiled helper is unavailable.
     """
+    refuse_real_desktop(runner, lnk, "create a shortcut")
     icon_arg = ps_quote(str(icon)) if icon is not None else ""
     icon_part = f"$s.IconLocation = '{ps_quote(str(icon))},0'; " if icon is not None else ""
     script = "\n".join([
@@ -389,6 +449,7 @@ def get_shortcut_aumid_script(lnk: Path) -> str:
 
 def set_shortcut_aumid(runner: Runner, lnk: Path, aumid: str) -> bool:
     """Stamp ``aumid`` on a shortcut. True on success; False leaves the shortcut as it was."""
+    refuse_real_desktop(runner, lnk, "change a shortcut")
     res = run_ps(
         runner, set_shortcut_aumid_script(lnk, aumid), tag="ps:aumid-shortcut",
         meta={"lnk": str(lnk), "aumid": aumid}, timeout=120,

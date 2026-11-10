@@ -7,26 +7,33 @@ the launchers directly (after an interrupted update they only flash a window) an
 newly placed program folder does it too, in a thread that never delays or stops the engine:
 
 1. the script: copied from the program folder unless the one in the home has a higher format number;
-2. the shortcuts on the Desktop that start a launcher of THIS install directly are pointed at the script,
-   each under its own name, icon and working folder. A shortcut of another install that exists, or whose
-   drive is not there, is never touched; one whose install folder was deleted is pointed at this install,
-   and a morning note says so once;
-3. the nightly task, when it is this install's and enabled, is registered again at its own time, so its
-   action runs through the script (`schedule.refresh_action`).
+2. the shortcuts on the Desktop that start a launcher of THIS install's home directly are pointed at the
+   script, each under its own name, icon and working folder. A shortcut that points at any other home is
+   never touched: another install that exists, one that was deleted, a drive that is not there (or whose
+   letter another drive took). Nothing is created and nothing is taken over;
+3. the nightly task, when it is this install's and enabled, gets the action that runs through the script;
+   its time, logon type and settings stay (`schedule.refresh_action`).
+
+Before all that, at EVERY engine start (also when the three steps are done): a night the launch script
+counted as missed is cleared (`_clear_missed`: one morning note, the Desktop note removed, the count
+removed), by the script itself, so there is one implementation and one starter at a time. The Desktop note
+says it goes "the next time Nightshift starts", and setup's Open dashboard, `ns up` and the restart after
+an update start the engine without the script.
 
 The order matters: what calls the script never exists before the script. Every step is safe to repeat. The
 marker `<home>/run/launch-reach.json`, written last, says which program folder this was done for and what
 failed; a failure is tried again at every engine start and shown by `ns doctor` (row "launch script"). It
 is not a morning note: nothing is broken while the program folder is there.
 
-A test run never asks Windows for the real Desktop: `run` refuses when it would (`RealMachineUnderTest`).
+A test run never asks Windows for the real Desktop: `run` refuses when it would (`RealMachineUnderTest`),
+and so do the calls below it (`winenv.desktop_dir`, `update_shortcut`). A dev install never touches the
+Desktop either: its shortcuts are left as they are (`ns_common.devmode.is_dev`).
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
-import os
 import threading
 from collections.abc import Callable
 from datetime import datetime
@@ -35,15 +42,19 @@ from typing import Any
 
 from ns_common import first_start
 from ns_common.atomic import read_text_retry, write_text_atomic
+from ns_common.devmode import is_dev
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.singleton import AlreadyRunning, FileLock
-from ns_supervisor import notify, schedule
+from ns_supervisor import schedule
 from ns_supervisor.testguard import RealMachineUnderTest, under_test
 
 MARKER_NAME = "launch-reach.json"
 ROW = "launch script"
-ICON_RELATIVE = Path("ns_dashboard") / "static" / "brand" / "nightshift.ico"
+#: The launch script's count of nights the nightly run could not start (`installer/launch.ps1`).
+MISSED_NAME = "launch-missed.json"
+#: The script format that knows `-Cleanup`.
+CLEANUP_SCHEMA = 3
 FAILED = "failed: "
 
 
@@ -76,11 +87,6 @@ def run(
     from installer.stage2.runner import SubprocessRunner
 
     log = log or NsLogger("launch_reach", paths.logs)
-    stamp = first_start.install_stamp(app)
-    old = read_marker(paths)
-    current = so.stub_schema(paths.home / so.STUB_NAME) >= so.stub_schema(app / so.STUB_SOURCE)
-    if old.get("stamp") == stamp and not old.get("failed") and current:
-        return old
     runner = runner or SubprocessRunner()
     if desktop is None and under_test() and isinstance(runner, SubprocessRunner):
         raise RealMachineUnderTest(
@@ -88,6 +94,12 @@ def run(
             "Desktop and rewrite the shortcuts on it; this is refused under pytest. Pass desktop= (a folder "
             "under tmp_path) or a stand-in runner."
         )
+    _clear_missed(paths, app, desktop, runner, so, log)
+    stamp = first_start.install_stamp(app)
+    old = read_marker(paths)
+    current = so.stub_schema(paths.home / so.STUB_NAME) >= so.stub_schema(app / so.STUB_SOURCE)
+    if old.get("stamp") == stamp and not old.get("failed") and current:
+        return old
     marker_file(paths).parent.mkdir(parents=True, exist_ok=True)
     lock = FileLock(paths.home / "run" / "shortcuts.lock")
     try:
@@ -104,6 +116,28 @@ def run(
     level = log.warn if marker["failed"] else log.info
     level("launch_reach", f"stub {marker['stub']}; task {marker['task'] or 'not looked at'}", **marker)
     return marker
+
+
+def _clear_missed(paths: Paths, app: Path, desktop: Path | None, runner: Any, so: Any, log: NsLogger) -> None:
+    """The program runs (this is its engine), so a night the launch script counted is over: let the script
+    clear it. Nothing is started when there is no count. The script holds the count's file open while it
+    works, so a shortcut, the nightly task and this start never clear the same night twice; it writes the
+    morning note first and removes the count last, so a failure or a kill keeps the count for the next
+    start. Never raises: the three steps of the reach do not depend on it."""
+    if not (paths.home / "run" / MISSED_NAME).is_file():
+        return
+    try:
+        stub = so.install_stub(app, paths.home)
+    except OSError:
+        stub = paths.home / so.STUB_NAME
+    if stub is None or so.stub_schema(stub) < CLEANUP_SCHEMA:
+        log.warn("launch_missed_kept", f"no launch script that can clear it ({stub}); a shortcut start will")
+        return
+    argv = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
+    argv += ["-File", str(stub), "-Cleanup"] + (["-DesktopDir", str(desktop)] if desktop is not None else [])
+    res = runner.run(argv, tag="ps:launch-cleanup", timeout=120)
+    said = _why(res.text)
+    (log.info if res.ok and said == "cleared" else log.warn)("launch_missed_cleanup", said)
 
 
 def _reach(paths: Paths, app: Path, stamp: str, desktop: Path | None, runner: Any, so: Any) -> dict[str, Any]:
@@ -135,6 +169,9 @@ def _shortcuts(
 ) -> None:
     from installer.stage2 import winenv
 
+    if is_dev(paths):           # a dev install never changes the Desktop of the PC it is developed on
+        marker["desktop"] = "dev install: shortcuts left as they are"
+        return
     try:
         folder = desktop or winenv.desktop_dir(runner)
         if folder is None or not folder.is_dir():
@@ -146,56 +183,38 @@ def _shortcuts(
         return
     marker["desktop"] = str(folder)
     states: dict[str, str] = marker["shortcuts"]
-    icon = app / ICON_RELATIVE
-    taken: dict[str, list[str]] = {}
-    try:
-        for lnk in links:
-            try:
-                have = so.read_lnk(lnk)
-            except ValueError:
-                states[lnk.name] = so.FOREIGN
-                continue
-            except OSError as e:    # held by another program: one of setup's own names counts as not done
-                ours = lnk.name.lower().startswith("nightshift")
-                states[lnk.name] = (FAILED if ours else "unread: ") + _why(e)
-                continue
-            who, found = so.owner(have.arguments, paths.home, app), so.parse(have.arguments)
-            if found is None or who not in (so.MINE, so.GONE):
-                states[lnk.name] = who
-                continue
-            if who == so.MINE and so.is_stub_form(have.arguments, paths.home):
-                states[lnk.name] = "ok"
-                continue
-            launcher: Path | str = found[0]
-            extra: dict[str, Any] = {}
-            if who == so.GONE:      # its install folder was deleted: it becomes a shortcut of this install
-                mine = app / "launchers" / os.path.basename(found[0])
-                if not mine.is_file():      # a launcher this program does not have: nothing to point it at
-                    states[lnk.name] = "left"
-                    continue
-                launcher, extra = mine, {"workdir": paths.home, "icon": icon if icon.is_file() else None}
-            arguments = so.arguments_for(launcher, stub)
-            res = winenv.update_shortcut(runner, lnk, arguments, **extra)
-            try:
-                took = res.ok and so.read_lnk(lnk).arguments == arguments
-            except (OSError, ValueError):
-                took = False
-            if not took:
-                why = res.text if not res.ok else "the shortcut did not take the change"
-                states[lnk.name] = FAILED + _why(why)
-            elif who == so.GONE:
-                states[lnk.name] = "taken"
-                taken.setdefault(str(so.opens_home(have.arguments)), []).append(lnk.stem)
-            else:
-                states[lnk.name] = "done"
-    finally:
-        for gone, names in taken.items():
-            with contextlib.suppress(OSError):
-                notify.leave_note(
-                    paths, "Nightshift",
-                    f"The Desktop shortcuts {', '.join(names)} opened a Nightshift folder that no longer "
-                    f"exists ({gone}); they now open this Nightshift ({paths.home}).",
-                )
+    for left in folder.glob(winenv.LNK_TEMP_GLOB):      # a change that lost power before its rename
+        with contextlib.suppress(OSError):
+            left.unlink()
+    for lnk in links:
+        try:
+            have = so.read_lnk(lnk)
+        except ValueError:
+            states[lnk.name] = so.FOREIGN
+            continue
+        except OSError as e:    # held by another program: one of setup's own names counts as not done
+            ours = lnk.name.lower().startswith("nightshift")
+            states[lnk.name] = (FAILED if ours else "unread: ") + _why(e)
+            continue
+        # only a shortcut that starts a launcher in THIS home: any other home's is its own install's
+        who, found = so.owner(have.arguments, paths.home), so.parse(have.arguments)
+        if found is None or who != so.MINE:
+            states[lnk.name] = who
+            continue
+        if so.is_stub_form(have.arguments, paths.home):
+            states[lnk.name] = "ok"
+            continue
+        if not Path(found[0]).is_file():    # a launcher this program no longer has: the script could only
+            states[lnk.name] = "left"       # say "the program folder is missing", which would be untrue
+            continue
+        arguments = so.arguments_for(found[0], stub)
+        res = winenv.update_shortcut(runner, lnk, arguments)
+        try:
+            took = res.ok and so.read_lnk(lnk).arguments == arguments
+        except (OSError, ValueError):
+            took = False
+        why = res.text if not res.ok else "the shortcut did not take the change"
+        states[lnk.name] = "done" if took else FAILED + _why(why)
     if any(state.startswith(FAILED) for state in states.values()):
         marker["failed"].append("shortcuts")
 

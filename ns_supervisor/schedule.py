@@ -164,6 +164,21 @@ def build_install_script(
     )
 
 
+def build_action_script(paths: Paths, task_name: str = TASK_NAME) -> str:
+    """PowerShell that gives the existing task the action `action_arguments` builds and changes nothing
+    else: `Set-ScheduledTask -Action` keeps its trigger, its logon type (the principal) and its settings,
+    where registering it again would have to state them anew."""
+    return "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            f"$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument {_q(action_arguments(paths))} "
+            f"-WorkingDirectory {_q(str(paths.home))}",
+            f"Set-ScheduledTask -TaskName {_q(task_name)} -Action $action | Out-Null",
+            "Write-Output 'action set'",
+        ]
+    )
+
+
 def build_remove_script(task_name: str = TASK_NAME) -> str:
     """PowerShell that unregisters the task if it exists."""
     return "\n".join(
@@ -233,13 +248,15 @@ class TaskState:
     """What Windows has for the task now: switched on or off, the clock time of its daily trigger, whether
     it runs only while the owner is signed in (None when Windows did not say), and the install folder its
     action names (`home`; None when the action does not say, as in a task made by hand), and whether the
-    action starts the run through the launch script (`stub`; 0.1.14's action did not)."""
+    action starts the run through the launch script (`stub`; 0.1.14's action did not). `logon` is the logon
+    type as Windows names it (S4U, Interactive, Password, ...; None when it did not say)."""
 
     enabled: bool
     run_time: str | None
     interactive: bool | None = None
     home: str | None = None
     stub: bool = False
+    logon: str | None = None
 
 
 #: `2026-11-09T04:15:00`; `Z` or `+02:00` follows the seconds when the trigger synchronizes across time zones.
@@ -313,6 +330,7 @@ def parse_task_state(out: str, local_tz: tzinfo | None = None) -> TaskState | No
     interactive: bool | None = None
     home: str | None = None
     stub = False
+    logon: str | None = None
     for line in out.splitlines():
         key, _, value = line.partition(":")
         if key.strip() == "error":
@@ -322,7 +340,8 @@ def parse_task_state(out: str, local_tz: tzinfo | None = None) -> TaskState | No
         elif key.strip() == "start":
             run_time = _local_clock(value, local_tz)
         elif key.strip() == "logon" and value.strip():
-            interactive = value.strip().lower() in SIGNED_IN_ONLY_LOGONS
+            logon = value.strip()
+            interactive = logon.lower() in SIGNED_IN_ONLY_LOGONS
         elif key.strip() in ("args", "args64"):
             if key.strip() == "args64":
                 try:
@@ -334,7 +353,7 @@ def parse_task_state(out: str, local_tz: tzinfo | None = None) -> TaskState | No
             stub = is_stub_action(value)
     if not state:
         return None
-    return TaskState(state.lower() != "disabled", run_time, interactive, home or None, stub)
+    return TaskState(state.lower() != "disabled", run_time, interactive, home or None, stub, logon)
 
 
 #: The install folder inside the action `build_install_script` writes (0.1.14 wrote it the same way).
@@ -995,10 +1014,14 @@ def refresh_action(paths: Paths, app_path: Path, *, log: NsLogger | None = None)
     that an older updater installed: `ns_supervisor.launch_reach`). True when the task was registered again.
 
     Nothing is touched, and False, for: no task, a disabled one (the owner's or a dev install's), one that
-    runs another Nightshift folder or does not say which, and one whose action is this one already. The
-    registration is `_switch_on`: under the schedule lock, at the task's own time, read back and recorded;
-    Windows is asked for the unattended mode first, as at every registration. `ScheduleError` when the task
-    cannot be read, Windows refuses, or the action read back is still the old one: the task is as it was.
+    runs another Nightshift folder or does not say which, and one whose action is this one already.
+
+    Only the action is set (`build_action_script`), under the schedule lock; the task is not registered
+    again, so its time, its logon type and its settings are not this code's to state. Then the task is read
+    back and compared with what was read before: still enabled, the same time, the same logon type, the
+    new action. `ScheduleError` when the task cannot be read, Windows refuses (the task is as it was), or
+    the task read back differs in anything but the action (the message names what; the record follows
+    what Windows has).
     """
     if is_dev(paths):
         return False
@@ -1007,12 +1030,25 @@ def refresh_action(paths: Paths, app_path: Path, *, log: NsLogger | None = None)
         before = read_task()
         if before is None or not before.enabled or before.stub or task_owner(paths, before) != MINE:
             return False
-        when = before.run_time or read_run_time(paths) or DEFAULT_TIME
-        _switch_on(paths, when, app_path, log, before)
+        _run(build_action_script(paths))
         after = read_task()
         if after is None or not after.stub:
-            raise ScheduleError(f"Windows registered '{TASK_NAME}' again; its action is still the old one")
-        log.info("schedule_action_refreshed", f"'{TASK_NAME}' now starts through the launch script", at=when)
+            raise ScheduleError(f"Windows took the new action of '{TASK_NAME}'; the old one is still there")
+        changed = [
+            f"{what} was {was} and is {now}"
+            for what, was, now in (
+                ("the time", before.run_time, after.run_time),
+                ("the logon type", before.logon, after.logon),
+                ("switched on", before.enabled, after.enabled),
+            )
+            if was != now
+        ]
+        if changed:
+            _record(paths, after, log)
+            raise ScheduleError(
+                f"'{TASK_NAME}' has the new action, but more than its action changed: {'; '.join(changed)}"
+            )
+        log.info("schedule_action_refreshed", f"'{TASK_NAME}' now starts through the launch script")
         return True
 
 
