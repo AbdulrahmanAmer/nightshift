@@ -117,8 +117,8 @@ since 0.1.14; each "Not covered" line is a limit the change shipped with.
   off touched no task; `ns verify --quick` passed with the task unchanged); switching on, deleting the task by hand,
   an update and a rollback were not run, because they need an engine-test install, and nothing was tried on a real
   Task Scheduler with the switch. When Windows accepts a change but `config\schedule.json` cannot be written, every
-  page says off (or the old time) while Windows runs the new one, until the file can be written again; the Settings
-  switch is read when the page opens and can stay stale until it is opened again, and there is no browser test of it;
+  page says off (or the old time) while Windows runs the new one, until the file can be written again; there is no
+  browser test of the Settings switch;
   0.1.14's own updater still re-enables a disabled task if the one `ns verify --quick` look it calls fails.
 - An update saves a copy of the settings files it may rewrite (engine settings, setup answers, install state, the
   nightly time, dashboard settings, channels, formats) as `<folder>.prev-config.zip`, and `ns update --rollback`
@@ -169,10 +169,11 @@ since 0.1.14; each "Not covered" line is a limit the change shipped with.
   restarted for you while it stays held; a job or night whose owner record is missing or cannot be read no longer
   stays held for ever (see the next entry).
 - Work whose lock file cannot be opened is held for at most an hour, not for ever (lock-bound,
-  `ns_studio/ownership.py`). It stays "running" only while the process that started it is provably still running: a
-  process that started after the work was recorded is not its owner, a process number Windows reports as holding the
-  lock file counts as the owner whatever the clocks say (the Restart Manager answer is kept for a minute and no other
-  program is named), and NS-W117 says so as before. In every other case the hold ends: three failed looks in a row
+  `ns_studio/ownership.py`). It stays "running" while its process is running and is not shown to be another
+  program: a process that started after the work was recorded is not its owner, a process number Windows reports as
+  holding the lock file counts as the owner whatever the clocks say (the Restart Manager answer is kept for a minute),
+  and a running process whose start time cannot be read is held too, without proof: its NS-W117 note says the process
+  may be another program and does not tell you to end it. In every other case the hold ends: three failed looks in a row
   once the process is gone, or an hour after the work was last known to start (a record with no start time counts from
   when its record or lock file was last written). You get one morning note with NS-W118 ("Nightshift cannot tell
   whether this work is still running, and no process is known to be running it"), and after the hour the work counts
@@ -368,7 +369,11 @@ since 0.1.14; each "Not covered" line is a limit the change shipped with.
   job" and starts by itself, in its turn, after Resume. A video being made stops before its next step (the step under
   way is finished first; Cancel stops at once), keeps what it made and continues from that step after the resume; a
   Create request for several videos keeps the ones still owed (the status says, for example, "(3 videos still to make,
-  the first one half made)") and makes none twice. Retry and the Assistant's resume are refused for a paused channel
+  the first one half made)") and makes none twice. Retry changed for every Create request for several videos, paused
+  or not: Retry on a failed request now also makes the videos of that request that had not started (a request for
+  five that failed in the second gives four videos of work, not one), once; a second Retry of the same request is
+  refused, and the message after pressing Retry says how many videos it will make. Retry and the Assistant's
+  resume are refused for a paused channel
   ("'<channel>' is paused. Resume it first."). `studio run --channel <it>` and `studio run --resume <its job>` refuse
   with the new NS-E330 ("The channel is paused.") and start nothing; a run of every channel leaves it out; a pause
   typed while a `studio run` works stops it before its next step, recorded failed with NS-E330, and the terminal
