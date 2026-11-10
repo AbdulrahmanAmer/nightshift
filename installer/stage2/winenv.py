@@ -9,7 +9,8 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from installer.stage2.runner import Runner, RunResult
+import ns_common.testguard as testguard
+from installer.stage2.runner import Runner, RunResult, SubprocessRunner
 
 HOME_VAR = "NIGHTSHIFT_HOME"
 
@@ -76,6 +77,8 @@ def get_user_env(runner: Runner, name: str) -> str | None:
 
 def desktop_dir(runner: Runner) -> Path | None:
     """The current user's Desktop folder (follows OneDrive redirection); exact for non-ASCII paths."""
+    if isinstance(runner, SubprocessRunner):    # a stand-in runner starts nothing and is let through
+        testguard.refuse_real_shortcut(None)    # a test run never asks Windows where the real Desktop is
     text = eval_ps_text(runner, "[Environment]::GetFolderPath('Desktop')", tag="ps:desktop")
     return Path(text) if text else None
 
@@ -147,8 +150,64 @@ public static class NsLink
         }
         finally { Marshal.ReleaseComObject(link); }
     }
+
+    public static void Update(string lnk, string args, string workdir, string icon)
+    {
+        // The changed link is saved beside the shortcut and then swapped over it (File.Replace): a power
+        // cut leaves the old shortcut or the new one, never a torn file. The temp file is removed on failure.
+        string tmp = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(lnk),
+            "~nslnk-" + System.Diagnostics.Process.GetCurrentProcess().Id + ".tmp");
+        IShellLinkW link = (IShellLinkW)new ShellLinkObject();
+        try
+        {
+            ((IPersistFile)link).Load(lnk, 0);
+            link.SetArguments(args);
+            if (!string.IsNullOrEmpty(workdir)) { link.SetWorkingDirectory(workdir); }
+            if (!string.IsNullOrEmpty(icon)) { link.SetIconLocation(icon, 0); }
+            ((IPersistFile)link).Save(tmp, false);
+            System.IO.File.Replace(tmp, lnk, null);
+        }
+        finally
+        {
+            Marshal.ReleaseComObject(link);
+            if (System.IO.File.Exists(tmp)) { System.IO.File.Delete(tmp); }
+        }
+    }
 }
 """
+
+
+#: The temp file `update_shortcut` saves beside a shortcut before the swap (left only by a power cut).
+LNK_TEMP_GLOB = "~nslnk-*.tmp"
+
+
+def update_shortcut(
+    runner: Runner, lnk: Path, arguments: str, *, workdir: Path | None = None, icon: Path | None = None
+) -> RunResult:
+    """Change the arguments of an existing .lnk (and its working folder and icon when given); everything
+    else it holds stays: its name, target, description and toast identity. The result says why not. The
+    file is swapped in whole (a temp file beside it, then a rename over it); a read-only or held shortcut
+    is refused and stays as it was.
+
+    Only through IShellLinkW: WScript.Shell goes through the ANSI code page and would save a path with other
+    characters wrong, which is worse than leaving the shortcut as it is.
+    """
+    testguard.refuse_real_shortcut(lnk)     # the same refusal as create_shortcut: one guard, one list
+    script = "\n".join([
+        "$ErrorActionPreference = 'Stop'",
+        "Add-Type -TypeDefinition @'",
+        _SHELL_LINK_CSHARP,
+        "'@",
+        f"[NsLink]::Update('{ps_quote(str(lnk))}', '{ps_quote(arguments)}', "
+        f"'{ps_quote(str(workdir)) if workdir is not None else ''}', "
+        f"'{ps_quote(str(icon)) if icon is not None else ''}')",
+    ])
+    meta = {"lnk": str(lnk), "arguments": arguments}
+    if workdir is not None:
+        meta["workdir"] = str(workdir)
+    if icon is not None:
+        meta["icon"] = str(icon)
+    return run_ps(runner, script, tag="ps:shortcut-update", meta=meta, timeout=120)
 
 
 def create_shortcut(
@@ -159,6 +218,7 @@ def create_shortcut(
 
     Unicode-safe through IShellLinkW; falls back to WScript.Shell when the compiled helper is unavailable.
     """
+    testguard.refuse_real_shortcut(lnk)     # a test run writes no shortcut into a real Desktop or Start menu
     icon_arg = ps_quote(str(icon)) if icon is not None else ""
     icon_part = f"$s.IconLocation = '{ps_quote(str(icon))},0'; " if icon is not None else ""
     script = "\n".join([
@@ -349,6 +409,7 @@ def get_shortcut_aumid_script(lnk: Path) -> str:
 
 def set_shortcut_aumid(runner: Runner, lnk: Path, aumid: str) -> bool:
     """Stamp ``aumid`` on a shortcut. True on success; False leaves the shortcut as it was."""
+    testguard.refuse_real_shortcut(lnk)
     res = run_ps(
         runner, set_shortcut_aumid_script(lnk, aumid), tag="ps:aumid-shortcut",
         meta={"lnk": str(lnk), "aumid": aumid}, timeout=120,

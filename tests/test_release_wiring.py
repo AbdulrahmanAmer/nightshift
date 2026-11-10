@@ -439,7 +439,7 @@ def _github_api(requests: list[str]):
     return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
 
 
-def test_a_prerelease_is_not_offered_as_the_update():
+def test_a_prerelease_is_not_offered_as_the_update(tmp_home: Path):  # the check reads the install's home
     from ns_supervisor import releases
 
     requests: list[str] = []
@@ -450,7 +450,7 @@ def test_a_prerelease_is_not_offered_as_the_update():
     assert requests == ["/repos/AbdulrahmanAmer/nightshift/releases/latest"]
 
 
-def test_a_prerelease_or_draft_answered_as_the_latest_release_is_refused():
+def test_a_prerelease_or_draft_answered_as_the_latest_release_is_refused(tmp_home: Path):
     # the guard is in the code, not in the endpoint: if /releases/latest ever returned a candidate (or a
     # draft), `ns update --check`, `--github`, the stable git channel and the dashboard would offer it.
     import httpx

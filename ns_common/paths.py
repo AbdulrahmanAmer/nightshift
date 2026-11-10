@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+import ns_common.testguard as testguard
+
 # Folder under models/tts that holds the PyTorch (reference engine) safetensors checkouts. The installer
 # downloads there (installer/stage2/fallback.py) and ns_tts.engine reads there: one constant, both sides.
 TTS_HF_SUBDIR = "hf"
@@ -27,9 +29,12 @@ class Paths:
         e = os.environ if env is None else env
         raw = e.get("NIGHTSHIFT_HOME")
         if raw:
-            return cls(Path(raw))
-        local = e.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        return cls(Path(local) / "Nightshift")
+            home = Path(raw)
+        else:
+            local = e.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+            home = Path(local) / "Nightshift"
+        testguard.refuse_real_home(home)    # a test run never uses the owner's real home; no-op otherwise
+        return cls(home)
 
     # --- directories ---
     @property

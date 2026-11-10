@@ -50,7 +50,7 @@ from ns_common.models import Channel, InstallState, Runtime
 from ns_common.paths import Paths
 from ns_common.uv import find_uv, home_uv, uv_env
 from ns_common.venv_extras import DEV_VENV_EXTRAS, NO_DEPS, VENV_EXTRAS, extras_suffix
-from ns_supervisor.childenv import child_env
+from ns_supervisor.childenv import child_env, window_flags
 
 PRESERVE = (".git", "config", "answers.json")
 RELEASE_NOTES_MAX = 20000       # keeps the dashboard's state file small whatever a changelog holds
@@ -235,6 +235,7 @@ def git_untracked(app: Path) -> list[str]:
             timeout=60,
             check=False,
             env=child_env(),
+            creationflags=window_flags(),
         )
     except (OSError, subprocess.SubprocessError):
         return []
@@ -1299,7 +1300,8 @@ def resync_venvs(
 def _run(cmd: list[str], env: dict[str, str] | None = None) -> tuple[int, str]:
     try:
         r = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=1800, check=False, env=child_env(env)
+            cmd, capture_output=True, text=True, timeout=1800, check=False, env=child_env(env),
+            creationflags=window_flags(),
         )
     except (OSError, subprocess.SubprocessError) as e:
         return 1, str(e)
@@ -1318,6 +1320,7 @@ def verify_quick(app: Path, python: str | None = None) -> bool:
         cwd=str(app),
         check=False,
         env=child_env(),
+        creationflags=window_flags(),   # a terminal: 0, its lines are seen; the update worker: no window
     )
     return r.returncode == 0
 
@@ -1338,7 +1341,7 @@ def _git_run(app: Path) -> GitRun:
         try:
             r = subprocess.run(
                 [exe, "-C", str(app), *args], capture_output=True, text=True, timeout=900, check=False,
-                env=child_env(),
+                env=child_env(), creationflags=window_flags(),
             )
         except (OSError, subprocess.SubprocessError) as e:
             return 1, str(e)

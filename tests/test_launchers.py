@@ -1,14 +1,18 @@
 import json
+import os
+import shutil
 import subprocess
 import sys
 import threading
 from collections.abc import Iterator
+from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
 
-from ns_supervisor import pwsh
+from ns_common.paths import Paths
+from ns_supervisor import notify, pwsh, schedule
 
 LAUNCHERS = Path(__file__).resolve().parents[1] / "launchers"
 EXPECTED = {
@@ -1081,7 +1085,7 @@ def test_the_shortcut_script_says_what_to_do_when_the_program_folder_is_missing(
     proc = _run_stub(home / "app" / "launchers" / "nightshift-dashboard.ps1")
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert "Nightshift cannot start: its program folder is missing or incomplete." in proc.stdout
-    assert "Run INSTALL.cmd from the Nightshift zip" in proc.stdout
+    assert "Run INSTALL.cmd from a Nightshift zip of version 0.1.15 or later" in proc.stdout
     assert f"The program is waiting in {home / 'app.swap'}" in proc.stdout
     assert proc.stderr.strip() == ""
 
@@ -1103,3 +1107,217 @@ def test_the_shortcut_script_keeps_the_rules_of_every_ps1() -> None:
     text = raw.decode("ascii")  # ASCII only
     assert "Set-StrictMode -Version Latest" in text and "$ErrorActionPreference = 'Stop'" in text
     assert "Invoke-Expression" not in text and "python" not in text.lower()
+
+
+# ---- card launcher-reach: the nightly task runs through the same script, and a missed night is said ----
+# Every run here is a test run (NS_UNDER_TEST is inherited): the script shows no toast, and writes its
+# Desktop note only into the folder -DesktopDir names.
+HARD = "Jo's Nightshift (2) ليلة"
+NOTE = "Nightshift did not run.txt"
+TODAY = date.today().isoformat()
+
+
+def _home(tmp_path: Path, *, app: bool = True) -> Path:
+    """An install home with the script beside the program folder, as setup and the first start leave it."""
+    home = tmp_path / HARD
+    for name in ("config", "run", "logs"):
+        (home / name).mkdir(parents=True)
+    shutil.copy(STUB, home / "nightshift-launch.ps1")
+    if app:
+        (home / "app" / "ns_studio").mkdir(parents=True)
+        (home / "app" / "ns_studio" / "cli.py").write_text("", encoding="ascii")
+    return home
+
+
+def _studio(tmp_path: Path) -> Path:
+    """A stand-in for studio.exe: it notes that it was asked for the nightly run of the right home; exit 5."""
+    cmd = tmp_path / "studio.cmd"
+    line = 'if "%~1 %~2"=="run --daily" if exist "%NIGHTSHIFT_HOME%\\config" echo seen>"%~dp0seen.txt"'
+    cmd.write_bytes(f"@echo off\r\n{line}\r\nexit /b 5\r\n".encode("ascii"))
+    return cmd
+
+
+def _stub(home: Path, *args: object) -> "subprocess.CompletedProcess[str]":
+    exe = pwsh.find_powershell()
+    assert exe is not None
+    script = str(home / "nightshift-launch.ps1")
+    argv = [exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, *(str(a) for a in args)]
+    env = {**os.environ, "NIGHTSHIFT_HOME": str(home)}
+    return subprocess.run(argv, input="\n", capture_output=True, text=True, timeout=120, env=env)
+
+
+def _lines(home: Path) -> list[dict]:
+    out: list[dict] = []
+    for f in sorted((home / "logs").glob("launch-*.jsonl")):
+        raw = f.read_bytes()
+        assert not raw.startswith(b"\xef\xbb\xbf")       # UTF-8 without a byte order mark, like every log
+        out += [json.loads(line) for line in raw.decode("utf-8").splitlines()]
+    return out
+
+
+def _missed(home: Path) -> dict:
+    return json.loads((home / "run" / "launch-missed.json").read_text(encoding="utf-8-sig"))
+
+
+@needs_powershell
+def test_the_nightly_switch_runs_studio_and_passes_its_exit_code(tmp_path: Path) -> None:
+    home, studio = _home(tmp_path), _studio(tmp_path)
+    proc = _stub(home, "-Nightly", "-Studio", studio)
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    assert (tmp_path / "seen.txt").exists()              # `run --daily`, with the home in its environment
+    assert _lines(home) == [] and not (home / "run" / "launch-missed.json").exists()
+
+
+@needs_powershell
+def test_the_nightly_switch_without_the_program_folder_tells_the_owner_each_night(tmp_path: Path) -> None:
+    home, studio, desk = _home(tmp_path, app=False), _studio(tmp_path), tmp_path / "Desk"
+    (home / "app.swap").mkdir()
+    desk.mkdir()
+    proc = _stub(home, "-Nightly", "-Studio", studio, "-DesktopDir", desk)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert not (tmp_path / "seen.txt").exists()
+    (line,) = _lines(home)
+    assert (line["level"], line["component"]) == ("WARN", "launch")
+    assert line["data"] == {
+        "code": "NS-W209", "home": str(home), "first": TODAY, "last": TODAY, "nights": 1, "what": "folder",
+        "toast": "test-run", "desktop_note": "written",
+    }
+    assert _missed(home) == {"first": TODAY, "last": TODAY, "nights": 1, "what": "folder"}
+    note = (desk / NOTE).read_text(encoding="utf-8-sig")
+    assert note.splitlines()[0] == (
+        f"Nightshift could not start its nightly run on {TODAY} (1 night so far, the first on {TODAY}). "
+        "(NS-W209)"
+    )
+    assert f"Its program folder {home}\\app is missing or incomplete." in note
+    assert f"The program is waiting in {home}\\app.swap and nothing in it was deleted." in note
+    assert "2. Run INSTALL.cmd from a Nightshift zip of version 0.1.15 or later and choose the same" in note
+    assert f"folder ({home}). Setup puts the program folder back." in note
+    assert "this file is removed the next time Nightshift starts" in note
+    assert "disable 'Nightshift Daily' in Task Scheduler" in note and "move it back" not in note
+    # the next night: the record of the night before is there (also when the run was killed before its note)
+    before = (date.today() - timedelta(days=1)).isoformat()
+    record = home / "run" / "launch-missed.json"
+    night = {"first": before, "last": before, "nights": 1, "what": "folder"}
+    record.write_text(json.dumps(night), encoding="ascii")
+    (desk / NOTE).unlink()
+    assert _stub(home, "-Nightly", "-Studio", studio, "-DesktopDir", desk).returncode == 1
+    assert len(_lines(home)) == 2 and _missed(home) == {**night, "last": TODAY, "nights": 2}
+    assert (desk / NOTE).read_text(encoding="utf-8-sig").splitlines()[0] == (
+        f"Nightshift could not start its nightly run on {TODAY} (2 nights so far, the first on {before}). "
+        "(NS-W209)"
+    )
+    # the task started twice in one night: one more log line, not one more night, still one note
+    assert _stub(home, "-Nightly", "-Studio", studio, "-DesktopDir", desk).returncode == 1
+    assert len(_lines(home)) == 3 and _missed(home)["nights"] == 2
+    assert [p.name for p in desk.iterdir()] == [NOTE]
+    # a Desktop that is not there, and a file of that name that is the owner's own: said in the log line
+    nowhere = tmp_path / "nowhere"
+    assert _stub(home, "-Nightly", "-Studio", studio, "-DesktopDir", nowhere).returncode == 1
+    assert _lines(home)[-1]["data"]["desktop_note"].startswith("failed: ")
+    (desk / NOTE).write_text("my own notes", encoding="ascii")
+    assert _stub(home, "-Nightly", "-Studio", studio, "-DesktopDir", desk).returncode == 1
+    assert (desk / NOTE).read_text(encoding="ascii") == "my own notes"
+    assert _lines(home)[-1]["data"]["desktop_note"].startswith("failed: ")
+    # the program is there and its environment is not: said as that
+    (home / "app" / "ns_studio").mkdir(parents=True)
+    (home / "app" / "ns_studio" / "cli.py").write_text("", encoding="ascii")
+    (desk / NOTE).unlink()
+    record.unlink()
+    no_exe = home / "venvs" / "studio.exe"
+    assert _stub(home, "-Nightly", "-Studio", no_exe, "-DesktopDir", desk).returncode == 1
+    assert _missed(home)["what"] == "environment"
+    assert "Its program environment is missing or incomplete" in (desk / NOTE).read_text("utf-8-sig")
+
+
+@needs_powershell
+def test_the_first_start_with_the_program_back_leaves_one_morning_note_and_clears_the_rest(
+    tmp_path: Path,
+) -> None:
+    home, desk = _home(tmp_path, app=False), tmp_path / "Desk"
+    desk.mkdir()
+    assert _stub(home, "-Nightly", "-Studio", _studio(tmp_path), "-DesktopDir", desk).returncode == 1
+    launcher = home / "app" / "launchers" / "x.ps1"
+    launcher.parent.mkdir(parents=True)                  # setup put the program folder back
+    body = "Add-Content -LiteralPath (Join-Path $PSScriptRoot 'ran.txt') -Value 'x'\r\nexit 0\r\n"
+    launcher.write_text(body, encoding="ascii")
+    # the note cannot be written: the record stays, and the launcher runs all the same
+    blocked = home / "run" / "morning_note.json"
+    blocked.mkdir()
+    proc = _stub(home, "-Launcher", launcher, "-DesktopDir", desk)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (home / "run" / "launch-missed.json").exists() and (desk / NOTE).exists()
+    blocked.rmdir()
+    assert _stub(home, "-Launcher", launcher, "-DesktopDir", desk).returncode == 0
+    said = (
+        f"Nightshift did not run on 1 night, from {TODAY} to {TODAY}: its program folder was missing until "
+        f"it was put back on {TODAY}."
+    )
+    assert [n["message"] for n in notify.read_notes(Paths(home))] == [said]
+    assert not (desk / NOTE).exists() and not (home / "run" / "launch-missed.json").exists()
+    assert _stub(home, "-Launcher", launcher, "-DesktopDir", desk).returncode == 0
+    assert len(notify.read_notes(Paths(home))) == 1
+    assert (launcher.parent / "ran.txt").read_text(encoding="ascii").split() == ["x", "x", "x"]
+
+
+@needs_powershell
+def test_under_a_test_run_the_stub_shows_no_toast_and_writes_no_real_desktop(tmp_path: Path) -> None:
+    home = _home(tmp_path, app=False)
+    assert os.environ.get("NS_UNDER_TEST")
+    assert _stub(home, "-Nightly", "-Studio", _studio(tmp_path)).returncode == 1
+    (line,) = _lines(home)
+    assert line["data"]["toast"] == line["data"]["desktop_note"] == "test-run"
+    # a dev install never names the real Desktop either: said as that, with or without a test run
+    (home / "config" / "runtime.json").write_text(json.dumps({"dev_mode": True}), encoding="utf-8")
+    assert _stub(home, "-Nightly", "-Studio", _studio(tmp_path)).returncode == 1
+    assert _lines(home)[-1]["data"]["desktop_note"] == "dev-install"
+    desk = tmp_path / "Desk"
+    desk.mkdir()                                         # the folder a proof hands it is still written
+    assert _stub(home, "-Nightly", "-Studio", _studio(tmp_path), "-DesktopDir", desk).returncode == 1
+    assert _lines(home)[-1]["data"]["desktop_note"] == "written" and (desk / NOTE).exists()
+
+
+@needs_powershell
+def test_the_task_action_runs_under_cmd_with_a_hard_home(tmp_path: Path) -> None:
+    action = getattr(schedule, "action_arguments", None)
+    assert action is not None, "the task's action is still built inline"
+    home = _home(tmp_path, app=False)
+    # one command line, as Task Scheduler starts it (a list would be quoted again by Python)
+    proc = subprocess.run("cmd.exe " + action(Paths(home)), capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    (line,) = _lines(home)
+    assert line["data"]["code"] == "NS-W209" and line["data"]["home"] == str(home)
+
+
+@needs_powershell
+def test_without_the_stub_file_the_task_action_still_starts_studio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action = getattr(schedule, "action_arguments", None)
+    assert action is not None, "the task's action is still built inline"
+    home, studio = _home(tmp_path), _studio(tmp_path)
+    monkeypatch.setattr(schedule, "studio_exe", lambda paths: str(studio))
+    proc = subprocess.run("cmd.exe " + action(Paths(home)), capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 5 and (tmp_path / "seen.txt").exists(), proc.stdout + proc.stderr  # by the stub
+    (tmp_path / "seen.txt").unlink()
+    (home / "nightshift-launch.ps1").unlink()
+    proc = subprocess.run("cmd.exe " + action(Paths(home)), capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 5 and (tmp_path / "seen.txt").exists(), proc.stdout + proc.stderr  # as 0.1.14
+
+
+@needs_powershell
+def test_the_stub_names_the_zip_version_that_puts_the_program_back(tmp_path: Path) -> None:
+    home, desk = _home(tmp_path, app=False), tmp_path / "Desk"
+    desk.mkdir()
+    proc = _stub(home, "-Launcher", home / "app" / "launchers" / "nightshift-dashboard.ps1")
+    assert proc.returncode == 1
+    assert "Run INSTALL.cmd from a Nightshift zip of version 0.1.15 or later" in proc.stdout
+    assert "move it back" not in proc.stdout
+    (home / "app.rollback-pending.json").write_text("{}", encoding="ascii")   # an interrupted rollback, and
+    proc = _stub(home, "-Launcher", home / "app" / "launchers" / "nightshift-dashboard.ps1")   # no app.swap
+    assert "If you moved the folder app or app.swap somewhere else, move it back to " in proc.stdout
+    assert "before you run INSTALL.cmd: otherwise setup starts a fresh program folder." in proc.stdout
+    assert _stub(home, "-Nightly", "-Studio", _studio(tmp_path), "-DesktopDir", desk).returncode == 1
+    assert (
+        f"If you moved the folder app or app.swap somewhere else, move it back to {home}\\app.swap before "
+        "you run INSTALL.cmd: otherwise setup starts a fresh program folder."
+    ) in (desk / NOTE).read_text(encoding="utf-8-sig")

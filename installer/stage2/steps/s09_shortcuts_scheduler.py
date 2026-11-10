@@ -41,6 +41,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from installer.stage2 import shortcut_owner
 from installer.stage2.answers import forget_setup_input
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
@@ -52,7 +53,6 @@ from installer.stage2.winenv import (
     register_aumid,
     set_shortcut_aumid,
 )
-from ns_common.atomic import copy_atomic
 from ns_supervisor.notify import AUMID
 from ns_supervisor.schedule_cfg import remember_run_time
 
@@ -74,8 +74,8 @@ SHORTCUTS = (
 )
 
 #: The script every shortcut starts (in the program folder), and the name of its copy in the install home.
-STUB_SOURCE = Path("installer") / "launch.ps1"
-STUB_NAME = "nightshift-launch.ps1"
+STUB_SOURCE = shortcut_owner.STUB_SOURCE
+STUB_NAME = shortcut_owner.STUB_NAME
 
 #: The shortcut that carries the AppUserModelID.
 AUMID_SHORTCUT = "Nightshift Dashboard"
@@ -96,12 +96,12 @@ def wanted_shortcuts(ctx: StepContext) -> list[tuple[str, Path]]:
 
 def launch_stub(ctx: StepContext) -> Path | None:
     """Copy ``installer/launch.ps1`` to ``<home>/nightshift-launch.ps1`` and return the copy; None when this
-    build has no such file or it cannot be copied (the shortcuts then start the launchers directly)."""
-    source = ctx.app_path / STUB_SOURCE
-    if not source.is_file():
+    build has no such file or it cannot be copied (the shortcuts then start the launchers directly). A
+    copy of a higher format that a newer version left in the home is kept (`shortcut_owner.install_stub`)."""
+    if not (ctx.app_path / STUB_SOURCE).is_file():
         return None
     try:
-        return copy_atomic(source, ctx.paths.home / STUB_NAME)
+        return shortcut_owner.install_stub(ctx.app_path, ctx.paths.home)
     except OSError as e:
         ctx.ui.say(f"  could not copy {STUB_NAME} to {ctx.paths.home} ({e}); shortcuts start directly", "dim")
         return None
@@ -109,8 +109,7 @@ def launch_stub(ctx: StepContext) -> Path | None:
 
 def shortcut_arguments(launcher: Path, stub: Path | None) -> str:
     """What a shortcut passes to powershell.exe: the launcher through the stub, or the launcher itself."""
-    head = "-NoProfile -ExecutionPolicy Bypass -File"
-    return f'{head} "{stub}" -Launcher "{launcher}"' if stub is not None else f'{head} "{launcher}"'
+    return shortcut_owner.arguments_for(launcher, stub)
 
 
 def shortcut_workdir(ctx: StepContext) -> Path:

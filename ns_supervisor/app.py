@@ -26,7 +26,7 @@ from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_common.secret_file import relock_existing
 from ns_common.singleton import AlreadyRunning, FileLock
-from ns_supervisor import notify, tmpsweep, update_check
+from ns_supervisor import launch_reach, notify, tmpsweep, update_check
 from ns_supervisor.core import Supervisor, SupervisorConfig
 from ns_supervisor.health_cfg import read_health_timeout
 from ns_supervisor.scheduled import overdue_scheduled_jobs
@@ -291,6 +291,9 @@ def _serve(args: argparse.Namespace, paths: Paths) -> int:
     # F-10c: before the engine reads a settings file, an interrupted rollback is finished or undone and the
     # first start after an older updater takes the settings copy (both never raise)
     first_start.ensure(paths.config)
+    # card launcher-reach: an install an older updater brought here gets the launch script, shortcuts and a
+    # task action that go through it (a thread: it never delays or stops the engine)
+    launch_reach.start(paths, first_start.program_dir())
     try:
         runtime = load_runtime(paths)
     except NsError:

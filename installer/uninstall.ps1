@@ -212,6 +212,19 @@ if (-not $SkipSystem) {
                 Write-Host "  removed shortcut $($lnk.Name)"
             }
         }
+        # the note the launch script leaves when a nightly run could not start (installer/launch.ps1); a
+        # file of that name that does not start with the note's own first words is not Nightshift's
+        $missed = Join-Path $desktop 'Nightshift did not run.txt'
+        if (Test-Path -LiteralPath $missed -PathType Leaf) {
+            $firstLine = [string](Get-Content -LiteralPath $missed -TotalCount 1 -ErrorAction SilentlyContinue)
+            if ($firstLine.StartsWith('Nightshift could not start its nightly run on ')) {
+                if ($script:IsDry) { Show-Action "delete $missed" }
+                else {
+                    Remove-Item -LiteralPath $missed -Force -ErrorAction SilentlyContinue
+                    Write-Host "  removed $missed"
+                }
+            }
+        }
     }
 }
 
@@ -267,6 +280,9 @@ else {
     # app.swap-left-<stamp>: a third program folder a start set aside after an interrupted rollback
     # (ns_common/rollback_intent.py settle_swap); nightshift-launch.ps1 above is what the shortcuts start
     foreach ($left in @(Get-ChildItem -LiteralPath $nsHome -Directory -Filter 'app.swap-left-*' -ErrorAction SilentlyContinue)) { Remove-Tree -Path $left.FullName }
+    # app.rollback-settings-<stamp>.zip: the settings a stale rollback record held (rollback_intent.recover).
+    # run\launch-missed.json and run\launch-reach.json (the launch script's count, the reach's marker) go with run.
+    foreach ($kept in @(Get-ChildItem -LiteralPath $nsHome -File -Filter 'app.rollback-settings-*.zip' -ErrorAction SilentlyContinue)) { Remove-Tree -Path $kept.FullName }
 }
 if ($wipeModels) { Remove-Tree -Path (Join-Path $nsHome 'models') }
 if (-not $SkipSystem) {

@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Protocol
 
 from ns_common.avblock import blocked_hint, is_blocked_error
-from ns_supervisor.testguard import refuse_task_scheduler
+from ns_common.testguard import refuse_machine_writes, refuse_task_scheduler
+from ns_supervisor.childenv import window_flags
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,10 @@ class Runner(Protocol):
 class SubprocessRunner:
     """The real runner. ``capture=False`` lets the child write straight to the terminal.
 
+    A child never opens a console window of its own: in setup's console it shares that console (what it
+    prints with ``capture=False`` is seen there, as before); started by a process that has no console (the
+    engine's first-start reach) it gets ``CREATE_NO_WINDOW`` (``ns_supervisor.childenv.window_flags``).
+
     With ``bridge=True`` (the wizard talks JSON lines on its own stdout and reads commands from its stdin)
     children get no stdin and write to this process's stderr instead, so they cannot corrupt the stream.
     """
@@ -85,7 +90,8 @@ class SubprocessRunner:
             if not capture:
                 extra["stdout"] = sys.stderr
                 extra["stderr"] = sys.stderr
-        refuse_task_scheduler(list(argv))   # a test run never reaches the real Task Scheduler
+        refuse_task_scheduler(list(argv))   # a test run never reaches the real Task Scheduler,
+        refuse_machine_writes(list(argv))   # nor the registry, the user's environment, a UAC prompt
         try:
             proc = subprocess.run(
                 list(argv),
@@ -97,6 +103,7 @@ class SubprocessRunner:
                 errors="replace",
                 timeout=timeout,
                 check=False,
+                creationflags=window_flags(),
                 **extra,  # type: ignore[arg-type]
             )
         except FileNotFoundError as e:

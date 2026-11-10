@@ -164,10 +164,10 @@ def test_a_restore_that_hits_an_os_error_puts_everything_back(
             raise OSError(28, "No space left on device")
         return real(fsrc, fdst, *a, **k)
 
-    monkeypatch.setattr(backup.shutil, "copyfileobj", flaky)
-    with pytest.raises(NsError) as ei:
-        backup.restore_backup(dst, z, now=NOW)
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        m.setattr(backup.shutil, "copyfileobj", flaky)
+        with pytest.raises(NsError) as ei:
+            backup.restore_backup(dst, z, now=NOW)
     assert ei.value.code == "NS-E703" and "No space left" in ei.value.detail and "put back" in ei.value.detail
     # the files restored before the failure are the new PC's again, and the half-written one is whole
     assert "note: new-pc" in dst.channel_file("horror-nights").read_text(encoding="utf-8")

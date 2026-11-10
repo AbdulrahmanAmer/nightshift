@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 
+import ns_common.testguard as testguard
 import ns_common.vcruntime as vcruntime
 from installer.stage2.web import appcopy, deplock, filesdir, pathcheck
 from ns_common.atomic import copy_atomic, write_stream_atomic
@@ -76,6 +77,7 @@ def real_cmd(
     timeout: float | None = None,
 ) -> CmdResult:
     """Run a command without a shell and capture its output (exit 127: not found, 124: timeout)."""
+    testguard.refuse_machine_writes(list(argv))     # a test run starts no UAC prompt and changes no PC state
     try:
         proc = subprocess.run(
             list(argv), cwd=str(cwd) if cwd else None, env={**os.environ, **(env or {})}, capture_output=True,
@@ -110,8 +112,12 @@ def refresh_path_from_registry(environ: dict[str, str] | None = None) -> None:
         (environ if environ is not None else os.environ)["PATH"] = ";".join(parts)
 
 
+USER_ENVIRONMENT = "the user's own environment variables (HKCU, Environment)"
+
+
 def set_user_variable(name: str, value: str) -> bool:
     """Set a user environment variable in ``HKCU\\Environment`` and tell Windows about it."""
+    testguard.refuse_real(USER_ENVIRONMENT, "Pass a fake (Effects(set_home_var=...)).")
     try:
         import winreg
     except ImportError:
@@ -141,6 +147,7 @@ def add_user_path_entry(directory: str) -> bool:
     The launchers, the shortcuts and the nightly task start with the user's environment, so a tool that only
     lives under the install folder (the FFmpeg fallback) is found by them and by the programs they start.
     """
+    testguard.refuse_real(USER_ENVIRONMENT, "Pass a fake (Effects(add_user_path=...)).")
     try:
         import winreg
     except ImportError:

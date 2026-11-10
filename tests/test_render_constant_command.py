@@ -637,17 +637,17 @@ def test_a_200_clip_short_renders_in_parts_and_passes_qc(tmp_path: Path, monkeyp
             seen.append(list(cmd))
         return real(cmd, *a, **kw)
 
-    monkeypatch.setattr(ff.subprocess, "run", spy)
-    out = render_video(
-        shots=shots,
-        audio=audio,
-        out=folder / "short.mp4",
-        size=VERTICAL,
-        treatment=visual_treatment("cinematic_teal"),
-        video=VideoCfg(encoder="libx264", preset="ultrafast"),
-        ass_path=ass,
-    )
-    monkeypatch.undo()  # QC below runs its own FFmpeg commands; only the render is counted
+    with monkeypatch.context() as m:  # QC below runs its own FFmpeg commands; only the render is counted
+        m.setattr(ff.subprocess, "run", spy)
+        out = render_video(
+            shots=shots,
+            audio=audio,
+            out=folder / "short.mp4",
+            size=VERTICAL,
+            treatment=visual_treatment("cinematic_teal"),
+            video=VideoCfg(encoder="libx264", preset="ultrafast"),
+            ass_path=ass,
+        )
     assert len(seen) == math.ceil(count / ff.MAX_CLIP_INPUTS) + 1
     assert max(_cmd_chars(c) for c in seen) < ARGV_LIMIT
     edges = frame_edges([s.end for s in shots], FPS)
