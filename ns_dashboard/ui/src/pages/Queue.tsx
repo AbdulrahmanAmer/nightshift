@@ -504,6 +504,7 @@ const hm = (s?: number | null) => { const n = Math.max(0, Math.round(Number(s) |
 const FULL_PLANS = ["master_first", "master_from_script", "master_from_owner_script"];
 /** One thing the night left for time (NS-W211), in the morning note's words (ns_studio/notifications.py). */
 function leftWords(x: LeftForTime, channelName: (s?: string | null) => string, status: ReturnType<typeof useApp>["status"]): string {
+  if (x.said) return x.said.charAt(0).toUpperCase() + x.said.slice(1); // the decision's own sentence: the note and this card never disagree
   const ch = channelName(x.channel); const was = x.left_s == null ? "" : `, ${hm(x.left_s)} ${x.left_s < 120 ? "was" : "were"} left`;
   if (x.reason === "stage_too_long") return `${ch}: ${x.job_id ? "a half-made video waits" : "not started"}: its ${x.stage || "longest"} stage takes longer than a whole night on this PC (make it from Create, where a run has no time limit)`;
   const way = (first: string) => nightComes(status) ? `the next nightly run continues it${first}` : "press Retry on its card to continue it";
@@ -528,7 +529,7 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
   // jobs the night did not start because their channel was paused (before or during the night, P47); a half-made one waits for the resume
   const held = r.summary?.paused ?? []; const heldJobs = held.reduce((n, x) => n + x.jobs, 0);
   // work the night left for the next night to end inside Windows' limit for the task, and how long it took of it (card night-fits; an older report has neither)
-  const left = r.summary?.out_of_time ?? []; const leftJobs = left.reduce((n, x) => n + x.jobs, 0); const t = r.summary?.timing;
+  const left = r.summary?.out_of_time ?? []; const leftJobs = left.filter((x) => x.reason !== "cannot_fit_new" && x.reason !== "stage_too_long").reduce((n, x) => n + x.jobs, 0); const t = r.summary?.timing;
   const ofLimit = t && t.limit_s && t.used_s != null ? ` Took ${hm(t.used_s)} of ${hm(t.limit_s)}${t.gpu_s && t.gpu_s >= 60 ? `, ${hm(t.gpu_s)} of it getting the graphics card` : ""}.` : "";
   // A run that was killed (power cut, crash) has a finish time written by the recovery, but it did not finish: say so, and name the jobs it left half made.
   const interrupted = r.state === "interrupted"; const live = r.state === "running"; const unfinished = r.summary?.interrupted_jobs ?? [];

@@ -24,7 +24,13 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PROMISES = ("next nightly run", "next scheduled run", "next night", "tonight's run")
+PROMISES = (
+    "next nightly run", "next scheduled run", "next night", "tonight's run",
+    # the night's time decisions (card night-fits, `ns_studio/nightfit.py`): a continuation said without
+    # "next nightly run" is a promise too
+    "continues next", "night continues", "nightly run after", "goes back to it", "plans it again",
+    "tries it once more", "make them again",
+)
 CONDITION = ("WHILE_NIGHTLY_ON", "IF_NIGHTLY_ON", "Automatic runs are on")
 UI_CONDITION = ("nightComes(", "next_run", "schedule_registered")
 PY_ROOTS = ("ns_studio", "ns_supervisor", "ns_dashboard", "installer")

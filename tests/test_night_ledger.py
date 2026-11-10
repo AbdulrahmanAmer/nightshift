@@ -294,6 +294,9 @@ def test_every_stage_acquire_and_load_is_written_to_the_ledger(world: World) -> 
     assert datetime.fromisoformat(start["deadline"]) - datetime.fromisoformat(
         start["task_start"]
     ) == timedelta(seconds=LIMIT_S - MARGIN_S)
+    assert "simulated_card" in start and start["room_s"] == LIMIT_S - MARGIN_S - 900, "default overhead"
+    first_stage = _one(world.lines("first_stage", run_id))
+    assert (first_stage["stage"], first_stage["overhead_s"]) == ("nf_a", LIMIT_S - MARGIN_S - 5 * 3600 + 60)
     stages = world.lines("stage", run_id)
     assert [(s["stage"], s["seconds"], s["job_id"], s["origin"]) for s in stages] == [
         (n, world.seconds[n], job_id, "daily") for n, _t in PLAN
@@ -344,14 +347,19 @@ def test_a_job_that_would_end_after_the_deadline_is_not_started(
         assert len(report["jobs"]) == 2 and not report.get("out_of_time")
         return
     assert [j["channel"] for j in report["jobs"]] == ["a-shorts"] and report["failures"] == []
-    assert report.get("out_of_time") == [
-        {"channel": "after-dark", "fmt": "master_first", "jobs": 1, "need_s": 7200, "left_s": 7140,
-         "basis": "history"}
-    ]
+    left = _one(report.get("out_of_time") or [])
+    assert {k: left.get(k) for k in ("channel", "fmt", "jobs", "need_s", "left_s", "basis", "reason")} == {
+        "channel": "after-dark", "fmt": "master_first", "jobs": 1, "need_s": 7200, "left_s": 7140,
+        "basis": "history", "reason": "new_no_room",
+    }
     masters = world.db.query("select * from combos where channel='after-dark'")
     assert masters == [], "nothing of the master was created"
     note = notifications.time_note(report) or ""
-    assert "after-dark's full video (it takes about 2 h here, 1 h 59 min were left)" in note
+    assert (
+        "After-dark's full video was not started: it takes about 2 h here, and 1 h 59 min were left; the "
+        "channel stays due, so the next nightly run plans it again, first (while Automatic runs are on in "
+        "Settings)." in note
+    )
     assert len([n for n in world.notes() if "(NS-W211)" in n["message"]]) == 1
     world.clock.advance(24 * 3600)
     due = cadence.plan_daily(world.paths, world.db, world.clock.now())
@@ -374,7 +382,7 @@ def test_with_no_history_the_default_estimate_is_used_and_said(
     left = _one(report.get("out_of_time") or [])
     assert (left["basis"], left["need_s"], left["left_s"]) == ("default", default, left_min * 60)
     note = notifications.time_note(report) or ""
-    assert "Nightshift plans 3 h for one until it has timed one on this PC, 2 h 59 min were left" in note
+    assert "Nightshift plans 3 h for one until it has timed one on this PC, and 2 h 59 min were left" in note
 
 
 def test_a_job_longer_than_what_is_left_is_begun_when_it_is_the_nights_first(world: World) -> None:
@@ -399,12 +407,22 @@ def test_a_video_longer_than_three_nights_is_said_and_never_ages_out(world: Worl
     world.seconds = {name: 16000 for name, _t in PLAN}
     first = world.night(left_s=21000)
     long_job = _one(first.get("long_jobs") or [])
-    assert (long_job["need_s"], long_job["capacity_s"], long_job["nights"]) == (64000, 21000, 4)
+    assert (long_job["need_s"], long_job["nights"], long_job["reason"]) == (64000, 4, "first_work_long")
     note = notifications.time_note(first) or ""
-    assert "after-dark's full video takes about 17 h 46 min of work here, more than the 5 h 50 min one " \
-           "night can give, so it is made over 4 nights" in note
-    assert "That is more than 3 nights for one video; to make videos in fewer nights, set Default type to " \
-           "Shorts only for that channel in Channels" in note
+    assert (
+        "After-dark's full video takes about 17 h 46 min of work here, more than the 5 h 50 min this night "
+        "had left, so it is begun as the night's first work and made over about 4 nights: each nightly run "
+        "after this one continues it where the last one stopped (while Automatic runs are on in Settings)."
+        in note
+    )
+    # the ways out that exist (the Queue's Retry, Create, Channels > Default type) and what each does to it
+    assert (
+        "That is more than 3 nights for one video. Once it is left half made, Retry on its Queue card "
+        "finishes it in one go (a run you start has no time limit). To have after-dark's next videos in one "
+        "night, make them from Create, or set Default type to Shorts only for after-dark in Channels (the "
+        "nightly run then no longer continues this half-made full video; Retry on its card still finishes "
+        "it)." in note
+    )
     assert world.ran == ["nf_a"]
     for night in range(2, 5):  # 25 h apart: the fourth night is more than 3 days after the job was made
         world.clock.advance(25 * 3600)
@@ -414,22 +432,160 @@ def test_a_video_longer_than_three_nights_is_said_and_never_ages_out(world: Worl
     assert len(world.db.query("select * from outputs where kind='long'")) == 1
 
 
-def test_a_stage_longer_than_a_whole_night_is_said_once_and_never_begun(world: World) -> None:
-    """Rule (d): measured from the ledger (here the hard mark's lower bound of an earlier night)."""
-    world.history(stage=("nf_c", 21600), kind="cut_expected", n=1)
+def test_one_pass_over_a_night_is_said_once_tried_as_a_nights_first_work_and_heals(world: World) -> None:
+    """Review blocker 2: one pass over what a fresh night has (here a by-hand master that slept 7 h in nf_c)
+    does not stop nightly masters. It is a retest: begun only as a night's first work, where it is measured
+    again; the normal pass then replaces it and masters are made in one night again."""
+    nightfit = _module("ns_studio.nightfit")
+    for seconds in (100, 100, 100, 100, 7 * 3600):
+        world.history(stage=("nf_c", seconds), n=1)
+    first = world.night(left_s=5 * 3600)
+    assert world.ran == ["nf_a", "nf_b"], "begun; stopped before the retest stage (the night has begun work)"
+    left = _one(first.get("out_of_time") or [])
+    assert (left["stage"], left["reason"], left["answer"]) == ("nf_c", "stop_retest_waits", "stop")
+    note = notifications.time_note(first) or ""
+    assert "After-dark's video stopped before nf_c: that stage took 7 h once, longer than the 5 h 35 min a " \
+           "night has here, so it is tried again only as the first work of a night" in note
+    world.clock.advance(24 * 3600)
+    world.ran.clear()
+    second = world.night(left_s=5 * 3600)
+    assert world.ran == ["nf_c", "nf_d"] and len(second["jobs"]) == 1, "the next night's first work"
+    assert nightfit is not None
+    e = nightfit.estimate("nf_c", ledger_samples(world, "nf_c"), 20100)
+    assert (e.retest, e.cannot_fit, e.seconds) == (False, False, 100), "healed: planned with normal passes"
+
+
+def ledger_samples(world: World, stage: str, plan: str = "master_first") -> list[float]:
+    from ns_studio import ledger
+
+    return ledger.stage_samples(ledger.read(world.paths), plan, stage)
+
+
+def test_two_passes_over_a_night_give_the_stage_up_said_once_and_one_pass_from_create_heals(
+    world: World,
+) -> None:
+    """Rule 3: two of the last five passes over a fresh night's room, the newest among them: no master is
+    begun at night, said once in the morning note (the Last night card says it each night); one pass inside a
+    night's time from Create (no time limit) is the newest, and the next night makes the master again."""
+    world.history(stage=("nf_c", 21600), kind="cut_expected", n=2)
     report = world.night(left_s=21000)
     assert world.ran == [] and report["jobs"] == [] and report["failures"] == []
     left = _one(report.get("out_of_time") or [])
-    assert (left["reason"], left["stage"]) == ("stage_too_long", "nf_c")
-    told = _one(report.get("too_long_stages") or [])
-    assert (told["stage"], told["measured_s"], told["capacity_s"]) == ("nf_c", 21600, 21000)
+    assert (left["reason"], left["stage"], left["told"]) == ("cannot_fit_new", "nf_c", True)
     note = notifications.time_note(report) or ""
-    assert "The nf_c stage of after-dark's full videos took at least 6 h on this PC, longer than the " \
-           "5 h 50 min one night can give" in note and "Make them from Create" in note
+    assert (
+        "After-dark's full videos are not made at night: their nf_c stage took longer than the 5 h 35 min a "
+        "night has here on 2 of its last 2 passes, the longest 6 h. Make them from Create (a run you start "
+        "has no time limit), or set Default type to Shorts only for after-dark in Channels" in note
+    )
     world.clock.advance(24 * 3600)
     again = world.night(left_s=21000)
-    assert _one(again.get("out_of_time") or [])["reason"] == "stage_too_long", "the card says it each night"
-    assert not again.get("too_long_stages") and notifications.time_note(again) is None, "said once"
+    assert _one(again.get("out_of_time") or [])["told"] is False, "the card says it each night"
+    assert notifications.time_note(again) is None, "the note said it once"
+    channel = crud.get_channel(world.paths, "after-dark")
+    ctx = jobs.make_job(world.env, channel, "master_first", origin="manual")
+    ctx.clock = world.clock  # type: ignore[attr-defined]
+    orch.run_job(ctx)  # made from Create: nf_c takes 60 s, the newest pass
+    nightfit = _module("ns_studio.nightfit")
+    assert nightfit is not None
+    e = nightfit.estimate("nf_c", ledger_samples(world, "nf_c"), 20100)
+    assert (e.cannot_fit, e.retest, e.seconds) == (False, False, 60), "healed by one pass inside a night"
+    # the night's decision for the channel's next master (the one just made from Create makes it not due)
+    from ns_studio import ledger, nightclock
+
+    start = nightclock.TaskStart(world.clock.now(), nightclock.START_STUB)
+    lines = ledger.read(world.paths)
+    night = nightclock.Night(world.paths, "probe", world.clock, start, LIMIT_S, None, lines)
+    d = night.ask(nightfit.NEW, "master_first", [n for n, _t in PLAN])
+    assert (d.answer, d.reason) == (nightfit.BEGIN, nightfit.FITS)
+
+
+def _first_stage_lines(world: World, overhead_s: float) -> None:
+    """Five earlier nights that each spent `overhead_s` before their first stage: what a fresh night has
+    here is 21000 - overhead_s."""
+    at = (world.clock.now() - timedelta(days=3)).isoformat(timespec="seconds")
+    f = world.ledger_dir() / f"ledger-{world.clock.now():%Y%m}.jsonl"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    with f.open("a", encoding="utf-8") as fh:
+        for _ in range(5):
+            fh.write(json.dumps({"kind": "first_stage", "at": at, "overhead_s": overhead_s}) + "\n")
+
+
+@pytest.mark.parametrize("pass_s, given_up", [(20000, False), (20001, True)])
+def test_a_stage_that_fits_the_full_night_but_not_a_fresh_ones_room_is_begun_or_given_up(
+    world: World, pass_s: int, given_up: bool
+) -> None:
+    """Review blocker 1, both ends of the band: the capacity is 21000 s, a fresh night here has 20000 s (5
+    nights measured 1000 s before their first stage). A half-made job's next stage newly measured twice at
+    20000 s is begun on a fresh night with 20000 s left; at 20001 s it can never fit what a fresh night
+    has: it is given up at once, with its card and its sentence, never skipped as "continues next"."""
+    _first_stage_lines(world, 1000)
+    _stopped_before_nf_c(world, 1199)  # night 1: nf_a and nf_b done, stopped before nf_c
+    job_id = _one([r["job_id"] for r in world.db.query("select distinct job_id from combos")])
+    world.history(stage=("nf_c", pass_s), n=2)  # two newer passes (from Retry or Create elsewhere)
+    world.clock.advance(24 * 3600)
+    world.ran.clear()
+    world.seconds["nf_c"] = 100
+    report = world.night(left_s=20000)
+    if not given_up:
+        assert world.ran == ["nf_c", "nf_d"] and [j["job_id"] for j in report["jobs"]] == [job_id]
+        return
+    assert world.ran == [] and report["jobs"] == [] and report["failures"] == []
+    left = _one(report.get("out_of_time") or [])
+    assert (left["job_id"], left["answer"], left["reason"]) == (job_id, "cannot_fit", "cannot_fit_job")
+    rec = ownership.read_record(world.paths, job_id) or {}
+    assert rec.get("cannot_fit") == left["said"]
+    assert ownership.resume_problem(world.paths, rec) == left["said"]
+    (card,) = world.cards()
+    assert card["result"]["interrupted"]["resume"] == "needs_retry" and left["said"] in card["message"]
+    assert "continues" not in left["said"]
+    world.clock.advance(24 * 3600)
+    third = world.night(left_s=20000)
+    assert world.ran == [] and not [x for x in third.get("out_of_time") or [] if x.get("job_id")], "said once"
+
+
+def test_a_night_that_finishes_no_stage_does_not_make_the_job_younger_and_two_give_it_up(
+    world: World,
+) -> None:
+    """Review blocker 1, the zero-progress loop: a cut that finished no stage of the job leaves its age
+    where it was (`progressed_at`), and the second night it is the first work and still has too little time
+    gives it up with its card (rule 7), instead of cutting it with nothing done for ever."""
+    _stopped_before_nf_c(world, 1199)
+    job_id = _one([r["job_id"] for r in world.db.query("select distinct job_id from combos")])
+    rec = ownership.read_record(world.paths, job_id) or {}
+    progressed = rec.get("progressed_at")
+    assert progressed and (rec.get("cuts"), rec.get("misses")) == (1, 0), "night 1 finished nf_a and nf_b"
+    world.clock.advance(24 * 3600)
+    world.ran.clear()
+    second = world.night(left_s=1199)
+    rec = ownership.read_record(world.paths, job_id) or {}
+    assert world.ran == []
+    assert (rec.get("progressed_at"), rec.get("misses"), rec.get("cuts")) == (progressed, 1, 2)
+    assert _one(second["out_of_time"])["reason"] == "resume_first_miss"
+    world.clock.advance(24 * 3600)
+    third = world.night(left_s=1199)
+    left = _one(third["out_of_time"])
+    assert (left["answer"], left["reason"]) == ("cannot_fit", "missed_twice")
+    assert (
+        "After-dark's half-made video is given up by the nightly run: it was the night's first work on 2 "
+        "nights since a stage of it was last finished" in (notifications.time_note(third) or "")
+    )
+    (card,) = world.cards()
+    assert card["result"]["interrupted"]["resume"] == "needs_retry"
+
+
+def test_a_half_made_job_ages_from_its_last_progress_not_from_its_last_cut(world: World) -> None:
+    """The age rule: a job ages unless a night FINISHED one of its stages; past `RESUME_WITHIN_DAYS` without
+    one it is left for Retry, and its card says so in those words."""
+    _stopped_before_nf_c(world, 1199)
+    job_id = _one([r["job_id"] for r in world.db.query("select distinct job_id from combos")])
+    rec = ownership.read_record(world.paths, job_id) or {}
+    assert rec.get("progressed_at"), "the night that finished nf_a and nf_b is the job's last progress"
+    anchor = datetime.fromisoformat(str(rec["progressed_at"]))
+    assert ownership.resume_problem(world.paths, rec, anchor + timedelta(days=3)) is None
+    assert ownership.resume_problem(world.paths, rec, anchor + timedelta(days=3, seconds=1)) == (
+        "no night has finished a stage of it for more than 3 days"
+    )
 
 
 def test_a_stage_is_estimated_from_jobs_of_its_own_plan_at_its_worst(world: World) -> None:
@@ -508,7 +664,11 @@ def test_the_next_night_continues_the_job_left_for_time_first(world: World) -> N
     assert card["status"] == "done" and "The nightly run continued it and it finished." in card["message"]
     # one note for the night that left work, none for the night that left nothing; its toast says no more
     w211 = [n for n in world.notes() if "(NS-W211)" in n["message"]]
-    assert len(w211) == 1 and "after-dark's video stopped at nf_c and continues next" in w211[0]["message"]
+    assert len(w211) == 1 and (
+        "After-dark's video stopped before nf_c: that stage takes about 20 min here and 19 min were left; "
+        "the next nightly run goes back to it before starting new videos (while Automatic runs are on in "
+        "Settings)." in w211[0]["message"]
+    )
     assert told == ["1 master ready for review"], "the job left for time was no interrupted night"
     dash = Dashboard(
         build_state(
@@ -523,9 +683,9 @@ def test_the_next_night_continues_the_job_left_for_time_first(world: World) -> N
 def test_a_half_made_job_that_would_not_fit_tonight_waits_for_the_next_night(
     world: World, left_s: int, continued: bool
 ) -> None:
-    """S3: what the job still has to do (nf_c 1200 s by its history + nf_d 600 s, no history) fits (1800), or
-    it is the night's first work and its next stage fits (1200: rule (b), the night makes progress); else
-    (1199) it waits for the next night."""
+    """S3 (`nightfit` rules 6 and 7): its next stage (nf_c, 1200 s by its history) fits what is left (1800,
+    1200: both ends), else (1199), as the night's first work, it is a fresh miss: not continued, its record
+    keeps the miss and asks for the next night's first place, and the next night continues it."""
     _stopped_before_nf_c(world, 1199)
     job_id = _one([r["job_id"] for r in world.db.query("select distinct job_id from combos")])
     world.clock.advance(24 * 3600)
@@ -538,14 +698,18 @@ def test_a_half_made_job_that_would_not_fit_tonight_waits_for_the_next_night(
         return
     assert world.ran == [] and report["jobs"] == [] and report["failures"] == []
     left = _one(report.get("out_of_time") or [])
-    assert (left["job_id"], left["resumed"], left["need_s"], left["left_s"]) == (job_id, True, 1800, 1199)
+    assert (left["job_id"], left["resumed"], left["need_s"], left["left_s"]) == (job_id, True, 1200, 1199)
+    assert left["reason"] == "resume_first_miss"
     assert "after-dark" in report["not_due"], "no new video of the channel starts beside the half-made one"
     assert world.db.query("select count(*) n from combos where item='long'")[0]["n"] == 1
     rec = ownership.read_record(world.paths, job_id) or {}
     assert (rec.get("state"), rec.get("interrupted_at_stage")) == ("interrupted", "nf_c")
+    assert (rec.get("misses"), rec.get("cuts"), rec.get("first_next")) == (1, 2, True)
     words = (
-        "half-made video (it needs about 30 min more by Nightshift's first estimate, at nf_c, "
-        "19 min were left)"
+        "After-dark's half-made video was not continued: even as the night's first work only 19 min were "
+        "left for its next stage, nf_c, which takes about 20 min here; the nightly run tries it once more as "
+        "the first work of a night and gives it up for Retry if that time is too short too (while Automatic "
+        "runs are on in Settings)."
     )
     assert words in (notifications.time_note(report) or "")
     world.clock.advance(24 * 3600)
@@ -757,11 +921,12 @@ def test_the_morning_note_and_toast_say_what_was_left_for_time(world: World) -> 
     note = getattr(notifications, "time_note", lambda r: None)(REPORT)
     assert note == (
         "Last night's run used 5 h 40 min of the 6 hours Windows allows it, 1 h 10 min of it getting the "
-        "graphics card (waiting for it and loading its models). Not finished in the night: quiet-hours's "
-        "full video (it takes about 3 h 10 min here, 52 min were left); after-dark's video stopped at voice "
-        "and continues next. The next nightly run continues what was left first (while Automatic runs are "
-        "on in Settings). To fit more into one night, set fewer Full videos per week for a channel in "
-        "Channels, or pause a channel. (NS-W211)"
+        "graphics card (waiting for it and loading its models). Quiet-hours's full video was not started: it "
+        "takes about 3 h 10 min here, and 52 min were left; the channel stays due, so the next nightly run "
+        "plans it again, first (while Automatic runs are on in Settings). After-dark's video stopped before "
+        "voice: that stage takes about 15 min here and 10 min were left; the next nightly run goes back to "
+        "it before starting new videos (while Automatic runs are on in Settings). To fit more into one "
+        "night, set fewer Full videos per week for a channel in Channels, or pause a channel. (NS-W211)"
     )
     toast = notifications.nightly_message(REPORT, 1, 4)
     assert toast == (

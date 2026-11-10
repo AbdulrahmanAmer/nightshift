@@ -1198,15 +1198,27 @@ def resume_problem(paths: Paths, rec: Mapping[str, Any], now: datetime | None = 
         return "its channel is paused"
     if str(info.get("fmt")) != ch.format:
         return "its channel now makes another type of video"
-    created = _parse(info.get("created_at"))
-    if rec.get("owner") == OUT_OF_TIME_OWNER:
-        # A job the night left for time (card night-fits) ages from the night that last worked on it and left
-        # it, not from its creation: a video longer than one night, cut at a stage each night, is continued
-        # every night for as long as it makes progress, and never ages out half made.
-        created = _parse(rec.get("closed_at")) or created
-    if created is not None and now - created > timedelta(days=RESUME_WITHIN_DAYS):
+    if rec.get("cannot_fit"):  # the night's time decision gave it up (card night-fits): its own sentence
+        return str(rec["cannot_fit"])
+    from ns_studio import nightfit
+
+    anchor = age_anchor(paths, rec, info)
+    if anchor is not None and nightfit.too_old((now - anchor).total_seconds() / 86400, RESUME_WITHIN_DAYS):
+        if rec.get("progressed_at"):
+            return f"no night has finished a stage of it for more than {RESUME_WITHIN_DAYS} days"
         return f"it is more than {RESUME_WITHIN_DAYS} days old"
     return None
+
+
+def age_anchor(
+    paths: Paths, rec: Mapping[str, Any], info: Mapping[str, Any] | None = None
+) -> datetime | None:
+    """Where a job's age counts from (card night-fits, `nightfit.too_old`): the last night that FINISHED one
+    of its stages (`progressed_at`, written when the night leaves it for time), else its creation. A night
+    that left it without finishing a stage does not make it younger."""
+    if info is None:
+        info = job_info(paths, str(rec["id"]))
+    return _parse(rec.get("progressed_at")) or _parse(info.get("created_at"))
 
 
 def _has_output(db: SqlDb, job_id: str) -> bool:
@@ -1514,8 +1526,10 @@ def recovery_message(
 
     `outcomes` is what the nightly then did with a resumable job, by job id: `("resumed", None)`,
     `("failed", <code>)`, `("waiting", None)` (the GPU was busy), `("paused", None)` (its channel was paused
-    during the night) or `("busy", None)` (a Retry from the Queue was already running it). Without an outcome
-    the note never claims the job is being continued: it says when it will be, and how to continue it by hand.
+    during the night), `("busy", None)` (a Retry from the Queue was already running it), or the night's time
+    decision with its one sentence: `("out_of_time", <sentence>)`, `("gave_up", <sentence>)`. Without an
+    outcome the note never claims the job is being continued: it says when it will be, and how to continue it
+    by hand.
     """
     outcomes = outcomes or {}
     night: list[str] = []  # jobs of the nightly run
@@ -1540,6 +1554,8 @@ def recovery_message(
             )
         elif what == "busy":
             tail = "It is being continued right now from the Queue."
+        elif what in ("out_of_time", "gave_up") and code:  # the night's time decision, in its one sentence
+            tail = f"{code[:1].upper()}{code[1:]}."
         elif what == "out_of_time":
             tail = (
                 "The night's run had too little time left to continue it inside Windows' limit for the "

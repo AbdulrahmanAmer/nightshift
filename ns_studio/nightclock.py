@@ -9,12 +9,13 @@ the next night, at a stage boundary, and the owner reads in the morning what was
 Time is an input: everything here reads the injected `Clock` (`now()` wall time for the deadline, which a
 sleep shortens; `monotonic()` for durations); nothing reads the PC's clock in the middle of a decision.
 
-Estimates come from this install's own ledger (`ledger.stage_samples`, the one rule for what counts):
-a stage of a plan is the WORST of its last `HISTORY_N` measured passes in jobs of that plan (an estimate
-must err long: a wrong "does not fit" costs one job a night, a wrong "fits" gets the task killed
-mid-stage), and a job is the work of one pass: the sum of its plan's stage estimates, never its waits. A
-plan this PC never measured is `DEFAULT_JOB_S`, a stage of it `STAGE_FLOOR_S`, and the report says
-`basis: default`.
+Estimates come from this install's own ledger (`ledger.stage_samples`, the one rule for what counts) and
+every timing decision is `nightfit.decide` (the one pure function): this module only gathers its inputs
+(the time left, whether the night has begun a stage, the estimates, what a fresh night really has here, the
+job's record) and acts on its answer. A stage of a plan is the WORST of its last `HISTORY_N` passes in jobs
+of that plan that fit a fresh night (an estimate errs long); passes over that are evidence (`nightfit`,
+rules 3 and 4), never a plan. A job is the sum of its stage estimates, never its waits; a plan this PC never
+measured is `DEFAULT_JOB_S`, a stage of it `STAGE_FLOOR_S`, and the report says `basis: default`.
 
 Within one plan a stage's time also follows the length of the story (voice, captions and render with its
 words, clips and the Short combos with the number of Shorts); the channel's length band bounds that spread and
@@ -36,11 +37,14 @@ from typing import TYPE_CHECKING, Any, Protocol
 from ns_common.atomic import write_text_atomic
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
-from ns_studio import ledger
+from ns_studio import ledger, nightfit
 from ns_studio.errors import OUT_OF_TIME, StudioError
+from ns_studio.nightfit import DEFAULT_JOB_S, DEFAULT_OTHER_JOB_S, HISTORY_N, STAGE_FLOOR_S, words
 
 if TYPE_CHECKING:
     from ns_studio.context import JobContext
+
+__all__ = ["DEFAULT_JOB_S", "DEFAULT_OTHER_JOB_S", "HISTORY_N", "STAGE_FLOOR_S", "words"]
 
 #: Set by the launch script (`installer/launch.ps1 -Nightly`) to its own start, in UTC: the task's start.
 STARTED_ENV = "NS_NIGHT_STARTED"
@@ -51,12 +55,6 @@ TEST_LIMIT_MIN_S, TEST_LIMIT_MAX_S = 60, 21600
 CLOSE_MARGIN_S = 10 * 60
 #: The hard mark: still running this long before Windows' limit, the night says so (`cut_expected`).
 HARD_MARK_S = 120
-HISTORY_N = 5
-#: A job's estimate before this install has finished one of its plan (`basis: default`), by plan.
-DEFAULT_JOB_S: dict[str, int] = {"master_first": 3 * 3600, "master_from_script": 9000, "shorts_only": 3600}
-DEFAULT_OTHER_JOB_S = 3600
-#: A stage's estimate before this install has run it.
-STAGE_FLOOR_S = 10 * 60
 #: How often the night writes `run/night-beat.json` and looks at the hard mark.
 BEAT_S = 30.0
 BEAT_FILE = "night-beat.json"
@@ -84,17 +82,6 @@ class SystemClock:
         return time.monotonic()
 
 
-def words(seconds: float) -> str:
-    """`5 h 40 min`, `52 min`, `40 s`: a duration as the owner reads it."""
-    s = max(0, round(seconds))
-    if s < 60:
-        return f"{s} s"
-    hours, minutes = divmod(s // 60, 60)  # whole minutes, never more than there were
-    if hours and minutes:
-        return f"{hours} h {minutes} min"
-    return f"{hours} h" if hours else f"{minutes} min"
-
-
 def limit_words(limit_s: int) -> str:
     """`6 hours` for a whole number of hours, else `words`."""
     if limit_s % 3600 == 0:
@@ -111,18 +98,14 @@ def limit_adjective(limit_s: int) -> str:
 
 
 class OutOfTime(StudioError):
-    """A stage would end after the night's deadline: the job stops before it (NS-W211), its finished stages
-    kept, and the next night continues it from this stage."""
+    """The night's decision before a stage or a wait for the graphics card was not BEGIN (`nightfit`): the
+    job stops there (NS-W211), its finished stages kept; `daily._left_for_time` acts on `decision` (STOP: it
+    is continued; CANNOT_FIT: it is given up with a card)."""
 
-    def __init__(
-        self, stage: str, need_s: float, left_s: float, basis: str, *, too_long: bool = False
-    ) -> None:
-        self.stage, self.need_s, self.left_s, self.basis = stage, need_s, left_s, basis
-        #: the stage takes longer than a whole night here: no night can run it (`Night.capacity_s`)
-        self.too_long = too_long
-        super().__init__(
-            OUT_OF_TIME, f"{stage} needs about {words(need_s)}, {words(left_s)} were left before the deadline"
-        )
+    def __init__(self, decision: nightfit.Decision) -> None:
+        self.decision = decision
+        self.stage = decision.stage
+        super().__init__(OUT_OF_TIME, f"{decision.answer} before {decision.stage}: {decision.reason}")
 
 
 # ---------------------------------------------------------------------------------------------- the start
@@ -229,35 +212,20 @@ def margins(limit_s: int) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------------------------- estimates
-def stage_estimate(lines: Sequence[Mapping[str, Any]], plan: str, stage: str) -> tuple[float, str]:
-    """(seconds, basis) one pass of `stage` needs in a job of `plan` on this install: the worst of its last
-    `HISTORY_N` samples (`ledger.stage_samples`), else `STAGE_FLOOR_S`."""
-    samples = ledger.stage_samples(lines, plan, stage)[-HISTORY_N:]
-    if samples:
-        return max(samples), "history"
-    return float(STAGE_FLOOR_S), "default"
-
-
-def stages_estimate(
-    lines: Sequence[Mapping[str, Any]], plan: str, stages: Sequence[str]
+def stage_estimate(
+    lines: Sequence[Mapping[str, Any]], plan: str, stage: str, room_s: float | None = None
 ) -> tuple[float, str]:
-    """(seconds, basis) of a run of `stages` of `plan` (what a resumed job has left): the sum of their
-    estimates; `default` when any of them has no measurement."""
-    total, basis = 0.0, "history"
-    for name in stages:
-        need, how = stage_estimate(lines, plan, name)
-        total += need
-        if how == "default":
-            basis = "default"
-    return total, basis
+    """(seconds, basis) one pass of `stage` needs in a job of `plan` on this install (`nightfit.estimate`:
+    the worst of its last `HISTORY_N` passes inside a fresh night's `room_s`, else `STAGE_FLOOR_S`)."""
+    e = nightfit.estimate(stage, ledger.stage_samples(lines, plan, stage), room_s)
+    return e.seconds, e.basis
 
 
-def job_estimate(lines: Sequence[Mapping[str, Any]], plan: str, stages: Sequence[str]) -> tuple[float, str]:
-    """(seconds, basis) of the WORK of one pass of a job of `plan` with these `stages`: the sum of the stage
-    estimates; `DEFAULT_JOB_S` of the plan when this PC has measured none of its stages."""
-    if not any(ledger.stage_samples(lines, plan, name) for name in stages):
-        return float(DEFAULT_JOB_S.get(plan, DEFAULT_OTHER_JOB_S)), "default"
-    return stages_estimate(lines, plan, stages)
+def simulated_card_mark(paths: Paths) -> Any:
+    """INTEGRATION HOOK for H-10 (not in this branch): what the `night_start` line says about the graphics
+    card, so the kit never reads a laptop's times on a `fake_gpu` install as the GPU PC's. At integration
+    this returns `gpu.simulated_mark(gpu.smi_source(paths))`; until then None (written as `null`)."""
+    return None
 
 
 def plan_of(fmt: str, job_dir: Any) -> str:
@@ -265,6 +233,24 @@ def plan_of(fmt: str, job_dir: Any) -> str:
     from ns_studio.orchestrator import plan_format
 
     return plan_format(fmt, job_dir)
+
+
+def _later_stages(ctx: JobContext, stage: str) -> list[str]:
+    """The job's stages after `stage` that are not done (a stage of them that cannot fit a night gives the job
+    up now, not after more work); none when the plan cannot be read."""
+    from ns_studio.orchestrator import stage_names
+    from ns_studio.stages import StageState
+
+    try:
+        names = stage_names(str(ctx.fmt), ctx.job_dir)
+        done = {n for n, e in StageState.load(ctx.job_dir).entries.items() if e.get("status") == "done"}
+    except Exception:  # noqa: BLE001 - the stage alone is still decided
+        return []
+    return [n for n in names[names.index(stage) + 1:] if n not in done] if stage in names else []
+
+
+def _round(value: float | None) -> int | None:
+    return None if value is None else round(value)
 
 
 # ---------------------------------------------------------------------------------------------- the night
@@ -286,9 +272,18 @@ class Night:
     current: tuple[str, str, str, str, float] | None = None  # (job, channel, stage, plan, began) under way
     sums: dict[str, float] = field(default_factory=dict)
     cut_written: bool = False
+    #: what a night spends here before its first stage (`nightfit.overhead` of the ledger's `first_stage`
+    #: lines, read once when the night opens)
+    overhead_s: float | None = None
     _beat_warned: bool = False
     _stop: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = None
+
+    def __post_init__(self) -> None:
+        if self.overhead_s is None and self.limit_s is not None:
+            self.overhead_s = nightfit.overhead(
+                ledger.overhead_samples(self.lines), nightfit.default_overhead(self.limit_s)
+            )
 
     @property
     def deadline(self) -> datetime | None:
@@ -307,28 +302,72 @@ class Night:
         deadline = self.deadline
         return None if deadline is None else (deadline - self.clock.now()).total_seconds()
 
-    def fits(self, need_s: float) -> bool:
-        """True when work of `need_s` seconds ends by the deadline (both ends: exactly at it fits)."""
-        left = self.left_s()
-        return left is None or need_s <= left
-
     @property
     def capacity_s(self) -> float | None:
-        """What a whole night can give work: from the task's start to the deadline (5 h 50 min)."""
+        """From the task's start to the deadline (5 h 50 min): the limit minus the closing margin."""
         if self.limit_s is None:
             return None
         return float(self.limit_s - margins(self.limit_s)[0])
 
     @property
-    def fresh(self) -> bool:
-        """True while no stage has been finished tonight: the night's first job is begun whatever its
-        estimate (the stage check then stops it at a boundary), so no plan is ever locked out."""
-        return self.sums.get("stages_done", 0.0) == 0.0
-
-    def too_long(self, need_s: float) -> bool:
-        """True for one stage that takes longer than a whole night here: no night can run it."""
+    def room_s(self) -> float | None:
+        """What a fresh night really has for work here: the capacity minus the measured overhead."""
         capacity = self.capacity_s
-        return capacity is not None and need_s > capacity
+        return None if capacity is None else nightfit.room(capacity, self.overhead_s or 0.0)
+
+    @property
+    def begun_tonight(self) -> bool:
+        """This night has begun a stage (of any job): it is no longer a fresh night."""
+        return self.sums.get("stages_begun", 0.0) > 0
+
+    # ------------------------------------------------------------------ the one decision
+    def job_facts(self, job_id: str | None) -> nightfit.Job:
+        """What the decision knows of a job: its record (cuts, misses, last progress, age) and its stages
+        finished in this night. A job not made yet (None) has the defaults."""
+        from ns_studio import ownership
+
+        max_age = float(ownership.RESUME_WITHIN_DAYS)
+        if job_id is None:
+            return nightfit.Job(max_age_days=max_age)
+        rec = ownership.read_record(self.paths, job_id) or {}
+        finished = sum(
+            1 for x in self.lines if x.get("kind") == "stage" and x.get("outcome") == "done"
+            and x.get("run_id") == self.run_id and x.get("job_id") == job_id
+        )
+        anchor = ownership.age_anchor(self.paths, {**rec, "id": job_id})
+        age = 0.0 if anchor is None else (self.clock.now() - anchor).total_seconds() / 86400
+        return nightfit.Job(
+            cuts=int(rec.get("cuts") or 0), misses=int(rec.get("misses") or 0),
+            last_progressed=bool(rec.get("last_progressed", True)), finished_tonight=finished,
+            age_days=age, max_age_days=max_age,
+        )
+
+    def ask(
+        self,
+        where: str,
+        plan: str,
+        names: Sequence[str],
+        job_id: str | None = None,
+        *,
+        service: str | None = None,
+        wait_cap_s: int = 7200,
+    ) -> nightfit.Decision:
+        """Gather the inputs and ask `nightfit.decide` (never raises a decision itself). A decision that is
+        not a plain BEGIN is written to the ledger (`decision`) with the numbers it was taken on."""
+        room = self.room_s
+        stages = tuple(nightfit.estimate(n, ledger.stage_samples(self.lines, plan, n), room) for n in names)
+        job_s, basis = nightfit.job_seconds(plan, stages, whole=where == nightfit.NEW)
+        load = ledger.load_samples(self.lines, service) if service else []
+        q = nightfit.Question(
+            where, self.left_s(), self.begun_tonight, room, stages, job_s, basis, self.job_facts(job_id),
+            load_s=nightfit.overhead(load, 0.0), wait_cap_s=wait_cap_s,
+        )
+        d = nightfit.decide(q)
+        if d.answer != nightfit.BEGIN or d.reason in (nightfit.FIRST_WORK, nightfit.FIRST_WORK_LONG):
+            self.write("decision", job_id=job_id, plan=plan, where=where, answer=d.answer, reason=d.reason,
+                       stage=d.stage, need_s=_round(d.need_s), left_s=_round(d.left_s), room_s=_round(room),
+                       basis=d.basis, passes=d.passes, over=d.over, misses=d.misses)
+        return d
 
     # ------------------------------------------------------------------ the ledger
     def write(self, kind: str, **fields: Any) -> None:
@@ -362,6 +401,8 @@ class Night:
             start_basis=self.start.basis,
             limit="none" if self.limit_s is None else self.limit_s,
             deadline=None if deadline is None else deadline.isoformat(timespec="seconds"),
+            overhead_s=_round(self.overhead_s), room_s=_round(self.room_s),
+            simulated_card=simulated_card_mark(self.paths),
             said=[*self.start.said, *said],
         )
         if self.log is not None:
@@ -373,27 +414,28 @@ class Night:
 
     # ------------------------------------------------------------------ the checks
     def before_stage(self, ctx: JobContext, stage: str) -> None:
-        """S6: called immediately before a stage really runs. Raises `OutOfTime` when its estimate ends
-        after the deadline; else the stage is the one under way (for the hard mark)."""
+        """S6: called immediately before a stage really runs; asks the one decision. Not BEGIN: raises
+        `OutOfTime` with it. BEGIN: the stage is under way (for the hard mark); the night's first begun stage
+        writes `first_stage` with the seconds since the task's start (what `overhead_s` is measured from)."""
         plan = plan_of(str(ctx.fmt), ctx.job_dir)
+        d = self.ask(nightfit.STAGE, plan, [stage, *_later_stages(ctx, stage)], ctx.job_id)
+        if d.answer != nightfit.BEGIN:
+            raise OutOfTime(d)
+        if self.limit_s is not None and not self.begun_tonight:
+            self.write("first_stage", job_id=ctx.job_id, plan=plan, stage=stage,
+                       overhead_s=round((self.clock.now() - self.start.at).total_seconds(), 3))
+        self.sums["stages_begun"] = self.sums.get("stages_begun", 0.0) + 1
         self.current = (ctx.job_id, ctx.channel.slug, stage, plan, self.clock.monotonic())
-        left = self.left_s()
-        if left is None:
-            return
-        need, basis = stage_estimate(self.lines, plan, stage)
-        if need > left:
-            self.current = None
-            raise OutOfTime(stage, need, left, basis, too_long=basis == "history" and self.too_long(need))
 
-    def wait_cap(self, plan: str, rest: Sequence[str], cap_s: int) -> int | None:
-        """S7: how long the wait for the graphics card may take: `cap_s` (the acquirer's own cap), or the time
-        left after the estimate of `rest` (the stages the job still has to run) when that is less. At or under
-        0 nothing can be waited for. None without a deadline."""
-        left = self.left_s()
-        if left is None:
-            return None
-        need, _basis = stages_estimate(self.lines, plan, rest)
-        return min(int(cap_s), int(left - need))
+    def before_wait(self, ctx: JobContext, rest: Sequence[str], service: str, cap_s: int) -> int | None:
+        """S7: before the wait for the graphics card ahead of `rest[0]` (`rest`: the job's stages still to
+        run); asks the one decision with the model load. Not BEGIN: raises `OutOfTime`. BEGIN: how long the
+        wait may take (None without a deadline: the acquirer's own cap)."""
+        d = self.ask(nightfit.WAIT, plan_of(str(ctx.fmt), ctx.job_dir), rest, ctx.job_id, service=service,
+                     wait_cap_s=cap_s)
+        if d.answer != nightfit.BEGIN:
+            raise OutOfTime(d)
+        return d.wait_s
 
     # ------------------------------------------------------------------ the beat and the hard mark
     def beat_file(self) -> Any:

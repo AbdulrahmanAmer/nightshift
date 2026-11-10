@@ -9,7 +9,10 @@ install measured. The kinds:
 - `stage` (job, stage, seconds, `outcome` `done` or the error code), `acquire` (the GPU tenant, `seconds` of
   the whole call, `wait_s`/`load_s` when the acquirer can tell them apart, `timeout_s` the night allowed);
 - `job_end` (job, plan, seconds of this run of it, `outcome`); `cut_expected` (the night still ran two minutes
-  before Windows' limit: the stage it was in).
+  before Windows' limit: the stage it was in);
+- `first_stage` (the seconds from the task's start to the night's first stage: what a fresh night spends
+  before work here), `decision` (a time decision of the night that was not a plain BEGIN, `nightfit`) and
+  `too_long_told` (a stage that cannot fit a night was told in the morning note with this evidence).
 
 Writing never stops anything. A file another program holds open (a scanner, an editor) takes the line in the
 month's spare file `-2` (then `-3` ... `-9`) with one WARN per file and process; a line that no file takes is
@@ -142,3 +145,25 @@ def stage_samples(lines: Iterable[Mapping[str, Any]], plan: str, stage: str) -> 
         latest.pop(job, None)  # re-inserted: the job's order is that of its latest sample
         latest[job] = seconds
     return list(latest.values())
+
+
+def _numbers(lines: Iterable[Mapping[str, Any]], kind: str, key: str, **match: Any) -> list[float]:
+    out: list[float] = []
+    for line in lines:
+        if line.get("kind") != kind or any(line.get(k) != v for k, v in match.items()):
+            continue
+        value = line.get(key)
+        if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
+            out.append(float(value))
+    return out
+
+
+def overhead_samples(lines: Iterable[Mapping[str, Any]]) -> list[float]:
+    """What each timed night spent before its first stage (`first_stage` lines, oldest first): start-up,
+    recovery, planning, the wait for the graphics card and the model load."""
+    return _numbers(lines, "first_stage", "overhead_s")
+
+
+def load_samples(lines: Iterable[Mapping[str, Any]], service: str) -> list[float]:
+    """The model loads of `service` the acquirer told apart from the wait (`acquire` lines with `load_s`)."""
+    return _numbers(lines, "acquire", "load_s", service=service)

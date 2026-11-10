@@ -297,7 +297,7 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
                 # engine swap tenants and load a model it will not use (the check before every stage, below,
                 # stays: the wait for the card can take hours, and a pause may come during it).
                 not_paused(group_list[0].name)
-                wait = _wait_cap(ctx, [s.name for s in stages], [s.name for s in group_list])
+                wait = _wait_cap(ctx, [s.name for s in stages], [s.name for s in group_list], tenant)
                 with _timed(ctx, tenant, group_list[0].name, wait):
                     alias = "story" if tenant == "llama" else None
                     ctx.services.acquirer.acquire(tenant, owner, model_alias=alias, **wait)  # type: ignore[arg-type]
@@ -335,29 +335,20 @@ def _job_timed(ctx: JobContext) -> Iterator[None]:
                  seconds=round(ctx.clock.monotonic() - t0, 3), outcome=outcome)
 
 
-def _wait_cap(ctx: JobContext, names: list[str], group: list[str]) -> dict[str, int]:
+def _wait_cap(ctx: JobContext, names: list[str], group: list[str], tenant: str) -> dict[str, int]:
     """The `timeout_s` of the wait for the graphics card before the stages `group` ({} outside the nightly).
-    In the nightly it is bounded by what the night can spend on it (`Night.wait_cap`, S7): the time left after
-    the estimate of the stages the job still has to run; when even that is gone (a job too long for what is
-    left, begun as the night's first: it is made over two nights), the time left after the group's next stage,
-    so the night still makes progress. At or under 0 it is NS-E201 at once, marked `out_of_time`
-    (`daily._attempt` then leaves the job at that stage for the next night)."""
-    timeout: int | None = None
-    if ctx.deadline is not None:
-        plan = plan_format(ctx.fmt, ctx.job_dir)
-        done = {n for n, e in StageState.load(ctx.job_dir).entries.items() if e.get("status") == "done"}
-        rest = [n for n in names[names.index(group[0]):] if n not in done]
-        mine = [n for n in group if n not in done]
-        timeout = ctx.deadline.wait_cap(plan, rest, WAIT_CAP_S)
-        if timeout is not None and timeout <= 0 and mine:
-            timeout = ctx.deadline.wait_cap(plan, mine[:1], WAIT_CAP_S)
-        if timeout is not None and timeout <= 0 and mine:
-            raise NsError(
-                "NS-E201", f"the night has no time left to wait for the graphics card before {mine[0]}",
-                out_of_time=True, stage=mine[0],
-            )
-        if timeout is not None and not mine:  # a group a resume skips: never refused, never a long wait
-            timeout = max(1, timeout)
+    In the nightly the night's one time decision answers (`Night.before_wait`, S7, `nightfit` rule 6 with the
+    model load): BEGIN with at most the time left after the rest of the job (or, when the rest does not fit,
+    after its next stage), or `OutOfTime` (STOP or CANNOT_FIT) before any wait is begun, which
+    `daily._attempt` acts on. A group a resume skips (all its stages done) is never refused and never waits
+    long."""
+    if ctx.deadline is None:
+        return {}
+    done = {n for n, e in StageState.load(ctx.job_dir).entries.items() if e.get("status") == "done"}
+    rest = [n for n in names[names.index(group[0]):] if n not in done]
+    if not [n for n in group if n not in done]:
+        return {} if ctx.deadline.limit_s is None else {"timeout_s": 1}
+    timeout = ctx.deadline.before_wait(ctx, rest, tenant, WAIT_CAP_S)
     return {} if timeout is None else {"timeout_s": timeout}
 
 

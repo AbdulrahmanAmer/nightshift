@@ -381,8 +381,12 @@ def seed(tmp_home: Path) -> Any:
                 {"channel": "after-dark", "job_id": "j3", "stage": "voice", "jobs": 1, "need_s": 900, "left_s": 600, "basis": "default"},
                 {"channel": "after-dark", "job_id": "j4", "stage": None, "jobs": 1, "resumed": True, "need_s": None, "left_s": None, "basis": "default"},
                 {"channel": "after-dark", "fmt": "master_first", "jobs": 1, "need_s": 9000, "left_s": 3000, "basis": "history", "reason": "stage_too_long", "stage": "render_master"},
+                # the night's one time decision (`nightfit`): its answer, reason and sentence
+                {"channel": "after-dark", "fmt": "master_first", "jobs": 1, "stage": "voice", "need_s": 25200, "left_s": 21000, "basis": "history",
+                 "answer": "cannot_fit", "reason": "cannot_fit_new", "said": "after-dark's full videos are not made at night", "told": True},
             ],
-            "long_jobs": [{"channel": "after-dark", "fmt": "master_first", "need_s": 30000, "capacity_s": 21000, "nights": 2}],
+            "long_jobs": [{"channel": "after-dark", "fmt": "master_first", "need_s": 30000, "capacity_s": 21000, "nights": 2},
+                          {"channel": "after-dark", "fmt": "master_first", "need_s": 30000, "nights": None, "reason": "first_work", "said": "made over nights"}],
             "too_long_stages": [{"channel": "after-dark", "plan": "master_first", "stage": "render_master", "measured_s": 22000, "capacity_s": 21000}],
             "timing": {"task_start": now, "start_basis": "stub", "limit_s": 21600, "deadline": now, "used_s": 20400,
                        "left_s": 600, "stages_s": 18000, "gpu_s": 1200, "wait_s": None, "load_s": None},
