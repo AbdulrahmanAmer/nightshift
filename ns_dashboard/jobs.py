@@ -46,6 +46,14 @@ def scheduled_text(at: datetime) -> str:
     return f"Scheduled for {at:%a %d %b %H:%M}"
 
 
+def released_text(rec: JobRecord) -> str:
+    """The message of a held job once its channel is resumed: what it read before the hold. A Series Workshop
+    part is queued with its title as the message (`params["title"]`, `workshop.make_db_enqueue`); any other
+    job with "Queued", as `JobStore.create` writes it."""
+    title = rec.params.get("title")
+    return title if isinstance(title, str) and title.strip() else "Queued"
+
+
 @dataclass
 class JobRecord:
     """One row of `dashboard_jobs` with `params_json` unpacked into `params` and `result`."""
@@ -765,7 +773,7 @@ class JobWorker:
         elif rec.message.startswith(HELD_PREFIX):
             at = rec.not_before()
             later = at is not None and not self.store.is_due(rec)
-            text = scheduled_text(at) if at and later else "Queued"
+            text = scheduled_text(at) if at and later else released_text(rec)
             if self.store.set_queued_message(rec.job_id, text):
                 self.log.info("job_released", job_id=rec.job_id, channel=rec.channel)
                 self._publish(rec.job_id)

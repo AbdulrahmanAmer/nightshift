@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from ns_common.acquire import Acquirer
 from ns_common.db import Db
+from ns_common.errors import NsError
 from ns_common.logging import Level, NsLogger
 from ns_common.paths import Paths
 
@@ -89,11 +90,18 @@ def output_ids(db: Db, job_id: str) -> list[str]:
     return [str(r["output_id"]) for r in rows]
 
 
-class ChannelPaused(Exception):
+PAUSED_CODE = "NS-E330"
+
+
+class ChannelPaused(NsError):
     """The channel was paused before a story video started: nothing was made and the job stops (P47).
 
     The dashboard's worker looks at the pause when it holds the GPU, so this only meets a pause that came in
-    the seconds after that look, while the studio process was starting."""
+    the seconds after that look, while the studio process was starting. It is coded (NS-E330), so the studio
+    child reports it with its code and hint and the job card does not read NS-E327 ("unexpected problem")."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(PAUSED_CODE, detail)
 
 
 def run_story_jobs(
@@ -178,13 +186,15 @@ def _require_not_paused(env: Env, slug: str) -> None:
 
 def paused_now(env: Env, slug: str) -> bool:
     """True when the channel's profile says `paused` right now (read again between the videos of one run job;
-    a pause can come at any time). A profile that cannot be read is not a pause."""
+    a pause can come at any time). A profile that cannot be read (invalid, gone, or held open by another
+    program on Windows: OSError) is not a pause: a WARN `channel_profile_unreadable` and the run goes on."""
     from ns_studio.channels.crud import get_channel
     from ns_studio.errors import StudioError
 
     try:
         return get_channel(env.paths, slug).status == "paused"
-    except StudioError:
+    except (StudioError, OSError) as e:
+        env.log.warn("channel_profile_unreadable", str(e), channel=slug, check="pause")
         return False
 
 

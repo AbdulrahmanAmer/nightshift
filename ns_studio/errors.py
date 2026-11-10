@@ -1,7 +1,7 @@
 """Studio-level coded conditions (component C7).
 
-`StudioError` carries one of the studio codes NS-E320 to NS-E326 and NS-E329 and takes message and hint from
-`contracts/errors.json` through `ns_common.errors.describe` (CR-C7-1 is applied).
+`StudioError` carries one of the studio codes NS-E320 to NS-E326, NS-E329 and NS-E330 and takes message and
+hint from `contracts/errors.json` through `ns_common.errors.describe` (CR-C7-1 is applied).
 """
 
 from __future__ import annotations
@@ -10,6 +10,8 @@ from ns_common.errors import NsError, describe
 
 #: Code used when a job dies on an exception that carries no code of its own (a bug or a corrupt file).
 UNEXPECTED = "NS-E327"
+#: The channel is paused: no story video of it starts (`studio run --channel`, `--resume`, dashboard; P47).
+PAUSED = "NS-E330"
 
 
 def hint_of(e: NsError) -> str:

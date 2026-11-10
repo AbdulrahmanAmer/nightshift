@@ -558,10 +558,12 @@ PAUSED_TONIGHT = (
 
 def _paused_now(env: jobs.Env, slug: str) -> bool:
     """True when the channel's profile says `paused` right now (read again: a pause can come at any time,
-    from the Dashboard, the Assistant or `studio pause` in another window). Unreadable means not paused."""
+    from the Dashboard, the Assistant or `studio pause` in another window). Unreadable (invalid, gone, or held
+    open by another program on Windows: OSError) means not paused: a WARN and the night goes on."""
     try:
         return get_channel(env.paths, slug).status == "paused"
-    except StudioError:
+    except (StudioError, OSError) as e:
+        env.log.warn("channel_profile_unreadable", str(e), channel=slug, check="pause")
         return False
 
 

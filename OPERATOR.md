@@ -312,8 +312,10 @@ stopped card in **Create** and **Queue**) and the Assistant's resume are refused
 "'<channel>' is paused. Resume it first.", the same answer as a new video. A pause does not stop a story video
 that is already being made: press **Cancel** on it under **Working now** if it must stop. A Create request for
 several videos finishes the one it is making and does not start the next. A `studio run` typed by hand in a
-terminal (`--channel` or `--resume`) does not look at the pause, so do not type it for a paused channel. Videos that are already
-made stay in the Queue.
+terminal refuses a paused channel with NS-E330 ("The channel is paused."): `--channel <it>` and `--resume <its job>` start
+nothing, a run of every channel leaves it out, and a pause typed while a `studio run` works stops it before its next
+video. After the night, the Queue's **Last night** card says how many jobs a pause held ("1 job not started:
+<channel> is paused"). Videos that are already made stay in the Queue.
 
 Type the commands in a terminal opened after setup finished, with the full path of the studio program in the
 install folder. Windows Terminal opens PowerShell, and there the quoted path needs `&` in front of it, or

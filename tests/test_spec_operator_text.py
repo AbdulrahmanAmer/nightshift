@@ -676,11 +676,34 @@ def test_the_texts_name_the_count_loop_the_hand_typed_run_and_the_wrong_schedule
     """P47 review round: what a pause still does not reach is written down, not left to be found."""
     guide = _flat(doc_section(GUIDE, HEADING))
     assert "several videos" in guide and "does not start the next" in guide
-    assert "`studio run`" in guide and "does not look at the pause" in guide
+    # P47 follow-ups: `studio run --channel` / `--resume` refuse a paused channel now, with NS-E330
+    assert "`studio run`" in guide and "does not look at the pause" not in guide
+    assert "refuses a paused channel with NS-E330" in guide and "`--resume <its job>`" in guide
     assert "Scheduled for <time>" in guide
     assert "several videos" in _flat(doc_section(README, HEADING))
     d = _flat(decision("Incident procedure"))
     assert "`paused_now`" in d and "`run_cmd`" in d and "Scheduled for <time>" in d
+    assert "do not look at the pause" not in d and "refuse with NS-E330" in d and "`_run_jobs`" in d
+
+
+def test_the_texts_name_ns_e330_the_last_night_card_and_the_engine_start():
+    """P47 follow-ups: what each route now says about a paused channel is written where the owner reads."""
+    from ns_dashboard import studio_bridge
+    from ns_dashboard.assistant import composite
+    from ns_studio import cli as studio_cli
+    from ns_supervisor import scheduled
+
+    paused = getattr(studio_bridge, "ChannelPaused", None)
+    assert paused is not None and paused("x").code == "NS-E330", "a pause met by the studio child is coded"
+    assert "PAUSED" in inspect.getsource(studio_cli._run_jobs)
+    assert "_start_of" in inspect.getsource(composite.tonight_plan)
+    assert "HELD_KINDS" in inspect.getsource(scheduled.overdue_scheduled_jobs)
+    assert "r.summary?.paused" in tsx("pages/Queue.tsx")
+    d = _flat(decision("Incident procedure"))
+    assert "NS-E330" in d and "Queue's \"Last night\" card prints them" in d and "is paused yet" not in d
+    assert "`tonight_plan`" in d and "`overdue_scheduled_jobs`" in d and "`channel_profile_unreadable`" in d
+    assert "`jobs.released_text`" in d
+    assert "Last night" in _flat(doc_section(GUIDE, HEADING))
 
 
 def test_the_content_safety_checklist_is_not_narrower_than_18_3():

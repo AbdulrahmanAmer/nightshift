@@ -19,7 +19,9 @@ from typing import Any
 from ns_common.errors import describe
 from ns_dashboard.assistant import orientation
 from ns_dashboard.assistant.registry import ToolCall, ToolContext, ToolDef, ToolSpec, obj
+from ns_dashboard.channel_hold import HELD_KINDS
 from ns_dashboard.errors import AdapterUnavailable, ApiError
+from ns_dashboard.jobs import JobRecord
 from ns_dashboard.logs_tail import LEVELS, tail
 from ns_dashboard.security import is_within
 
@@ -256,6 +258,17 @@ def what_worked(c: ToolContext, a: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- tonight_plan
 
 
+def _start_of(job: JobRecord, held_by: dict[str, str]) -> str:
+    """When a queued job starts: its set time, or as soon as possible; a story job of a paused channel waits for
+    the resume (`channel_hold.HELD_KINDS`), also past its set time."""
+    name = held_by.get(job.channel or "") if job.kind in HELD_KINDS else None
+    if name is None:
+        return job.schedule_at or "as soon as possible"
+    if job.schedule_at:
+        return f"{job.schedule_at} if {name} is resumed by then, else when {name} is resumed"
+    return f"when {name} is resumed"
+
+
 def tonight_plan(c: ToolContext, a: dict[str, Any]) -> dict[str, Any]:
     """What the nightly run will make: channels, counts and the governor's reasons, run time, queued jobs."""
     from ns_studio.channels import cadence
@@ -267,6 +280,8 @@ def tonight_plan(c: ToolContext, a: dict[str, Any]) -> dict[str, Any]:
     planned = {d.channel.slug for d in due}
     nxt = c.dash.engine.next_run()
     queued = c.dash.state.store.list_jobs("queued", None, 10)
+    # the job worker holds a paused channel's story jobs until the resume (P47, `channel_hold`)
+    held_by = {ch.slug: ch.display_name for ch in chans if ch.status == "paused"}
     return {
         "next_run": nxt.isoformat(timespec="minutes") if nxt else None,
         "plan": [
@@ -277,7 +292,7 @@ def tonight_plan(c: ToolContext, a: dict[str, Any]) -> dict[str, Any]:
         ],
         "active_but_nothing_due": [ch.slug for ch in chans if ch.status == "active" and ch.slug not in planned],
         "paused": [ch.slug for ch in chans if ch.status != "active"],
-        "queued_jobs": [{"job_id": j.job_id, "kind": j.kind, "channel": j.channel, "start": j.schedule_at or "as soon as possible"}
+        "queued_jobs": [{"job_id": j.job_id, "kind": j.kind, "channel": j.channel, "start": _start_of(j, held_by)}
                         for j in queued],
         "next": {"tool": "start_story_job", "why": "To add a video outside the plan, use start_story_job (it asks first)."},
     }
