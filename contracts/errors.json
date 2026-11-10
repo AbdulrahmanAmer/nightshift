@@ -90,6 +90,7 @@
   "NS-E325": {"message": "The variation pools are exhausted.", "hint": "Widen the pools with 'studio channel edit' or wait for the 30-day ledger to clear."},
   "NS-E326": {"message": "Output not found or not in a state that allows this action.", "hint": "Run 'studio review' to list the outputs and their status."},
   "NS-E329": {"message": "This video is a test output and cannot be published.", "hint": "It was made on an engine-test install (tiny_story): a tiny model, a short length, placeholder voice and footage. Make the video again on an install without tiny_story to publish it."},
+  "NS-E330": {"message": "The channel is paused.", "hint": "A paused channel makes no story video. Check its last videos, resume it (Dashboard > Channels, or 'studio resume <slug>'), then start or continue the video again."},
   "NS-E408": {"message": "Transcription failed.", "hint": "Check that the video has an audio track and that the whisper model is installed; run 'ns verify --quick'. For GPU errors see NS-E112."},
   "NS-E409": {"message": "Download failed.", "hint": "Check the link and that the video is yours or you have permission to use it; yt-dlp must be installed by setup."},
   "NS-E328": {"message": "A job was interrupted by a restart of Nightshift or the PC.", "hint": "Press Retry from where it stopped: the finished stages are kept. If it happens every night, check the PC's sleep and restart settings."},

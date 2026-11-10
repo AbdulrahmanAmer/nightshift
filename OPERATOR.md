@@ -296,14 +296,51 @@ instead of ours. To change a prompt, copy its file from `ns_studio\prompts\` to 
 ## If YouTube sends a warning or strike
 
 If YouTube sends a warning, a strike or a monetization notice about a channel, stop that channel first and look at
-what it made. A pause stops only new work: the night run skips a paused channel and the Dashboard refuses to start
-a story video for it (the Clipper does not check whether the channel is paused). Videos that are already made
-stay in the Queue. A story video that is already queued or scheduled (Create > **Pick a time**) still runs after
-the pause, because the Dashboard does not look at the channel again when it starts a waiting job: open **Create**
-and press **Cancel** on every job of that channel under **Working now**. The same goes for a story video that
-stopped with an error: **Retry from where it stopped** (on its card in **Create** and **Queue**) does not refuse a
-paused channel and starts that video again, so do not press it on any stopped card of that channel until you
-resume the channel.
+what it made. A pause holds the channel's story videos that have not started: the night run skips a paused
+channel (and, if the pause comes during the night, it starts no further video of that channel, new or half-made
+from an earlier night; the morning report lists them under `paused`, not under `skipped`; a half-made video it left
+waiting is continued by the first night after you resume the channel only if it started no more than three days before
+that night, an older one waits for **Retry** in the Queue), and the Dashboard
+refuses to start a story video for it (the Clipper does not check whether the channel is paused). A story video that
+is already queued or scheduled (Create > **Pick a time**) does not start while the channel is paused: it stays
+waiting under **Working now**, also when its time comes, and starts by itself, in its turn, after you
+resume the channel. This holds also for a video that was already waiting for the engine because the night run was
+using it: when the engine becomes free the Dashboard looks at the channel again, makes no video and puts the job
+back to waiting (until then its card still reads "Waiting for GPU"; if that wait for the engine runs out after two
+hours, the job fails with NS-E201 and no video is made). The job's status text says why ("Paused: <channel> is paused since <time>; resume it to release
+this job"); the Queue's **Render jobs** card shows it (Stage: Paused, with that text); the Create page does not
+print it yet: Create says "Waiting for the engine" for it, or "Scheduled for <time>" while the time it was set for
+is still ahead, which is not the real reason. **Retry from where it stopped** (on a
+stopped card in **Create** and **Queue**) and the Assistant's resume are refused for a paused channel with
+"'<channel>' is paused. Resume it first.", the same answer as a new video. A story video that is already being
+made stops before its next step: the step under way is finished first (press **Cancel** under **Working now** to
+stop at once), what it made so far is kept, the job goes back to waiting under **Working now** and continues from
+that step by itself after you resume the channel. Nothing you asked for is lost: a Create request for several
+videos does not start the next while paused, and after the resume it finishes the video it was making and then
+makes the ones still owed (the status text says how many, for example "(3 videos still to make, the first one half
+made)"); none is made twice. If you resume before the Dashboard has looked at the stopped job, nothing is lost
+either: the job goes back to waiting as "Queued" with the same videos still to make and continues in its turn
+(it does not stop with an error). Its card, while it waits and when it is finished, lists every video of the
+request, also those made before the pause. **Cancel** on a waiting request stops it for good: the card then says
+how many videos were made and names the half-made one, whose files stay in its job folder (nothing is deleted).
+**Retry from where it stopped** on a story card that stopped with an error or after a restart continues the video
+that stopped and also makes the videos of that request that had not started; once that has started work, pressing
+Retry on the old card again is refused, so nothing is made twice (the message that appears when you press
+Retry says how many videos it will make). A video the night run was making when you paused
+waits the same way and is continued by the first night after the resume if it started no more than three days
+before that night (an older one waits for **Retry** in the Queue; a resume during the same night does not
+continue it that night). Its Queue card says "its channel was paused during the night's run" and that the next
+nightly run continues it after you resume. A video that a power cut or a restart interrupted, and whose channel
+you paused afterwards, says the same way back ("Resume the channel: the next nightly run then continues it"),
+not "Press Retry": Retry is refused while the channel is paused. A waiting video holds no part of the graphics card: the engine is
+free for other work until it continues, and a job that is paused between two steps does not ask for the
+graphics card again, so no model is loaded for it. A `studio run` typed by hand in a
+terminal refuses a paused channel with NS-E330 ("The channel is paused."): `--channel <it>` and `--resume <its job>` start
+nothing, and a run of every channel leaves it out. A pause typed while a `studio run` works stops it before its
+next step: the video under way is left half made and recorded as failed with NS-E330, and the terminal prints
+`studio run --resume <job id>`, which continues it from that step once the channel is resumed (with `--count`,
+the videos it had not started are not made: type the run again). After the night, the Queue's **Last night** card says how many jobs a pause held ("1 job not started:
+<channel> is paused"). Videos that are already made stay in the Queue.
 
 Type the commands in a terminal opened after setup finished, with the full path of the studio program in the
 install folder. Windows Terminal opens PowerShell, and there the quoted path needs `&` in front of it, or

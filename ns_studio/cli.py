@@ -22,9 +22,10 @@ from ns_studio.calibrate import run as calibration
 from ns_studio.channels import cadence, crud
 from ns_studio.clipper import cli as clipper_cli
 from ns_studio.context import JobContext
+from ns_studio.daily import _paused_now as paused_now
 from ns_studio.daily import nothing_due_message, run_daily
 from ns_studio.diskroom import require_story_room
-from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected, hint_of
+from ns_studio.errors import PAUSED, UNEXPECTED, StudioError, describe_unexpected, hint_of
 from ns_studio.footage_keys import require_footage_key
 from ns_studio.learn import importer, reweight, status
 from ns_studio.orchestrator import OWNER_SCRIPT_FORMATS, plan_job, run_job
@@ -252,14 +253,19 @@ def _run_jobs(
 ) -> None:
     """The `--resume` and plain branches of `studio run`."""
     if resume is not None:
-        ctx = jobs.load_job(env, resume)
+        ctx = jobs.load_job(env, resume)  # reads the channel profile again (`get_channel`)
         jobs.prepare_plan(ctx.fmt, policy)
         if dry_run:
             typer.echo("plan: " + " -> ".join(run_job(ctx, dry_run=True)))
             return
+        if ctx.channel.status == "paused":  # as the Dashboard refuses Retry of a paused channel's job (P47)
+            env.log.info("run_channel_paused", channel=ctx.channel.slug, job_id=ctx.job_id)
+            who = f"{ctx.channel.display_name} ({ctx.channel.slug})"
+            raise StudioError(PAUSED, f"{who}: job {ctx.job_id} was not continued")
         # a resumed job needs only what its unfinished stages still write; refused (NS-E104) before it starts
         require_story_room(env.paths, env.log, ctx.channel, ctx.fmt, fake=env.fake, resume_dir=ctx.job_dir)
-        ran = run_job_guarded(ctx, resume=True)
+        with _say_how_to_continue(ctx):
+            ran = run_job_guarded(ctx, resume=True)
         rows = env.db.query("select output_id from outputs where job_id=?", (ctx.job_id,))
         # the Queue card of an interrupted job is done now
         ownership.settle_resumed(env.db, ctx.job_id, [r["output_id"] for r in rows])
@@ -272,7 +278,17 @@ def _run_jobs(
     for ch in channels:
         job_fmt = fmt or ch.format
         jobs.prepare_plan(job_fmt, policy)
-        for _ in range(count):
+        for n in range(count):
+            # before EVERY job, as a pause typed in another window lands at any time (P47): the named
+            # channel is refused with NS-E330, as the Dashboard refuses it; a run of every channel (a paused
+            # one is not in its list) leaves out the one paused since and goes on with the others
+            if paused_now(env, ch.slug):
+                env.log.info("run_channel_paused", channel=ch.slug, made=n, left=count - n)
+                if channel is not None:
+                    made = f"{n} of {count} jobs were made" if n else "no job was made"
+                    raise StudioError(PAUSED, f"{ch.display_name} ({ch.slug}): {made}")
+                typer.echo(f"channel {ch.slug} was paused: {count - n} job(s) not started")
+                break
             require_footage_key(env.services)  # before any GPU work: `clips` would fail an hour in
             # and before the job exists: a drive with less room than the job needs writes nothing (D-33)
             require_story_room(env.paths, env.log, ch, job_fmt, fake=env.fake)
@@ -280,8 +296,25 @@ def _run_jobs(
                 ctx = jobs.make_script_job(env, ch, job_fmt, script, title, rng=rng)
             else:
                 ctx = jobs.make_job(env, ch, job_fmt, rng=rng)
-            ran = run_job_guarded(ctx)
+            with _say_how_to_continue(ctx):
+                ran = run_job_guarded(ctx)
             typer.echo(f"job {ctx.job_id} done: {len(ran)} stages ({ch.slug}, {ctx.fmt})")
+
+
+@contextmanager
+def _say_how_to_continue(ctx: JobContext) -> Iterator[None]:
+    """A pause typed while the job runs stops it before its next stage (NS-E330, `ns_studio.pause`): say how
+    to continue it, then let `guarded` print the error. Its finished stages are kept."""
+    try:
+        yield
+    except NsError as e:
+        if e.code == PAUSED:
+            typer.echo(
+                f"job {ctx.job_id} stopped before its next stage because {ctx.channel.slug} was paused; after"
+                f" studio resume {ctx.channel.slug}, continue it with: studio run --resume {ctx.job_id}",
+                err=True,
+            )
+        raise
 
 
 def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:

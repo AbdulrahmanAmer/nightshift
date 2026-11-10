@@ -10,6 +10,7 @@ from pathlib import Path
 from ns_common.errors import NsError
 from ns_studio.context import JobContext, owner_script_of
 from ns_studio.media.job_formats import prepare_job_formats
+from ns_studio.pause import require_not_paused
 from ns_studio.stages import REGISTRY, Stage, Tenant, needs_embed, run_stage
 from ns_studio.text.story_profile import note_job
 
@@ -165,6 +166,10 @@ def embed_lease(ctx: JobContext, stage: Stage, owner: str) -> Iterator[None]:
         ctx.services.acquirer.release("embed", owner)
 
 
+#: Formats a pause does not stop: a Clipper job cuts the owner's own video, accepted for a paused channel.
+UNPAUSED_FORMATS = frozenset({"clip"})
+
+
 def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> list[str]:
     """Run every stage of `ctx.fmt` in order and return the names that were visited.
 
@@ -177,13 +182,29 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
     prepare_job_formats(ctx)  # which format each video is drawn from, chosen once, before the first stage
     owner = f"studio:{ctx.job_id}"
     ran: list[str] = []
+
+    def not_paused(stage: str) -> None:  # P47: no stage of a paused channel's story job starts, on any route
+        if ctx.fmt not in UNPAUSED_FORMATS:
+            ch = ctx.channel
+            require_not_paused(ctx.paths, ctx.log, ch.slug, ch.display_name, ctx.job_id, stage)
+
     for tenant, group in groupby(stages, key=_tenant_of):
         group_list = list(group)
         if tenant is not None:
+            # Before the graphics card is asked for: a job paused between two groups must not make the engine
+            # swap tenants and load a model it will not use (the check before every stage, below, stays: the
+            # wait for the card can take hours, and a pause may come during it).
+            not_paused(group_list[0].name)
             ctx.services.acquirer.acquire(tenant, owner, model_alias="story" if tenant == "llama" else None)
         try:
             for st in group_list:
+                if needs_embed(st):
+                    not_paused(st.name)  # likewise before the embed service is started for this stage
                 with embed_lease(ctx, st, owner):
+                    # The check no route gets past: immediately before EVERY stage, after any wait for the GPU
+                    # or the embed lease (up to hours); a pause waits for the stage under way only. Raising
+                    # here releases the tenant in the `finally` below, so a held job keeps no lease.
+                    not_paused(st.name)
                     run_stage(ctx, st, force=not resume)
                 ran.append(st.name)
         finally:

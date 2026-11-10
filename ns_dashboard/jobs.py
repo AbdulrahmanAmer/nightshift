@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import sqlite3
@@ -28,6 +29,15 @@ STATUSES = ("queued", "running", "done", "failed", "cancelled")
 GPU_KINDS = frozenset({"run", "clip", "verify", "series_part", "apply_voice"})
 JOB_OWNER = "dashboard:job"  # the owner id of the worker's heartbeat to the engine (never holds the GPU)
 PULSE_S = 60.0  # how often a running job tells the engine it is alive
+PAUSED_CODE = "NS-E330"  # the studio stopped a job because its channel was paused (contracts/errors.json)
+HELD_PREFIX = "Paused: "  # the message of a queued job that waits because its channel is paused (P47)
+#: How often in a row a job the studio stopped for a pause is put back in line although the worker itself does
+#: not see the pause (the owner resumed before the worker looked). A person can cause this once per pause; a
+#: studio and a worker that disagree about the same profile would do it for ever, so the fourth time it fails.
+PAUSE_REQUEUE_LIMIT = 3
+REQUEUED, CANCEL_ASKED, GONE = "requeued", "cancel_asked", "gone"  # what `JobStore.requeue` answers
+#: Called with a queued job: the plain reason it must not start now (its channel is paused), or None.
+Hold = Callable[["JobRecord"], str | None]
 
 
 class JobCancelled(Exception):
@@ -36,6 +46,80 @@ class JobCancelled(Exception):
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
+def scheduled_text(at: datetime) -> str:
+    """The message of a job that waits for its start time (Create > Pick a time)."""
+    return f"Scheduled for {at:%a %d %b %H:%M}"
+
+
+def released_text(rec: JobRecord) -> str:
+    """The message of a held job once its channel is resumed: what it read before the hold. A Series Workshop
+    part is queued with its title as the message (`params["title"]`, `workshop.make_db_enqueue`); any other
+    job with "Queued", as `JobStore.create` writes it."""
+    title = rec.params.get("title")
+    return title if isinstance(title, str) and title.strip() else "Queued"
+
+
+def asked_videos(params: dict[str, Any]) -> int:
+    """How many videos a stored run request makes: its `count` (1 when unset, and for the owner's own script,
+    which is one video whatever the count says)."""
+    if params.get("script") and not params.get("resume_job_id"):
+        return 1
+    try:
+        return max(1, int(params.get("count") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def owed_after_stop(
+    params: dict[str, Any], seen: Iterable[Any], stop: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """What a run request that stopped before its end still has to make, as the params that make it:
+    `{"resume_job_id": <the half-made studio job, or None>, "count": <videos to make, that one included>}`.
+
+    The ONE place that decides it (P47: every video asked for is made exactly once), read by the worker when
+    it puts a paused job back in line and by Retry (`svc_jobs._resume_params`). `seen` are the studio jobs the
+    pass that stopped announced, in order (a continued one first). `stop` is the studio's own account when it
+    stopped for a pause (`left`, `half_made`: `studio_bridge._owed_on_pause`), which also knows a stop between
+    two videos (no half-made one). Without it (an error, a restart, a killed studio process) the last job
+    announced counts as half made; when none was announced the pass made nothing and owes what was asked."""
+    left = (stop or {}).get("left")
+    if isinstance(left, int) and not isinstance(left, bool) and left >= 0:
+        half = (stop or {}).get("half_made")
+        return {"resume_job_id": str(half) if half else None, "count": left + (1 if half else 0)}
+    ids = [str(i) for i in seen if i]
+    if ids:
+        return {"resume_job_id": ids[-1], "count": 1 + max(0, asked_videos(params) - len(ids))}
+    half = params.get("resume_job_id")
+    return {"resume_job_id": str(half) if half else None, "count": asked_videos(params)}
+
+
+def cancelled_text(params: dict[str, Any]) -> str:
+    """The message of a job cancelled while it was queued. A request a pause had stopped mid-way did start:
+    it says what was made and that the half-made video stays unfinished in its job folder (nothing is
+    removed; the folder is the one `studio run --resume <id>` continues)."""
+    if params.get("asked") is None:  # set when the worker puts a stopped job back: without it, nothing ran
+        return "Cancelled before it started"
+    made, half = len(params.get("made_job_ids") or []), half_made_of(params)
+    text = f"Cancelled while it waited: {made} of {params['asked']} videos were made"
+    if half:
+        text += f"; the half-made one ({half}) is not finished and its files stay in its job folder"
+    return text + "; no further video of this request is made"
+
+
+def half_made_of(params: dict[str, Any]) -> str | None:
+    """The studio job a waiting request left half made, or None: only a request the worker put back after a
+    stop has one (`asked` is set then): the video it continues (`resume_job_id`), or a series part's own job.
+    A Retry that has not started yet names a job too, but that one belongs to the card it retries."""
+    if params.get("asked") is None:
+        return None
+    half = params.get("resume_job_id") or params.get("job_id")
+    return str(half) if half else None
+
+
+def _uniq(items: Iterable[Any]) -> list[str]:
+    return list(dict.fromkeys(str(i) for i in items if i))
 
 
 @dataclass
@@ -249,12 +333,22 @@ class JobStore:
         at = rec.not_before()
         return at is None or at <= self.clock()
 
-    def next_queued(self, exclude: Iterable[str] = ()) -> JobRecord | None:
+    def next_queued(self, exclude: Iterable[str] = (), hold: Hold | None = None) -> JobRecord | None:
         """Oldest queued job that is due (FIFO by insertion order), skipping kinds in `exclude`.
 
-        A job with a future `schedule_at` stays queued and is passed over until its time has come.
+        A job with a future `schedule_at` stays queued and is passed over until its time has come. With
+        `hold`, a job it gives a reason for (its channel is paused) is passed over too.
         """
-        return next((r for r in self._queued(exclude) if self.is_due(r)), None)
+        for r in self._queued(exclude):
+            if hold is not None and hold(r) is not None:
+                continue
+            if self.is_due(r):
+                return r
+        return None
+
+    def queued_jobs(self) -> list[JobRecord]:
+        """Every queued job, oldest first (due or not)."""
+        return list(self._queued())
 
     def scheduled(self) -> list[JobRecord]:
         """Queued jobs that are waiting for a start time, soonest first."""
@@ -308,6 +402,66 @@ class JobStore:
                 "UPDATE dashboard_jobs SET progress = ?, message = ? WHERE job_id = ?", (p, message, job_id)
             )
 
+    def set_queued_message(self, job_id: str, message: str) -> bool:
+        """Write the message of a job only while it is still `queued`; True when it was written.
+
+        The hold text is written from a snapshot taken a moment earlier, on the request thread (Channels pause
+        and resume) or the worker's; the job may have started or been cancelled since, and then its own
+        message and progress must stay (one UPDATE with the status in the WHERE, no read-then-write)."""
+        changed = self.db.execute(
+            "UPDATE dashboard_jobs SET progress = 0.0, message = ? WHERE job_id = ? AND status = 'queued'",
+            (message, job_id),
+        )
+        return changed > 0
+
+    def requeue(
+        self, job_id: str, message: str, params_update: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> str:
+        """running -> queued with `message`, as if it had never started, its place in the queue (insertion
+        order) kept. Answers `REQUEUED`; `GONE` when it is no longer running; `CANCEL_ASKED` (nothing
+        changed) when the owner pressed Cancel on it: a Cancel always wins over putting a job back (P47).
+
+        Without `params_update` the row is otherwise untouched (a job that waited at the GPU gate and found
+        its channel paused). With it (a job the studio stopped for a pause, NS-E330) the params are merged and
+        the result is replaced by `result`: what the request made so far, so the waiting card lists it.
+
+        The Cancel flag and the status are read inside one transaction, and `JobWorker.cancel` looks at the
+        row again after it set the flag, so one of the two always sees the other."""
+        with self.db.tx():
+            if self.is_cancel_requested(job_id):
+                return CANCEL_ASKED
+            row = self.db.one("SELECT status, params_json FROM dashboard_jobs WHERE job_id = ?", (job_id,))
+            if row is None or row["status"] != "running":
+                return GONE
+            payload = row["params_json"]
+            if params_update is not None:
+                params, _old = _unpack(payload)
+                payload = json.dumps(
+                    {"params": {**params, **params_update}, "result": result,
+                     "dismissed_at": _dismissed_at(payload)},
+                    default=str,
+                )
+            self.db.execute(
+                "UPDATE dashboard_jobs SET status = 'queued', started_at = NULL, progress = 0.0, message = ?,"
+                " params_json = ? WHERE job_id = ? AND status = 'running'",
+                (message, payload, job_id),
+            )
+        return REQUEUED
+
+    def outputs_of(self, studio_job_ids: Iterable[str]) -> list[str]:
+        """Ids of the `outputs` rows of these studio jobs, in their order (as `studio_bridge.output_ids`)."""
+        out: list[str] = []
+        for job_id in studio_job_ids:
+            try:
+                rows = self.db.query(
+                    "SELECT output_id FROM outputs WHERE job_id = ? ORDER BY created_at, output_id", (job_id,)
+                )
+            except sqlite3.Error:  # the list is a courtesy of the card: the videos are in the Queue anyway
+                continue
+            out.extend(str(r["output_id"]) for r in rows)
+        return out
+
     def finish(self, job_id: str, status: str, message: str, result: dict[str, Any] | None = None) -> None:
         """Terminal state; merges `result` into `params_json`."""
         with self.db.tx():
@@ -345,11 +499,36 @@ class JobStore:
         return self.get(job_id)
 
     def cancel_queued(self, job_id: str) -> bool:
-        """Cancel a job that has not started."""
+        """Cancel a job that is queued: not started, or put back in line by a pause (`cancelled_text` says
+        which; the result then names the half-made studio job, whose folder is left as it is)."""
+        with self.db.tx():
+            row = self.db.one("SELECT status, params_json FROM dashboard_jobs WHERE job_id = ?", (job_id,))
+            if row is None or row["status"] != "queued":
+                return False
+            payload = row["params_json"]
+            params, result = _unpack(payload)
+            half = half_made_of(params)
+            if half:
+                ids = _uniq([*((result or {}).get("studio_job_ids") or []), half])
+                payload = json.dumps(
+                    {"params": params, "result": {**(result or {}), "studio_job_ids": ids, "half_made": half},
+                     "dismissed_at": _dismissed_at(payload)},
+                    default=str,
+                )
+            self.db.execute(
+                "UPDATE dashboard_jobs SET status = 'cancelled', message = ?, finished_at = ?,"
+                " params_json = ? WHERE job_id = ? AND status = 'queued'",
+                (cancelled_text(params), _now(), payload, job_id),
+            )
+        return True
+
+    def mark_cancelling(self, job_id: str) -> bool:
+        """Say on a RUNNING job that it stops after its stage; False (nothing written) when it is not running
+        any more, so the text never lands on a job that was put back in line meanwhile."""
         n = self.db.execute(
-            "UPDATE dashboard_jobs SET status = 'cancelled', message = 'Cancelled before it started',"
-            " finished_at = ? WHERE job_id = ? AND status = 'queued'",
-            (_now(), job_id),
+            "UPDATE dashboard_jobs SET message = 'Cancelling after the current stage...'"
+            " WHERE job_id = ? AND status = 'running'",
+            (job_id,),
         )
         return n == 1
 
@@ -521,6 +700,7 @@ class JobWorker:
         on_end: dict[str, Callable[[JobRecord], None]] | None = None,
         on_done: dict[str, Callable[[JobRecord], None]] | None = None,
         sweep: Callable[[set[str], dict[str, str]], object] | None = None,
+        hold: Hold | None = None,
         recover_studio: Callable[[], object] | None = None,
         idle_poll_s: float = 30.0,
         awake: Callable[[], AbstractContextManager[None]] = keep_awake,
@@ -541,6 +721,9 @@ class JobWorker:
         self.on_done = on_done or {}
         #: Called once at start with the ids of the queued and running jobs, after interrupted ones failed.
         self.sweep = sweep
+        #: Asked about every queued job before it may start: the reason it must wait (its channel is paused),
+        #: or None. A held job stays `queued`, its message says why, and it starts once the reason is gone.
+        self.hold = hold
         #: Called once at start: the studio runs and jobs whose process is gone (a nightly killed by a power
         #: cut or a crash) are closed as interrupted and offered in the Queue with Retry (defect D-31).
         self.recover_studio = recover_studio
@@ -638,19 +821,26 @@ class JobWorker:
         rec = self.store.get(job_id)
         if rec is None:
             raise LookupError(job_id)
-        if rec.status == "queued":
-            if self.store.cancel_queued(job_id):
-                self.log.info("job_cancelled", job_id=job_id)
-                self._end_hook(rec)
-                self._publish(job_id)
-                return "cancelled"
-            # the worker started it between our read and the update: look again, so it is cancelled as running
+        # The job can change under us: the worker starts it (queued -> running) or puts it back because its
+        # channel is paused (running -> queued, `JobStore.requeue`). Each turn acts on what the row says and
+        # looks again, so a Cancel is never left on a job that went back to waiting (P47).
+        for _ in range(4):
+            if rec.status == "queued":
+                if self.store.cancel_queued(job_id):
+                    self.store.clear_cancel(job_id)
+                    self.log.info("job_cancelled", job_id=job_id)
+                    self._end_hook(rec)
+                    self._publish(job_id)
+                    return "cancelled"
+            elif rec.status == "running":
+                self.store.request_cancel(job_id)
+                if self.store.mark_cancelling(job_id):
+                    self._publish(job_id)
+                    return "cancelling"
+                self.store.clear_cancel(job_id)  # it ended or was put back before the flag: act on the row
+            else:
+                break
             rec = self.store.get(job_id) or rec
-        if rec.status == "running":
-            self.store.request_cancel(job_id)
-            self.store.update_progress(job_id, rec.progress, "Cancelling after the current stage...")
-            self._publish(job_id)
-            return "cancelling"
         refreshed = self.store.get(job_id)
         return refreshed.status if refreshed else rec.status
 
@@ -683,7 +873,101 @@ class JobWorker:
             return self._cv.wait_for(self._is_idle, timeout)
 
     def _is_idle(self) -> bool:
-        return self._running_id is None and self.store.next_queued() is None
+        return self._running_id is None and self.store.next_queued(hold=self._held) is None
+
+    # --- holding a paused channel's jobs ---
+    def _hold_reason(self, rec: JobRecord) -> str | None:
+        """The hold's answer for `rec`; a hold that fails to answer is logged and counts as no hold."""
+        if self.hold is None:
+            return None
+        try:
+            return self.hold(rec)
+        except Exception as e:  # a profile that cannot be read must not stop the queue: run as before
+            self.log.warn("hold_check_failed", str(e), job_id=rec.job_id)
+            return None
+
+    def _requeue_if_held(self, rec: JobRecord, ctl: JobControl) -> bool:
+        """The job holds the GPU gate: ask the hold once more (the gate can wait for hours, and a pause may
+        have come meanwhile). When it says wait, the job goes back to `queued` with the reason and True is
+        returned: nothing of it runs. A Cancel pressed meanwhile still wins (it raises `JobCancelled`)."""
+        reason = self._hold_reason(rec)
+        if reason is None:
+            return False
+        outcome = self.store.requeue(rec.job_id, reason)
+        if outcome == CANCEL_ASKED:
+            raise JobCancelled(rec.job_id)
+        if outcome == REQUEUED:
+            self.log.info("job_held_after_gate", job_id=rec.job_id, channel=rec.channel, reason=reason)
+        return True
+
+    def _requeue_paused(self, rec: JobRecord, ctl: JobControl, stop: dict[str, Any]) -> bool:
+        """The studio stopped the job with NS-E330 (its channel was paused while it ran): put it back in line
+        with everything the request still owes (`owed_after_stop`: the half-made video, continued from its
+        stage, and the videos after it), and remember what it made so far (`made_job_ids`), so the finished
+        card lists every video of the request. True when it was put back.
+
+        When the worker sees the pause too, the job waits, held, and continues by itself after the resume.
+        When it does not (the owner resumed before the worker looked), nothing is lost either: the job goes
+        back as plain "Queued" and continues in its turn. A person can cause that once per pause; a studio
+        that keeps reporting a pause the worker cannot see would go round for ever, so after
+        `PAUSE_REQUEUE_LIMIT` such turns in a row the answer is False and the job fails with NS-E330 (its
+        Retry still covers everything owed). False also for a worker with no hold at all, which cannot hold
+        anything. A Cancel pressed meanwhile wins: `JobCancelled`. The kind's end hook is not called: a
+        series part stays with its job and its job folder."""
+        if self.hold is None or rec.kind not in ("run", "series_part"):
+            return False
+        update: dict[str, Any] = {"asked": 1}  # a series part is one video, half made in its own job folder
+        made = _uniq(rec.params.get("made_job_ids") or [])
+        if rec.kind == "run":
+            seen = _uniq(ctl.extras.get("studio_job_ids") or [])
+            owed = owed_after_stop(rec.params, seen, stop)
+            if owed["count"] < 1:
+                return False
+            made = _uniq([*made, *(i for i in seen if i != owed["resume_job_id"])])
+            asked = rec.params.get("asked") or asked_videos(rec.params)
+            update = {**owed, "made_job_ids": made, "asked": asked}
+        later = dataclasses.replace(rec, params={**rec.params, **update})
+        reason = self._hold_reason(later)  # the message says what the request owes, from its new params
+        turns = int(rec.params.get("pause_requeues") or 0)
+        if reason is None and turns >= PAUSE_REQUEUE_LIMIT:
+            return False
+        update["pause_requeues"] = 0 if reason is not None else turns + 1
+        result = {"studio_job_ids": made, "output_ids": self.store.outputs_of(made)} if made else None
+        outcome = self.store.requeue(rec.job_id, reason or self._released_text(later), update, result)
+        if outcome == CANCEL_ASKED:
+            raise JobCancelled(rec.job_id)
+        if outcome == REQUEUED:
+            event = "job_held_mid_way" if reason is not None else "job_requeued_after_pause"
+            self.log.info(event, job_id=rec.job_id, channel=rec.channel, reason=reason, **update)
+        return True
+
+    def _released_text(self, rec: JobRecord) -> str:
+        """The message of a queued job that no pause holds: its set time while that is ahead, else what it
+        read when it was queued (`released_text`)."""
+        at = rec.not_before()
+        return scheduled_text(at) if at is not None and not self.store.is_due(rec) else released_text(rec)
+
+    def _held(self, rec: JobRecord) -> str | None:
+        """Why `rec` must not start (None: it may). Keeps the job's message true: the reason while held,
+        the usual "Queued" / "Scheduled for ..." again once the reason is gone."""
+        reason = self._hold_reason(rec)
+        if reason is not None:
+            if rec.message != reason and self.store.set_queued_message(rec.job_id, reason):
+                self.log.info("job_held", job_id=rec.job_id, channel=rec.channel, reason=reason)
+                self._publish(rec.job_id)
+        elif rec.message.startswith(HELD_PREFIX):
+            if self.store.set_queued_message(rec.job_id, self._released_text(rec)):
+                self.log.info("job_released", job_id=rec.job_id, channel=rec.channel)
+                self._publish(rec.job_id)
+        return reason
+
+    def refresh_holds(self) -> None:
+        """Bring the message of every queued job up to date with its channel (called when a channel is
+        paused or resumed, so the Queue is right at once, also while another job runs)."""
+        if self.hold is None:
+            return
+        for rec in self.store.queued_jobs():
+            self._held(rec)
 
     # --- execution ---
     def _publish(self, job_id: str) -> None:
@@ -693,7 +977,7 @@ class JobWorker:
 
     def run_next(self) -> bool:
         """Run exactly one queued job to completion; False when the queue is empty."""
-        rec = self.store.next_queued(self.inline_kinds)
+        rec = self.store.next_queued(self.inline_kinds, hold=self._held)
         if rec is None:
             return False
         self._execute(rec)
@@ -757,25 +1041,37 @@ class JobWorker:
                 raise RuntimeError(f"no handler for job kind {rec.kind!r}")
             if self.gpu_gate is not None and rec.kind in GPU_KINDS:
                 self.gpu_gate(ctl)
+            if self._requeue_if_held(rec, ctl):  # paused while it waited: no video, no hooks, back in line
+                return
             result = handler(ctl) or {}
-            self.store.finish(rec.job_id, "done", "Done", result)
+            self.store.finish(rec.job_id, "done", "Done", self._whole(rec, result))
             self.log.info("job_done", job_id=rec.job_id, kind=rec.kind)
             self._done_hook(rec)
         except JobCancelled:
-            self.store.finish(rec.job_id, "cancelled", "Cancelled", dict(ctl.extras) or None)
-            self.log.info("job_cancelled", job_id=rec.job_id)
-            self._end_hook(rec)
+            self._end_cancelled(rec, ctl)
         except AdapterUnavailable as e:  # a collaborator that has not landed yet: say so plainly
-            self.store.finish(rec.job_id, "failed", str(e), self._failure(ctl, "unavailable", None))
+            failure = self._whole(rec, self._failure(ctl, "unavailable", None))
+            self.store.finish(rec.job_id, "failed", str(e), failure)
             self.log.warn("job_unavailable", str(e), job_id=rec.job_id)
             self._end_hook(rec)
         except NsError as e:
-            self.store.finish(rec.job_id, "failed", str(e), self._failure(ctl, e.code, hint_of(e)))
+            if e.code == PAUSED_CODE:
+                try:
+                    if self._requeue_paused(rec, ctl, e.data):
+                        return  # stopped by a pause: back in line with all it owes, it continues by itself
+                except JobCancelled:
+                    self._end_cancelled(rec, ctl)
+                    return
+            failure = self._failure(ctl, e.code, hint_of(e))
+            if e.code == PAUSED_CODE:  # the studio's account of the stop: Retry makes exactly what is owed
+                failure["stop"] = {k: e.data[k] for k in ("left", "half_made") if k in e.data}
+            self.store.finish(rec.job_id, "failed", str(e), self._whole(rec, failure))
             self.log.error("job_failed", str(e), job_id=rec.job_id, code=e.code)
             self._end_hook(rec)
         except Exception as e:  # the worker thread must survive any handler failure
             msg = f"{type(e).__name__}: {e}"
-            self.store.finish(rec.job_id, "failed", msg, self._failure(ctl, "job_failed", None))
+            failure = self._whole(rec, self._failure(ctl, "job_failed", None))
+            self.store.finish(rec.job_id, "failed", msg, failure)
             self.log.error("job_failed", msg, job_id=rec.job_id)
             self._end_hook(rec)
         finally:
@@ -786,6 +1082,24 @@ class JobWorker:
             self._publish(rec.job_id)
             with self._cv:
                 self._cv.notify_all()
+
+    def _end_cancelled(self, rec: JobRecord, ctl: JobControl) -> None:
+        """The owner cancelled the running job: record it, with what it had made, and give its work back."""
+        self.store.finish(rec.job_id, "cancelled", "Cancelled", self._whole(rec, dict(ctl.extras)) or None)
+        self.log.info("job_cancelled", job_id=rec.job_id)
+        self._end_hook(rec)
+
+    def _whole(self, rec: JobRecord, result: dict[str, Any]) -> dict[str, Any]:
+        """`result` with the videos the request made in the passes before a pause put it back in line
+        (`made_job_ids`), first: a request's card lists every video it made, however it ended (P47)."""
+        made = _uniq(rec.params.get("made_job_ids") or [])
+        if not made:
+            return result
+        return {
+            **result,
+            "studio_job_ids": _uniq([*made, *(result.get("studio_job_ids") or [])]),
+            "output_ids": _uniq([*self.store.outputs_of(made), *(result.get("output_ids") or [])]),
+        }
 
     def _done_hook(self, rec: JobRecord) -> None:
         """Run the `on_done` hook of the job's kind; it must never break the worker."""

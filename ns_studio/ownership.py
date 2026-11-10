@@ -51,7 +51,7 @@ from ns_common.errors import describe
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.singleton import AlreadyRunning, FileLock
-from ns_studio.errors import UNEXPECTED, StudioError
+from ns_studio.errors import PAUSED, UNEXPECTED, StudioError
 
 OWNERS = "owners"
 INTERRUPTED_CODE = "NS-E328"
@@ -95,6 +95,10 @@ OPEN_STATES = ("starting", "running")
 #: Whose dead jobs the Queue offers (a clip, a series part or a calibration has its own way back).
 STORY_ORIGINS = ("daily", "manual")
 OFFER_SOURCE = "nightly_recovery"
+#: The `owner` of a record the nightly closed because the job's channel was paused while it ran (P47): its
+#: Queue card says so, with NS-E330, instead of naming a restart that did not happen.
+PAUSED_OWNER = "its channel was paused"
+PAUSED_REASON = "its channel is paused"  # `resume_problem` of a job whose channel is paused
 
 Liveness = Literal["live", "dead", "interrupted", "ended", "unknown"]
 
@@ -669,15 +673,42 @@ def _our_row(rows: Sequence[Any]) -> Any | None:
     return None
 
 
-def _card_text(stage: str | None, resume: str, reason: str | None = None) -> str:
+def _card_text(stage: str | None, resume: str, reason: str | None = None, owner: str | None = None) -> str:
+    """The words of an interrupted job's Queue card. Two things are said, each from its own fact:
+
+    - the cause, from who stopped it last (`owner`): a pause, or a dead process;
+    - the way back, from why it waits NOW (`resume`, `reason`), whatever stopped it first. A job whose channel
+      is paused cannot be retried (Retry answers 409 `channel_paused`), so its card never says "press Retry"
+      without "after the resume", and it says that the first nightly run after the resume continues it. The
+      sentences stay true when the owner pauses or resumes later, because nothing rewrites a card then.
+    """
     at = f"Interrupted at {stage}" if stage else "Interrupted"
-    stopped = f"{at}: the PC or Nightshift stopped during the night's run."
-    if resume == "pending":
-        return f"{stopped} The next nightly run continues it, or press Retry."
+    cause = "its channel was paused" if owner == PAUSED_OWNER else "the PC or Nightshift stopped"
+    stopped = f"{at}: {cause} during the night's run."
     if resume == "resumed":
         return f"{stopped} The nightly run continued it and it finished."
+    if reason == PAUSED_REASON:
+        since = "" if owner == PAUSED_OWNER else " Its channel was paused after that."
+        return (
+            f"{stopped}{since} Resume the channel: the next nightly run then continues it, if the job "
+            f"started no more than {RESUME_WITHIN_DAYS} days before that run; or press Retry after the "
+            "resume."
+        )
+    if resume == "pending":
+        return (
+            f"{stopped} The next nightly run continues it, or press Retry (if its channel is paused by then, "
+            "both wait for the resume)."
+        )
     why = f" ({reason})" if reason else ""
     return f"{stopped} Press Retry to continue it{why}."
+
+
+def _card_error(stage: str | None, owner: str | None, reason: str | None) -> dict[str, Any]:
+    """The code and hint of the card: NS-E330 when a pause stopped the job or holds it now (its hint says to
+    resume the channel first), else NS-E328 (its hint says to press Retry, which then works)."""
+    if owner == PAUSED_OWNER or reason == PAUSED_REASON:
+        return {"code": PAUSED, "hint": describe(PAUSED).hint, "stage": stage}
+    return {"code": INTERRUPTED_CODE, "hint": INTERRUPTED_HINT, "stage": stage}
 
 
 def _write_card(
@@ -701,7 +732,7 @@ def _card_result(
 ) -> dict[str, Any]:
     return {
         "studio_job_ids": [job_id],
-        "error": {"code": INTERRUPTED_CODE, "hint": INTERRUPTED_HINT, "stage": stage},
+        "error": _card_error(stage, rec.get("owner"), reason),
         "interrupted": {
             "stage": stage,
             "run_id": rec.get("run_id"),
@@ -731,7 +762,7 @@ def offer_job(
     if mine is None and rows:
         return None
     result = _card_result(job_id, stage, rec, resume, reason)
-    message = _card_text(stage, resume, reason)
+    message = _card_text(stage, resume, reason, rec.get("owner"))
     stamp = _iso(when)
     if mine is not None:
         _write_card(db, str(mine["job_id"]), "failed", message, result, finished=stamp)
@@ -791,7 +822,9 @@ def _settle(
         interrupted["reason"] = reason
     result["interrupted"] = interrupted
     stage = interrupted.get("stage")
-    message = _card_text(stage, resume, reason)
+    message = _card_text(stage, resume, reason, interrupted.get("owner"))
+    if resume == "needs_retry":  # the code and hint follow the reason it waits now, like the words
+        result["error"] = _card_error(stage, interrupted.get("owner"), reason)
     if status == "done":
         result.pop("error", None)
         result["output_ids"] = list(output_ids or [])
@@ -1186,9 +1219,9 @@ def recovery_message(
     """The morning note for what `recover` closed, or None when nobody needs telling.
 
     `outcomes` is what the nightly then did with a resumable job, by job id: `("resumed", None)`,
-    `("failed", <code>)`, `("waiting", None)` (the GPU was busy) or `("busy", None)` (a Retry from the Queue
-    was already running it). Without an outcome the note never claims
-    the job is being continued: it says when it will be, and how to continue it by hand.
+    `("failed", <code>)`, `("waiting", None)` (the GPU was busy), `("paused", None)` (its channel was paused
+    during the night) or `("busy", None)` (a Retry from the Queue was already running it). Without an outcome
+    the note never claims the job is being continued: it says when it will be, and how to continue it by hand.
     """
     outcomes = outcomes or {}
     lines: list[str] = []
@@ -1209,6 +1242,12 @@ def recovery_message(
             tail = f"The GPU was busy, so it waits for the next nightly run; or {_way_back(j)}."
         elif what == "busy":
             tail = "It is being continued right now from the Queue."
+        elif what == "paused":
+            tail = (
+                "Its channel was paused during the night, so it waits; resume the channel and the next "
+                f"nightly run continues it, as long as the job started no more than {RESUME_WITHIN_DAYS} "
+                f"days before that run; an older one is not continued by the night, so {_way_back(j)}."
+            )
         elif j.resumable:
             tail = f"It continues at the next nightly run, or {_way_back(j)}."
         else:
@@ -1321,6 +1360,8 @@ def pending_resumes(paths: Paths, db: SqlDb, now: datetime | None = None) -> lis
                 write_record(paths, job_id, resume_problem=problem)
                 settle_needs_retry(db, job_id, problem)
             continue
+        if rec.get("resume_problem"):  # the problem is gone: a later one, the same again, is told again
+            write_record(paths, job_id, resume_problem=None)
         out.append(rec)
     return out
 

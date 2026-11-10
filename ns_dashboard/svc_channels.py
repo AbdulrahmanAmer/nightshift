@@ -170,6 +170,10 @@ class ChannelsService:
                 (slug, now_iso(), kind, (note or "").strip()[:500] or None),
             )
         self.s.log.info(f"channel_{kind}", slug=slug)
+        try:
+            self.s.worker.refresh_holds()  # queued story jobs show (or lose) "Paused: ..." at once (P47)
+        except Exception as e:  # the status is saved; the worker's own pass fixes the messages
+            self.s.log.warn("hold_refresh_failed", str(e), slug=slug)
         return {"profile": ch.model_dump(mode="json")}
 
     def pause(self, slug: str, note: str | None = None) -> dict[str, Any]:
