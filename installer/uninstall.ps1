@@ -3,7 +3,7 @@
     Nightshift uninstaller (component C1, spec 5).
 
 .DESCRIPTION
-    Removes the scheduled task, desktop shortcuts, venvs\, bin\, the program folder (app, app.new, app.prev, app.failed, app.swap),
+    Removes the scheduled task, desktop shortcuts, venvs\, bin\, the program folder (app, app.new, app.prev, app.failed, app.swap, app.swap-left-*),
     the FFmpeg fallback's user PATH entry and the NIGHTSHIFT_HOME user environment
     variable. models\ and the user data (outbox, rejected, data, imports, cache) are kept unless you answer
     yes (default No) or pass -DeleteModels / -DeleteData. Safe to run more than once.
@@ -243,7 +243,10 @@ else {
     # it, so the deferred cleanup of the window removes these.
     # app.failed and app.swap are what an interrupted `ns update` leaves beside the program folder;
     # app.prev-config.zip is the copy of the settings files an update keeps for `ns update --rollback`
-    foreach ($leaf in @('app', 'app.new', 'app.prev', 'app.prev-config.zip', 'app.prev-config.zip.unrestored', 'app.prev-config.zip.lock', 'app.rollback-pending.json', 'app.failed', 'app.swap')) { Remove-Tree -Path (Join-Path $nsHome $leaf) }
+    foreach ($leaf in @('app', 'app.new', 'app.prev', 'app.prev-config.zip', 'app.prev-config.zip.unrestored', 'app.prev-config.zip.lock', 'app.rollback-pending.json', 'app.failed', 'app.swap', 'nightshift-launch.ps1')) { Remove-Tree -Path (Join-Path $nsHome $leaf) }
+    # app.swap-left-<stamp>: a third program folder a start set aside after an interrupted rollback
+    # (ns_common/rollback_intent.py settle_swap); nightshift-launch.ps1 above is what the shortcuts start
+    foreach ($left in @(Get-ChildItem -LiteralPath $nsHome -Directory -Filter 'app.swap-left-*' -ErrorAction SilentlyContinue)) { Remove-Tree -Path $left.FullName }
 }
 if ($wipeModels) { Remove-Tree -Path (Join-Path $nsHome 'models') }
 if (-not $SkipSystem) {

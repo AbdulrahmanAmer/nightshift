@@ -3,6 +3,13 @@
 Shortcuts point at the launcher scripts under ``<app>/launchers``; launchers that are not in this build are
 reported and skipped. The scheduled task is registered by ``ns schedule install``.
 
+Each shortcut starts the launcher through ``<home>/nightshift-launch.ps1`` (a copy of
+``installer/launch.ps1``, card 206-carried): that file is beside the program folder, not in it, so when an
+interrupted update or rollback has left no ``<home>/app`` the shortcut still opens a window that says so and
+says to run INSTALL.cmd from the zip, instead of flashing and closing. A build without that file keeps the
+direct shortcut. An install made before this keeps its direct shortcuts until setup runs again (``check``
+asks for a re-run while the copy is missing).
+
 Toasts: ``ns_supervisor.notify`` sends them as AppUserModelID ``Nightshift``, which Windows ignores unless
 it is registered. This step writes the registry key (DisplayName and IconUri) and, best effort, stamps the
 same ID on the Desktop dashboard shortcut through IPropertyStore. If only the registry part works, toasts
@@ -22,6 +29,7 @@ from installer.stage2.winenv import (
     register_aumid,
     set_shortcut_aumid,
 )
+from ns_common.atomic import copy_atomic
 from ns_supervisor.notify import AUMID
 from ns_supervisor.schedule import INTERACTIVE_MARK, KEPT_OFF_MARK
 from ns_supervisor.schedule_cfg import remember_run_time
@@ -40,6 +48,10 @@ SHORTCUTS = (
     ("Nightshift Code", "nightshift-code.ps1", True),
 )
 
+#: The script every shortcut starts (in the program folder), and the name of its copy in the install home.
+STUB_SOURCE = Path("installer") / "launch.ps1"
+STUB_NAME = "nightshift-launch.ps1"
+
 #: The shortcut that carries the AppUserModelID.
 AUMID_SHORTCUT = "Nightshift Dashboard"
 
@@ -55,6 +67,25 @@ def wanted_shortcuts(ctx: StepContext) -> list[tuple[str, Path]]:
         if path.is_file():
             out.append((name, path))
     return out
+
+
+def launch_stub(ctx: StepContext) -> Path | None:
+    """Copy ``installer/launch.ps1`` to ``<home>/nightshift-launch.ps1`` and return the copy; None when this
+    build has no such file or it cannot be copied (the shortcuts then start the launchers directly)."""
+    source = ctx.app_path / STUB_SOURCE
+    if not source.is_file():
+        return None
+    try:
+        return copy_atomic(source, ctx.paths.home / STUB_NAME)
+    except OSError as e:
+        ctx.ui.say(f"  could not copy {STUB_NAME} to {ctx.paths.home} ({e}); shortcuts start directly", "dim")
+        return None
+
+
+def shortcut_arguments(launcher: Path, stub: Path | None) -> str:
+    """What a shortcut passes to powershell.exe: the launcher through the stub, or the launcher itself."""
+    head = "-NoProfile -ExecutionPolicy Bypass -File"
+    return f'{head} "{stub}" -Launcher "{launcher}"' if stub is not None else f'{head} "{launcher}"'
 
 
 def shortcut_workdir(ctx: StepContext) -> Path:
@@ -94,6 +125,8 @@ class S09ShortcutsScheduler(Step):
         # still point at the folder the zip was extracted to (which the owner may delete) until s09 re-runs.
         if ctx.flag("shortcuts_app") != str(ctx.app_path):
             return False
+        if (ctx.app_path / STUB_SOURCE).is_file() and not (ctx.paths.home / STUB_NAME).is_file():
+            return False                    # shortcuts made before the stub existed (or the copy is gone)
         asked = ctx.ensure_answers().run_time
         if ctx.flag("schedule_time", asked) != asked:
             return False                    # the answers ask for another time than the task has (D-14)
@@ -109,8 +142,9 @@ class S09ShortcutsScheduler(Step):
         for script in sorted(known - have):
             ctx.ui.say(f"  launcher {script} is not part of this version yet; no shortcut for it.", "dim")
         icon = shortcut_icon(ctx)
+        stub = launch_stub(ctx)
         for name, launcher in shortcuts:
-            args = f'-NoProfile -ExecutionPolicy Bypass -File "{launcher}"'
+            args = shortcut_arguments(launcher, stub)
             ok = create_shortcut(
                 ctx.runner, folder / f"{name}.lnk", "powershell.exe", args, shortcut_workdir(ctx),
                 f"Nightshift: {name}", icon,

@@ -19,12 +19,12 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 
-from ns_common import __version__, ffmpeg
+from ns_common import __version__, config_snapshot, ffmpeg, first_start, rollback_intent
 from ns_common.atomic import read_text_retry, retry_busy, write_zip_atomic
 from ns_common.config import load_install_state, load_runtime
 from ns_common.devmode import is_dev
 from ns_common.errors import NsError
-from ns_common.paths import Paths
+from ns_common.paths import Paths, repo_root
 from ns_common.uv import find_uv
 from ns_supervisor import procs
 from ns_supervisor.childenv import child_env
@@ -214,8 +214,11 @@ def build_bundle(
     return out
 
 
-def diagnose(paths: Paths, client: SupervisorClient) -> list[tuple[str, bool, str]]:
-    """Quick health table for plain `ns doctor`: (check, ok, detail-or-fix-hint)."""
+def diagnose(
+    paths: Paths, client: SupervisorClient, on_wait: Callable[[], None] | None = None
+) -> list[tuple[str, bool, str]]:
+    """Quick health table for plain `ns doctor`: (check, ok, detail-or-fix-hint). The last row runs the
+    start check (`program_folders`); `on_wait` is called once if it has to wait for another program."""
     rows: list[tuple[str, bool, str]] = []
     try:
         rt = load_runtime(paths)
@@ -240,4 +243,80 @@ def diagnose(paths: Paths, client: SupervisorClient) -> list[tuple[str, bool, st
         rows.append(("nvidia-smi", smi is not None, "ok" if smi is not None else "no NVIDIA driver found"))
     have_ffmpeg = ffmpeg.available()
     rows.append(("ffmpeg", have_ffmpeg, "on PATH" if have_ffmpeg else "ffmpeg/ffprobe not found"))
+    rows.append(program_folders(paths, Path(st.app_path) if st.app_path else repo_root(), on_wait))
     return rows
+
+
+#: The log events that say the start check, an update or a rollback changed something beside the program.
+DONE_EVENTS = (first_start.SWAP_EVENT, "rollback_recovered")
+
+
+def _last_done(paths: Paths) -> str:
+    """The newest thing a start, an update or a rollback did about an interrupted rollback: a rename of a
+    leftover `app.swap` (`first_start.SWAP_EVENT` with `settled` true) or a rollback finished, undone or its
+    stale record removed (`rollback_recovered`); from the three newest log files of each, with its time.
+    Empty when there is none."""
+    newest: tuple[str, str] = ("", "")
+    for component in (first_start.LOG_COMPONENT, "update"):
+        try:
+            files = sorted(paths.logs.glob(f"{component}-*.jsonl"))[-3:]
+        except OSError:
+            continue
+        for f in files:
+            try:
+                lines = read_text_retry(f).splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                if not any(e in line for e in DONE_EVENTS):
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(rec, dict) or rec.get("event") not in DONE_EVENTS:
+                    continue
+                data = rec.get("data")
+                held = isinstance(data, dict) and data.get("settled") is False  # (a rename that failed)
+                if not held:
+                    newest = max(newest, (str(rec.get("ts", "")), str(rec.get("msg", ""))))
+    return f"{newest[1]} ({newest[0][:16].replace('T', ' ')} UTC)" if newest[1] else ""
+
+
+def program_folders(
+    paths: Paths, app: Path, on_wait: Callable[[], None] | None = None
+) -> tuple[str, bool, str]:
+    """The row "program folders": what an interrupted `ns update --rollback` left beside the program, and
+    everything this run did about it.
+
+    `ns doctor` is a start of the program like any other, so the start's own check runs first
+    (`first_start.ensure`): a leftover `app.swap` is given its place, an interrupted rollback is finished or
+    undone (settings files rewritten, its record deleted), a missing settings copy is taken. Every sentence
+    of that check is in the row ("This check: ..."), not only in the log. While another program holds the
+    copy's lock the check waits up to 60 s (`on_wait` is called once, so the terminal is not silent), and
+    the row then says it did not look. FAIL while `app.swap` is still there (held open, or not a program
+    folder), with the way out, or when a rollback could not be finished or undone; ok, naming each folder,
+    while a folder that was set aside (`app.swap-left-<stamp>`) waits for the owner to delete it; else ok,
+    with the last thing that was done before this run, if any."""
+    told: list[tuple[str, str]] = []
+    first_start.ensure(paths.config, told=told, on_wait=on_wait)
+    if any(event == "first_start_lock_busy" for event, _ in told):
+        return (
+            "program folders",
+            False,
+            f"Another Nightshift program (an update or a rollback) kept the settings copy busy for "
+            f"{config_snapshot.LOCK_WAIT_S:.0f} s, so this check did not look at the program folders and "
+            "changed nothing. Run ns doctor again when that program has finished.",
+        )
+    did = " ".join(msg for _, msg in told)
+    failed = any(event in ("rollback_recovery_failed", "first_start_check_failed") for event, _ in told)
+    waiting = rollback_intent.swap_note(app)
+    left = [rollback_intent.left_sentence(f) for f in rollback_intent.left_folders(app) if str(f) not in did]
+    now = f"This check: {did}" if did else ""
+    if waiting or left or failed:
+        said = [waiting, *left, now]
+        return ("program folders", not (waiting or failed), " ".join(part for part in said if part))
+    if now:
+        return ("program folders", True, f"ok. {now}")
+    last = _last_done(paths)
+    return ("program folders", True, f"ok. Last: {last}" if last else "ok")

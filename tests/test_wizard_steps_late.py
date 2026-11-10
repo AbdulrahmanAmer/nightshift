@@ -424,6 +424,30 @@ def test_s09_creates_shortcuts_for_existing_launchers_and_registers_the_task(tmp
     assert step.check(ctx) is True
 
 
+def test_s09_shortcuts_start_through_the_script_beside_the_program_folder(tmp_path: Path):
+    """Card 206-carried: with no <home>/app the launcher is gone too; the shortcut starts a script in the
+    install home that says what to do. A build without it keeps the direct shortcut (the test above)."""
+    from installer.stage2.steps import s09_shortcuts_scheduler as s09
+
+    app = launcher_app(tmp_path, ["nightshift-dashboard.ps1"])
+    (app / "installer").mkdir()
+    (app / s09.STUB_SOURCE).write_text("# stub", encoding="ascii")
+    runner = FakeRunner(tmp_path / "desktop")
+    ctx = make_test_context(
+        tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner
+    )
+    step = S09ShortcutsScheduler()
+    step.run(ctx)
+    stub = ctx.paths.home / s09.STUB_NAME
+    assert stub.read_text(encoding="ascii") == "# stub"
+    args = runner.called("ps:shortcut")[0].meta["arguments"]
+    launcher = app / "launchers" / "nightshift-dashboard.ps1"
+    assert args == f'-NoProfile -ExecutionPolicy Bypass -File "{stub}" -Launcher "{launcher}"'
+    assert step.check(ctx) is True
+    stub.unlink()  # shortcuts made before the script existed, or the copy was deleted: setup makes them again
+    assert step.check(ctx) is False
+
+
 def test_s09_runs_again_when_the_program_folder_moved_to_home_app(tmp_path: Path):
     # INSTALL.cmd over an old install: the shortcuts and the task still point at the extracted folder.
     old = launcher_app(tmp_path / "extracted", ["nightshift-dashboard.ps1"])

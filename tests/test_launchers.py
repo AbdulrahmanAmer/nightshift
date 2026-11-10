@@ -1059,3 +1059,47 @@ def test_host_script_does_not_change_the_browser_arguments() -> None:
     assert "AdditionalBrowserArguments" not in text and "--disable-http-cache" not in text
     call = text.index("Reset-StaleHttpCache -ProfileDir")
     assert call < text.index("$script:wv.CreationProperties = $props")
+
+
+# ---- card 206-carried: what the shortcuts start when the program folder may be missing ----------------
+STUB = LAUNCHERS.parent / "installer" / "launch.ps1"
+
+
+def _run_stub(launcher: Path) -> "subprocess.CompletedProcess[str]":
+    exe = pwsh.find_powershell()
+    assert exe is not None
+    argv = [exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(STUB), "-Launcher", str(launcher)]
+    return subprocess.run(argv, input="\n", capture_output=True, text=True, timeout=120)
+
+
+@needs_powershell
+def test_the_shortcut_script_says_what_to_do_when_the_program_folder_is_missing(tmp_path: Path) -> None:
+    """No `app` (an interrupted rollback): the launcher is gone with it. The window stays open and says to
+    run INSTALL.cmd from the zip; it needs no Python and nothing from the program folder."""
+    home = tmp_path / "Jo's home"
+    (home / "app.swap").mkdir(parents=True)
+    proc = _run_stub(home / "app" / "launchers" / "nightshift-dashboard.ps1")
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "Nightshift cannot start: its program folder is missing or incomplete." in proc.stdout
+    assert "Run INSTALL.cmd from the Nightshift zip" in proc.stdout
+    assert f"The program is waiting in {home / 'app.swap'}" in proc.stdout
+    assert proc.stderr.strip() == ""
+
+
+@needs_powershell
+def test_the_shortcut_script_runs_the_launcher_and_passes_its_exit_code(tmp_path: Path) -> None:
+    launcher = tmp_path / "Jo's home" / "app" / "launchers" / "x.ps1"
+    launcher.parent.mkdir(parents=True)
+    body = "Set-Content -LiteralPath (Join-Path $PSScriptRoot 'ran.txt') -Value 'yes'\r\nexit 7\r\n"
+    launcher.write_text(body, encoding="ascii")
+    proc = _run_stub(launcher)
+    assert proc.returncode == 7, proc.stdout + proc.stderr
+    assert (launcher.parent / "ran.txt").read_text(encoding="ascii").strip() == "yes"
+    assert "cannot start" not in proc.stdout
+
+
+def test_the_shortcut_script_keeps_the_rules_of_every_ps1() -> None:
+    raw = STUB.read_bytes()
+    text = raw.decode("ascii")  # ASCII only
+    assert "Set-StrictMode -Version Latest" in text and "$ErrorActionPreference = 'Stop'" in text
+    assert "Invoke-Expression" not in text and "python" not in text.lower()

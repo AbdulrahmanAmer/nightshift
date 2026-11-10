@@ -14,6 +14,10 @@ a key it never had. So, from 0.1.15 on:
   copy missing or damaged) and on the copy it restored. Only the fields in `NEW_FIELDS` are taken out (the
   ones added since 0.1.14): for a rollback to a version older than 0.1.14 nothing more is checked, and a file
   that cannot be written keeps its new keys (the rollback names it as one the older version may refuse).
+  A field 0.1.14 already had that accepts more now (`CHANGED_FIELDS`, card 206-carried: a wider Literal) is
+  not taken out: a value the older version refuses is replaced by the declared fallback, and named. Only a
+  change whose older values can be listed has such a rule; tests/test_config_compat.py fails, and says so,
+  when a field changes in any other way (a bound, a pattern, a type).
 
 `NEW_FIELDS` (defined in `ns_common.new_fields`, standard library only, and re-exported here) is the one list
 of fields the strict settings models have now and 0.1.14 did not (0.1.14 is the oldest version a rollback from
@@ -35,6 +39,8 @@ rollback. Decided for 0.1.15 (H-8b, PR 179):
 
 from __future__ import annotations
 
+import copy
+import json
 import types
 from collections.abc import Callable, Iterable
 from typing import Any, Union, get_args, get_origin
@@ -43,10 +49,19 @@ from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 
 from ns_common.models import Answers, Channel, Format, InstallState, Runtime
-from ns_common.new_fields import BASE_VERSION, NEW_FIELDS, NewField, version_key
+from ns_common.new_fields import (
+    BASE_VERSION,
+    CHANGED_FIELDS,
+    NEW_FIELDS,
+    ChangedField,
+    NewField,
+    version_key,
+)
 
 __all__ = [
     "BASE_VERSION",
+    "CHANGED_FIELDS",
+    "ChangedField",
     "FILE_MODELS",
     "NEW_FIELDS",
     "NewField",
@@ -82,12 +97,25 @@ def model_for(name: str) -> tuple[type[BaseModel], tuple[str, ...]] | None:
     return FILE_MODELS.get(head) if "/" in name else None
 
 
-def _new_fields(cls: type[BaseModel], extra: Iterable[str]) -> dict[str, NewField]:
+#: `CHANGED_FIELDS` by declaring class: the fields 0.1.14 already had that accept other values now.
+_CHANGED_BY_MODEL: dict[str, dict[str, ChangedField]] = {}
+for _c in CHANGED_FIELDS:
+    _CHANGED_BY_MODEL.setdefault(_c.model, {})[_c.field] = _c
+
+
+def _fields_of(
+    table: dict[str, dict[str, Any]], cls: type[BaseModel], extra: Iterable[str]
+) -> dict[str, Any]:
+    """The entries of `table` (by declaring class) for `cls`, its bases and the `extra` class names."""
     names = [c.__name__ for c in cls.__mro__ if isinstance(c, type) and issubclass(c, BaseModel)]
-    out: dict[str, NewField] = {}
+    out: dict[str, Any] = {}
     for name in [*names, *extra]:
-        out.update(_BY_MODEL.get(name, {}))
+        out.update(table.get(name, {}))
     return out
+
+
+def _new_fields(cls: type[BaseModel], extra: Iterable[str]) -> dict[str, NewField]:
+    return _fields_of(_BY_MODEL, cls, extra)
 
 
 def _models_in(annotation: Any) -> tuple[str, type[BaseModel]] | None:
@@ -113,19 +141,32 @@ def _models_in(annotation: Any) -> tuple[str, type[BaseModel]] | None:
 
 
 Drop = Callable[[NewField, Any, Any], bool]  # (the field, its value in the file, its default) -> take it out?
+Fix = Callable[[ChangedField, Any], bool]  # (the changed field, its value in the file) -> write its fallback?
 _NO_DEFAULT = object()  # a required field: it never holds "its default"
 
 
 def _walk(
-    cls: type[BaseModel], extra: Iterable[str], data: Any, drop: Drop, prefix: str, dropped: list[str]
+    cls: type[BaseModel],
+    extra: Iterable[str],
+    data: Any,
+    drop: Drop,
+    prefix: str,
+    dropped: list[str],
+    fix: Fix | None = None,
 ) -> None:
     if not isinstance(data, dict):
         return
     added = _new_fields(cls, extra)
+    changed = _fields_of(_CHANGED_BY_MODEL, cls, extra) if fix is not None else {}
     fields = cls.model_fields
     for key in list(data):
         info = fields.get(key)
         new = added.get(key)
+        wider = changed.get(key)
+        if fix is not None and wider is not None and fix(wider, data[key]):
+            data[key] = copy.deepcopy(wider.fallback)
+            dropped.append(f"{prefix}{key} set back to {json.dumps(wider.fallback)}")
+            continue
         if new is not None:
             # (a field of the installer's subclass is not one of `Answers`: it has no default to compare here)
             default = (
@@ -145,13 +186,13 @@ def _walk(
         how, inner = held
         value = data[key]
         if how == "one":
-            _walk(inner, (), value, drop, f"{prefix}{key}.", dropped)
+            _walk(inner, (), value, drop, f"{prefix}{key}.", dropped, fix)
         elif how == "items" and isinstance(value, list):
             for i, item in enumerate(value):
-                _walk(inner, (), item, drop, f"{prefix}{key}[{i}].", dropped)
+                _walk(inner, (), item, drop, f"{prefix}{key}[{i}].", dropped, fix)
         elif how == "values" and isinstance(value, dict):
             for k, item in value.items():
-                _walk(inner, (), item, drop, f"{prefix}{key}.{k}.", dropped)
+                _walk(inner, (), item, drop, f"{prefix}{key}.{k}.", dropped, fix)
 
 
 def _at_default(_field: NewField, value: Any, default: Any) -> bool:
@@ -176,9 +217,12 @@ def disk_dict_of(cls: type[BaseModel], data: dict[str, Any]) -> dict[str, Any]:
 
 
 def for_version(name: str, data: Any, version: str) -> list[str]:
-    """Take out of `data` (the parsed settings file `name`, changed in place) every field that `version` does
-    not have; returns their dotted names (`tiny_story`, `llama.flags.x`). Empty for a file no strict model
-    reads. A version that cannot be read counts as older than every release (everything listed goes)."""
+    """Make `data` (the parsed settings file `name`, changed in place) one that `version` reads: every field
+    it does not have is taken out (`NEW_FIELDS`), and a value it does not accept in a field it has is
+    replaced by the declared fallback (`CHANGED_FIELDS`). Returns what was done, one entry each: the dotted
+    name of a field taken out (`tiny_story`, `llama.flags.x`), or `<name> set back to <fallback>`. Empty for
+    a file no strict model reads, and the second time. A version that cannot be read (`-`, empty, any text
+    without a leading number) counts as older than every release: everything listed is applied."""
     spec = model_for(name)
     if spec is None:
         return []
@@ -188,5 +232,10 @@ def for_version(name: str, data: Any, version: str) -> list[str]:
     def unknown_to_target(field: NewField, _value: Any, _default: Any) -> bool:
         return version_key(field.since) > target
 
-    _walk(spec[0], spec[1], data, unknown_to_target, "", dropped)
+    def refused_by_target(field: ChangedField, value: Any) -> bool:
+        if field.old_reads_all or version_key(field.since) <= target:
+            return False
+        return any(v not in field.old_values for v in (value if isinstance(value, list) else [value]))
+
+    _walk(spec[0], spec[1], data, unknown_to_target, "", dropped, refused_by_target)
     return dropped
