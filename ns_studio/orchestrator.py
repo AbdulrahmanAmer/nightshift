@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from itertools import groupby
 from pathlib import Path
@@ -289,8 +289,7 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
             ch = ctx.channel
             require_not_paused(ctx.paths, ctx.log, ch.slug, ch.display_name, ctx.job_id, stage)
 
-    t0, outcome = ctx.clock.monotonic(), "done"
-    try:
+    with _job_timed(ctx):  # the job's `job_end` ledger line, whatever ends it
         for tenant, group in groupby(stages, key=_tenant_of):
             group_list = list(group)
             if tenant is not None:
@@ -302,14 +301,38 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
                 with _timed(ctx, tenant, group_list[0].name, wait):
                     alias = "story" if tenant == "llama" else None
                     ctx.services.acquirer.acquire(tenant, owner, model_alias=alias, **wait)  # type: ignore[arg-type]
-            _run_group(ctx, tenant, group_list, owner, ran, resume, not_paused)
+            try:
+                for st in group_list:
+                    if needs_embed(st):
+                        not_paused(st.name)  # likewise before the embed service is started for this stage
+                    with embed_lease(ctx, st, owner):
+                        # The check no route gets past: immediately before EVERY stage, after any wait for the
+                        # GPU or the embed lease (up to hours); a pause waits for the stage under way only.
+                        # Raising here releases the tenant in the `finally` below, so a held job keeps no
+                        # lease. (The night's time check is inside `run_stage`, once it knows the stage runs.)
+                        not_paused(st.name)
+                        run_stage(ctx, st, force=not resume)
+                    ran.append(st.name)
+            finally:
+                if tenant == "whisper":  # free the weights before the lock goes to the next tenant (llama)
+                    ctx.services.transcriber.unload()
+                if tenant is not None:
+                    ctx.services.acquirer.release(tenant, owner)
+    return ran
+
+
+@contextmanager
+def _job_timed(ctx: JobContext) -> Iterator[None]:
+    """The `job_end` ledger line of one run of the job: its seconds and how it ended (`done` or the code)."""
+    t0, outcome = ctx.clock.monotonic(), "done"
+    try:
+        yield
     except BaseException as e:
         outcome = str(getattr(e, "code", None) or type(e).__name__)
         raise
     finally:
         job_line(ctx, "job_end", plan=plan_format(ctx.fmt, ctx.job_dir), fmt=str(ctx.fmt),
                  seconds=round(ctx.clock.monotonic() - t0, 3), outcome=outcome)
-    return ran
 
 
 def _wait_cap(ctx: JobContext, names: list[str], group: list[str]) -> dict[str, int]:
@@ -348,32 +371,3 @@ def _timed(ctx: JobContext, tenant: str, first: str, wait: dict[str, int]) -> It
         wait_s, load_s = timing if isinstance(timing, tuple) and len(timing) == 2 else (None, None)
         job_line(ctx, "acquire", service=tenant, stage=first, seconds=round(ctx.clock.monotonic() - t0, 3),
                  wait_s=wait_s, load_s=load_s, timeout_s=wait.get("timeout_s"), outcome=outcome)
-
-
-def _run_group(
-    ctx: JobContext,
-    tenant: Tenant,
-    group_list: list[Stage],
-    owner: str,
-    ran: list[str],
-    resume: bool,
-    not_paused: Callable[[str], None],
-) -> None:
-    """Run one tenant group's stages; the tenant is released whatever happens."""
-    try:
-        for st in group_list:
-            if needs_embed(st):
-                not_paused(st.name)  # likewise before the embed service is started for this stage
-            with embed_lease(ctx, st, owner):
-                # The check no route gets past: immediately before EVERY stage, after any wait for the GPU
-                # or the embed lease (up to hours); a pause waits for the stage under way only. Raising
-                # here releases the tenant in the `finally` below, so a held job keeps no lease. (The
-                # night's time check is inside `run_stage`, after it knows the stage really runs.)
-                not_paused(st.name)
-                run_stage(ctx, st, force=not resume)
-            ran.append(st.name)
-    finally:
-        if tenant == "whisper":  # free the weights before the lock goes to the next tenant (llama)
-            ctx.services.transcriber.unload()
-        if tenant is not None:
-            ctx.services.acquirer.release(tenant, owner)
