@@ -1,4 +1,5 @@
-"""One studio-side retry of an NS-E301 (the errors.json hint promises "The job will retry once").
+"""One studio-side retry of an NS-E301 (the errors.json hint says a story job tries once more after a server
+error, a dropped connection or an empty answer, and not after a timeout or a refused request).
 
 `ns_common.llm_client.LlmClient` raises NS-E301 on any transport error, any HTTP error status and an answer
 with no content. A busy or just restarted llama-server answers a 5xx or an empty body now and then; one more

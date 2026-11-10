@@ -444,6 +444,10 @@ class FakeUpdateAdapter:
         """Tests set `models_command` to switch the command on."""
         return getattr(self, "models_command", False)
 
+    def model_unavailable(self, name: str) -> str | None:
+        """None (every model can be had) unless a test put a reason in `unavailable_models`."""
+        return getattr(self, "unavailable_models", {}).get(name)
+
     def get_model(self, name: str, on_line: Callable[[str], None] = lambda _l: None) -> tuple[int, str]:
         """Pretend to download."""
         self.downloaded = [*getattr(self, "downloaded", []), name]

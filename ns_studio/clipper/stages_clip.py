@@ -626,6 +626,13 @@ class CaptionsStage:
             shown = cleaned_words.get(str(clip.k))
             if shown is not None and len(shown) != len(src_words):
                 shown = None  # written for another span of this clip: keep the recogniser's spelling
+            # one list of kept words: the caption words and their speakers both come from it, so they line up
+            # when the channel leaves hesitations out (n is the index among the spoken words, as `shown` is)
+            kept = [
+                (n, w, si)
+                for n, (w, si) in enumerate(zip(src_words, sentence_indices(src_words), strict=True))
+                if not (drop_fillers and select.is_filler_word(w.w))
+            ]
             words = [
                 tmod.Word(
                     shown[n] if shown else w.w,
@@ -633,8 +640,7 @@ class CaptionsStage:
                     min(dur, max(0.0, w.end - clip.start_s)),
                     si,
                 )
-                for n, (w, si) in enumerate(zip(src_words, sentence_indices(src_words), strict=True))
-                if not (drop_fillers and select.is_filler_word(w.w))
+                for n, w, si in kept
             ]
             style = picked or (
                 clip.caption_style
@@ -645,7 +651,7 @@ class CaptionsStage:
             crop = _crop_at(lay, clip.start_s)
             y_pct = layout.caption_y_pct(tpl, crop)
             avoid = layout.avoid_boxes(tpl, crop, lay, clip.start_s, clip.end_s)
-            speakers, breaks = speaker_plan(words, [seg_speaker.get(w.seg) for w in src_words], style)
+            speakers, breaks = speaker_plan(words, [seg_speaker.get(w.seg) for _, w, _ in kept], style)
             opts = AssOptions(
                 variant="vertical", safe_zones=safe_zones_for("vertical"), avoid_regions=tuple(avoid),
                 emphasis=emphasis_from_list(clip.emphasis), speakers=speakers, speaker_breaks=tuple(breaks),
