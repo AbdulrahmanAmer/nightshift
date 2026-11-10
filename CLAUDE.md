@@ -5,16 +5,15 @@
   test files (one pytest process at a time). Dev-mode and engine-test installs live under
   `D:\NightShift\installs`; scratch goes to `D:\NightShift\runs`, never C:. Heavy models, torch and GPU runtimes
   never go on the laptop; tests use fakes and tiny models.
-- **CI is the verification of record** (`.github/workflows/ci.yml`). Never report a task as passing without the
-  CI run URL and its conclusion.
-- **Builders push and read CI.** A branch without a pull request gets no CI (push runs only for `main` and
-  tags): push, open a pull request (a draft is fine), then `gh pr checks <n> --watch`; fix failures, commit,
-  push again.
+- **Work moves in blocks** per `D:\NightShift\refs\OPERATING.md` (on this machine; the file is outside the
+  repository). A builder builds, tests and commits locally in its worktree and never pushes or opens a pull
+  request. The Head integrates a block, and CI on the block's one pull request is the verification of record: never
+  report a block as passing without that run's URL and its conclusion.
 - **Never spawn Fable agents.** Spawned agents get an explicit cheaper model: `haiku` for sweeps and lookups,
   `sonnet` for ordinary code, `opus` only for hard design, verification or synthesis work.
 - **Never download heavy models, torch, llama.cpp or whisper on a machine that is not the GPU target.** Tests use
   fakes (`ns_common` Fake* classes) and the FFmpeg that CI installs. Manifest values come from metadata APIs only.
-- `contracts/` and `ns_common/` are edited only by the main session. Workers file `contracts/CHANGE_REQUESTS.md`.
+- Shared code (`ns_common/`, `contracts/`, `pyproject.toml`) changes only in an item whose card says "shared".
 - Stage files explicitly with `git add <paths>`; never `git add -A`.
 - Every stage, client and CLI logs through `ns_common.logging.NsLogger`; errors are `NsError` with a code from
   `contracts/errors.json`.

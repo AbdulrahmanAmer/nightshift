@@ -9,12 +9,14 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [0.1.15] - 2026-11-10
 
-This is release candidate 0.1.15-rc1, published for testing. It is a prerelease: it is not offered as an update to a
-PC on 0.1.14, and you install it by hand (`Nightshift-Setup-0.1.15-rc1.zip` for a first install, or
-`Nightshift-Update-0.1.15-rc1.zip` through Settings > Updates > From a file). The final 0.1.15 will also contain
-what is still open: the setup disk-need check (pull request 189), the keys-file follow-up (pull request 193) and
-the first-start config snapshot (F-10c). Below is everything merged since 0.1.14; each "Not covered" line is a
-limit the change shipped with.
+This is release candidate 0.1.15-rc2, published for testing. It is a prerelease: it is not offered as an update to a
+PC on 0.1.14, and you install it by hand (`Nightshift-Setup-0.1.15-rc2.zip` for a first install, or
+`Nightshift-Update-0.1.15-rc2.zip` through Settings > Updates > From a file). Compared with 0.1.15-rc1 it adds the
+first-start config copy and the safer rollback (F-10c), the keys file on a drive without permissions (F-9b), job
+ids that cannot collide (D-ids), the posting checklist that stays reachable after Approve (P14), a longer CI
+shard timeout and the first proof scripts. The final 0.1.15 will also contain the items of block B: the Code
+console must not keep the graphics card, pausing a channel must stop its queued jobs, and the join measurement of
+the render. Below is everything merged since 0.1.14; each "Not covered" line is a limit the change shipped with.
 
 ### Setup and install
 
@@ -61,8 +63,15 @@ limit the change shipped with.
   in its answers file).
 - The welcome text of the console (headless) setup, `OPERATOR.md` and `README.md` now say what the installer
   already checked: at least 60 GB of free disk space (they said about 40 GB), and stock-footage keys are optional.
-  Text only; no installer behaviour changed. Not covered: the setup disk-need check (pull request 189) is still
-  open, and the figures per model tier (74 GB Balanced, 81 GB Best) these documents also give are not final.
+  Text only; no installer behaviour changed. Not covered: the per-tier figures (74 GB Balanced, 81 GB Best) these
+  documents gave were later replaced by the computed need described in the next entry.
+- Setup works out how much disk space this install needs (`ns_common/diskneed.py`, pull request 189, already in
+  rc1) instead of using fixed figures: the files it still has to download or copy (none for a file already in
+  place with a good `.ok` mark), the unpacked size of the programs it still has to make, and a working reserve for
+  videos (38 GB on a first install). The PC check row, the Choices check and step `s01` use that one number, and
+  a drive with less free space is refused with NS-E104. A drive whose free space cannot be read never blocks.
+  The welcome text now says 60 to 72 GB for a first install and that setup shows the exact number. Not covered:
+  the reserve is a stated estimate (twelve weeks of videos at the default pace), not a measurement of your use.
 
 ### Updates, files and safety
 
@@ -85,8 +94,49 @@ limit the change shipped with.
   puts them back with the old program. Settings changed after the update are lost on rollback and the result
   names the files; a second rollback goes forward with them. A copy that cannot be saved or read stops the update
   (NS-E702, NS-E115 from INSTALL.cmd). Not covered: the hop 0.1.14 to 0.1.15 by `ns update`, `--github` or Settings
-  > Updates saves no copy (the old updater runs); the first-start snapshot (F-10c) and tolerant loading of
-  unknown keys are not in; a rollback as a whole is not atomic, and `secrets.dpapi` is never copied.
+  > Updates saves no copy at update time (the old updater runs; the first start of the new version saves it, see
+  the next entry); `secrets.dpapi` is never copied.
+- First start after an update made by an older updater takes the settings copy itself (F-10c, pull request 206;
+  `ns_common/first_start.py`). 0.1.14's updater saves no copy, so the first time 0.1.15 is about to write a
+  settings file (engine settings, setup answers, install state, channels, formats, schedule, dashboard settings) and
+  finds a program backup (`<folder>.prev`) with no copy of its own, it saves the settings as the older version left
+  them, then goes on; once per process, with no file access afterwards. If the copy cannot be saved (a locked file,
+  a full disk, a copy of another version in its place) Nightshift still starts, writes one line to
+  `logs\first_start-<date>.jsonl` and records the failure in `.ns-first-start.json`, so a later start does not
+  save settings the new version has already changed as the older version's. A setting a newer version added is
+  written to its file only when you use it (`ns_common/config_compat.py`, `NEW_FIELDS`), and `ns update --rollback`
+  with no usable copy takes out of the settings every such setting added since 0.1.14 and names each one. Not
+  covered: a file the rollback cannot change (open, read-only) keeps its new settings and is named; going back to a
+  version older than 0.1.14 checks only the settings added since 0.1.14; a tiny-story job's `plan.json` (engine-test
+  installs only) cannot be resumed by 0.1.14 after a rollback; the end-to-end rollback on a real install is still
+  to be shown by QA.
+- `ns update --rollback` is safe to interrupt (pull request 206, `ns_common/rollback_intent.py`). It first writes
+  `<folder>.rollback-pending.json`, then makes the settings files ones the older version reads, then swaps the
+  programs. Whichever version is in `<folder>` afterwards loads its settings; the next start of the newer version
+  undoes or finishes the rollback (and says so in its log), and `ns update`, `ns update --rollback` and
+  `INSTALL.cmd` refuse, changing nothing, while the settings of an interrupted rollback are not back. Not covered:
+  a power cut between the two folder renames leaves no `<folder>` and nothing can start until you rename
+  `<folder>.swap` back (`OPERATOR.md` and the record say so); 0.1.14 itself cannot finish an interrupted rollback;
+  a window that is already open when a rollback runs saves at once, into the settings the rollback is changing
+  (only a window whose first save falls in the rollback waits, up to 60 seconds, once).
+- Your API keys on a drive without file permissions (FAT or exFAT; pull request 193). Windows cannot lock
+  `config\secrets.dpapi` there, so rc1's save failed with NS-E120. Now the keys file is saved without a lock and
+  you get the warning NS-W116 once per install (setup, Settings > Stock footage keys, or a morning note at engine
+  start; `config\keys_unprotected.json` records that it was given). A restore skips only the keys file when it
+  cannot be locked there, and says so; `ns backup` to such a drive exits 0 with the keys file left out and
+  prints a warning, `backup-manifest.json` records `left_out`, and Settings > Export shows the note. `ns backup`
+  prints the code, message and hint of NS-E120 instead of a traceback when a lock fails on a drive that does keep
+  permissions. If Windows cannot say whether the drive keeps permissions, it is treated as keeping them, so a
+  failing lock is still NS-E120. Not covered: the warning shown under the keys is kept in the dashboard's memory
+  and is gone after a restart (the marker file stops it repeating); a notice that fails to show is not given
+  again; the file is still encrypted for this PC but any account on the PC can read it.
+- A job or night whose lock file cannot be opened right now (an antivirus or backup program holds it) is no
+  longer treated as finished (pull request 193, `ns_studio/ownership.py`). It stays "running" until three probes in
+  a row have failed and the process that started it is gone; a record with no process number counts as dead an
+  hour after it was announced; a process that is still alive keeps it held. While it is held for that reason you
+  get one morning note with NS-W117 and `studio status` shows a `held:` line. Not covered: nothing is closed or
+  restarted for you while it stays held; a job or night whose owner record is missing or cannot be read either
+  stays held until it can be read again (NS-W117 says so once).
 - A file Nightshift saves is no longer written over in place while another program reads it: the diagnostics
   zips, the backup zip and restored files, the config and state files, the job `stage_state.json` and the outbox
   videos and sheets are written beside the file and swapped in whole, and readers retry while Windows refuses an
@@ -121,9 +171,9 @@ limit the change shipped with.
   it holds the keys file (a failing lock raises NS-E120 and leaves no zip), and a restore writes the keys file
   through the same lock (NS-E703 names NS-E120 and the restore rolls back). Not covered: on a drive that takes no
   permissions (FAT, exFAT) or where AppLocker blocks icacls, every key save and any restore of a backup holding the
-  keys file now fails, and `ns backup` fails with NS-E120, with no switch to leave the keys out (pull request 193
-  is the follow-up and is not in this candidate); the warning under the keys is kept in the dashboard's memory and
-  is gone after a restart.
+  keys file now fails, and `ns backup` fails with NS-E120, with no switch to leave the keys out (pull request 193,
+  in rc2, changes that; see the entry on drives without permissions); the warning under the keys is kept in the
+  dashboard's memory and is gone after a restart.
 - An update zip is checked before it is put under its name. `ns update --github` and the dashboard download the
   zip to a temp file, hash it against the release's SHA256 and move it to `data/updates` only when it matches; a
   mismatch is NS-E701 and nothing is saved. Settings > Updates > From a file does the same: an empty `.sha256`,
@@ -213,6 +263,21 @@ limit the change shipped with.
   clip layouts and the Anton font still ignore formats; a series design format that is skipped is reported only in
   the log and the render report; a channel whose `formats_allowed` lists `square_1x1` but no Short format now
   gets 1080x1080 Shorts where it got 9:16; the editor has no fields for region, caption style or canvas.
+- A new job takes its id by making its folder, so two jobs never share one (pull request 207, D-ids,
+  `ns_common/db.py` `claim_job_id`). Before, an id was 16 random bits per name and day and nothing checked that
+  it was free: two videos for one channel on one day, or two uploads or two linked videos on one day (their ids
+  are shared by all channels), could write into the same folder, one over the other (about 1 in 300 days at 20 jobs a day). The folder is made in one step the file
+  system settles, the id format is unchanged, and after 64 refusals in a row the job stops with NS-E205. Used by
+  new videos, clip jobs, the series workshop's produce, uploads and linked videos; the nightly's run id is checked
+  against the runs table and the owner files. Not covered: the nightly run id is checked, not claimed, so two
+  nights started in the same moment that draw the same id are refused by the runs table (an error, before any
+  job is made); a clip job from a local file keeps a drawn label that names no folder.
+- The Queue keeps the posting checklist reachable after Approve (pull request 210, P14, `Queue.tsx`). The Ready
+  tab asks for pending and approved videos and keeps the ones that still need you (to review, or approved and not
+  posted; an approved test output is left out), so an approved video stays on screen with its checklist until you
+  mark it posted, and "Finish posting" on the posted list opens it again. Before, the video left the screen about
+  ten seconds after Approve together with its checklist. Not covered: the Ready tab's number still counts only
+  videos to review; there is no browser test of this page in CI.
 
 ### Clips and the Assistant
 
@@ -262,6 +327,20 @@ limit the change shipped with.
   from real timings; CI's FFmpeg install cannot fail silently; a push to `main` is never cancelled by a newer
   one; a test fails on stray control characters in tracked text files; the dashboard and setup window now each
   load one script file (`app.js`), so the versioned entry cannot load twice.
+- Tests and CI, added since rc1: the test-shard timeout in `ci.yml` and `release.yml` is 30 minutes (it was 25),
+  so a test file with no measured weight no longer turns every open pull request red, and a test fails while a
+  shard has room for fewer than 8 such files (pull request 208). Not covered: the slowest test files are not made
+  cheaper yet, and the weights are not refreshed by a schedule.
+- Proofs as code (pull requests 195 and 196): `dev/prove.py` runs the scripts in `proofs/` one at a time against an
+  install, writes an evidence file per box under the runs folder, and `dev/finalization_status.py --check` accepts a
+  tick citing `proof:<id>` only when a script declares that id for that box. The first scripts cover F-B18 (`studio
+  status` only), F-C1 (status and the first events frame), F-B7 (reject, approve, mark posted) and F-B13 and F-B14
+  (stock-footage rate limits against a local fake). Not covered: no script has yet been run on an install, and the
+  evidence file is not read by the check.
+- Instructions: the repository's `CLAUDE.md` and `docs/ENGINEERING.md` section 5 now follow the block process
+  (builders commit locally; the block's one pull request carries the CI run); 17 boxes of section H of
+  `docs/FEATURE_STATUS.md` were ticked with evidence checked against main, and six boxes for the launch gaps were
+  added. `OPERATOR.md` no longer says every open window waits for a rollback. No product behaviour.
 - Documents: the pipeline, setup-window, runtime and installer specs and the operator documents (the incident
   procedure and first-run wording in `OPERATOR.md`) and the Clipper spec text were brought in line with the code;
   change requests that were applied elsewhere were marked closed, stale ones rejected, and CR-H106-1 filed; the finalization lists carry the boxes ticked on the 0.1.14

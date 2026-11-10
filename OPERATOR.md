@@ -399,8 +399,10 @@ settings file) and try again. If the older version stays in place and you later 
 same one), the record is dropped and the settings stay as the older version left them. Only if the power goes off
 in the instant between two folder renames can `<folder>` be missing with `<folder>.swap` beside it: rename
 `<folder>.swap` back to `<folder>` and start Nightshift. Close the Dashboard and Studio windows before
-`ns update --rollback`: a window that saves a setting while the rollback runs waits for it up to a minute and then
-saves anyway, into the settings the rollback is changing.
+`ns update --rollback`: a window that is already open saves its settings at once, into the settings the rollback is
+changing, because it made its first-start check when it opened (or at its first save) and does not look again. Only a
+window whose first settings save falls during the rollback waits for the rollback's lock, up to 60 seconds, once; if
+the rollback still holds it then, the window logs a warning (`first_start_lock_busy`) and saves anyway.
 A copy is replaced only together with the program it belongs to (an update replaces the
 program backup and its copy together, and a rollback swaps the pair). Two things are never done to a copy: it is never overwritten with settings
 that are not its program's, and a whole copy of a version that is not installed (it may be the only copy of that

@@ -510,9 +510,9 @@ BOXES = {
 
 
 @pytest.mark.parametrize("box_id", sorted(BOXES))
-def test_box_cites_its_decision_row_and_is_not_ticked(box_id):
+def test_box_cites_its_decision_row_and_is_ticked_only_with_evidence(box_id):
     line = box(box_id)
-    assert line.startswith("- [ ] ")
+    assert line.startswith("- [ ] ") or (line.startswith("- [x] ") and " evidence: " in line)
     assert f"section 13 {decision_id(BOXES[box_id])}" in line
 
 

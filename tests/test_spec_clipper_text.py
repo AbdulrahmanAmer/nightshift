@@ -56,7 +56,15 @@ def _status_row(feature_start: str) -> list[str]:
 
 
 def _box(box_id: str) -> str:
-    return next(ln for ln in STATUS.splitlines() if ln.startswith(f"- [ ] {box_id} "))
+    line = next(ln for ln in STATUS.splitlines() if ln.startswith((f"- [ ] {box_id} ", f"- [x] {box_id} ")))
+    assert line.startswith("- [ ] ") or " evidence: " in line, f"{box_id} is ticked without evidence"
+    if box_id in STAYS_OPEN:
+        assert line.startswith("- [ ] "), f"{box_id} must stay open: the remove_fillers crash is on main"
+    return line
+
+
+# Open until the remove_fillers crash is fixed (the strict xfail below; D-38).
+STAYS_OPEN = ("F-H95", "F-H127")
 
 
 FACECAM_QUESTION = "Facecam candidate limits"
@@ -365,4 +373,4 @@ def test_audit_rows_follow_the_spec_text_and_the_boxes_stay_open():
     for line in (_status_row("Captions 17.2: text source")[4], _box("F-H95")):
         assert "), (" not in line and "restor" in line and f"D{n_fill}" in line  # no dangling comma
     for box_id, number in (("F-H125", n_cam), ("F-H127", n_fill), ("F-H128", n_pol)):
-        assert f"Decision: section 13 D{number}." in _box(box_id), box_id  # open: QA ticks with evidence
+        assert f"Decision: section 13 D{number}." in _box(box_id), box_id  # QA ticks with evidence
