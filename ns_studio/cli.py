@@ -190,6 +190,7 @@ def run_cmd(
             return
         env = jobs.open_env(fake)
         if not dry_run:
+            engine_gate(env)    # before the voice, the job folder, job.json, the owner file and the ledger
             _setup_voice(env)
         if daily:
             _daily(env, dry_run, policy)
@@ -201,6 +202,24 @@ def run_cmd(
                 env, fmt=fmt, channel=channel, count=count, dry_run=dry_run, resume=resume, policy=policy,
                 script=script_text, title=title,
             )
+
+
+#: The services the engine runs (the acquirer starts it for them); `clips` is the stock sites only.
+ENGINE_SERVICES = frozenset({"llm", "tts", "whisper", "embed"})
+
+
+def engine_gate(env: jobs.Env, needs: frozenset[str] = ENGINE_SERVICES) -> None:
+    """D-39b: a command that will need the engine (for a service of `needs` that is not faked) is refused
+    FIRST, before it writes anything, when the engine may not start now (`NS-W210`:
+    `ns_supervisor.client.start_gate`, the gate `ensure_running` passes later). An engine that already
+    answers lets it through, as there."""
+    if not (needs - env.fake):
+        return
+    try:
+        sup: Any = importlib.import_module("ns_supervisor.client")
+    except ImportError:
+        return      # (the acquirer says NS-E202 when it needs the engine)
+    sup.start_gate(env.paths, sup.SupervisorClient.from_runtime(env.runtime))
 
 
 def _close_dead_work(env: jobs.Env) -> None:
@@ -507,6 +526,7 @@ def voice_list(fake_services: FakeOpt = None) -> None:
     """List the voices known to the TTS service."""
     with guarded():
         env = jobs.open_env(fake_set(fake_services))
+        engine_gate(env, frozenset({"tts"}))
         owner = "studio:voice-list"
         env.services.acquirer.acquire("tts", owner)
         try:
@@ -528,6 +548,7 @@ def voice_preview(
     """Synthesize a short sample with voice NAME and write it to a WAV file."""
     with guarded():
         env = jobs.open_env(fake_set(fake_services))
+        engine_gate(env, frozenset({"tts"}))
         target = out or (env.paths.data / "voice_preview.wav")
         target.parent.mkdir(parents=True, exist_ok=True)
         owner = "studio:voice-preview"
@@ -549,6 +570,7 @@ def voice_design(
     """Design a voice from a description (needs the VoiceDesign model) and store it in the library."""
     with guarded():
         env = jobs.open_env(fake_set(fake_services))
+        engine_gate(env, frozenset({"tts"}))
         folder = voice_setup.design_voice(env, name, description, language=language)
         typer.echo(f"voice {name} created: {folder}")
 
@@ -567,6 +589,7 @@ def voice_clone(
     """Clone a voice from a recording and store it in the library."""
     with guarded():
         env = jobs.open_env(fake_set(fake_services))
+        engine_gate(env, frozenset({"tts"}))
         folder = voice_setup.clone_voice(
             env, name, audio, text, rights_confirmed=rights_confirmed, language=language
         )
@@ -578,6 +601,7 @@ def voice_apply_pending(fake_services: FakeOpt = None) -> None:
     """Create the voice chosen during setup (queued in config/pending_voice.json), if it is not there yet."""
     with guarded():
         env = jobs.open_env(fake_set(fake_services))
+        engine_gate(env, frozenset({"tts"}))
         made = voice_setup.apply_pending_report(env)
         typer.echo(made.said() if made else "no voice is waiting to be created")
 

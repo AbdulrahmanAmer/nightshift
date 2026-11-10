@@ -12,19 +12,22 @@ import contextlib
 import json
 import sys
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import FastAPI  # pyright: ignore[reportMissingImports]
 from fastapi.responses import JSONResponse, StreamingResponse  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, Field, StrictInt
 
+from installer.stage2.web import venvrepair
 from ns_common import first_start
 from ns_common.atomic import sweep_stale_tmp
-from ns_common.config import load_runtime
+from ns_common.config import load_install_state, load_runtime
 from ns_common.errors import NsError, describe
+from ns_common.logging import NsLogger
 from ns_common.loopback import NO_BROWSER, LoopbackGuard
 from ns_common.models import Runtime
-from ns_common.paths import Paths
+from ns_common.paths import Paths, repo_root
 from ns_common.secret_file import relock_existing
 from ns_common.singleton import AlreadyRunning, FileLock
 from ns_supervisor import launch_reach, notify, tmpsweep, update_check
@@ -215,6 +218,23 @@ def engine_lock(paths: Paths) -> FileLock:
     return FileLock(paths.home / "run" / "supervisor.lock")
 
 
+def refuse_unfinished(paths: Paths) -> int:
+    """D-39b, the engine's own gate (a start that did not come through `client.ensure_running`, e.g. a
+    launcher's `Start-NsSupervisor` or a hand-typed `python -m ns_supervisor.app`): `venvrepair.REFUSED_EXIT`
+    when an update left the environments of this program unfinished, said on stderr, in the log and once as
+    a morning note; 0 when it may start. Nothing else has been done by then."""
+    st = load_install_state(paths)
+    why = venvrepair.start_refusal(paths.home, Path(st.app_path) if st.app_path else repo_root())
+    if why is None:
+        return 0
+    sys.stderr.write(f"NS-W210: {why}\n")
+    NsLogger("supervisor", paths.logs).warn("start_refused_unfinished_venvs", why, code="NS-W210")
+    with contextlib.suppress(OSError):
+        notify.leave_note(paths, "Nightshift", why,
+                          once=lambda notes: any(n["message"] == why for n in notes))
+    return venvrepair.REFUSED_EXIT
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for `python -m ns_supervisor.app`.
 
@@ -230,6 +250,9 @@ def main(argv: list[str] | None = None) -> int:
 
     paths = Paths.from_env()
     paths.logs.mkdir(parents=True, exist_ok=True)
+    refused = refuse_unfinished(paths)
+    if refused:
+        return refused
     lock = engine_lock(paths)
     try:
         lock.acquire()

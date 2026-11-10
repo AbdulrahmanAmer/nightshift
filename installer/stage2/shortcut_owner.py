@@ -27,7 +27,7 @@ from ns_common.atomic import copy_atomic
 #: never puts an older script under shortcuts and a task that pass it newer switches).
 STUB_SOURCE = Path("installer") / "launch.ps1"
 STUB_NAME = "nightshift-launch.ps1"
-STUB_SCHEMA = 4
+STUB_SCHEMA = 5
 _SCHEMA_LINE = re.compile(rb"^# STUB_SCHEMA: (\d+)\s*$", re.MULTILINE)
 
 MINE, GONE, OTHER, UNREACHABLE, FOREIGN = "mine", "gone", "other", "unreachable", "foreign"

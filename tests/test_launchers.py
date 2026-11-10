@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -41,11 +42,13 @@ def test_script_hygiene(script: Path) -> None:
     raw.decode("ascii")  # ASCII only (also guards against a BOM)
     text = raw.decode("ascii")
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if script.name == "nightshift-host.ps1":
+    if script.name == "nightshift-host.ps1" or lines[0].startswith("param("):
         # A script with a param() block must start with it; the two guard lines follow the block.
         start = lines.index("Set-StrictMode -Version Latest")
         assert lines[start + 1] == "$ErrorActionPreference = 'Stop'"
-        assert "[CmdletBinding()]" in lines[:start] and "param(" in lines[:start]
+        assert any(ln.startswith("param(") for ln in lines[:start])
+        if script.name == "nightshift-host.ps1":
+            assert "[CmdletBinding()]" in lines[:start] and "param(" in lines[:start]
     else:
         assert lines[0] == "Set-StrictMode -Version Latest"
         assert lines[1] == "$ErrorActionPreference = 'Stop'"
@@ -1106,7 +1109,10 @@ def test_the_shortcut_script_keeps_the_rules_of_every_ps1() -> None:
     raw = STUB.read_bytes()
     text = raw.decode("ascii")  # ASCII only
     assert "Set-StrictMode -Version Latest" in text and "$ErrorActionPreference = 'Stop'" in text
-    assert "Invoke-Expression" not in text and "python" not in text.lower()
+    # it starts no Python (the words "Python environment" are what it tells the owner; a replayed record runs
+    # uv, whose command lines come from the record)
+    assert "Invoke-Expression" not in text
+    assert not re.search(r"python(w)?\.exe|-m ns_|\bpy\.exe", text.lower())
 
 
 # ---- card launcher-reach: the nightly task runs through the same script, and a missed night is said ----
@@ -1321,3 +1327,383 @@ def test_the_stub_names_the_zip_version_that_puts_the_program_back(tmp_path: Pat
         f"If you moved the folder app or app.swap somewhere else, move it back to {home}\\app.swap before "
         "you run INSTALL.cmd: otherwise setup starts a fresh program folder."
     ) in (desk / NOTE).read_text(encoding="utf-8-sig")
+
+
+# ---- card D-39b: nothing starts on an environment an update left unfinished, nor while one runs ----------
+# The record and the state file are written here in the shape the update worker writes them
+# (installer/stage2/web/venvrepair.py write, ns_supervisor/update_job.py write_status).
+MARKER = "0.2.0|aaaaaaaaaaaaaaaa|bbbbbbbbbbbbbbbb"
+RUN_EXIT = 0
+
+
+def _program_home(tmp_path: Path) -> tuple[Path, Path]:
+    """An install home on 0.2.0 with two venvs and a launcher stand-in that notes each start."""
+    home = _home(tmp_path)
+    app = home / "app"
+    (app / "VERSION").write_text("0.2.0\n", encoding="ascii")
+    (app / ".ns-app.done").write_text(MARKER, encoding="ascii")
+    launcher = app / "launchers" / "x.ps1"
+    launcher.parent.mkdir(parents=True)
+    body = "Add-Content -LiteralPath (Join-Path $PSScriptRoot 'ran.txt') -Value 'x'\r\nexit 0\r\n"
+    launcher.write_text(body, encoding="ascii")
+    for venv in ("studio", "supervisor"):
+        (home / "venvs" / venv / "Scripts").mkdir(parents=True)
+        (home / "venvs" / venv / "Scripts" / "python.exe").write_bytes(b"MZ")
+    return home, launcher
+
+
+def _uv(tmp_path: Path, *, fail: bool = False) -> Path:
+    """A stand-in for uv.exe: it writes its environment's UV_LINK_MODE and its arguments, one line a call."""
+    lines = ["@echo off", 'echo %UV_LINK_MODE% %*>>"%~dp0uv-ran.txt"']
+    if fail:
+        lines += [
+            "echo Resolved 1 package 1>&2",
+            "echo error: failed to remove file `ns.exe`: The process cannot access the file because it is "
+            "being used by another process. (os error 32) 1>&2",
+            "exit /b 1",
+        ]
+    else:
+        lines.append("exit /b 0")
+    cmd = tmp_path / "uv.cmd"
+    cmd.write_bytes(("\r\n".join(lines) + "\r\n").encode("ascii"))
+    return cmd
+
+
+def _record(home: Path, uv: Path, **over: object) -> Path:
+    app = home / "app"
+
+    def argv(venv: str) -> list[str]:
+        py = home / "venvs" / venv / "Scripts" / "python.exe"
+        return [str(uv), "pip", "install", "-e", f"{app}[{venv}]", "--python", str(py)]
+
+    data = {
+        "schema": 1, "app": str(app), "match": "marker", "for_app": MARKER, "version": "0.2.0",
+        "by": "update",
+        "written": "2026-11-10T03:00:00", "uv": str(uv), "env": {"UV_LINK_MODE": "copy"},
+        "commands": [{"venv": v, "argv": argv(v)} for v in ("studio", "supervisor")], **over,
+    }
+    target = home / "run" / "venv-repair.json"
+    target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
+def _ran(tmp_path: Path) -> list[str]:
+    f = tmp_path / "uv-ran.txt"
+    return f.read_text(encoding="ascii", errors="replace").splitlines() if f.exists() else []
+
+
+def _starts(launcher: Path) -> int:
+    f = launcher.parent / "ran.txt"
+    return len(f.read_text(encoding="ascii").split()) if f.exists() else 0
+
+
+def _words(text: str) -> str:
+    return " ".join(text.split())
+
+
+@needs_powershell
+def test_the_stub_finishes_an_interrupted_sync_before_starting_anything(tmp_path: Path) -> None:
+    home, launcher = _program_home(tmp_path)
+    record = _record(home, _uv(tmp_path))
+    proc = _stub(home, "-Launcher", launcher)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    ran = _ran(tmp_path)
+    assert len(ran) == 2, f"the launcher started on a half-filled environment (uv ran {ran})"
+    assert ran[0].startswith("copy pip install -e ") and "studio" in ran[0] and "supervisor" in ran[1]
+    assert (tmp_path / "uv-ran.txt").stat().st_mtime_ns <= (launcher.parent / "ran.txt").stat().st_mtime_ns
+    assert _starts(launcher) == 1 and not record.exists()
+    said = (f"An interrupted update was finished on {TODAY}: the Python environments 'studio', 'supervisor' "
+            "now match Nightshift 0.2.0.")
+    assert [n["message"] for n in notify.read_notes(Paths(home))] == [said]
+    # the next start has nothing to finish: no uv, no second note
+    assert _stub(home, "-Launcher", launcher).returncode == 0
+    assert len(_ran(tmp_path)) == 2 and _starts(launcher) == 2 and len(notify.read_notes(Paths(home))) == 1
+    # the nightly task finishes it the same way before the night runs
+    _record(home, _uv(tmp_path))
+    assert _stub(home, "-Nightly", "-Studio", _studio(tmp_path)).returncode == 5
+    assert len(_ran(tmp_path)) == 4 and (tmp_path / "seen.txt").exists() and not record.exists()
+
+
+@needs_powershell
+def test_a_failed_repair_is_said_and_nothing_starts(tmp_path: Path) -> None:
+    home, launcher = _program_home(tmp_path)
+    record = _record(home, _uv(tmp_path, fail=True))
+    proc = _stub(home, "-Launcher", launcher)
+    assert proc.returncode == 1 and _starts(launcher) == 0, "Nightshift started on a half-filled environment"
+    assert _words(
+        "Nightshift could not finish an interrupted update (NS-W210): its Python environment 'studio' "
+        "does not match the program yet. uv said: error: failed to remove file `ns.exe`: The process "
+        "cannot access the "
+        "file because it is being used by another process. (os error 32) Close every Nightshift window and "
+        "open Nightshift again. If it fails again, run INSTALL.cmd from the Nightshift 0.2.0 zip and choose "
+        "this folder (Repair)."
+    ) in _words(proc.stdout)
+    assert record.exists() and len(_ran(tmp_path)) == 1
+    # the nightly run: a missed night with that reason, the record kept for the next start
+    desk = tmp_path / "Desk"
+    desk.mkdir()
+    proc = _stub(home, "-Nightly", "-Studio", _studio(tmp_path), "-DesktopDir", desk)
+    assert proc.returncode == 1 and not (tmp_path / "seen.txt").exists() and record.exists()
+    assert _missed(home)["what"] == "repair"
+    line = _lines(home)[-1]
+    assert line["data"]["code"] == "NS-W210" and "(os error 32)" in line["data"]["reason"]
+    note = (desk / NOTE).read_text(encoding="utf-8-sig")
+    assert "(NS-W210)" in note.splitlines()[0] and "uv said: error: failed to remove file" in note
+    # a record that cannot be read is treated as there: nothing starts, and it is said
+    record.write_text("{torn", encoding="utf-8")
+    proc = _stub(home, "-Launcher", launcher)
+    assert proc.returncode == 1 and _starts(launcher) == 0
+    said = _words(proc.stdout)      # (the home's non-ASCII letters may not survive the console)
+    assert "(NS-W210): the record " in said and "venv-repair.json cannot be read" in said
+    assert record.exists()
+
+
+@needs_powershell
+def test_a_stale_record_is_dropped_by_the_stub(tmp_path: Path) -> None:
+    home, launcher = _program_home(tmp_path)
+    record = _record(home, _uv(tmp_path), for_app="0.1.9|cccc|dddd", version="0.1.9")   # a later INSTALL.cmd
+    assert _stub(home, "-Launcher", launcher).returncode == 0
+    assert _ran(tmp_path) == [] and not record.exists() and _starts(launcher) == 1
+    assert [x["event"] for x in _lines(home)] == ["venv_record_stale"]
+    assert notify.read_notes(Paths(home)) == []
+
+
+def _sleeper(seconds: float) -> "subprocess.Popen[bytes]":
+    return subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({seconds})"])
+
+
+def _running(home: Path, pid: int, **extra: object) -> None:
+    state = {"state": "running", "old": "0.2.0", "new": "", "message": "Updating.",
+             "updated_at": "2026-11-10T03:00:00", "log": str(home / "logs" / "update-x.log"), "pid": pid,
+             **extra}
+    (home / "run" / "update_state.json").write_text(json.dumps(state), encoding="utf-8")
+
+
+@needs_powershell
+def test_the_nightly_task_during_an_update_waits_then_runs(tmp_path: Path) -> None:
+    home, launcher = _program_home(tmp_path)
+    studio, desk = _studio(tmp_path), tmp_path / "Desk"
+    desk.mkdir()
+    procs: list[subprocess.Popen] = []
+    try:
+        # an update of an older release (it takes no lock) ends inside the bound: the night runs after it
+        procs.append(_sleeper(4))
+        _running(home, procs[-1].pid)
+        proc = _stub(home, "-Nightly", "-Studio", studio, "-UpdateWaitSeconds", 60)
+        assert proc.returncode == 5, proc.stdout + proc.stderr
+        assert procs[-1].poll() is not None and (tmp_path / "seen.txt").exists()
+        (tmp_path / "seen.txt").unlink()
+        # one that is still running at the bound: a missed night, said as that
+        procs.append(_sleeper(120))
+        _running(home, procs[-1].pid)
+        proc = _stub(home, "-Nightly", "-Studio", studio, "-UpdateWaitSeconds", 2, "-DesktopDir", desk)
+        assert proc.returncode == 1 and not (tmp_path / "seen.txt").exists()
+        assert _missed(home)["what"] == "update" and _lines(home)[-1]["data"]["code"] == "NS-W210"
+        assert "was still running after" in (desk / NOTE).read_text(encoding="utf-8-sig")
+        # a shortcut meanwhile starts nothing and says why
+        proc = _stub(home, "-Launcher", launcher)
+        assert proc.returncode == 1 and _starts(launcher) == 0
+        assert "An update, rollback or repair of Nightshift is running (progress: " in _words(proc.stdout)
+        assert "Nothing was started." in proc.stdout
+        procs[-1].kill()
+        procs[-1].wait(timeout=30)
+        # this release's update holds run\update.lock (its state may say anything): the same
+        (home / "run" / "update_state.json").unlink()
+        code = ("import sys, time; from pathlib import Path; from ns_common.singleton import FileLock; "
+                "lock = FileLock(Path(sys.argv[1])); lock.acquire(); print('held', flush=True); "
+                "time.sleep(120)")
+        holder = subprocess.Popen([sys.executable, "-c", code, str(home / "run" / "update.lock")],
+                                  cwd=str(LAUNCHERS.parent), stdout=subprocess.PIPE, text=True)
+        procs.append(holder)
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "held"
+        proc = _stub(home, "-Launcher", launcher)
+        assert proc.returncode == 1 and _starts(launcher) == 0 and "is running" in proc.stdout
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
+                p.wait(timeout=30)
+    assert _stub(home, "-Launcher", launcher).returncode == 0 and _starts(launcher) == 1
+
+
+@needs_powershell
+def test_a_dead_update_is_told_once_at_the_next_start(tmp_path: Path) -> None:
+    home, launcher = _program_home(tmp_path)
+    gone = _sleeper(0)
+    gone.wait(timeout=30)
+    left = "The update process stopped before it changed anything. 0.2.0 is in place."
+    _running(home, gone.pid, if_stopped_here=left)
+    assert _stub(home, "-Launcher", launcher).returncode == 0 and _starts(launcher) == 1
+    state = json.loads((home / "run" / "update_state.json").read_text(encoding="utf-8"))
+    assert state["state"] == "failed" and state["message"] == left and state["pid"] == gone.pid
+    notes = notify.read_notes(Paths(home))
+    assert [(n["title"], n["message"]) for n in notes] == [
+        ("Nightshift", f"An update or rollback of Nightshift was interrupted. {left}")]
+    assert _stub(home, "-Launcher", launcher).returncode == 0 and len(notify.read_notes(Paths(home))) == 1
+
+
+@needs_powershell
+def test_an_environment_an_older_updater_left_is_said_once_and_nightshift_starts(tmp_path: Path) -> None:
+    home, launcher = _program_home(tmp_path)
+    info = home / "venvs" / "supervisor" / "Lib" / "site-packages" / "nightshift-0.1.14.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: nightshift\nVersion: 0.1.14\n", "utf-8")
+    said = ("The Python environment 'supervisor' holds Nightshift 0.1.14, but the program is 0.2.0 (an "
+            "update by an older version was interrupted). Run INSTALL.cmd from the Nightshift 0.2.0 zip and "
+            "choose this folder (Repair).")
+    proc = _stub(home, "-Launcher", launcher)
+    assert proc.returncode == 0 and _starts(launcher) == 1 and said in _words(proc.stdout)
+    assert [n["message"] for n in notify.read_notes(Paths(home))] == [said]
+    assert _stub(home, "-Launcher", launcher).returncode == 0 and len(notify.read_notes(Paths(home))) == 1
+
+@needs_powershell
+def test_after_a_failed_repair_the_diagnostics_and_outbox_shortcuts_still_open(tmp_path: Path) -> None:
+    """The way out may ask for the diagnostics zip: those two shortcuts open after a FAILED replay (they start
+    no engine), the others say so on their refusal; while an update runs, all of them wait."""
+    home, launcher = _program_home(tmp_path)
+    _record(home, _uv(tmp_path, fail=True))
+    body = "Add-Content -LiteralPath (Join-Path $PSScriptRoot 'ran.txt') -Value 'x'\r\nexit 0\r\n"
+    for name in ("diagnostics.ps1", "open-outbox.ps1"):
+        (launcher.parent / name).write_text(body, encoding="ascii")
+    proc = _stub(home, "-Launcher", launcher)
+    assert proc.returncode == 1 and _starts(launcher) == 0
+    assert "The Diagnostics shortcut still opens" in _words(proc.stdout)
+    for name in ("diagnostics.ps1", "open-outbox.ps1"):
+        proc = _stub(home, "-Launcher", launcher.parent / name)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "(NS-W210)" in proc.stdout              # the reason is still said
+    assert _starts(launcher) == 2                        # (both stand-ins write the same ran.txt)
+    # while an update runs (an older release's worker: a live python pid), even these wait
+    sleeper = _sleeper(120)
+    try:
+        _running(home, sleeper.pid)
+        proc = _stub(home, "-Launcher", launcher.parent / "diagnostics.ps1")
+        assert proc.returncode == 1 and _starts(launcher) == 2 and "is running" in proc.stdout
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=30)
+
+# ---- D-39b review @ e2d2bb0: the record's last step in the launch script, and the Diagnostics shortcut ----
+@needs_powershell
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows file sharing")
+def test_a_replayed_record_held_open_at_its_delete_is_marked_finished_and_nightshift_starts(
+    tmp_path: Path,
+) -> None:
+    from tests.test_venv_repair import _hold, _stop, venvrepair
+
+    vr = venvrepair()           # (None before D-39b: the assertions below then fail, not the import)
+
+    home, launcher = _program_home(tmp_path)
+    record = _record(home, _uv(tmp_path), id="0123456789abcdef")
+    done = home / "run" / "venv-repair.done"
+    holder = _hold(record, 120)            # a reader (Python's open: no delete sharing) for the whole start
+    try:
+        proc = _stub(home, "-Launcher", launcher, "-ClearWaitSeconds", 1)
+        assert proc.returncode == 0 and _starts(launcher) == 1, proc.stdout + proc.stderr
+        assert record.exists()
+        assert json.loads(done.read_text(encoding="utf-8-sig"))["id"] == "0123456789abcdef"
+        assert vr is not None and vr.read(home) is None and vr.start_refusal(home, home / "app") is None
+        assert "venv_record_marked_finished" in [x["event"] for x in _lines(home)]
+        # the next start: finished, so no replay; the two files go once nothing holds them
+        proc = _stub(home, "-Launcher", launcher, "-ClearWaitSeconds", 1)
+        assert proc.returncode == 0 and _starts(launcher) == 2 and len(_ran(tmp_path)) == 2
+    finally:
+        _stop([holder])
+    assert _stub(home, "-Launcher", launcher).returncode == 0 and _starts(launcher) == 3
+    assert not record.exists() and not done.exists() and len(_ran(tmp_path)) == 2
+    # a record with no id cannot be marked: said, and nothing starts (every Python start would refuse it)
+    record = _record(home, _uv(tmp_path))
+    holder = _hold(record, 120)
+    try:
+        proc = _stub(home, "-Launcher", launcher, "-ClearWaitSeconds", 1)
+    finally:
+        _stop([holder])
+    said = _words(proc.stdout)
+    assert proc.returncode == 1 and _starts(launcher) == 3
+    assert "(NS-W210): its Python environments 'studio', 'supervisor' were refreshed, but the record" in said
+    assert "could not be removed" in said and "(Repair)" in said
+
+
+def _diagnostics_home(tmp_path: Path, doctor: str | None) -> tuple[Path, Path, Path]:
+    """A home whose replay fails (so the stub lets only Diagnostics and Outbox through), with the real
+    Diagnostics launcher and an `ns.exe` stand-in: a copy of this venv's python.exe launcher that runs the
+    file `doctor` from the working folder (`doctor` None: no ns.exe at all)."""
+    home, launcher = _program_home(tmp_path)
+    _record(home, _uv(tmp_path, fail=True))
+    for name in ("diagnostics.ps1", "_common.ps1"):
+        shutil.copy(LAUNCHERS / name, launcher.parent / name)
+    (home / "config" / "runtime.json").write_text("{}", encoding="ascii")
+    (home / "config" / "install_state.json").write_text('{"version": "0.2.0"}', encoding="ascii")
+    (home / "config" / "answers.json").write_text('{"pexels_api_key": "SECRET"}', encoding="ascii")
+    (home / "run" / "update_state.json").write_text('{"state": "failed"}', encoding="ascii")
+    (home / "logs" / "update-x.log").write_bytes(b"the update log\n")
+    work = tmp_path / "work"
+    work.mkdir()
+    if doctor is not None:
+        sup = home / "venvs" / "supervisor"
+        shutil.copy(Path(sys.executable), sup / "Scripts" / "ns.exe")
+        shutil.copy(Path(sys.prefix) / "pyvenv.cfg", sup / "pyvenv.cfg")
+        (work / "doctor").write_text(doctor, encoding="ascii")
+    return home, launcher.parent / "diagnostics.ps1", work
+
+
+def _stub_in(work: Path, home: Path, *args: object) -> "subprocess.CompletedProcess[str]":
+    exe = pwsh.find_powershell()
+    assert exe is not None
+    argv = [exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(home / "nightshift-launch.ps1"),
+            *(str(a) for a in args)]
+    return subprocess.run(argv, input="\n", capture_output=True, text=True, timeout=180, cwd=str(work),
+                          env={**os.environ, "NIGHTSHIFT_HOME": str(home)})
+
+
+DIES = "import sys\nsys.stderr.write(\"ModuleNotFoundError: No module named 'pydantic'\n\")\nsys.exit(1)\n"
+WORKS = (
+    "import sys, zipfile\nfrom pathlib import Path\n"
+    "out = Path(sys.argv[sys.argv.index('--out-dir') + 1]) / 'nightshift-diagnostics-2026-11-10-0300.zip'\n"
+    "with zipfile.ZipFile(out, 'w') as z:\n    z.writestr('VERSION', '0.2.0')\n"
+    "print(f'Diagnostics written to {out}')\n"
+)
+
+
+@needs_powershell
+@pytest.mark.skipif(sys.platform != "win32", reason="a venv launcher as the ns.exe stand-in")
+def test_the_diagnostics_shortcut_says_which_zip_it_made(tmp_path: Path) -> None:
+    import zipfile
+
+    # the supervisor environment is half-filled: ns.exe dies at import. A smaller zip, made without Python
+    home, diag, work = _diagnostics_home(tmp_path / "dies", DIES)
+    desk = tmp_path / "dies" / "Desk"
+    desk.mkdir()
+    proc = _stub_in(work, home, "-Launcher", diag, "-DesktopDir", desk)
+    said = _words(proc.stdout)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "(NS-W210)" in said and "The diagnostics zip is on your Desktop" not in said
+    assert "The full diagnostics zip could not be made (ns doctor --bundle ended with exit code 1" in said
+    (small,) = list(desk.glob("nightshift-diagnostics-small-*.zip"))
+    assert f"A smaller diagnostics zip was made without Python instead: {small}" in said
+    with zipfile.ZipFile(small) as z:
+        names = {n.replace("\\", "/") for n in z.namelist()}
+        assert {"logs/update-x.log", "install_state.json", "VERSION", "run/venv-repair.json",
+                "run/update_state.json", "bundle-notes.txt"} <= names, names
+        assert not any("answers" in n or "secrets" in n for n in names)
+        assert z.read([n for n in z.namelist() if n.endswith("update-x.log")][0]) == b"the update log\n"
+    assert not list((home / "run").glob("diagnostics-*")), "the staging folder was left"
+    # ns doctor --bundle works: its zip, named as it is
+    home, diag, work = _diagnostics_home(tmp_path / "works", WORKS)
+    desk = tmp_path / "works" / "Desk"
+    desk.mkdir()
+    proc = _stub_in(work, home, "-Launcher", diag, "-DesktopDir", desk)
+    said = _words(proc.stdout)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    full = desk / "nightshift-diagnostics-2026-11-10-0300.zip"
+    assert f"The diagnostics zip is on your Desktop: {full}" in said
+    assert not list(desk.glob("nightshift-diagnostics-small-*.zip"))
+    # neither can be made (the Desktop folder is gone): said plainly, with what to send instead
+    home, diag, work = _diagnostics_home(tmp_path / "none", DIES)
+    gone = tmp_path / "none" / "Desk"
+    proc = _stub_in(work, home, "-Launcher", diag, "-DesktopDir", gone)
+    said = _words(proc.stdout)
+    assert proc.returncode == 1 and not gone.exists()
+    assert "No diagnostics zip was made: the smaller zip without Python failed too" in said
+    assert "Instead, send the folder " in said and "venv-repair.json" in said
+    assert "zip is on your Desktop" not in said and "was made without Python instead" not in said

@@ -70,7 +70,7 @@ export default function Settings() {
             if (u.state === "failed") {
               clearInterval(t); setUpdating(null); setUpd(null);
               // the message says what is in place ("Nothing was changed" only where that is so) and what to do
-              toast(`The update did not complete. ${u.message || ""}`, "bad"); setUpdateNote(failedNote(u));
+              toast(`${u.updated ? "The update was applied, but Nightshift did not start again by itself." : "The update did not complete."} ${u.message || ""}`, "bad"); setUpdateNote(failedNote(u));
               return;
             }
             // done: the service that answers must be the new version before the page says so
@@ -93,7 +93,8 @@ export default function Settings() {
   };
   // A failed update or rollback stays on this card until the next one: it may have ended while nobody was looking
   // (Nightshift not started again, a power cut), and its message carries the way out.
-  const failedNote = (u: UpdateState) => `The last update or rollback did not complete${u.updated_at ? ` (${u.updated_at.replace("T", " ")})` : ""}. ${u.message || "See the newest update log in the logs folder."}`;
+  // `updated`: the program was changed and only the restart did not happen, which is not "did not complete".
+  const failedNote = (u: UpdateState) => `${u.updated ? "The last update or rollback was applied, but Nightshift did not start again by itself" : "The last update or rollback did not complete"}${u.updated_at ? ` (${u.updated_at.replace("T", " ")})` : ""}. ${u.message || "See the newest update log in the logs folder."}`;
   useEffect(() => { api.get<UpdateState>("/update/state").then((u) => { if (u.state === "running") follow(false); else if (u.state === "failed") setUpdateNote(failedNote(u)); else if (u.state === "done" && u.release_notes) setWhatsNew({ version: u.new, text: u.release_notes }); }).catch(() => undefined); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const apply = async () => {
     const ok = await confirm({ title: "Install the update?", body: "Nightshift stops the engine, installs the new version and starts again. If anything fails it goes back to this version", ok: "Install" });

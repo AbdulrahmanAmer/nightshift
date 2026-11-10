@@ -661,7 +661,8 @@ else {
     # (ns_common/rollback_intent.py settle_swap); nightshift-launch.ps1 above is what the shortcuts start
     foreach ($left in @(Get-ChildItem -LiteralPath $nsHome -Directory -Filter 'app.swap-left-*' -ErrorAction SilentlyContinue)) { Remove-Tree -Path $left.FullName }
     # app.rollback-settings-<stamp>.zip: the settings a stale rollback record held (rollback_intent.recover).
-    # run\launch-missed.json and run\launch-reach.json (the launch script's count, the reach's marker) go with run.
+    # run\launch-missed.json and run\launch-reach.json (the launch script's count, the reach's marker) go with run,
+    # and so do run\venv-repair.json and run\update.lock (an unfinished sync's record, the update lock: D-39b).
     foreach ($kept in @(Get-ChildItem -LiteralPath $nsHome -File -Filter 'app.rollback-settings-*.zip' -ErrorAction SilentlyContinue)) { Remove-Tree -Path $kept.FullName }
 }
 if ($wipeModels) { Remove-Tree -Path (Join-Path $nsHome 'models') }

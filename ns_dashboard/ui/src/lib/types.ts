@@ -61,7 +61,8 @@ export interface ChannelDetail { profile: ChannelProfile; warnings: string[]; wa
 export interface MorningNote { id: string; at: string; title: string; message: string }
 /** GET /update/state: what the detached updater writes to run/update_state.json (idle when it never ran). */
 export interface UpdateState { state: "idle" | "running" | "done" | "failed"; old: string | null; new: string | null; message: string | null; updated_at: string | null; /** The updater process is gone though the file still said running. */ stale?: boolean;
-  /** After an update: the new version's section of CHANGELOG.md (the `## [x.y.z] - date` heading line included). */ release_notes?: string }
+  /** After an update: the new version's section of CHANGELOG.md (the `## [x.y.z] - date` heading line included). */ release_notes?: string;
+  /** The program was changed (set from the restart step on): a failed state with it is only a restart that did not happen. */ updated?: boolean; restart_failed?: boolean }
 /** One entry of GET /assistant/tools: the registry the Assistant works from. */
 export interface ToolInfo { name: string; description: string; side_effect: boolean; topic: string }
 

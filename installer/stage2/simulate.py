@@ -218,7 +218,13 @@ class FakeRunner:
         venv = Path(call.argv[call.argv.index("--python") + 1]).parent.parent
         info = venv / SITE_PACKAGES / PRODUCT_DIST_INFO
         info.mkdir(parents=True, exist_ok=True)
-        (info / "METADATA").write_text("Name: nightshift\n", encoding="utf-8")
+        # the version of the program installed, as uv records it (D-39b's checks compare it with VERSION)
+        app = Path(call.argv[call.argv.index("-e") + 1].split("[")[0])
+        try:
+            version = (app / "VERSION").read_text(encoding="utf-8-sig").strip()
+        except OSError:
+            version = ""
+        (info / "METADATA").write_text(f"Name: nightshift\nVersion: {version}\n", encoding="utf-8")
 
     @staticmethod
     def _import_check(call: Call) -> RunResult:

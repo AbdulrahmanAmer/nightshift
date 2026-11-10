@@ -26,7 +26,7 @@ from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error, uv_error
 from installer.stage2.fallback import ensure_tts_venv
 from installer.stage2.runner import RunResult
-from installer.stage2.web import deplock, filesdir
+from installer.stage2.web import deplock, filesdir, venvrepair
 from ns_common.errors import NsError
 from ns_common.uv import uv_env, venv_args
 from ns_common.venv_extras import DEV_VENV_EXTRAS, VENV_EXTRAS
@@ -192,6 +192,12 @@ class S04Venvs(Step):
             return False                    # the editable installs point at another program folder
         if ctx.flag("tts_fallback", False) and not ctx.flag("tts_venv_installed", False):
             return False
+        # D-39b: an update, rollback or resync that broke off (its repair record), or an older updater that
+        # left a venv on another version: the flags are setup's own and say nothing of either
+        unfinished = venvrepair.unfinished(ctx.paths.home, ctx.app_path)
+        if unfinished is not None:
+            ctx.log.info("venv_check_failed", why=unfinished)
+            return False
         for name in venv_names(ctx):
             problem = cannot_load(ctx, name)
             if problem is not None:
@@ -279,6 +285,20 @@ class S04Venvs(Step):
 
         if ctx.flag("tts_fallback", False):
             ensure_tts_venv(ctx)
+        # D-39b: every venv now holds this program, so a repair record (this program's, or a stale one of
+        # another) has nothing left to do. Its delete is retried; still refused, it is marked finished
+        # (venvrepair.clear). When neither can be done the record would refuse every start: the step fails
+        # with that sentence (Retry), and the done-state below is not written.
+        try:
+            how = venvrepair.clear(ctx.paths.home)
+        except OSError as e:
+            ctx.log.error("venv_record_left", str(e))
+            raise make_error(
+                "NS-W210", venvrepair.left_sentence(ctx.paths.home, ctx.app_path, str(e))
+                + " Or press Retry once the program that holds it has ended.",
+            ) from e
+        if how == "marked":
+            ctx.log.warn("venv_record_marked_finished", str(venvrepair.record_path(ctx.paths.home)))
         # the done-state is written last, after every venv was filled (the wizard cleared it before the work)
         ctx.set_flag("venvs_installed", True)
         ctx.set_flag("venvs_version", ctx.manifest.version)
