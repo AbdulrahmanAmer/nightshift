@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -631,7 +632,14 @@ def test_the_real_restart_manager_names_the_process_that_holds_a_lock_file(tmp_p
     pid = 0
     try:
         assert child.stdout is not None and child.stdin is not None
-        pid = int(child.stdout.readline())  # the interpreter's own pid (a venv launcher has another one)
+        # The interpreter's own pid (a venv launcher has another one), read with a deadline: a holder that
+        # never prints must fail this test in 30 s, not hang the shard until CI's limit.
+        said: list[str] = []
+        reader = threading.Thread(target=lambda: said.append(child.stdout.readline()), daemon=True)
+        reader.start()
+        reader.join(30)
+        assert said and said[0].strip().isdigit(), f"the holder printed no pid within 30 s: {said!r}"
+        pid = int(said[0])
         assert REAL_PID_HOLDS(pid, lock) is True
         assert REAL_PID_HOLDS(os.getpid(), lock) is False, "this process does not have it open"
         assert REAL_PID_HOLDS(pid, other) is False, "the holder does not have the other file open"
