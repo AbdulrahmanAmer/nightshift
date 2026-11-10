@@ -64,7 +64,7 @@ def test_the_engine_sweeps_run_and_config_when_it_starts(
         sup = Supervisor(
             paths, Runtime.default("gpu"), config=fast_config(idle_unload_s=60), resolver=StubTable()
         )
-        return TestClient(create_app(sup, run_monitor=False))
+        return TestClient(create_app(sup, run_monitor=False), base_url="http://127.0.0.1:18099")
 
     # a file made a moment ago is not a leftover
     with start_engine():

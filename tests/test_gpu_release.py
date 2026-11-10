@@ -81,7 +81,7 @@ def test_the_release_route_takes_unless_alive(tmp_path: Path):
         Paths(tmp_path / "ns"), Runtime.default("gpu"), config=fast_config(idle_unload_s=60),
         resolver=StubTable(),
     )
-    with TestClient(create_app(sup)) as tc:
+    with TestClient(create_app(sup), base_url="http://127.0.0.1:18099") as tc:
         tc.post("/acquire", json={"service": "llama", "owner": "studio:j1"})
         assert tc.post("/heartbeat", json={"owner": "studio:j1"}).json() == {"ok": True}
         r = tc.post("/release_owner", json={"owner": "studio:j1", "unless_alive": True}).json()

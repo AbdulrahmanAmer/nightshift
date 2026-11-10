@@ -465,7 +465,7 @@ def test_e314_clears_without_restarting_the_service(tmp_path: Path, models: Path
     (models / DESIGN).unlink()
     engine = QwenttsEngine(tmp_path / "bin", models, timeout_s=60, launcher=launcher())
     engine.load()
-    client = TestClient(create_app(engine, VoiceLibrary(tmp_path / "voices")))
+    client = TestClient(create_app(engine, VoiceLibrary(tmp_path / "voices")), base_url="http://127.0.0.1:18099")
     body = {"name": "velvet", "description": "deep calm male narrator"}
     before = client.post("/v1/voices/design", json=body)
     assert before.status_code == 409 and before.json()["error"] == "NS-E314"

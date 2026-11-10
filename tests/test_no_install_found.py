@@ -363,18 +363,20 @@ def test_an_unreadable_runtime_json_stops_models_get_with_its_own_error(
 
 
 def test_the_way_out_the_hint_names_works(tmp_path: Path, plans: Plans) -> None:
-    """NS-E125's hint: rename a damaged runtime.json to runtime.json.bad, then run setup again. Setup's step
-    s06 starts with `ensure_baseline`, which writes a missing runtime.json; after that `ns models get` works.
-    (`ns tune`, the obvious guess, reads the file first and cannot repair a missing or damaged one.)"""
-    from installer.stage2.runtime_cfg import ensure_baseline
+    """NS-E125's hint: run setup again. Setup writes a missing runtime.json from the answers, and keeps a
+    damaged one as runtime.json.bad before it does (the owner renames nothing); after that `ns models get`
+    works. (`ns tune`, the obvious guess, reads the file first and cannot repair a missing or damaged one.)"""
+    from installer.stage2.steps.s06_tune import S06Tune
     from installer.stage2.testing import example_answers, make_test_context
+    from installer.stage2.wizard import EXIT_OK, Wizard
 
     ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True)
     home = ctx.paths.home
     env = {"NIGHTSHIFT_HOME": str(home)}
     for damage in ("missing", "torn"):
         ctx.paths.runtime_file.unlink(missing_ok=True)
-        ctx.paths.runtime_file.with_name("runtime.json.bad").unlink(missing_ok=True)
+        for old in ctx.paths.config.glob("runtime.json.bad*"):
+            old.unlink()
         if damage == "torn":
             ctx.paths.runtime_file.parent.mkdir(parents=True, exist_ok=True)
             ctx.paths.runtime_file.write_text("{", encoding="utf-8")
@@ -382,10 +384,10 @@ def test_the_way_out_the_hint_names_works(tmp_path: Path, plans: Plans) -> None:
         r = run("ns", "models", "get", "voicedesign", env=env)
         assert r.exit_code == 1 and "NS-E125" in r.output and plans.calls == [], (damage, r.output)
         assert "INSTALL.cmd" in r.output and "runtime.json.bad" in r.output
+        assert "rename it" not in r.output                                  # the owner renames nothing
+        assert Wizard(ctx, [S06Tune()], backoff=()).run() == EXIT_OK        # setup, again
         if damage == "torn":
-            # the owner's step
-            ctx.paths.runtime_file.rename(ctx.paths.runtime_file.with_name("runtime.json.bad"))
-        ensure_baseline(ctx)                                                                    # setup, again
+            assert (ctx.paths.config / "runtime.json.bad").read_text(encoding="utf-8") == "{"
         r2 = run("ns", "models", "get", "voicedesign", env=env)
         assert r2.exit_code == 0 and len(plans.calls) == 1, (damage, r2.output)
 

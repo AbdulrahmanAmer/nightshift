@@ -22,6 +22,7 @@ from ns_common import first_start
 from ns_common.atomic import sweep_stale_tmp
 from ns_common.config import load_runtime
 from ns_common.errors import NsError, describe
+from ns_common.loopback import NO_BROWSER, LoopbackGuard
 from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_common.secret_file import relock_existing
@@ -197,6 +198,15 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
+    # FN-1: before any route, for every method: a request a browser made, or one addressed to a name other
+    # than this PC's, gets 403 NS-E207. A page that keeps trying is told to the owner in a morning note.
+    app.add_middleware(
+        LoopbackGuard,
+        rule=NO_BROWSER,
+        log=sup.log,
+        tell=lambda message, at: notify.leave_note(sup.paths, "Nightshift", message, now=at),
+        waiting=lambda: notify.read_notes(sup.paths),
+    )
     return app
 
 

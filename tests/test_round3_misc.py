@@ -227,6 +227,7 @@ def test_the_route_takes_both_files(tmp_home: Path):
     dash, fake = update_dash(tmp_home)
     app = create_app(state=dash.state, start_worker=False, static_dir=tmp_home / "absent")
     client = TestClient(app, base_url="http://127.0.0.1:8100")
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     r = client.post(
         "/api/update/file",
         files={
