@@ -79,6 +79,7 @@ LIMITER_ATTACK_MS = 2.0
 LIMITER_RELEASE_MS = 120.0  # long enough not to ripple on low voices
 LIMITER_RATE_HZ = 192000    # the limiter works at this rate so it holds true peaks, not only sample peaks
 OUTPUT_RATE_HZ = 48000      # the rate every stored or delivered audio file is written at
+SAMPLE_FMT = "flt"          # `assemble_audio` joins in float: any 16-bit input fits, rounded once on write
 MAX_LIMITER_PASSES = 2      # each pass is a whole FFmpeg run over the audio; the second is the best guess
 MAX_BOOST_STEP_DB = 15.0
 AIM_PAST_DB = 0.3           # the second boost aims this far over the target; loudnorm then only trims
@@ -229,6 +230,8 @@ def assemble_audio(
 
     Each segment is one input of the command, so a long list is assembled in parts of at most `max_inputs`
     (mono WAV at `sr`, so joining them by copy loses nothing) and the command stays the same size.
+    Every chain names its sample format (`SAMPLE_FMT`): left open, the graph holding an `anullsrc` silence
+    settled on a coarse one and the narration came out in steps of 256 (8 of the 16 bits).
     """
     if not segments:
         raise NsError("NS-E401", "nothing to assemble")
@@ -241,7 +244,7 @@ def assemble_audio(
             args += ["-i", str(seg)]
         else:
             args += ["-f", "lavfi", "-t", f"{seg:.3f}", "-i", f"anullsrc=r={sr}:cl=mono"]
-        chains.append(f"[{k}:a]aformat=sample_rates={sr}:channel_layouts=mono[a{k}]")
+        chains.append(f"[{k}:a]aformat=sample_fmts={SAMPLE_FMT}:sample_rates={sr}:channel_layouts=mono[a{k}]")
     joined = "".join(f"[a{k}]" for k in range(len(segments)))
     graph = ";".join(chains) + f";{joined}concat=n={len(segments)}:v=0:a=1[out]"
     out_wav.parent.mkdir(parents=True, exist_ok=True)
