@@ -186,8 +186,8 @@ def pending_sentence(home: Path, app: Path, record: Mapping[str, Any] | None, pr
         f"an interrupted update or rollback left the Python environment {which} unfinished"
     )
     return (
-        f"{what} ({CODE}). Nightshift finishes it the next time you open it from a Desktop shortcut, or at "
-        f"tonight's run, before anything else starts. If that fails, close every Nightshift window and run "
+        f"{what} ({CODE}). Nightshift finishes it the next time you open it from a Desktop shortcut, before "
+        f"anything else starts. If that fails, close every Nightshift window and run "
         f"INSTALL.cmd from the Nightshift {program_version(app) or 'unknown version'} zip and choose this "
         "folder (Repair)."
     )

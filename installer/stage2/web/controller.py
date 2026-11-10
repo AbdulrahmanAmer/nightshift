@@ -2135,11 +2135,11 @@ class SetupController:
             return EXIT_ALREADY_RUNNING
         try:
             with keepawake.keep_awake(self.fx.set_execution_state):
-                return self._run_headless()
+                return self._run_headless_checks()
         finally:
             lock.release()
 
-    def _run_headless(self) -> int:
+    def _run_headless_checks(self) -> int:
         state = self.snapshot()
         say = self.fx.console
         for c in state["checks"]:
@@ -2165,12 +2165,12 @@ class SetupController:
             say(f"    {e.detail}", "error")
             return EXIT_ALREADY_RUNNING if e.code == "NS-E705" else 14
         try:
-            return self._run_headless_steps(say)
+            return self._run_headless(say)
         finally:
             if guard is not None:
                 guard.release()
 
-    def _run_headless_steps(self, say: Callable[[str, str], None]) -> int:
+    def _run_headless(self, say: Callable[[str, str], None]) -> int:
         try:
             for step in bootstrap.bootstrap_steps():
                 self._run_bootstrap_step(step)

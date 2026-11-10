@@ -178,7 +178,7 @@ def test_a_forward_sync_that_does_not_finish_keeps_the_record_and_the_backup(
         assert (base / "NightShift.prev" / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
         rec = record(paths)
         assert rec is not None and rec["version"] == "0.2.0", "the next start has nothing to finish from"
-        first = "open Nightshift from a Desktop shortcut (or wait for tonight's run)"
+        first = "open Nightshift from a Desktop shortcut: it finishes the Python environments before anything"
         assert (first in said) is stub, said
 
 

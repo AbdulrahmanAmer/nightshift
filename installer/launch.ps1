@@ -156,7 +156,7 @@ function Get-NoteLines {
     $lines = @($head, '')
     if ($Missed.what -eq 'update') {
         $lines += ('An update, rollback or repair of Nightshift was still running after ' + [string][Math]::Round($UpdateWaitSeconds / 60) + ' minutes, so the nightly run did not start.')
-        $lines += @('', 'What to do: nothing. The next night runs by itself, and this file is removed the next time Nightshift starts.')
+        $lines += @('', 'What to do: nothing. While Automatic runs are on, the next night runs by itself; this file is removed the next time Nightshift starts.')
         $lines += @('', "To stop the nightly attempts, disable 'Nightshift Daily' in Task Scheduler.")
         return $lines
     }
@@ -418,7 +418,7 @@ function Write-Miss {
     if ($What -eq 'update') {
         $code = 'NS-W210'
         $why = 'an update, rollback or repair of Nightshift was running.'
-        $body = 'An update, rollback or repair of Nightshift was running. The next night runs by itself. ' + $where
+        $body = 'An update, rollback or repair of Nightshift was running. While Automatic runs are on, the next night runs by itself. ' + $where
     } elseif ($What -eq 'repair') {
         $code = 'NS-W210'
         $why = 'an interrupted update could not be finished.'

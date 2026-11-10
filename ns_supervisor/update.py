@@ -1185,8 +1185,8 @@ def update_way_out(paths: Paths, app: Path, here: str, other: str, command: str 
 #: backup: running the update again after a forward sync broke off would replace `<app>.prev` (the older
 #: version) with the newer program, and the way back would be gone.
 FINISH_AT_START = (
-    "open Nightshift from a Desktop shortcut (or wait for tonight's run): it finishes the Python "
-    "environments before anything else starts. If that does not work, "
+    "open Nightshift from a Desktop shortcut: it finishes the Python environments before anything else "
+    "starts. If that does not work, "
 )
 
 
