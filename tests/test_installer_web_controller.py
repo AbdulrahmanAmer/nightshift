@@ -469,6 +469,12 @@ def test_a_second_run_resumes_what_the_first_one_finished(tmp_path, monkeypatch)
     # left alone, byte for byte (`saved` holds `nightly: None` and `nightly_seen: None`, which the writer
     # leaves out of the file since F-10c, so the dict is not what is on disk)
     assert (cfg_dir / "answers.json").read_text(encoding="utf-8") == written
+    # and the file still holds the owner's answers: `saved` without the two answers the writer leaves out
+    # while they are None (F-10c; its other None values stay in the file) and with the key fields blank
+    left_out = ("nightly", "nightly_seen")
+    held = {k: v for k, v in saved.items() if not (k in left_out and v is None)}
+    held |= {"pexels_api_key": "", "pixabay_api_key": ""}
+    assert json.loads((cfg_dir / "answers.json").read_text(encoding="utf-8")) == held
 
 
 # ------------------------------------------------------------------- INSTALL.cmd over a finished install
