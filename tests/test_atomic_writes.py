@@ -335,12 +335,12 @@ def test_a_crash_in_the_swap_leaves_the_old_zip_whole_and_no_temp_file(
     def die(src: object, dst: object) -> None:
         raise OSError("power lost")
 
-    monkeypatch.setattr(atomic.os, "replace", die)
-    with pytest.raises(OSError):
-        atomic.append_to_zip_atomic(target, [("report", b"x" * 100_000)])
-    with pytest.raises(OSError):
-        atomic.write_zip_atomic(target, lambda zf: zf.writestr("other", "y"))
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        m.setattr(atomic.os, "replace", die)
+        with pytest.raises(OSError):
+            atomic.append_to_zip_atomic(target, [("report", b"x" * 100_000)])
+        with pytest.raises(OSError):
+            atomic.write_zip_atomic(target, lambda zf: zf.writestr("other", "y"))
     assert read_whole_zip(target) == ["VERSION"]
     assert not list(tmp_path.glob("*.tmp"))
 
@@ -372,15 +372,15 @@ def test_bytes_streams_and_copies_arrive_whole(tmp_path: Path, monkeypatch: pyte
     def die(src: object, dst: object) -> None:
         raise OSError("power lost")
 
-    monkeypatch.setattr(atomic.os, "replace", die)
-    for attempt in (
-        lambda: atomic.write_bytes_atomic(target, b"new"),
-        lambda: atomic.write_stream_atomic(target, io.BytesIO(b"new")),
-        lambda: atomic.copy_atomic(copy, target),
-    ):
-        with pytest.raises(OSError):
-            attempt()
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        m.setattr(atomic.os, "replace", die)
+        for attempt in (
+            lambda: atomic.write_bytes_atomic(target, b"new"),
+            lambda: atomic.write_stream_atomic(target, io.BytesIO(b"new")),
+            lambda: atomic.copy_atomic(copy, target),
+        ):
+            with pytest.raises(OSError):
+                attempt()
     assert target.read_bytes() == blob[:1000]
     assert not list(tmp_path.rglob("*.tmp"))
 
@@ -849,14 +849,14 @@ def test_a_zip_held_open_past_the_wait_stays_whole_and_the_error_is_coded(
 ) -> None:
     z = make_zip(tmp_path / "d.zip", **{"a.txt": "old"})
     clock = FakeClock()
-    in_place = writes_in_place(monkeypatch, z)
-    refuse_every_swap(monkeypatch)
-    monkeypatch.setattr(atomic, "time", clock)
-    with pytest.raises(NsError) as rebuilt:
-        atomic.write_zip_atomic(z, lambda zf: zf.writestr("b.txt", "new"))
-    with pytest.raises(NsError) as appended:
-        atomic.append_to_zip_atomic(z, [("c.txt", b"new")])
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        in_place = writes_in_place(m, z)
+        refuse_every_swap(m)
+        m.setattr(atomic, "time", clock)
+        with pytest.raises(NsError) as rebuilt:
+            atomic.write_zip_atomic(z, lambda zf: zf.writestr("b.txt", "new"))
+        with pytest.raises(NsError) as appended:
+            atomic.append_to_zip_atomic(z, [("c.txt", b"new")])
     assert rebuilt.value.code == appended.value.code == "NS-E119"
     assert read_whole_zip(z) == ["a.txt"] and in_place == []
     assert not list(tmp_path.glob("*.tmp"))
@@ -956,12 +956,12 @@ def test_a_failed_swap_of_a_read_only_source_leaves_no_temp_file(
     def die(a: Any, b: Any) -> None:
         raise OSError("power lost")
 
-    monkeypatch.setattr(atomic.os, "replace", die)
     try:
-        with pytest.raises(OSError):
-            atomic.copy_atomic(src, dst)
+        with monkeypatch.context() as m:
+            m.setattr(atomic.os, "replace", die)
+            with pytest.raises(OSError):
+                atomic.copy_atomic(src, dst)
     finally:
-        monkeypatch.undo()
         os.chmod(src, stat.S_IWRITE)
     assert list(dst.parent.glob("*")) == []
 
@@ -1187,11 +1187,11 @@ def test_a_restore_whose_swap_is_refused_rolls_everything_back(
     with zipfile.ZipFile(z, "w") as zf:
         zf.writestr(backup.MANIFEST, "{}")
         zf.writestr("config/ui_prefs.json", '{"theme": "new"}')
-    refuse_every_swap(monkeypatch)
-    monkeypatch.setattr(atomic, "time", FakeClock())
-    with pytest.raises(NsError) as ei:
-        backup.restore_backup(p, z)
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        refuse_every_swap(m)
+        m.setattr(atomic, "time", FakeClock())
+        with pytest.raises(NsError) as ei:
+            backup.restore_backup(p, z)
     assert ei.value.code == "NS-E703" and "NS-E119" in ei.value.detail, ei.value.detail
     assert cfg.read_text(encoding="utf-8") == '{"theme": "old"}'
     assert not list(p.config.glob("*.tmp"))
@@ -1204,10 +1204,10 @@ def test_the_updater_goes_on_when_a_progress_line_cannot_be_written(
 
     paths = Paths(tmp_path / "home")
     update_job.write_status(paths, "running", "Step 1.", pid=os.getpid())
-    refuse_every_swap(monkeypatch)
-    monkeypatch.setattr(atomic, "time", FakeClock())
-    update_job._progress(paths, "running", "Step 2.", pid=os.getpid())  # noqa: SLF001 - must not raise
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        refuse_every_swap(m)
+        m.setattr(atomic, "time", FakeClock())
+        update_job._progress(paths, "running", "Step 2.", pid=os.getpid())  # noqa: SLF001 - must not raise
     assert "could not write update_state.json" in capsys.readouterr().err
     assert update_job.read_status(paths)["message"] == "Step 1."
 
@@ -1298,10 +1298,10 @@ def test_a_download_whose_write_fails_removes_an_older_zip_of_that_name(
     def full(src: Any, dst: Any) -> None:
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(atomic.os, "replace", full)
-    with pytest.raises(OSError, match="No space"):
-        releases.download(rel, tmp_path, client_for(data))
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        m.setattr(atomic.os, "replace", full)
+        with pytest.raises(OSError, match="No space"):
+            releases.download(rel, tmp_path, client_for(data))
     assert not older.exists() and not list(tmp_path.glob("*.tmp"))
 
 
@@ -1365,22 +1365,21 @@ def test_the_updaters_lines_do_not_stall_it_for_long_while_a_program_holds_the_s
 
     paths = Paths(tmp_path / "home")
     update_job.write_status(paths, "running", "Step 1.", pid=os.getpid())
-    refuse_every_swap(monkeypatch)
     clock = FakeClock()
-    monkeypatch.setattr(atomic, "time", clock)
-    update_job._progress(paths, "running", "Step 2.", pid=os.getpid())  # noqa: SLF001
-    assert 0.5 <= clock.slept <= update_job.PROGRESS_WAIT_S + 0.01, (
-        f"one progress line waited {clock.slept} s"
-    )
-
-    clock.slept = 0.0
 
     def sleep(seconds: float) -> None:
         clock.sleep(seconds)
 
-    update_job._final(paths, "done", "Done.", sleep=sleep)  # noqa: SLF001
-    assert clock.slept <= 13.0, f"the final line stalled the updater for {clock.slept:.0f} s"
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        refuse_every_swap(m)
+        m.setattr(atomic, "time", clock)
+        update_job._progress(paths, "running", "Step 2.", pid=os.getpid())  # noqa: SLF001
+        assert 0.5 <= clock.slept <= update_job.PROGRESS_WAIT_S + 0.01, (
+            f"one progress line waited {clock.slept} s"
+        )
+        clock.slept = 0.0
+        update_job._final(paths, "done", "Done.", sleep=sleep)  # noqa: SLF001
+        assert clock.slept <= 13.0, f"the final line stalled the updater for {clock.slept:.0f} s"
     assert update_job.read_status(paths)["message"] == "Step 1."
 
 
@@ -1393,11 +1392,11 @@ def test_the_supervisors_pid_file_does_not_block_its_event_loop_for_15_seconds(
     sup, _, paths = make(tmp_path)
     assert sup.write_state() is True
     before = sup.state_file.read_bytes()
-    refuse_every_swap(monkeypatch)
     clock = FakeClock()
-    monkeypatch.setattr(atomic, "time", clock)
-    assert sup.write_state() is False  # given up after STATE_WAIT_S; it never raises (see the start test)
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        refuse_every_swap(m)
+        m.setattr(atomic, "time", clock)
+        assert sup.write_state() is False  # given up after STATE_WAIT_S; it never raises (see the start test)
     assert 1.0 <= clock.slept <= STATE_WAIT_S + 0.01, f"write_state waited {clock.slept} s"
     assert sup.state_file.read_bytes() == before and not list(sup.state_file.parent.glob("*.tmp"))
     lines = [x for f in paths.logs.glob("supervisor-*.jsonl") for x in f.read_text("utf-8").splitlines()]

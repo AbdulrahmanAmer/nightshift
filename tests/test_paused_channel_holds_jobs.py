@@ -521,13 +521,13 @@ def test_a_channel_known_to_be_paused_stays_held_when_the_pause_time_cannot_be_r
     def boom(*_a: Any) -> str:
         raise RuntimeError("database is locked")
 
-    monkeypatch.setattr(channel_hold, "paused_since", boom)
-    pause(client)
-    assert state.worker.run_next() is False and runner.calls == []
-    now = job_of(client, job["job_id"])
-    assert now["status"] == "queued"
-    assert now["message"] == "Paused: After Dark is paused; resume it to release this job"
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        m.setattr(channel_hold, "paused_since", boom)
+        pause(client)
+        assert state.worker.run_next() is False and runner.calls == []
+        now = job_of(client, job["job_id"])
+        assert now["status"] == "queued"
+        assert now["message"] == "Paused: After Dark is paused; resume it to release this job"
     resume(client)
     assert state.worker.run_next() is True and runner.calls == [CH]
 

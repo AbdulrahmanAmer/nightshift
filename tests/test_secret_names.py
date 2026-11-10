@@ -53,7 +53,9 @@ def test_the_studio_reads_the_keys_setup_and_settings_store(monkeypatch: pytest.
     assert jobs.load_keys() == {"pexels": "PK", "pixabay": "XK"}
 
 
-def test_the_dpapi_file_is_the_fallback_when_keyring_is_empty(monkeypatch: pytest.MonkeyPatch):
+def test_the_dpapi_file_is_the_fallback_when_keyring_is_empty(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
     """The nightly task (S4U) may not reach Credential Manager; config/secrets.dpapi is the fallback."""
     kr = types.ModuleType("keyring")
     errors = types.ModuleType("keyring.errors")
@@ -67,7 +69,7 @@ def test_the_dpapi_file_is_the_fallback_when_keyring_is_empty(monkeypatch: pytes
     assert jobs.load_keys() == {"pexels": "FILEKEY"}
 
 
-def test_keys_are_found_without_the_keyring_package(monkeypatch: pytest.MonkeyPatch):
+def test_keys_are_found_without_the_keyring_package(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(sys.modules, "keyring", None)  # import raises ImportError
     sf = types.ModuleType("ns_common.secret_file")
     sf.load_secret = lambda p, name: "K" if name == "pixabay_api_key" else None  # type: ignore[attr-defined]
@@ -87,7 +89,9 @@ def test_the_nightly_toast_falls_back_to_a_morning_note(monkeypatch: pytest.Monk
     assert notifications.default_notifier() is mod.toast  # type: ignore[attr-defined]
 
 
-def test_a_keyring_that_raises_any_exception_falls_back_to_the_file(monkeypatch: pytest.MonkeyPatch):
+def test_a_keyring_that_raises_any_exception_falls_back_to_the_file(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
     """Nightly review row 1: in the S4U session CredRead error 1312 is no KeyringError; open_env crashed."""
 
     class CredReadError(OSError):  # pywin32-style: neither a KeyringError nor an ImportError
@@ -110,7 +114,7 @@ def test_a_keyring_that_raises_any_exception_falls_back_to_the_file(monkeypatch:
 
 
 def test_no_key_anywhere_is_empty_not_an_error_and_the_source_raises_e501_later(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     from ns_common.errors import NsError
     from ns_studio.media.clip_sources import PexelsSource

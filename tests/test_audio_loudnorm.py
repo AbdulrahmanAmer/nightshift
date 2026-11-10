@@ -174,9 +174,9 @@ def test_narration_is_limited_once_and_the_short_adds_no_second_limiter(
         runs.append(args)
         return real(args, **kw)
 
-    monkeypatch.setattr(audio.ff, "run", counting)
-    final = build_short_audio(None, voice, tmp_path / "raw.wav", tmp_path / "final.wav", 0.15, log=log)
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        m.setattr(audio.ff, "run", counting)
+        final = build_short_audio(None, voice, tmp_path / "raw.wav", tmp_path / "final.wav", 0.15, log=log)
     got = audio.measure_loudness(final)
     assert abs(got.lufs - audio.FINAL_LUFS) <= 0.5 and got.true_peak <= -1.0
     assert not any("alimiter" in a for args in runs for a in args)
@@ -237,9 +237,9 @@ def test_the_short_adds_no_second_limiter_to_wideband_speech(
         runs.append(args)
         return real(args, **kw)
 
-    monkeypatch.setattr(audio.ff, "run", counting)
-    final = build_short_audio(None, voice, tmp_path / "raw.wav", tmp_path / "final.wav", 0.15, log=log)
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        m.setattr(audio.ff, "run", counting)
+        final = build_short_audio(None, voice, tmp_path / "raw.wav", tmp_path / "final.wav", 0.15, log=log)
     got = audio.measure_loudness(final)
     assert abs(got.lufs - audio.FINAL_LUFS) <= 0.5 and got.true_peak <= audio.FINAL_TP
     assert not any("alimiter" in a for args in runs for a in args)

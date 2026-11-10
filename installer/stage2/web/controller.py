@@ -27,6 +27,7 @@ import installer.stage2.devmode as devmode
 import ns_common.config_snapshot as config_snapshot
 import ns_common.diskneed as diskneed
 import ns_common.first_start as first_start
+import ns_common.testguard as testguard
 from installer.stage2.web import (
     answers_view,
     appcopy,
@@ -279,8 +280,9 @@ def elevate_longpaths() -> bool:
         "'Set-ItemProperty HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem "
         "LongPathsEnabled 1 -Type DWord'"
     )
-    subprocess.run(["powershell.exe", "-NoProfile", "-Command", script], capture_output=True, check=False,
-                   timeout=300)
+    argv = ["powershell.exe", "-NoProfile", "-Command", script]
+    testguard.refuse_machine_writes(argv)           # a test run shows no UAC prompt and changes no HKLM value
+    subprocess.run(argv, capture_output=True, check=False, timeout=300)
     try:
         import winreg
 
@@ -296,6 +298,7 @@ def ignore_console(text: str, level: str) -> None:
 
 def copy_to_clipboard(text: str) -> None:
     """Put text on the Windows clipboard (clip.exe); silently does nothing when that fails."""
+    testguard.refuse_real("the Windows clipboard", "Pass a fake (Effects(clipboard=...)).")
     try:
         subprocess.run(["clip.exe"], input=text, text=True, check=False, timeout=10)
     except (OSError, subprocess.SubprocessError):
