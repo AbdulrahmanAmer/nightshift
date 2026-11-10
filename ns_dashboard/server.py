@@ -806,6 +806,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--open", action="store_true", help="open the dashboard in the default browser")
     ap.add_argument("--fake-services", action="store_true", help="use fake adapters (no GPU, no models)")
     args = ap.parse_args(argv)
+    from ns_studio.gate import refusal
+
+    why = refusal()     # D-48: it runs jobs; the engine that starts it passed the same gate, a hand start not
+    if why is not None:
+        sys.stderr.write(f"NS-W210: {why}\n")
+        return 4    # (venvrepair.REFUSED_EXIT, as the engine's own refusal)
     import uvicorn
 
     configure_tmp(Paths.from_env())

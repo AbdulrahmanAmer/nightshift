@@ -367,6 +367,68 @@ def pending_sentence(home: Path, app: Path, record: Mapping[str, Any] | None, pr
 #: Exit code of `main` when a start is refused (the launchers' `Start-NsSupervisor` and the engine use it).
 REFUSED_EXIT = 4
 
+# ---------------------------------------------------------------- D-48: the update state, once it is finished
+STATE_NAME = "update_state.json"
+#: Words of a stored state that sends the owner to finish the environments (every wording since 0.1.15-rc3:
+#: `ns_supervisor.update` SYNC_STOPPED, ROLLBACK_SYNC_STOPPED, FINISH_AT_START, `_unfinished`). The launch
+#: script has the same list (`$finishMarks`).
+FINISH_MARKS = (
+    "finishes the Python environments", "To fill every environment", "To finish it:",
+    "could not be refreshed",
+)
+#: Who finished an interrupted update, in the words of the closed state.
+BY_SETUP = "setup (INSTALL.cmd, Repair)"
+
+
+def needs_finish(state: Mapping[str, Any]) -> bool:
+    """True when an update state says an update or rollback stopped with environments left to finish: a
+    `running` state (whoever asks holds ``run/update.lock`` or has found its worker dead) or a `failed` one,
+    written while a repair record waited (``record``), or naming environments left (``venvs_left``,
+    ``record_left``), or telling the owner to finish them (``FINISH_MARKS``)."""
+    if state.get("state") not in ("running", "failed"):
+        return False
+    if state.get("record") or state.get("venvs_left") or state.get("record_left"):
+        return True
+    text = f"{state.get('message') or ''} {state.get('if_stopped_here') or ''}"
+    return any(mark in text for mark in FINISH_MARKS)
+
+
+def finished_sentence(by: str, version: str, at: datetime) -> str:
+    """What the closed state says (the launch script writes the same words)."""
+    return (
+        f"An update or rollback was interrupted and has since been finished by {by} "
+        f"({at:%Y-%m-%d %H:%M}): Nightshift {version or 'unknown version'}, its program and Python "
+        "environments, is in place."
+    )
+
+
+def close_update_state(home: Path, app: Path, by: str, *, now: datetime | None = None) -> bool:
+    """D-48: whoever finishes the environments an interrupted update or rollback left (setup's Repair here;
+    the launch script's replay in PowerShell; the next update writes its own state) brings
+    ``run/update_state.json`` to the final state: `done`, saying who finished it and what is in place. Only
+    a state that `needs_finish` is changed, and only by a caller that holds ``run/update.lock`` (no update
+    process writes the file then). True when it was rewritten; a file that cannot be read or written stays
+    (its readers say what is true: ``ns_supervisor.update_job.settled``)."""
+    path = Path(home) / "run" / STATE_NAME
+    try:
+        raw = json.loads(read_text_retry(path))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(raw, dict) or not needs_finish(raw):
+        return False
+    at = now or datetime.now()
+    version = program_version(app)
+    data = {
+        "state": "done", "old": str(raw.get("old") or ""), "new": version, "exit_code": 0,
+        "message": finished_sentence(by, version, at), "updated_at": at.isoformat(timespec="seconds"),
+        "finished_by": by, "log": str(raw.get("log") or ""),
+    }
+    try:
+        write_text_atomic(path, json.dumps(data))
+    except OSError:
+        return False
+    return True
+
 
 def start_refusal(home: Path, app: Path) -> str | None:
     """The one start gate of the Python side (D-39b review): None when Nightshift may start from the program
@@ -388,6 +450,29 @@ def start_refusal(home: Path, app: Path) -> str | None:
     if update_running(home):    # (review note: a live update is not an interrupted one: other words)
         why = running_sentence(home)
     return "Nightshift was not started: " + why.replace(f" ({CODE})", "", 1)
+
+
+def program_of(home: Path) -> Path:
+    """The program folder this home runs (``config/install_state.json``'s ``app_path``, or its ``.bak``),
+    else the program this code is in. Standard library only, like ``start_refusal``."""
+    config = Path(home) / "config"
+    for name in ("install_state.json", "install_state.json.bak"):
+        try:
+            app = json.loads(read_text_retry(config / name, "utf-8-sig")).get("app_path")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(app, str) and app:
+            return Path(app)
+    return Path(__file__).resolve().parents[3]
+
+
+def home_refusal(home: Path) -> str | None:
+    """D-48: THE start gate of every entry that starts a job, a model or the engine (``studio run`` and the
+    other job and voice commands, ``ns tune``, the dashboard server, the dashboard's job runner, the clip
+    runner, the assistant), whatever started the interpreter (``studio.exe``, ``python -m``, a shim): each
+    calls this first, before it opens or writes anything, so the route cannot matter. ``start_refusal`` for
+    the program of this home; None when it may start."""
+    return start_refusal(Path(home), program_of(home))
 
 
 def running_sentence(home: Path) -> str:

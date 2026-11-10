@@ -199,6 +199,10 @@ def cmd_tune(
         for line in tune.matrix_lines(rt):
             echo(line)
         return
+    try:        # D-48: it starts llama-server and saves runtime.json: not on unfinished environments
+        start_gate(paths)
+    except NsError as e:
+        raise _die(e) from e
     if rt.dev_mode:
         echo("Dev mode: the language model is a fake, so there is nothing to tune.")
         return

@@ -62,6 +62,9 @@ $stateFile = Join-Path $runDir 'update_state.json'
 $repairFile = Join-Path $runDir 'venv-repair.json'
 $doneFile = Join-Path $runDir 'venv-repair.done'
 $mixedTold = Join-Path $runDir 'venv-mixed-told.txt'
+# D-48: the words of an update state that sends the owner to finish the environments (venvrepair.py
+# FINISH_MARKS): once the replay has finished them, that state is closed (Close-FinishedUpdate).
+$finishMarks = @('finishes the Python environments', 'To fill every environment', 'To finish it:', 'could not be refreshed')
 $noteName = 'Nightshift did not run.txt'
 $noteStart = 'Nightshift could not start its nightly run on '
 # A test run never shows a toast and never names the real Desktop: only -DesktopDir counts there.
@@ -519,6 +522,36 @@ function Send-DeadUpdate {
     } catch { Write-LaunchLog 'WARN' 'update_interrupted_not_told' $_.Exception.Message $null }
 }
 
+function Close-FinishedUpdate {
+    # D-48 (this script holds run\update.lock, so no update process writes the state now): the replay finished
+    # what an interrupted update or rollback left, so its state says that, in the words of
+    # installer/stage2/web/venvrepair.py close_update_state. Only a state that sends the owner to finish the
+    # environments is changed (needs_finish: a 'running' or 'failed' state with record, venvs_left or
+    # record_left, or one of $finishMarks in its words).
+    $state = Read-UpdateState
+    if ($null -eq $state -or -not $state.PSObject.Properties['state']) { return }
+    if (@('running', 'failed') -notcontains [string]$state.state) { return }
+    $flagged = $false
+    foreach ($k in @('record', 'venvs_left', 'record_left')) { if ($state.PSObject.Properties[$k] -and $state.$k) { $flagged = $true } }
+    $text = ''
+    foreach ($k in @('message', 'if_stopped_here')) { if ($state.PSObject.Properties[$k]) { $text += ' ' + [string]$state.$k } }
+    foreach ($m in $finishMarks) { if ($text.Contains($m)) { $flagged = $true } }
+    if (-not $flagged) { return }
+    $version = Get-AppVersion
+    if (-not $version) { $version = 'unknown version' }
+    $at = [DateTime]::Now
+    $by = "Nightshift's start (a Desktop shortcut or the nightly run)"
+    $said = 'An update or rollback was interrupted and has since been finished by ' + $by + ' (' + $at.ToString('yyyy-MM-dd HH:mm', $inv) + '): Nightshift ' + $version + ', its program and Python environments, is in place.'
+    $old = ''
+    if ($state.PSObject.Properties['old']) { $old = [string]$state.old }
+    $log = ''
+    if ($state.PSObject.Properties['log']) { $log = [string]$state.log }
+    try {
+        Write-NsFileSwap -Path $stateFile -Text (ConvertTo-Json -Compress -InputObject ([ordered]@{ state = 'done'; old = $old; new = $version; exit_code = 0; message = $said; updated_at = $at.ToString('s', $inv); finished_by = $by; log = $log }))
+        Write-LaunchLog 'INFO' 'update_state_closed' $said $null
+    } catch { Write-LaunchLog 'WARN' 'update_state_not_closed' $_.Exception.Message $null }
+}
+
 function Get-RepairWords {
     param([string]$What, [string]$Said)
     $version = Get-AppVersion
@@ -622,6 +655,7 @@ function Invoke-Repair {
     if (Test-RecordFinished $record) {
         # finished; only its delete was refused earlier: the two files go now if they can
         try { [IO.File]::Delete($repairFile); [IO.File]::Delete($doneFile) } catch { Write-Verbose 'the finished record is still held' }
+        Close-FinishedUpdate
         return ''
     }
     if (-not (Test-RecordFor $record)) {
@@ -675,6 +709,7 @@ function Invoke-Repair {
     $said = 'An interrupted update was finished on ' + $today + ': ' + $now + ' Nightshift ' + $version + '.'
     try { [void](Add-NsMorningNote -Message $said -OnceStart $said) } catch { Write-LaunchLog 'WARN' 'morning_note_not_written' $_.Exception.Message $null }
     Write-LaunchLog 'INFO' 'venv_repaired' $said ([ordered]@{ venvs = $names })
+    Close-FinishedUpdate
     return ''
 }
 

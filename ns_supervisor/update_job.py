@@ -37,6 +37,7 @@ from typing import Any, Protocol, TextIO
 
 import psutil
 
+from installer.stage2.web import venvrepair
 from ns_common import testguard
 from ns_common.atomic import REPLACE_WAIT_S, read_text_retry, write_text_atomic
 from ns_common.commandline import ps_formatter
@@ -175,6 +176,10 @@ def step(paths: Paths, message: str, if_stopped_here: str) -> None:
     if raw.get("state") != "running" or raw.get("pid") != os.getpid():
         return
     keep = {k: raw[k] for k in ("log", "pid", "old") if k in raw}
+    # D-48: a step taken while the repair record waits is one a finisher (the launch script's replay,
+    # setup's Repair) completes if this process dies in it: they close the state then (`needs_finish`)
+    if venvrepair.record_path(paths.home).is_file():
+        keep["record"] = True
     # stored with the plain `ns ...` words: the Update window, the CLI and the dashboard render them when
     # they show them (FN-3, `ns_common.commandline.render`)
     _progress(paths, "running", message, if_stopped_here=if_stopped_here, **keep)
@@ -289,9 +294,38 @@ def effective_status(
 
 
 def read_status_checked(paths: Paths, **kw: Any) -> dict[str, Any]:
-    """`read_status` with `effective_status` applied (what the dashboard shows)."""
+    """`read_status` with `effective_status` and `settled` applied (what the dashboard shows)."""
     kw.setdefault("describe", lambda: where(paths))
-    return effective_status(read_status(paths), **kw)
+    return settled(paths, effective_status(read_status(paths), **kw))
+
+
+#: D-48: what a reader says of an interrupted update whose environments nothing has left to finish now.
+FINISHED_SINCE = (
+    "An update or rollback was interrupted earlier and has been finished since; nothing is left to do."
+)
+
+
+def settled(paths: Paths, st: dict[str, Any]) -> dict[str, Any]:
+    """D-48, every reader of the state: a `failed` state that sends the owner to finish the environments
+    (`venvrepair.needs_finish`) while no repair record waits for the program in place and no environment
+    holds another Nightshift is no longer true (a finisher that did not close the state did the work: an
+    older launch script, a Repair of an older setup). It reads as `done`, saying so and what is in place
+    (`where`, read from the disk now); `finished_since` marks it. Anything else is returned as it is."""
+    if st.get("state") != "failed" or not venvrepair.needs_finish(st):
+        return st
+    try:
+        from ns_supervisor import control
+
+        app = control.app_path(paths)
+        record = venvrepair.read(paths.home)
+        if (record is not None and venvrepair.matches(record, app)) or venvrepair.mixed(paths.home, app):
+            return st
+        if not app.is_dir() or venvrepair.update_running(paths.home):
+            return st
+    except Exception:  # noqa: BLE001 - unreadable: the stored words stay (a reader must still answer)
+        return st
+    return {**st, "state": "done", "exit_code": 0, "finished_since": True,
+            "message": " ".join(s for s in (FINISHED_SINCE, where(paths)) if s)}
 
 
 def new_log_path(paths: Paths, now: datetime | None = None) -> Path:
