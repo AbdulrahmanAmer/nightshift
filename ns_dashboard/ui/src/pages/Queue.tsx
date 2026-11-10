@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { dayInline, doneWords, MAKES_VIDEO, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, plural, stageWords, stoppedAt, store } from "../lib/format";
+import { dayInline, doneWords, MAKES_VIDEO, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, nightComes, plural, stageWords, stoppedAt, store } from "../lib/format";
 import type { ChannelSummary, InterruptedJob, Job, MorningNote, Output, OutputDetail, Run } from "../lib/types";
 import { cx } from "../ui/kit";
 import { JobError } from "../ui/JobError";
@@ -63,7 +63,7 @@ export default function Queue() {
   const pending = counts?.pending ?? (tab === "ready" ? items.length : 0);
   const owner = chans.find((c) => c.status === "active")?.display_name || chans[0]?.display_name;
   // only an enabled nightly task has a next run (Automatic runs on); off shows no countdown and no time
-  const scheduled = !!status?.next_run && !!status?.schedule_registered;
+  const scheduled = nightComes(status);
   const nextRun = scheduled ? new Date(status!.next_run!) : null;
 
   const series = () => { ask({ page: "queue" }, "Draft 3 story concepts for a series", false); go("#/assistant"); };
@@ -92,7 +92,7 @@ export default function Queue() {
           <Card as="section" aria-labelledby="q-list" className={SPAN["6/4"]}>
             <CardHeader id="q-list" title={tab === "ready" ? "Ready to review" : tab === "posted" ? "Approved and posted" : "Rejected"} actions={<QueueTabs tab={tab} onTab={pick} />} />
             {list.loading && !items.length ? <div aria-busy="true" className="h-[320px] rounded-ds-lg bg-ds-sunken" />
-              : tab === "ready" ? <EmptyState icon="film" title="Nothing to review" action={<LinkButton href="#/create" variant="primary">Make something now</LinkButton>}>Everything made so far is posted or rejected. New videos appear here after tonight's run</EmptyState>
+              : tab === "ready" ? <EmptyState icon="film" title="Nothing to review" action={<LinkButton href="#/create" variant="primary">Make something now</LinkButton>}>Everything made so far is posted or rejected. New videos appear here {nightComes(status) ? "after tonight's run" : "when you make them"}</EmptyState>
               : <ListView items={items} tab={tab} onResume={(id) => { setTab("ready"); setCurrent(id); location.hash = `#/?id=${encodeURIComponent(id)}`; }} channelName={channelName} />}
           </Card>
         )}
@@ -378,7 +378,7 @@ function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; st
   return (
     <Card as="section" aria-labelledby="q-plan" className={cx("self-stretch", className)}>
       <CardHeader id="q-plan" title="Tonight's plan" actions={<Button variant="ghost" size="sm" leadingIcon="edit" onClick={() => go("#/channels")}>Edit</Button>} />
-      {status?.engine?.vram_owner && <p role="status" className="mb-3 flex flex-wrap items-center gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2 text-ds-xs"><StatusDot tone="accent" />GPU held by <strong className="font-semibold" title={status.engine.vram_owner}>{ownerWords(status.engine.vram_owner)}</strong>. Tonight's run waits for it.{!status.job && <Button size="sm" variant="soft" onClick={() => releaseGpu(status.engine.vram_owner!)}>Release</Button>}</p>}
+      {status?.engine?.vram_owner && <p role="status" className="mb-3 flex flex-wrap items-center gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2 text-ds-xs"><StatusDot tone="accent" />GPU held by <strong className="font-semibold" title={status.engine.vram_owner}>{ownerWords(status.engine.vram_owner)}</strong>. {nightComes(status) ? "Tonight's run waits for it." : "Jobs that need it wait."}{!status.job && <Button size="sm" variant="soft" onClick={() => releaseGpu(status.engine.vram_owner!)}>Release</Button>}</p>}
       <div className="flex flex-col gap-4">
         {plan.length ? plan.map((c) => (
           <AssignmentCard key={c.slug} categories={[c.display_name]} moreLabel={`Options for ${c.display_name}`} menu={[{ icon: "edit", label: "Edit channel", onSelect: () => go(`#/channels?edit=${encodeURIComponent(c.slug)}`) }, { icon: "pause", label: "Skip tonight and pause", onSelect: () => pause(c) }]}
@@ -481,13 +481,13 @@ function MachineMeters({ className }: { className?: string }) {
     caption={gpuLine ? [gpuLine, diskLine].filter(Boolean).join(". ") : diskLine ? `${diskLine}. GPU load appears once the engine reports it` : "Readings appear once the engine answers"} />;
 }
 
-/** One line about a job the night left half made. The state is decided where the summary is served (`interrupted_jobs[].state`), so the words are true for every case: still open, rescued, stopped again, waiting. */
-function interruptedWords(u: InterruptedJob): string {
+/** One line about a job the night left half made. The state is decided where the summary is served (`interrupted_jobs[].state`), so the words are true for every case: still open, rescued, stopped again, waiting. A waiting job is continued by the next night only while one is coming (`nightComes`); otherwise the line says why none is and the way that works now: its card's Retry, or `studio run --resume` for a job without a card. */
+function interruptedWords(u: InterruptedJob, status: ReturnType<typeof useApp>["status"]): string {
   const at = u.stage ? ` at ${stageWords(u.stage).toLowerCase()}` : "";
   switch (u.state ?? (u.resumed ? "resumed" : "open")) {
     case "resumed": return `interrupted${at}, then continued and finished`;
     case "failed_again": return `interrupted${at}, continued but stopped again`;
-    case "waiting": return `interrupted${at}, waiting for the GPU: the next night continues it`;
+    case "waiting": return nightComes(status) ? `interrupted${at}, waiting for the GPU: the next night continues it` : `interrupted${at}, waiting for the GPU: ${status?.schedule_registered ? "no channel is active, so no nightly run is coming" : "Automatic runs are off"}, so once the GPU is free ${u.has_card === false ? `continue it with studio run --resume ${u.job_id} in the Nightshift Studio window` : "press Retry from where it stopped on its card in Create, under Earlier"}`;
     case "open": return `interrupted${at}, not finished`;
     default: return `interrupted${at}, not finished`;
   }
@@ -495,6 +495,7 @@ function interruptedWords(u: InterruptedJob): string {
 
 /** "Last night": what the newest nightly run made and what stopped, from GET /runs. Shown only after a run has happened. */
 function LastNight({ className, pending, onReview, channelName }: { className?: string; pending: number; onReview: () => void; channelName: (s?: string | null) => string }) {
+  const { status } = useApp();
   const runs = useLoad<Run[]>(() => api.get("/runs?limit=1"), [], []);
   const notes = useLoad<MorningNote[]>(() => api.get("/notes"), [], []);
   const r = runs.data[0];
@@ -520,7 +521,7 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
         {heldJobs ? ` ${plural(heldJobs, "job")} held, the channel${new Set(held.map((x) => x.channel)).size > 1 ? "s were" : " was"} paused.` : ""}
         {interrupted ? ` ${r.note || "Interrupted: it never finished."}` : ""}
       </p>
-      {unfinished.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{unfinished.map((u) => <li key={u.job_id}>{channelName(u.channel)}: {interruptedWords(u)}</li>)}</ul>}
+      {unfinished.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{unfinished.map((u) => <li key={u.job_id}>{channelName(u.channel)}: {interruptedWords(u, status)}</li>)}</ul>}
       {notes.data.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{notes.data.map((n, i) => <li key={i}>{n.message} <span className="text-ds-muted">({fmtClock(n.at)})</span></li>)}</ul>}
       {noRoom.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{noRoom.map((x, i) => <li key={i}>{channelName(x.channel)}: {plural(x.jobs, "job")} not started, not enough disk space ({x.short || x.message || "free some space"})</li>)}</ul>}
       {held.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{held.map((x, i) => <li key={i}>{x.job_id ? `${channelName(x.channel)} is paused: its half-made job waits for the resume` : `${plural(x.jobs, "job")} not started: ${channelName(x.channel)} is paused`}</li>)}</ul>}

@@ -250,5 +250,7 @@ export interface UninstallView {
   models: { path: string; bytes: number };
   data: { path: string; bytes: number };
   running: boolean;
-  result: { removed: string[]; kept: { label: string; path: string }[]; stays: string[] } | null;
+  /** `keys`: the uninstall program's own lines about the stock-footage keys (forgotten, left for another
+   *  Nightshift folder, or what could not be removed); absent from a server that predates them. */
+  result: { removed: string[]; kept: { label: string; path: string }[]; stays: string[]; keys?: string[] } | null;
 }

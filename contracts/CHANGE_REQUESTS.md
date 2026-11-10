@@ -541,3 +541,9 @@ Format per entry:
 - **Why:** the behaviour works in the studio path, but the shared model disagrees with it, and old files must still load (both fields have defaults).
 - **Workaround until applied:** none needed for the product; F-H106 is proven on the engine install in the 0.1.15 round (QA proof 5.5).
 - **Status:** open
+
+## CR-FN4-1: NS-E201's message and hint, and a new NS-E206 (block D, item FN-4)
+- **From:** builder, card FN-4 (the code audit of 2026-11-10: owner texts that are false in some state)
+- **Change:** `NS-E201` reads "The graphics card was busy with another task, and this task did not get it." (it was "GPU is busy with another task; the nightly run gave up after waiting.", while a dashboard job, a `studio` command, Nightshift Code and a released waiter raise it too, and some of them never waited); its hint names the Queue, Retry from where it stopped, and "A nightly run tries again the next night while Automatic runs are on in Settings" (it promised "the next scheduled run" also while Automatic runs are off). New `NS-E206` "The nightly task could not be switched off, removed or read." for a refused switch-off, `ns schedule remove` and `ns schedule show`: its hint is Task Scheduler's Disable, where NS-E204's (register the task) was the opposite way out.
+- **Why:** each sentence must be true in every state it can be shown in; one fixed hint cannot serve both directions of the switch.
+- **Status:** applied on `block-d/fn4` (registered in `refs/locks/ORCH.lock`).

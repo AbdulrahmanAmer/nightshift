@@ -52,6 +52,18 @@ class ScheduleError(RuntimeError):
     """PowerShell refused to register, remove or read the task."""
 
 
+#: The code of a change that was refused. Registering (switching on, moving the time, `ns schedule install`)
+#: is NS-E204, whose way out is to register the task; switching off, removing or reading it (`ns schedule
+#: remove`, `ns schedule show`) is NS-E206, whose way out is Task Scheduler's Disable: the opposite.
+REGISTER_FAILED, SWITCH_OFF_FAILED = "NS-E204", "NS-E206"
+
+
+def refused_code(on: bool | None) -> str:
+    """The code for a refused change of Automatic runs: `on` False (switch off) is NS-E206; on (True) and
+    a time change (None) are NS-E204."""
+    return SWITCH_OFF_FAILED if on is False else REGISTER_FAILED
+
+
 class ScheduleBusy(ScheduleError):
     """Another change to the task holds `run/schedule.lock`; nothing was changed."""
 
@@ -1001,6 +1013,33 @@ def _setup_locked(
         )
 
 
+def left_task_words(paths: Paths, task: TaskState | None) -> str:
+    """What an update says when the record said on and the task is not on for this install: why, in the
+    words of the state Windows has (`task` as read under the lock), and how to get the nightly run back."""
+    back = "To get the nightly run back, switch Automatic runs on in Settings."
+    if task is None:
+        return (
+            f"Automatic runs are off: Windows no longer has the nightly task '{TASK_NAME}' (it was removed "
+            f"outside this Nightshift), so it was not registered again. {back}"
+        )
+    if not task.enabled:
+        return (
+            f"Automatic runs are off: the nightly task '{TASK_NAME}' is disabled in Task Scheduler and was "
+            f"left as it is. {back}"
+        )
+    owner = task_owner(paths, task)
+    if owner == GONE:
+        return (
+            f"Automatic runs are off: the nightly task runs a Nightshift folder that no longer exists "
+            f"({task.home}), so it was left as it is. Switch Automatic runs on in Settings to take it."
+        )
+    away = ", whose drive is not connected now" if owner == UNREACHABLE else ""
+    return (
+        f"Automatic runs are off here: the nightly task runs the Nightshift at {task.home}{away}, so it was "
+        "left as it is. Switch Automatic runs on in this Nightshift's Settings to move it back."
+    )
+
+
 def reregister(paths: Paths, app_path: Path, *, log: NsLogger | None = None) -> str | None:
     """What an update does to the task: nothing to the owner's choice (D-28). None: nothing to do or say.
 
@@ -1017,10 +1056,7 @@ def reregister(paths: Paths, app_path: Path, *, log: NsLogger | None = None) -> 
         before = read_task()
         if before is None or not on_here(paths, before):
             _record(paths, before, log)
-            return (
-                "Automatic runs are off (the nightly task was switched off or removed in Task Scheduler); "
-                "left as it is"
-            )
+            return left_task_words(paths, before)
         when = before.run_time or read_run_time(paths) or DEFAULT_TIME
         task = _switch_on(paths, when, app_path, log, before)
         _log_kept(log, before, task.run_time or "")

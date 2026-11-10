@@ -34,7 +34,7 @@ export default function Settings() {
 
   const put = async (body: Record<string, unknown>, ok: string) => { try { const r = await api.put("/settings", body); if (r && typeof r === "object") st.setData({ ...s, ...r }); if (r?.schedule_result && r.schedule_result.applied === false) { toast(r.schedule_result.note, "bad"); return false; } if (r?.schedule_result?.code === "NS-W205") { toast(r.schedule_result.note, "warn"); return true; } toast(ok, "ok"); return true; } catch (e: any) { toast(e.message, "bad"); return false; } };
   const setKey = async (name: string) => {
-    const v = await confirm({ title: `${name[0]!.toUpperCase() + name.slice(1)} key`, body: "Paste the free key from your account page. It is stored in Windows Credential Manager, never in a file", ok: "Save key", input: { label: "Key", placeholder: "Paste the key" } });
+    const v = await confirm({ title: `${name[0]!.toUpperCase() + name.slice(1)} key`, body: "Paste the free key from your account page. It is saved in Windows Credential Manager and, for nightly runs that cannot reach Credential Manager, in an encrypted copy in the Nightshift folder (config\\secrets.dpapi); on a drive that keeps permissions only your Windows account and Windows itself can open that copy", ok: "Save key", input: { label: "Key", placeholder: "Paste the key" } });
     if (typeof v !== "string" || !v.trim()) return;
     try { const r = await api.post("/settings/keys", { name, value: v.trim() }); toast(r?.message || "Key saved", r?.checked === false || r?.warning ? "warn" : "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
