@@ -680,6 +680,11 @@ def hold(paths: Paths, kind: str, owner_id: str, **fields: Any) -> Iterator[None
         _HELD[key] = 1
     known = read_record(paths, owner_id) or {}
     extra = {k: v for k, v in fields.items() if v is not None}
+    if kind == "job" and known.get("cannot_fit"):
+        # Someone runs a job the night gave up (a Retry, `studio run --resume`): it is no longer given up. If
+        # this run is interrupted too, the job is an interrupted job like any other and the nightly decides
+        # about it again by the same decision (card night-fits: a healed stage is then continued).
+        extra.update(cannot_fit=None, resume_problem=None, misses=0, first_next=False)
     origin = known.get("origin") or extra.get("origin") or "manual"
     extra.pop("origin", None)
     write_record(
@@ -1211,14 +1216,28 @@ def resume_problem(paths: Paths, rec: Mapping[str, Any], now: datetime | None = 
 
 
 def age_anchor(
-    paths: Paths, rec: Mapping[str, Any], info: Mapping[str, Any] | None = None
+    paths: Paths,
+    rec: Mapping[str, Any],
+    info: Mapping[str, Any] | None = None,
+    *,
+    lines: Sequence[Mapping[str, Any]] | None = None,
 ) -> datetime | None:
-    """Where a job's age counts from (card night-fits, `nightfit.too_old`): the last night that FINISHED one
-    of its stages (`progressed_at`, written when the night leaves it for time), else its creation. A night
-    that left it without finishing a stage does not make it younger."""
+    """Where a job's age counts from (card night-fits, `nightfit.too_old`): when a stage of it last FINISHED
+    (the ledger's `stage` lines, so a night Windows killed after it finished stages still counts, and the
+    record's `progressed_at` written when the night left it), else its creation. A night that left it
+    without finishing a stage does not make it younger. `lines`: the ledger already read (else it is read)."""
     if info is None:
         info = job_info(paths, str(rec["id"]))
-    return _parse(rec.get("progressed_at")) or _parse(info.get("created_at"))
+    from ns_studio import ledger
+
+    if lines is None:
+        try:
+            lines = ledger.read(paths)
+        except Exception:  # noqa: BLE001 - an unreadable ledger: the record alone
+            lines = []
+    found = [t for t in (_parse(rec.get("progressed_at")), _parse(ledger.last_done_at(lines, str(rec["id"]))))
+             if t is not None]
+    return max(found) if found else _parse(info.get("created_at"))
 
 
 def _has_output(db: SqlDb, job_id: str) -> bool:

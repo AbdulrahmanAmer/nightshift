@@ -574,6 +574,103 @@ def test_a_night_that_finishes_no_stage_does_not_make_the_job_younger_and_two_gi
     assert card["result"]["interrupted"]["resume"] == "needs_retry"
 
 
+def _given_up_by_two_misses(world: World) -> str:
+    """Night 1 leaves the job before nf_c; nights 2 and 3 begin with it and have too little time: given up."""
+    _stopped_before_nf_c(world, 1199)
+    job_id = _one([r["job_id"] for r in world.db.query("select distinct job_id from combos")])
+    for _night in (2, 3):
+        world.clock.advance(24 * 3600)
+        world.night(left_s=1199)
+    assert (ownership.read_record(world.paths, job_id) or {}).get("cannot_fit"), "given up after two misses"
+    return job_id
+
+
+def test_the_two_misses_mark_the_plans_stage_so_the_next_job_is_not_begun_and_create_heals(
+    world: World,
+) -> None:
+    """Review note (same-stage cycle): the misses that give a job up are evidence for its PLAN's stage (ledger
+    `missed`, over the room by the shortfall), so the next job of the plan is answered CANNOT_FIT before it
+    redoes nf_a and nf_b, with the sentence that says why; one pass of nf_c from Create heals it."""
+    _given_up_by_two_misses(world)
+    missed = world.lines("missed")
+    marks = [(m["stage"], m["sample_id"].rsplit("/", 1)[1]) for m in missed]
+    assert marks == [("nf_c", "miss1"), ("nf_c", "miss2")]
+    world.clock.advance(24 * 3600)
+    world.ran.clear()
+    report = world.night(left_s=5 * 3600)
+    assert world.ran == [] and report["jobs"] == [], "the earlier stages are not redone"
+    left = _one([x for x in report.get("out_of_time") or [] if not x.get("job_id")])
+    assert (left["answer"], left["reason"], left["stage"]) == ("cannot_fit", "cannot_fit_new", "nf_c")
+    assert "their nf_c stage did not fit the" in left["said"]
+    assert "each time, even as a night's first work, too little time was left for it" in left["said"]
+    channel = crud.get_channel(world.paths, "after-dark")
+    ctx = jobs.make_job(world.env, channel, "master_first", origin="manual")
+    ctx.clock = world.clock  # type: ignore[attr-defined]
+    orch.run_job(ctx)  # made from Create: nf_c runs 500 s, the newest pass
+    from ns_studio import ledger, nightclock, nightfit
+
+    start = nightclock.TaskStart(world.clock.now(), nightclock.START_STUB)
+    lines = ledger.read(world.paths)
+    night = nightclock.Night(world.paths, "probe", world.clock, start, LIMIT_S, None, lines)
+    d = night.ask(nightfit.NEW, "master_first", [n for n, _t in PLAN])
+    assert (d.answer, d.reason) == (nightfit.BEGIN, nightfit.FITS), "healed by one pass inside a night"
+
+
+@pytest.mark.parametrize("healed", [True, False])
+def test_an_interrupted_retry_of_a_given_up_job_leaves_it_to_the_same_decision(
+    world: World, healed: bool
+) -> None:
+    """Review note (interrupted Retry): a Retry clears the give-up when it begins (`ownership.hold`); if the
+    Retry is itself interrupted, the job is an interrupted nightly job like any other, and the nightly decides
+    about it again: continued when the stage has healed, given up again (with its card) when it has not."""
+    job_id = _given_up_by_two_misses(world)
+    with pytest.raises(KeyboardInterrupt), ownership.hold_job(world.paths, job_id):
+        raise KeyboardInterrupt  # the Retry's process stopped before any stage finished
+    ownership.write_record(world.paths, job_id, pid=4_000_000)  # ... and is gone (not this test's process)
+    rec = ownership.read_record(world.paths, job_id) or {}
+    assert (rec.get("cannot_fit"), rec.get("resume_problem"), rec.get("misses")) == (None, None, 0)
+    world.seconds = {"nf_a": 60, "nf_b": 60, "nf_c": 500, "nf_d": 60}
+    if healed:  # a video made from Create: its nf_c pass (500 s) is the newest, inside the room
+        channel = crud.get_channel(world.paths, "after-dark")
+        ctx = jobs.make_job(world.env, channel, "master_first", origin="manual")
+        ctx.clock = world.clock  # type: ignore[attr-defined]
+        orch.run_job(ctx)
+    world.clock.advance(20 * 3600)  # the next night, inside 3 days of its last progress (night 1)
+    world.ran.clear()
+    report = world.night(left_s=5 * 3600)
+    if healed:
+        assert world.ran == ["nf_c", "nf_d"] and [j["job_id"] for j in report["jobs"]] == [job_id]
+        return
+    assert world.ran == []
+    left = _one([x for x in report.get("out_of_time") or [] if x.get("job_id") == job_id])
+    assert (left["answer"], left["reason"]) == ("cannot_fit", "cannot_fit_job")
+    assert (ownership.read_record(world.paths, job_id) or {}).get("cannot_fit") == left["said"]
+
+
+def test_a_night_killed_after_it_finished_stages_still_counts_as_progress(world: World) -> None:
+    """Review note (kill after progress): Windows kills the night after nf_c finished (no decision is written
+    then); the job's age counts from that finished stage in the ledger, not from the night before."""
+    _stopped_before_nf_c(world, 1199)
+    job_id = _one([r["job_id"] for r in world.db.query("select distinct job_id from combos")])
+    first = ownership.read_record(world.paths, job_id) or {}
+    night1 = datetime.fromisoformat(str(first.get("progressed_at")))
+    world.clock.advance(24 * 3600)
+    world.ran.clear()
+
+    def killed() -> None:
+        raise KeyboardInterrupt  # stands for Windows ending the task while nf_d runs
+
+    world.hold["nf_d"] = killed
+    with pytest.raises(KeyboardInterrupt):
+        world.night(left_s=5 * 3600)
+    assert world.ran == ["nf_c", "nf_d"]
+    rec = ownership.read_record(world.paths, job_id) or {}
+    assert rec.get("progressed_at") == night1.isoformat(timespec="seconds"), "no decision wrote the progress"
+    anchor = ownership.age_anchor(world.paths, rec)
+    assert anchor is not None and anchor > night1 + timedelta(hours=23), "nf_c's finished line counts"
+    assert ownership.resume_problem(world.paths, rec, night1 + timedelta(days=3, hours=1)) is None
+
+
 def test_a_half_made_job_ages_from_its_last_progress_not_from_its_last_cut(world: World) -> None:
     """The age rule: a job ages unless a night FINISHED one of its stages; past `RESUME_WITHIN_DAYS` without
     one it is left for Retry, and its card says so in those words."""

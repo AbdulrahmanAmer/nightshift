@@ -556,11 +556,13 @@ def _left_entry(
 
 def _keep(env: jobs.Env, night: nightclock.Night, job_id: str, d: nightfit.Decision) -> None:
     """What the job's record keeps of tonight's decision: the nights it was left (`cuts`), the fresh misses,
-    whether this night finished a stage of it (its age restarts only then: `progressed_at`) and whether it
-    asks for the next night's first place. A decision that gives it up leaves its sentence as the reason the
+    whether this night finished a stage of it (its age restarts only then: `progressed_at`; a stage that
+    finishes after `kept_at`, on a night killed later, counts too: `Night.job_facts`) and whether it asks
+    for the next night's first place. A decision that gives it up leaves its sentence as the reason the
     nightly no longer continues it (`ownership.resume_problem`) and on its card."""
     fields: dict[str, Any] = {"cuts": d.cuts, "misses": d.misses, "last_progressed": d.refresh_age,
-                              "first_next": d.first_next}
+                              "first_next": d.first_next,
+                              "kept_at": night.clock.now().isoformat(timespec="seconds")}
     if d.refresh_age:
         fields["progressed_at"] = night.clock.now().isoformat(timespec="seconds")
     ownership.write_record(env.paths, job_id, **fields)

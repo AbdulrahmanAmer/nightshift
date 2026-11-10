@@ -15,6 +15,7 @@ import functools
 import importlib
 import itertools
 import re
+from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -42,7 +43,7 @@ ROOM = CAPACITY - OVERHEAD  # 20100: what a fresh night really has here
 FLOOR = 600.0  # nightfit.STAGE_FLOOR_S
 
 
-def est(samples: list[float], stage: str = "voice") -> Any:
+def est(samples: Sequence[float], stage: str = "voice") -> Any:
     return nf.estimate(stage, samples, ROOM)
 
 
@@ -375,3 +376,178 @@ def test_progress_every_job_is_begun_or_given_up_with_a_card_within_a_bounded_nu
                     assert how in ("begun", "too_old"), (name, nights, how)
     assert cases == len(SAMPLE_SETS) * 3**bound
 
+
+
+# ------------------------------------------------------------------ night after night, passes re-measured
+KILL = 480.0  # Windows' hard mark is 8 min after the deadline: a stage begun with `left` runs left + 480 s
+A_S = 300.0  # the stage before nf_b: always 300 s
+PATTERNS = {  # nf_b's true seconds, night after night (cycled)
+    "normal": [1200.0],
+    "slow_then_normal": [7 * 3600.0, 1200.0],
+    "normal_then_slow": [1200.0, 1200.0, 7 * 3600.0],
+    "near_room": [ROOM - 50, ROOM + 300],
+}
+KINDS = ("fresh", "late_start", "used", "slow_wait", "retry", "retry_cut")
+
+
+class _Sim:
+    """One plan of two stages (nf_a 300 s, then nf_b) made night after night by the one decision, as the
+    night keeps its records (`daily._keep`, `Night.job_facts`) and its ledger (passes, lower bounds at the
+    hard mark, misses as evidence). A Retry runs the job without a limit; an interrupted Retry only clears the
+    give-up (`ownership.hold`)."""
+
+    def __init__(self, pattern: list[float], growing: bool) -> None:
+        self.pattern, self.growing = pattern, growing
+        self.passes: dict[str, dict[str, tuple[float, bool]]] = {"nf_a": {}, "nf_b": {}}
+        self.overheads: list[float] = []
+        self.job: dict[str, Any] | None = None
+        self.made = 0
+        self.missed_twice_since_heal = 0
+        self.events: list[str] = []
+
+    def add(self, stage: str, key: str, seconds: float, room: float, miss: bool = False) -> None:
+        book = self.passes[stage]
+        book.pop(key, None)
+        book[key] = (seconds, miss)
+        if stage == "nf_b" and not miss and seconds <= room:
+            self.missed_twice_since_heal = 0  # the newest pass is inside the room: the mark heals
+
+    def est(self, stage: str, room: float) -> Any:
+        items = list(self.passes[stage].values())
+        return nf.estimate(stage, [s for s, _m in items], room, [m for _s, m in items])
+
+    def ask(self, where: str, n: int, left: float, begun: bool, room: float, todo: list[str],
+            finished: int) -> Any:
+        stages = tuple(self.est(st, room) for st in todo)
+        job_s, basis = nf.job_seconds("p", stages, whole=where == "new")
+        job = self.job or {}
+        facts = nf.Job(cuts=job.get("cuts", 0), misses=job.get("misses", 0), last_progressed=job.get("last", True),
+                       finished_tonight=finished, age_days=float(n - job.get("anchor", n)))
+        d = nf.decide(nf.Question(where, left, begun, room, stages, job_s, basis, facts))
+        if d.answer == "begin":  # invariant 1, also with the passes changing night after night
+            if where == "new":
+                assert job_s <= left or (not begun and stages[0].seconds <= left)
+            else:
+                assert stages[0].seconds <= left
+        return d
+
+    def keep(self, d: Any, n: int, room: float) -> None:
+        job = self.job
+        assert job is not None
+        job.update(misses=d.misses, cuts=d.cuts, last=d.refresh_age, first_next=d.first_next)
+        if d.refresh_age:
+            job["anchor"] = n
+        miss = nf.miss_sample(d)
+        if miss is not None:
+            self.add(str(d.stage), f"{job['id']}/miss{d.misses}", miss, room, miss=True)
+        if d.reason == "missed_twice":
+            self.missed_twice_since_heal += 1
+            assert self.est("nf_b", room).cannot_fit, "two misses mark the plan's stage"
+        if d.answer == "cannot_fit" or d.reason == "too_old":
+            job["given_up"] = True
+            self.events.append(d.reason)
+
+    def night(self, n: int, kind: str) -> None:
+        true_b = self.pattern[n % len(self.pattern)]
+        room = nf.room(CAPACITY, nf.overhead(self.overheads, OVERHEAD))
+        job = self.job
+        if kind in ("retry", "retry_cut"):
+            if job is not None and kind == "retry":  # no time limit: it finishes, its passes are measured
+                for st in job["todo"]:
+                    self.add(st, job["id"], A_S if st == "nf_a" else true_b, room)
+                self.job = None
+            elif job is not None:  # interrupted before a stage finished: it is no longer given up
+                job.update(given_up=False, misses=0, first_next=False)
+            return
+        spent = 300.0 + (n * 900.0 if self.growing else 0.0) + (4000.0 if kind == "late_start" else 0.0)
+        left, begun = (1100.0, True) if kind == "used" else (CAPACITY - spent, False)
+        if job is None:
+            d = self.ask("new", n, left, begun, room, ["nf_a", "nf_b"], 0)
+            if d.answer == "cannot_fit":
+                assert self.est("nf_b", room).cannot_fit or self.est("nf_a", room).cannot_fit
+                self.events.append("new_blocked")
+            if d.answer != "begin":
+                return
+            self.made += 1
+            job = self.job = {"id": f"j{self.made}", "todo": ["nf_a", "nf_b"], "anchor": n, "nightlies": 0}
+        else:
+            if job.get("given_up"):
+                return  # it waits for Retry on its card; the nightly does not continue it
+            fresh_with_room = not begun and left >= room and kind != "slow_wait" and job["todo"] == ["nf_b"]
+            b = self.est("nf_b", room)
+            d = self.ask("resume", n, left, begun, room, job["todo"], 0)
+            if fresh_with_room and b.seconds <= room and not b.cannot_fit and n - job["anchor"] <= 3:
+                assert d.answer == "begin", "progress: a stage that fits a fresh night is begun on one"
+            if d.answer != "begin":
+                self.keep(d, n, room)
+                job["nightlies"] += 1
+                return
+        if kind == "slow_wait":
+            left -= 4000.0  # the wait for the card took long; the night is still fresh
+        finished = 0
+        for st in list(job["todo"]):
+            d = self.ask("stage", n, left, begun, room, job["todo"], finished)
+            if d.answer != "begin":
+                self.keep(d, n, room)
+                break
+            if not begun:
+                self.overheads.append(CAPACITY - left)
+                begun = True
+            true = A_S if st == "nf_a" else true_b
+            if true > left + KILL:  # Windows ends the task at the hard mark: a lower bound, no decision
+                self.add(st, job["id"], left + KILL, room)
+                break
+            self.add(st, job["id"], true, room)
+            left -= true
+            finished += 1
+            job["todo"].remove(st)
+            job.update(anchor=n, misses=0, last=True)  # its finished line is progress (`Night.job_facts`)
+        job["nightlies"] = 0 if finished else job["nightlies"] + 1
+        if not job["todo"]:
+            self.job = None
+
+
+def test_night_after_night_with_passes_remeasured_every_job_ends_or_progresses_and_misses_end_the_cycle() -> None:
+    """Review note on the simulation: passes ARE re-measured within a sequence (a finished stage adds a pass,
+    a stage Windows stops adds the hard mark's lower bound, a miss adds evidence), with alternating slow and
+    normal passes, an overhead that grows, begun-then-stopped stages (a long wait after S3), Retry and an
+    interrupted Retry in the middle. Over every whole sequence: no BEGIN past what is left; a job open for
+    more than 4 nightly runs without progress never exists; a stage that fits a fresh night is begun on one;
+    two misses mark the plan's stage at once, and a second `missed_twice` never comes before a heal."""
+    import random
+
+    rng = random.Random(20261111)
+    combos = [(p, g) for p in PATTERNS.values() for g in (False, True)]
+    runs = 0
+    for i in range(1600):
+        pattern, growing = combos[i % len(combos)]
+        sim = _Sim(pattern, growing)
+        for n in range(1, 11):
+            kind = rng.choice(KINDS)
+            sim.night(n, kind)
+            job = sim.job
+            # (after an interrupted Retry the job is open until the next nightly run decides about it again)
+            if job is not None and not job.get("given_up") and kind not in ("retry", "retry_cut"):
+                assert job["nightlies"] <= int(nf.Job().max_age_days) + 1, "no job waits for ever"
+            assert sim.missed_twice_since_heal <= 1, "the same stage gave two jobs up without a heal"
+        runs += 1
+    assert runs == 1600
+
+
+def test_a_miss_is_evidence_over_the_room_by_its_shortfall_and_said_as_a_miss() -> None:
+    """Review note (same-stage cycle): `miss_sample` of a fresh miss is over the room by exactly the shortfall;
+    two of them mark the stage, and the words say the stage found too little time, not that it ran longer."""
+    d = ask("resume", 1100, stages=(est([1200]),))
+    assert d.reason == "resume_first_miss" and nf.miss_sample(d) == 1200 + (ROOM - 1100)
+    assert nf.miss_sample(ask("resume", 1300, stages=(est([1200]),))) is None, "no miss, no evidence"
+    two = nf.estimate("voice", [1000, ROOM + 100, ROOM + 100], ROOM, [False, True, True])
+    assert (two.cannot_fit, two.missed, two.newest_missed, two.longest) == (True, 2, True, 1000)
+    gone = nf.say(ask("new", ROOM, stages=(two,)), channel="ch", plan="master_first")
+    assert "their voice stage did not fit the 5 h 35 min a night has here on 2 of its last 3 tries: each time, " \
+           "even as a night's first work, too little time was left for it" in gone
+    mixed = nf.estimate("voice", [7 * 3600, ROOM + 100], ROOM, [False, True])
+    said = nf.say(ask("stage", ROOM, stages=(mixed,)), channel="ch", plan="master_first")
+    assert "1 ran longer (the longest 7 h) and 1 found too little time left even as a night's first work" in said
+    once = nf.estimate("voice", [1000, ROOM + 100], ROOM, [False, True])
+    waits = nf.say(ask("stage", ROOM, begun=True, stages=(once,)), channel="ch", plan="master_first")
+    assert "that stage once had too little time left for it even as a night's first work, so it is tried" in waits

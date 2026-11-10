@@ -11,8 +11,10 @@ install measured. The kinds:
 - `job_end` (job, plan, seconds of this run of it, `outcome`); `cut_expected` (the night still ran two minutes
   before Windows' limit: the stage it was in);
 - `first_stage` (the seconds from the task's start to the night's first stage: what a fresh night spends
-  before work here), `decision` (a time decision of the night that was not a plain BEGIN, `nightfit`) and
-  `too_long_told` (a stage that cannot fit a night was told in the morning note with this evidence).
+  before work here), `missed` (a night that began with a job had too little time for its next stage: evidence
+  for that plan and stage, `nightfit.miss_sample`), `decision` (a time decision of the night that was not a
+  plain BEGIN, `nightfit`) and `too_long_told` (a stage that cannot fit a night was told in the morning note
+  with this evidence).
 
 Writing never stops anything. A file another program holds open (a scanner, an editor) takes the line in the
 month's spare file `-2` (then `-3` ... `-9`) with one WARN per file and process; a line that no file takes is
@@ -120,31 +122,50 @@ def read(paths: Paths, *, months: int | None = HISTORY_MONTHS) -> list[dict[str,
     return [item for _at, _n, item in sorted(out, key=lambda t: (t[0], t[1]))]
 
 
-def stage_samples(lines: Iterable[Mapping[str, Any]], plan: str, stage: str) -> list[float]:
-    """THE one rule for what the estimates count: the WORK of one pass of `stage` in a job of `plan`.
+def stage_passes(lines: Iterable[Mapping[str, Any]], plan: str, stage: str) -> list[tuple[float, bool]]:
+    """THE one rule for what the estimates count, as (seconds, is a miss), oldest first: the WORK of one pass
+    of `stage` in a job of `plan`.
 
     Counted, one sample per job (its latest), oldest job first:
     - a `stage` line of that plan and stage with `outcome: done` (its `seconds` is the stage alone: never a
       wait for the graphics card, which has its own `acquire` line, and never another stage);
     - a `cut_expected` line of that plan and stage: the stage was still running at the hard mark, so its
-      `seconds` so far is a lower bound (a stage longer than a night never writes a `done` line).
+      `seconds` so far is a lower bound (a stage longer than a night never writes a `done` line);
+    - a `missed` line (`nightfit.miss_sample`): a night that began with this job had too little time left
+      for the stage; each miss is a sample of its own (`sample_id`), over the room by the shortfall, so the
+      two misses that give a job up mark the stage for its plan (no running time: `True`).
     Not counted: failed stages, `acquire` waits and loads, `job_end` totals, other plans (a Short's `voice` is
     not a master's) and the earlier runs of a stage a job ran again."""
-    latest: dict[str, float] = {}
+    latest: dict[str, tuple[float, bool]] = {}
     for line in lines:
         kind = line.get("kind")
         if line.get("plan") != plan or line.get("stage") != stage:
             continue
-        if not ((kind == "stage" and line.get("outcome") == "done") or kind == "cut_expected"):
+        if not ((kind == "stage" and line.get("outcome") == "done") or kind in ("cut_expected", "missed")):
             continue
         try:
             seconds = float(line["seconds"])
         except (KeyError, TypeError, ValueError):
             continue
-        job = str(line.get("job_id") or "")
-        latest.pop(job, None)  # re-inserted: the job's order is that of its latest sample
-        latest[job] = seconds
+        key = str(line.get("job_id") or "")
+        if kind == "missed":
+            key = str(line.get("sample_id") or key)
+        latest.pop(key, None)  # re-inserted: the order is that of the latest sample
+        latest[key] = (seconds, kind == "missed")
     return list(latest.values())
+
+
+def stage_samples(lines: Iterable[Mapping[str, Any]], plan: str, stage: str) -> list[float]:
+    """The seconds of `stage_passes` (the one rule), oldest first."""
+    return [seconds for seconds, _miss in stage_passes(lines, plan, stage)]
+
+
+def last_done_at(lines: Iterable[Mapping[str, Any]], job_id: str) -> str | None:
+    """When a stage of `job_id` last finished (`stage` line, `outcome: done`, any route): the job's progress
+    as the ledger saw it, also on a night that was killed after it (no decision wrote it then)."""
+    times = [str(x.get("at")) for x in lines if x.get("kind") == "stage" and x.get("outcome") == "done"
+             and x.get("job_id") == job_id and x.get("at")]
+    return max(times) if times else None
 
 
 def _numbers(lines: Iterable[Mapping[str, Any]], kind: str, key: str, **match: Any) -> list[float]:

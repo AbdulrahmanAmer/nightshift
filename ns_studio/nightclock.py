@@ -217,8 +217,15 @@ def stage_estimate(
 ) -> tuple[float, str]:
     """(seconds, basis) one pass of `stage` needs in a job of `plan` on this install (`nightfit.estimate`:
     the worst of its last `HISTORY_N` passes inside a fresh night's `room_s`, else `STAGE_FLOOR_S`)."""
-    e = nightfit.estimate(stage, ledger.stage_samples(lines, plan, stage), room_s)
+    e = _estimate(lines, plan, stage, room_s)
     return e.seconds, e.basis
+
+
+def _estimate(
+    lines: Sequence[Mapping[str, Any]], plan: str, stage: str, room_s: float | None
+) -> nightfit.Estimate:
+    passes = ledger.stage_passes(lines, plan, stage)
+    return nightfit.estimate(stage, [s for s, _m in passes], room_s, [m for _s, m in passes])
 
 
 def simulated_card_mark(paths: Paths) -> Any:
@@ -334,11 +341,16 @@ class Night:
             1 for x in self.lines if x.get("kind") == "stage" and x.get("outcome") == "done"
             and x.get("run_id") == self.run_id and x.get("job_id") == job_id
         )
-        anchor = ownership.age_anchor(self.paths, {**rec, "id": job_id})
+        anchor = ownership.age_anchor(self.paths, {**rec, "id": job_id}, lines=self.lines)
         age = 0.0 if anchor is None else (self.clock.now() - anchor).total_seconds() / 86400
+        misses, last = int(rec.get("misses") or 0), bool(rec.get("last_progressed", True))
+        done_at, kept_at = ledger.last_done_at(self.lines, job_id), rec.get("kept_at")
+        if done_at and kept_at and done_at > str(kept_at):
+            # a stage of it finished after the night's last decision about it (a night killed after that
+            # stage, or a Retry that stopped later): that night progressed, though no decision recorded it
+            misses, last = 0, True
         return nightfit.Job(
-            cuts=int(rec.get("cuts") or 0), misses=int(rec.get("misses") or 0),
-            last_progressed=bool(rec.get("last_progressed", True)), finished_tonight=finished,
+            cuts=int(rec.get("cuts") or 0), misses=misses, last_progressed=last, finished_tonight=finished,
             age_days=age, max_age_days=max_age,
         )
 
@@ -355,7 +367,7 @@ class Night:
         """Gather the inputs and ask `nightfit.decide` (never raises a decision itself). A decision that is
         not a plain BEGIN is written to the ledger (`decision`) with the numbers it was taken on."""
         room = self.room_s
-        stages = tuple(nightfit.estimate(n, ledger.stage_samples(self.lines, plan, n), room) for n in names)
+        stages = tuple(_estimate(self.lines, plan, n, room) for n in names)
         job_s, basis = nightfit.job_seconds(plan, stages, whole=where == nightfit.NEW)
         load = ledger.load_samples(self.lines, service) if service else []
         q = nightfit.Question(
@@ -367,6 +379,10 @@ class Night:
             self.write("decision", job_id=job_id, plan=plan, where=where, answer=d.answer, reason=d.reason,
                        stage=d.stage, need_s=_round(d.need_s), left_s=_round(d.left_s), room_s=_round(room),
                        basis=d.basis, passes=d.passes, over=d.over, misses=d.misses)
+        miss = nightfit.miss_sample(d)
+        if miss is not None and job_id is not None:  # evidence for the plan's stage, not only for this job
+            self.write("missed", job_id=job_id, sample_id=f"{job_id}/miss{d.misses}", plan=plan,
+                       stage=d.stage, seconds=round(miss, 3))
         return d
 
     # ------------------------------------------------------------------ the ledger

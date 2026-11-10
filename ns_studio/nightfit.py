@@ -101,7 +101,9 @@ class Estimate:
     passes: int = 0  # the measurements behind it (of the last `HISTORY_N`)
     over: int = 0  # of those, passes longer than a fresh night's room
     newest_over: bool = False  # the newest pass is one of them
-    longest: float | None = None  # the longest of those passes
+    longest: float | None = None  # the longest pass that ran (a miss is no running time)
+    missed: int = 0  # of those over the room, nights a job had too little time for it as the first work
+    newest_missed: bool = False  # the newest is such a miss
 
     @property
     def cannot_fit(self) -> bool:
@@ -114,17 +116,39 @@ class Estimate:
         return self.newest_over and not self.cannot_fit
 
 
-def estimate(stage: str, samples: Sequence[float], room_s: float | None) -> Estimate:
+def estimate(
+    stage: str, samples: Sequence[float], room_s: float | None, missed: Sequence[bool] | None = None
+) -> Estimate:
     """The estimate of `stage` from its passes (oldest first; `ledger.stage_samples`): the worst of the last
     `HISTORY_N` that fit a fresh night's `room_s` (an estimate errs long); a pass over the room is evidence
-    for rules 3 and 4, never a plan. No pass, or none inside the room: `STAGE_FLOOR_S`."""
-    last = [float(s) for s in samples][-HISTORY_N:]
+    for rules 3 and 4, never a plan. No pass, or none inside the room: `STAGE_FLOOR_S`. `missed` marks the
+    samples that are a fresh-night miss (`miss_sample`): evidence over the room, but no running time."""
+    marks = list(missed) if missed is not None else [False] * len(samples)
+    last = [(float(s), bool(m)) for s, m in zip(samples, marks, strict=True)][-HISTORY_N:]
     if not last:
         return Estimate(stage, float(STAGE_FLOOR_S))
     room = math.inf if room_s is None else room_s
-    normal = [s for s in last if s <= room]
+    normal = [s for s, _m in last if s <= room]
+    ran = [s for s, m in last if not m]
     seconds, basis = (max(normal), HISTORY) if normal else (float(STAGE_FLOOR_S), DEFAULT)
-    return Estimate(stage, seconds, basis, len(last), len(last) - len(normal), last[-1] > room, max(last))
+    return Estimate(
+        stage, seconds, basis, len(last), len(last) - len(normal), last[-1][0] > room,
+        max(ran) if ran else None, sum(1 for s, m in last if m and s > room),
+        last[-1][1] and last[-1][0] > room,
+    )
+
+
+def miss_sample(d: Decision) -> float | None:
+    """The evidence a fresh-night miss leaves for its plan and stage (`ledger` kind `missed`): the stage's
+    need plus what tonight lacked of a fresh night's room, which is over the room by exactly the shortfall.
+    Two of them (a job given up as `missed_twice`) answer the plan's next job CANNOT_FIT before it redoes its
+    earlier stages; one newer pass inside the room (Create or Retry) heals it like any mark. None for any
+    other decision."""
+    if d.reason not in (RESUME_FIRST_MISS, STOP_FIRST_MISS, MISSED_TWICE):
+        return None
+    if d.need_s is None or d.left_s is None or d.room_s is None:
+        return None
+    return d.need_s + (d.room_s - d.left_s)
 
 
 def default_overhead(limit_s: int) -> float:
@@ -200,6 +224,8 @@ class Decision:
     passes: int = 0
     over: int = 0
     longest: float | None = None
+    missed: int = 0  # of `over`, misses (no running time): the words say so
+    newest_missed: bool = False
     wait_s: int | None = None  # BEGIN at WAIT: how long the wait for the card may take
     nights: int | None = None  # FIRST_WORK: the nights the job is made over
     cuts: int = 0  # the job's record after this decision
@@ -224,7 +250,8 @@ def decide(q: Question) -> Decision:
     def answer(reason: str, *, about: Estimate | None = None, **more: object) -> Decision:
         out = replace(base, answer=REASONS[reason], reason=reason, **more)  # type: ignore[arg-type]
         if about is not None:
-            out = replace(out, stage=about.stage, passes=about.passes, over=about.over, longest=about.longest)
+            out = replace(out, stage=about.stage, passes=about.passes, over=about.over, longest=about.longest,
+                          missed=about.missed, newest_missed=about.newest_missed)
         if out.answer != BEGIN:
             out = replace(out, cuts=q.job.cuts + 1, first_next=reason in FIRST_NEXT)
         return out
@@ -237,7 +264,7 @@ def decide(q: Question) -> Decision:
     blocked = next((e for e in q.stages if e.cannot_fit), None)  # 3
     if blocked is not None:
         return answer(CANNOT_FIT_NEW if q.where == NEW else CANNOT_FIT_JOB, about=blocked,
-                      need_s=blocked.longest, basis=HISTORY)
+                      need_s=blocked.seconds, basis=HISTORY)
     if nxt is None:  # nothing left to run: nothing to refuse
         return answer(FITS, wait_s=min(q.wait_cap_s, max(0, int(left))) if q.where == WAIT else None)
     fresh = not q.begun_tonight
@@ -303,9 +330,9 @@ SENTENCES[STOP_NO_ROOM] = (
     f"the next nightly run goes back to it before starting new videos{IF_NIGHTLY_ON}"
 )
 SENTENCES[STOP_RETEST_WAITS] = (
-    "{channel}'s video stopped before {stage}: that stage took {longest} once, longer than the {room} a "
-    "night has here, so it is tried again only as the first work of a night; the next nightly run goes back "
-    f"to it before starting new videos{IF_NIGHTLY_ON}"
+    "{channel}'s video stopped before {stage}: that stage {once}, so it is tried again only as the first "
+    "work of a night; the next nightly run goes back to it before starting new videos"
+    f"{IF_NIGHTLY_ON}"
 )
 SENTENCES[STOP_FIRST_MISS] = (
     "{channel}'s video stopped before {stage}: even as the night's first work only {left} {were} left for "
@@ -317,18 +344,18 @@ SENTENCES[NEW_NO_ROOM] = (
     f"next nightly run plans it again, first{IF_NIGHTLY_ON}"
 )
 SENTENCES[NEW_RETEST_WAITS] = (
-    "{channel}'s {what} {was} not started: its first stage, {stage}, took {longest} once, longer than the "
-    "{room} a night has here, so it is tried again only as the first work of a night; the channel stays due, "
-    f"so the next nightly run plans it again{IF_NIGHTLY_ON}"
+    "{channel}'s {what} {was} not started: its first stage, {stage}, {once}, so it is tried again only as "
+    "the first work of a night; the channel stays due, so the next nightly run plans it again"
+    f"{IF_NIGHTLY_ON}"
 )
 SENTENCES[RESUME_NO_ROOM] = (
     "{channel}'s half-made video was not continued: its next stage, {stage}, takes about {need} here and "
     f"{{left}} {{were}} left; the next nightly run goes back to it before starting new videos{IF_NIGHTLY_ON}"
 )
 SENTENCES[RESUME_RETEST_WAITS] = (
-    "{channel}'s half-made video was not continued: its next stage, {stage}, took {longest} once, longer "
-    "than the {room} a night has here, so it is tried again only as the first work of a night; the next "
-    f"nightly run goes back to it before starting new videos{IF_NIGHTLY_ON}"
+    "{channel}'s half-made video was not continued: its next stage, {stage}, {once}, so it is tried again "
+    "only as the first work of a night; the next nightly run goes back to it before starting new videos"
+    f"{IF_NIGHTLY_ON}"
 )
 SENTENCES[RESUME_FIRST_MISS] = (
     "{channel}'s half-made video was not continued: even as the night's first work only {left} {were} left "
@@ -340,13 +367,11 @@ SENTENCES[TOO_OLD] = (
     "{max_age} days, so it is left for Retry on its Queue card (a run you start has no time limit)"
 )
 SENTENCES[CANNOT_FIT_NEW] = (
-    "{channel}'s {whats} are not made at night: their {stage} stage took longer than the {room} a night "
-    "has here on {over} of its last {passes} passes, the longest {longest}. {ways}; one pass of that stage "
-    f"inside a night's time, made from Create, lets the nightly run make them again{IF_NIGHTLY_ON}"
+    "{channel}'s {whats} are not made at night: their {stage} stage {evidence}. {ways}; one pass of that "
+    f"stage inside a night's time, made from Create, lets the nightly run make them again{IF_NIGHTLY_ON}"
 )
 SENTENCES[CANNOT_FIT_JOB] = (
-    "{channel}'s half-made video is given up by the nightly run: its {stage} stage took longer than the "
-    "{room} a night has here on {over} of its last {passes} passes, the longest {longest}. Retry on its "
+    "{channel}'s half-made video is given up by the nightly run: its {stage} stage {evidence}. Retry on its "
     "Queue card finishes it (a run you start has no time limit)"
 )
 SENTENCES[MISSED_TWICE] = (
@@ -373,7 +398,23 @@ def say(d: Decision, *, channel: str, plan: str, jobs: int = 1) -> str:
         f"{channel} in Channels" if full else "Make them from Create (a run you start has no time limit)"
     )
     left = d.left_s if d.left_s is not None else 0.0
-    return SENTENCES[d.reason].format(
+    room, longest = words(d.room_s or 0), words(d.longest or 0)
+    if d.newest_missed:
+        once = "once had too little time left for it even as a night's first work"
+    else:
+        once = f"took {longest} once, longer than the {room} a night has here"
+    ran = d.over - d.missed
+    if not d.missed:
+        evidence = (f"took longer than the {room} a night has here on {d.over} of its last {d.passes} "
+                    f"passes, the longest {longest}")
+    elif not ran:
+        evidence = (f"did not fit the {room} a night has here on {d.over} of its last {d.passes} tries: "
+                    "each time, even as a night's first work, too little time was left for it")
+    else:
+        evidence = (f"did not fit the {room} a night has here on {d.over} of its last {d.passes} tries: "
+                    f"{ran} ran longer (the longest {longest}) and {d.missed} found too little time left "
+                    "even as a night's first work")
+    return SENTENCES[d.reason].format(once=once, evidence=evidence,
         channel=channel, stage=d.stage or "its next stage", what=what, whats=many, need=need, took=took,
         left=words(left), were="was" if 0 <= left < 120 else "were", was="was" if jobs == 1 else "were",
         room=words(d.room_s or 0), longest=words(d.longest or 0), over=d.over, passes=d.passes,
