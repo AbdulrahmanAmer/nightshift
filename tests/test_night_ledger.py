@@ -757,11 +757,11 @@ def test_the_morning_note_and_toast_say_what_was_left_for_time(world: World) -> 
     note = getattr(notifications, "time_note", lambda r: None)(REPORT)
     assert note == (
         "Last night's run used 5 h 40 min of the 6 hours Windows allows it, 1 h 10 min of it getting the "
-        "graphics card (waiting for it and loading its models). Left for the next night: quiet-hours's full "
-        "video (it takes about 3 h 10 min here, 52 min were left); after-dark's video stopped at voice and "
-        "continues next. The next nightly run continues what was left first (while Automatic runs are on in "
-        "Settings). To fit more into one night, set fewer Full videos per week for a channel in Channels, or "
-        "pause a channel. (NS-W211)"
+        "graphics card (waiting for it and loading its models). Not finished in the night: quiet-hours's "
+        "full video (it takes about 3 h 10 min here, 52 min were left); after-dark's video stopped at voice "
+        "and continues next. The next nightly run continues what was left first (while Automatic runs are "
+        "on in Settings). To fit more into one night, set fewer Full videos per week for a channel in "
+        "Channels, or pause a channel. (NS-W211)"
     )
     toast = notifications.nightly_message(REPORT, 1, 4)
     assert toast == (

@@ -212,7 +212,7 @@ def time_note(report: dict[str, Any]) -> str | None:
         head += f", {words(gpu)} of it getting the graphics card (waiting for it and loading its models)"
     parts = [f"{head}."]
     if items:
-        parts.append(f"Left for the next night: {'; '.join(_left_words(i) for i in items)}.")
+        parts.append(f"Not finished in the night: {'; '.join(_left_words(i) for i in items)}.")
     parts += [f"{_long_job_words(i)}." for i in long_jobs]
     parts += [f"{_too_long_words(i)[:1].upper()}{_too_long_words(i)[1:]}." for i in too_long]
     if items or long_jobs:
