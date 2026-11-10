@@ -2104,11 +2104,12 @@ class SetupController:
         venv_python = self.home / "venvs" / "studio" / "Scripts" / "python.exe"
         python = self.cfg.python if self.cfg.simulate else str(venv_python)
         app = self.run_app_path
+        # `--non-interactive` always: this run has no window and no person to answer (D-40). stdin is not
+        # inherited either, so nothing the wizard starts can wait on a console that no one is watching.
         argv = [python, "-X", "utf8", "-m", "installer.stage2.wizard", "--app-path", str(app),
-                "--answers", str(self.cfg.answers), "--preflight", str(out)]
+                "--answers", str(self.cfg.answers), "--preflight", str(out), "--non-interactive"]
         if self.cfg.simulate:
-            argv += ["--simulate-downloads", "--no-head-checks", "--non-interactive",
-                     "--home", str(self.home)]
+            argv += ["--simulate-downloads", "--no-head-checks", "--home", str(self.home)]
         if self.cfg.halt_after:
             argv += ["--halt-after", self.cfg.halt_after]
         if self.dev:
@@ -2118,4 +2119,4 @@ class SetupController:
             argv += ["--files-dir", str(files)]
         env = wizard_env(app)
         env[bootstrap.HOME_VAR] = str(self.home)
-        return subprocess.run(argv, cwd=str(app), env=env, check=False).returncode
+        return subprocess.run(argv, cwd=str(app), env=env, check=False, stdin=subprocess.DEVNULL).returncode

@@ -56,7 +56,11 @@ Keep this file next to `INSTALL.cmd`.
    never see one, check Windows **Settings -> System -> Notifications** for "Nightshift".
 
 With an `answers.json` next to `INSTALL.cmd` setup runs without a window, as before (add `-Ui` after
-`INSTALL.cmd` to open the window with your answers filled in; `-NoUi` forces the no-window run).
+`INSTALL.cmd` to open the window with your answers filled in; `-NoUi` forces the no-window run). A run with an
+answers file next to `INSTALL.cmd` or named with `-Answers` never stops to ask a question, whatever its console is: a key the file names (an empty `""` means no key)
+is not asked for, and what the file leaves out takes its default or, for the channel name and niche, stops setup with a
+message. `INSTALL.cmd -NoUi` and `INSTALL.cmd -Answers <file>` also end without waiting at "Press any key"; a
+double-click on `INSTALL.cmd` still waits, so the message can be read.
 
 You can close the setup window at any time: setup keeps running in the window called Nightshift setup, and running
 **INSTALL.cmd** again opens the setup window again. If you close the Nightshift setup window, setup stops; run **INSTALL.cmd** again and it carries on
