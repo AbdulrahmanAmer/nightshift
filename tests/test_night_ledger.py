@@ -475,8 +475,11 @@ def test_a_half_made_job_that_would_not_fit_tonight_waits_for_the_next_night(
     assert world.db.query("select count(*) n from combos where item='long'")[0]["n"] == 1
     rec = ownership.read_record(world.paths, job_id) or {}
     assert (rec.get("state"), rec.get("interrupted_at_stage")) == ("interrupted", "nf_c")
-    assert "half-made video (it needs about 30 min more, at nf_c, 29 min were left) continues next" in (
-        notifications.time_note(report) or "")
+    words = (
+        "half-made video (it needs about 30 min more by Nightshift's first estimate, at nf_c, "
+        "29 min were left)"
+    )
+    assert words in (notifications.time_note(report) or "")
     world.clock.advance(24 * 3600)
     world.night(left_s=5 * 3600)
     assert world.ran == ["nf_c", "nf_d"], "the next night continues it"

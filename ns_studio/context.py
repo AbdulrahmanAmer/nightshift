@@ -18,11 +18,11 @@ from ns_common.models import Channel, Combo, Runtime
 from ns_common.paths import Paths, repo_root
 from ns_common.tts_client import FakeTts, Tts, TtsClient
 from ns_studio.acquirer import StudioAcquirer, wants_supervisor
+from ns_studio.nightclock import Clock, Night, SystemClock
 
 if TYPE_CHECKING:
     from ns_studio.media.clip_sources import ClipSource
     from ns_studio.media.transcribe import Transcriber
-    from ns_studio.nightclock import Clock, Night
 
 PROMPT_VERSIONS_FILE = "prompt_versions.json"
 FAKEABLE: frozenset[str] = frozenset({"llm", "tts", "whisper", "embed", "clips"})
@@ -116,12 +116,6 @@ def owner_script_of(job_dir: Path) -> bool:
     return isinstance(data, dict) and data.get("owner_script") is True
 
 
-def _system_clock() -> Clock:
-    from ns_studio.nightclock import SystemClock
-
-    return SystemClock()
-
-
 @dataclass
 class JobContext:
     """Everything a stage needs: identity, paths, DB, services and the job directory helpers."""
@@ -143,7 +137,7 @@ class JobContext:
     #: what another job in the same process asked for.
     policy: bool = False
     #: The clock every timing of this job reads (the ledger's seconds); the nightly passes its own.
-    clock: Clock = field(default_factory=lambda: _system_clock())
+    clock: Clock = field(default_factory=SystemClock)
     #: The night that runs this job (`nightclock.Night`: its deadline, checked before every stage and every
     #: wait for the graphics card); None on every other route, which is never refused for time.
     deadline: Night | None = None

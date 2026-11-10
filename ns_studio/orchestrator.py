@@ -298,7 +298,10 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
                 # engine swap tenants and load a model it will not use (the check before every stage, below,
                 # stays: the wait for the card can take hours, and a pause may come during it).
                 not_paused(group_list[0].name)
-                _acquire(ctx, tenant, owner, [s.name for s in stages], [s.name for s in group_list])
+                wait = _wait_cap(ctx, [s.name for s in stages], [s.name for s in group_list])
+                with _timed(ctx, tenant, group_list[0].name, wait):
+                    alias = "story" if tenant == "llama" else None
+                    ctx.services.acquirer.acquire(tenant, owner, model_alias=alias, **wait)  # type: ignore[arg-type]
             _run_group(ctx, tenant, group_list, owner, ran, resume, not_paused)
     except BaseException as e:
         outcome = str(getattr(e, "code", None) or type(e).__name__)
@@ -309,16 +312,15 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
     return ran
 
 
-def _acquire(ctx: JobContext, tenant: str, owner: str, names: list[str], group: list[str]) -> None:
-    """Take `tenant` for the stages `group`, timed into the ledger. In the nightly the wait
-    for the graphics card is bounded by what the night can spend on it (`Night.wait_cap`, S7): the time
-    left after the estimate of the stages the job still has to run. At or under 0 it is NS-E201 at once,
-    marked `out_of_time` (`daily._attempt` then leaves the job at this stage for the next night)."""
-    first = group[0]
+def _wait_cap(ctx: JobContext, names: list[str], group: list[str]) -> dict[str, int]:
+    """The `timeout_s` of the wait for the graphics card before the stages `group` ({} outside the nightly).
+    In the nightly it is bounded by what the night can spend on it (`Night.wait_cap`, S7): the time left after
+    the estimate of the stages the job still has to run. At or under 0 it is NS-E201 at once, marked
+    `out_of_time` (`daily._attempt` then leaves the job at that stage for the next night)."""
     timeout: int | None = None
     if ctx.deadline is not None:
         done = {n for n, e in StageState.load(ctx.job_dir).entries.items() if e.get("status") == "done"}
-        rest = [n for n in names[names.index(first):] if n not in done]
+        rest = [n for n in names[names.index(group[0]):] if n not in done]
         timeout = ctx.deadline.wait_cap(rest, WAIT_CAP_S)
         mine = [n for n in group if n not in done]
         if timeout is not None and timeout <= 0 and mine:
@@ -328,11 +330,16 @@ def _acquire(ctx: JobContext, tenant: str, owner: str, names: list[str], group: 
             )
         if timeout is not None and not mine:  # a group a resume skips: never refused, never a long wait
             timeout = max(1, timeout)
-    kwargs = {} if timeout is None else {"timeout_s": timeout}
+    return {} if timeout is None else {"timeout_s": timeout}
+
+
+@contextmanager
+def _timed(ctx: JobContext, tenant: str, first: str, wait: dict[str, int]) -> Iterator[None]:
+    """The `acquire` ledger line of the wait for `tenant`: its seconds, the wait and the load when the
+    acquirer tells them apart (`last_timing`), the `timeout_s` it was given and how it ended."""
     t0, outcome = ctx.clock.monotonic(), "done"
     try:
-        alias = "story" if tenant == "llama" else None
-        ctx.services.acquirer.acquire(tenant, owner, model_alias=alias, **kwargs)  # type: ignore[arg-type]
+        yield
     except BaseException as e:
         outcome = str(getattr(e, "code", None) or type(e).__name__)
         raise
@@ -340,7 +347,7 @@ def _acquire(ctx: JobContext, tenant: str, owner: str, names: list[str], group: 
         timing = getattr(ctx.services.acquirer, "last_timing", None)
         wait_s, load_s = timing if isinstance(timing, tuple) and len(timing) == 2 else (None, None)
         job_line(ctx, "acquire", service=tenant, stage=first, seconds=round(ctx.clock.monotonic() - t0, 3),
-                 wait_s=wait_s, load_s=load_s, timeout_s=timeout, outcome=outcome)
+                 wait_s=wait_s, load_s=load_s, timeout_s=wait.get("timeout_s"), outcome=outcome)
 
 
 def _run_group(
