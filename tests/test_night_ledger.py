@@ -1,0 +1,781 @@
+"""Card night-fits (night-fits-a): a night is measured, and fits the nightly task's time limit.
+
+Windows stops the nightly task 6 hours after it started it (`schedule_cfg.TASK_TIME_LIMIT_S`). Before:
+nothing timed a night beyond log lines, nothing checked the time before a job or a stage, and the GPU wait
+could take 2 of the 6 hours. After: every stage, wait for the graphics card and job is in the night ledger
+(`data/ledger/ledger-<yyyymm>.jsonl`); a night the task started never begins a job or a stage that would end
+after `task start + limit - 10 min`; what it left continues the next night first; and the owner reads what
+was left, with the numbers, in the morning.
+
+Every night here is the real `daily.run_daily` on a tmp home (fake services, the real ownership records and
+orchestrator, stub stages registered for the plan) with an injected clock: wall time and the monotonic counter
+come from one number, and each stub stage moves it on by the seconds the test names. New names are reached
+through `getattr` or the signature, so the code before the card fails at an assertion.
+"""
+
+from __future__ import annotations
+
+import importlib
+import inspect
+import json
+import random
+import sys
+import threading
+import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from ns_common.acquire import Endpoint
+from ns_common.db import Db
+from ns_common.paths import Paths
+from ns_studio import daily, jobs, notifications, ownership
+from ns_studio import orchestrator as orch
+from ns_studio.channels import cadence, crud
+from ns_studio.stages import REGISTRY, StageState
+from tests.helpers import make_channel
+
+LIMIT_S = 6 * 3600
+MARGIN_S = 600
+REPO = Path(__file__).resolve().parents[1]
+
+
+def _module(name: str) -> Any:
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        return None
+
+
+# ------------------------------------------------------------------ the clock, the stages, the GPU
+class FakeClock:
+    """Wall time and the monotonic counter from one number; thread-safe (the night's beat reads it too)."""
+
+    def __init__(self, start: datetime) -> None:
+        self.start, self._t, self._mu = start, 0.0, threading.Lock()
+
+    def now(self) -> datetime:
+        with self._mu:
+            return self.start + timedelta(seconds=self._t)
+
+    def monotonic(self) -> float:
+        with self._mu:
+            return self._t
+
+    def advance(self, seconds: float) -> None:
+        with self._mu:
+            self._t += seconds
+
+
+class Stub:
+    """A stage that moves the clock on by `seconds[name]`; the last one records the finished video."""
+
+    def __init__(
+        self, name: str, tenant: str | None, inputs: tuple[str, ...], world: World, last: bool
+    ) -> None:
+        self.name, self.tenant, self.inputs, self.outputs = name, tenant, inputs, (f"{name}.json",)
+        self.world, self.last = world, last
+
+    def run(self, ctx: Any) -> None:
+        self.world.ran.append(self.name)
+        self.world.clock.advance(self.world.seconds.get(self.name, 60))
+        hold = self.world.hold.get(self.name)
+        if hold is not None:
+            hold()
+        ctx.write_json(self.outputs[0], {"stage": self.name})
+        if self.last:
+            kind = "long" if ctx.fmt == "master_first" else "short"
+            ctx.db.execute(
+                "insert or ignore into outputs(output_id, job_id, channel, kind, title, path, created_at)"
+                " values (?,?,?,?,?,?,?)",
+                (
+                    f"{ctx.job_id}/{kind}",
+                    ctx.job_id,
+                    ctx.channel.slug,
+                    kind,
+                    "A finished video",
+                    str(ctx.file(self.outputs[0])),
+                    self.world.clock.now().isoformat(timespec="seconds"),
+                ),
+            )
+
+
+class FakeAcquirer:
+    """Grants every service at once after moving the clock by the wait and the load it was told; it says
+    both apart (`last_timing`) and records the `timeout_s` each call was given (None: the default)."""
+
+    def __init__(self, clock: FakeClock, wait_s: float = 0, load_s: float = 0) -> None:
+        self.clock, self.wait_s, self.load_s = clock, wait_s, load_s
+        self.calls: list[tuple[str, int | None]] = []
+        self.last_timing: tuple[float, float] | None = None
+
+    def acquire(
+        self, service: str, owner: str, *, model_alias: str | None = None, timeout_s: int | None = None
+    ) -> Endpoint:
+        self.calls.append((service, timeout_s))
+        if service in ("llama", "tts", "whisper"):
+            self.clock.advance(self.wait_s + self.load_s)
+            self.last_timing = (self.wait_s, self.load_s)
+        return Endpoint("inproc")
+
+    def release(self, service: str, owner: str) -> None:
+        return None
+
+
+PLAN = (("nf_a", "llama"), ("nf_b", "llama"), ("nf_c", None), ("nf_d", None))
+
+
+class World:
+    """One install home with the stub plan for master_first and shorts_only."""
+
+    def __init__(self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch, **channel: Any) -> None:
+        self.home = tmp_home
+        self.paths = Paths.from_env()
+        self.paths.ensure()
+        self.db = Db(self.paths.db_path)
+        self.db.migrate()
+        self.clock = FakeClock(datetime.now(UTC).replace(microsecond=0))
+        self.seconds: dict[str, float] = {}
+        self.hold: dict[str, Any] = {}
+        self.ran: list[str] = []
+        self.monkeypatch = monkeypatch
+        prev = ()
+        for i, (name, tenant) in enumerate(PLAN):
+            monkeypatch.setitem(REGISTRY, name, Stub(name, tenant, prev, self, i == len(PLAN) - 1))
+            prev = (f"{name}.json",)
+        for fmt in ("master_first", "shorts_only"):
+            monkeypatch.setitem(orch.FORMAT_STAGES, fmt, [n for n, _t in PLAN])
+        self.add_channel(**channel)
+        self.env = jobs.open_env(light=True)
+        self.acquirer = FakeAcquirer(self.clock)
+        self.env.services.acquirer = self.acquirer  # type: ignore[assignment]
+
+    def add_channel(self, **kw: Any) -> None:
+        created = (datetime.now(UTC) - timedelta(weeks=11)).isoformat(timespec="seconds")
+        crud.add_channel(
+            self.paths, self.db, make_channel(**{"format": "master_first", "created_at": created, **kw})
+        )
+
+    def night(
+        self,
+        *,
+        left_s: float | None = None,
+        started: Any = "none",
+        process: Any = None,
+        environ: dict[str, str] | None = None,
+        notifier: Any = None,
+    ) -> dict[str, Any]:
+        """One `run_daily`. `left_s`: the task started so that this much is left before the deadline."""
+        env = dict(environ or {})
+        if left_s is not None:
+            started = self.clock.now() - timedelta(seconds=LIMIT_S - MARGIN_S - left_s)
+        if isinstance(started, datetime):
+            env["NS_NIGHT_STARTED"] = started.strftime("%Y-%m-%dT%H:%M:%SZ")
+        params = inspect.signature(daily.run_daily).parameters
+        extra = {
+            k: v
+            for k, v in {
+                "clock": self.clock,
+                "environ": env,
+                "process": process or FakeProcess(self.clock.now()),
+            }.items()
+            if k in params
+        }
+        return daily.run_daily(
+            self.env, now=self.clock.now(), rng=random.Random(1), notifier=notifier, **extra
+        )
+
+    def history(
+        self,
+        *,
+        jobs_s: float | None = None,
+        plan: str = "master_first",
+        stage: tuple[str, float] | None = None,
+        n: int = 5,
+    ) -> None:
+        """Ledger lines an earlier night of this install wrote: `n` finished jobs, or `n` runs of a stage."""
+        at = (self.clock.now() - timedelta(days=2)).isoformat(timespec="seconds")
+        lines = []
+        for i in range(n):
+            if jobs_s is not None:
+                lines.append(
+                    {
+                        "kind": "job_end",
+                        "at": at,
+                        "job_id": f"old-{plan}-{i}",
+                        "plan": plan,
+                        "seconds": jobs_s,
+                        "outcome": "done",
+                        "origin": "daily",
+                    }
+                )
+            if stage is not None:
+                lines.append(
+                    {
+                        "kind": "stage",
+                        "at": at,
+                        "job_id": f"old-{i}",
+                        "stage": stage[0],
+                        "seconds": stage[1],
+                        "outcome": "done",
+                        "origin": "daily",
+                    }
+                )
+        f = self.ledger_dir() / f"ledger-{self.clock.now():%Y%m}.jsonl"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        with f.open("a", encoding="utf-8") as fh:
+            fh.write("".join(json.dumps(x) + "\n" for x in lines))
+
+    def ledger_dir(self) -> Path:
+        return self.home / "data" / "ledger"
+
+    def lines(self, kind: str | None = None, run_id: str | None = None) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for f in sorted(self.ledger_dir().glob("*.jsonl")) if self.ledger_dir().exists() else []:
+            for text in f.read_text(encoding="utf-8").splitlines():
+                try:
+                    item = json.loads(text)
+                except ValueError:
+                    continue
+                if (kind is None or item.get("kind") == kind) and (
+                    run_id is None or item.get("run_id") == run_id
+                ):
+                    out.append(item)
+        return out
+
+    def notes(self) -> list[dict[str, Any]]:
+        f = self.home / "run" / "morning_note.json"
+        return json.loads(f.read_text(encoding="utf-8"))["notes"] if f.exists() else []
+
+    def cards(self) -> list[dict[str, Any]]:
+        out = []
+        for r in self.db.query("select * from dashboard_jobs where kind='run' order by created_at, rowid"):
+            payload = json.loads(r["params_json"])
+            out.append({**dict(r), "result": payload["result"] or {}})
+        return out
+
+
+class FakeProcess:
+    """`psutil.Process()` of a run with the given parent chain (nearest first)."""
+
+    def __init__(
+        self,
+        created: datetime,
+        parents: list[Any] | None = None,
+        name: str = "studio.exe",
+        cmdline: list[str] | None = None,
+    ) -> None:
+        self._created, self._parents, self._name = created, parents or [], name
+        self._cmdline = cmdline or [name]
+
+    def parents(self) -> list[Any]:
+        return self._parents
+
+    def name(self) -> str:
+        return self._name
+
+    def cmdline(self) -> list[str]:
+        return self._cmdline
+
+    def create_time(self) -> float:
+        return self._created.timestamp()
+
+
+def _one(items: list[Any]) -> Any:
+    """The one item of `items` (an assertion, not an unpacking error, when there are more or none)."""
+    assert len(items) == 1, items
+    return items[0]
+
+
+@pytest.fixture
+def world(tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> World:
+    return World(tmp_home, monkeypatch)
+
+
+# ------------------------------------------------------------------ 1. every route into the ledger
+def test_every_stage_acquire_and_load_is_written_to_the_ledger(world: World) -> None:
+    world.seconds = {"nf_a": 300, "nf_b": 600, "nf_c": 900, "nf_d": 120}
+    world.acquirer.wait_s, world.acquirer.load_s = 40, 20
+    report = world.night(left_s=5 * 3600)
+    run_id = report["run_id"]
+    assert [j["job_id"] for j in report["jobs"]] and report["failures"] == []
+    (job_id,) = [j["job_id"] for j in report["jobs"]]
+
+    start = _one(world.lines("night_start"))
+    assert start["run_id"] == run_id and start["limit"] == LIMIT_S and start["start_basis"] == "stub"
+    assert datetime.fromisoformat(start["deadline"]) - datetime.fromisoformat(
+        start["task_start"]
+    ) == timedelta(seconds=LIMIT_S - MARGIN_S)
+    stages = world.lines("stage", run_id)
+    assert [(s["stage"], s["seconds"], s["job_id"], s["origin"]) for s in stages] == [
+        (n, world.seconds[n], job_id, "daily") for n, _t in PLAN
+    ]
+    acquires = world.lines("acquire", run_id)
+    assert [(a["service"], a["seconds"], a["wait_s"], a["load_s"]) for a in acquires] == [
+        ("llama", 60, 40, 20)
+    ]
+    end_job = _one(world.lines("job_end", run_id))
+    assert end_job["outcome"] == "done" and end_job["seconds"] == 300 + 600 + 900 + 120 + 60
+    end = _one(world.lines("night_end"))
+    assert end["used_s"] == report["timing"]["used_s"] and end["left_s"] == report["timing"]["left_s"]
+    used = LIMIT_S - MARGIN_S - 5 * 3600 + 1980
+    assert report["timing"]["used_s"] == used and report["timing"]["left_s"] == 5 * 3600 - 1980
+    assert report["timing"]["gpu_s"] == 60 and report["timing"]["stages_s"] == 1920
+
+    # a job started outside the nightly (`studio run`, a dashboard job, a Retry) writes its stage lines too
+    ctx = jobs.make_job(
+        world.env, crud.get_channel(world.paths, "after-dark"), "master_first", origin="manual"
+    )
+    ctx.clock = world.clock  # type: ignore[attr-defined]
+    orch.run_job(ctx)
+    by_hand = [s for s in world.lines("stage") if s["job_id"] == ctx.job_id]
+    assert [(s["stage"], s["origin"], s["run_id"]) for s in by_hand] == [
+        (n, "manual", None) for n, _t in PLAN
+    ]
+
+
+# ------------------------------------------------------------------ 2, 3. the job budget, both ends
+@pytest.mark.parametrize("left_min, started", [(121, True), (120, True), (119, False)])
+def test_a_job_that_would_end_after_the_deadline_is_not_started(
+    world: World, left_min: int, started: bool
+) -> None:
+    world.history(jobs_s=100 * 60)  # five finished jobs of 100 min: the estimate is 1.2 x 100 = 120 min
+    report = world.night(left_s=left_min * 60)
+    if started:
+        assert len(report["jobs"]) == 1 and not report.get("out_of_time")
+        return
+    assert report["jobs"] == [] and report["failures"] == []
+    assert report.get("out_of_time") == [
+        {
+            "channel": "after-dark",
+            "fmt": "master_first",
+            "jobs": 1,
+            "need_s": 7200,
+            "left_s": 7140,
+            "basis": "history",
+        }
+    ]
+    assert world.db.query("select * from combos") == [] and world.ran == [], "nothing was created"
+    assert [r for r in ownership.list_records(world.paths) if r.get("kind") == "job"] == []
+    world.clock.advance(24 * 3600)
+    assert [d.channel.slug for d in cadence.plan_daily(world.paths, world.db, world.clock.now())] == [
+        "after-dark"
+    ], "the channel is planned again the next night"
+
+
+@pytest.mark.parametrize("left_min, started", [(180, True), (179, False)])
+def test_with_no_history_the_default_estimate_is_used_and_said(
+    world: World, left_min: int, started: bool
+) -> None:
+    nightclock = _module("ns_studio.nightclock")
+    default = getattr(nightclock, "DEFAULT_JOB_S", {}).get("master_first")
+    assert default == 3 * 3600, "a first night on a new PC plans a full video at 3 h"
+    report = world.night(left_s=left_min * 60)
+    if started:
+        assert len(report["jobs"]) == 1
+        return
+    left = _one(report.get("out_of_time") or [])
+    assert (left["basis"], left["need_s"], left["left_s"]) == ("default", default, left_min * 60)
+    note = notifications.time_note(report)
+    assert "Nightshift plans 3 h for one until it has timed one on this PC, 2 h 59 min were left" in note
+
+
+# ------------------------------------------------------------------ 4, 5. the stage budget and the next night
+def _stopped_before_nf_c(world: World, left_before_c: int) -> dict[str, Any]:
+    """A night whose job reaches nf_c (estimate 1.2 x 1000 = 1200 s) with `left_before_c` seconds left."""
+    world.history(stage=("nf_c", 1000))
+    world.seconds = {"nf_a": 4830, "nf_b": 10860 - 4830 - left_before_c, "nf_c": 500, "nf_d": 100}
+    return world.night(left_s=10860)  # 181 min: the job's default estimate (3 h) fits
+
+
+@pytest.mark.parametrize("left_before_c, stops", [(1200, False), (1199, True)])
+def test_a_stage_that_would_end_after_the_deadline_leaves_the_job_interrupted(
+    world: World, left_before_c: int, stops: bool
+) -> None:
+    report = _stopped_before_nf_c(world, left_before_c)
+    if not stops:
+        assert world.ran == ["nf_a", "nf_b", "nf_c", "nf_d"] and len(report["jobs"]) == 1
+        return
+    assert world.ran == ["nf_a", "nf_b"], "the job stops BEFORE the stage"
+    assert report["jobs"] == [] and report["failures"] == [], "left for time is not a failure"
+    (job_id,) = [r["job_id"] for r in world.db.query("select distinct job_id from combos")]
+    left = _one(report.get("out_of_time") or [])
+    assert (left["job_id"], left["stage"], left["need_s"], left["left_s"]) == (job_id, "nf_c", 1200, 1199)
+    entries = StageState.load(world.paths.job_dir(job_id)).entries
+    assert [n for n, e in entries.items() if e.get("status") == "done"] == ["nf_a", "nf_b"]
+    rec = ownership.read_record(world.paths, job_id) or {}
+    assert (rec.get("state"), rec.get("interrupted_at_stage"), rec.get("reason")) == (
+        "interrupted",
+        "nf_c",
+        "out_of_time",
+    )
+    (card,) = world.cards()
+    assert card["message"] == (
+        "Left at nf_c so the night's run would end inside Windows' 6-hour limit for the nightly task. The "
+        "next nightly run continues it (while Automatic runs are on in Settings), or press Retry."
+    )
+    assert (
+        card["result"]["error"]["code"] == "NS-W211" and card["result"]["interrupted"]["resume"] == "pending"
+    )
+
+
+def test_the_next_night_continues_the_job_left_for_time_first(world: World) -> None:
+    from ns_dashboard.handlers import Dashboard, build_state
+    from ns_dashboard.supervisor_link import SupervisorLink
+
+    told: list[str] = []
+    first = _stopped_before_nf_c(world, 1199)
+    (job_id,) = [r["job_id"] for r in world.db.query("select distinct job_id from combos")]
+    world.clock.advance(24 * 3600)
+    world.ran.clear()
+    second = world.night(left_s=5 * 3600, notifier=lambda title, message: told.append(message) or True)
+
+    assert first["run_id"] != second["run_id"]
+    assert [j["job_id"] for j in second["jobs"]] == [job_id] and second["jobs"][0].get("resumed") is True
+    assert world.ran == ["nf_c", "nf_d"], "continued from the stage it was left at, before any planning"
+    assert [s["stage"] for s in world.lines("stage", second["run_id"])] == ["nf_c", "nf_d"]
+    assert len(world.lines("night_end")) == 2
+    assert len(list(world.paths.backup_dir.glob("studio-*.db"))) == 2
+    (card,) = world.cards()
+    assert card["status"] == "done" and "The nightly run continued it and it finished." in card["message"]
+    # one note for the night that left work, none for the night that left nothing; its toast says no more
+    w211 = [n for n in world.notes() if "(NS-W211)" in n["message"]]
+    assert len(w211) == 1 and "after-dark's video stopped at nf_c and continues next" in w211[0]["message"]
+    assert told == ["1 master ready for review"], "the job left for time was no interrupted night"
+    dash = Dashboard(
+        build_state(
+            Paths.from_env(), fake_services=True, link=SupervisorLink("http://127.0.0.1:9", timeout_s=0.2)
+        )
+    )
+    (last,) = dash.engine.runs(1)
+    assert last["run_id"] == second["run_id"] and last["summary"]["timing"]["left_s"] is not None
+
+
+@pytest.mark.parametrize("left_s, continued", [(1800, True), (1799, False)])
+def test_a_half_made_job_that_would_not_fit_tonight_waits_for_the_next_night(
+    world: World, left_s: int, continued: bool
+) -> None:
+    """S3: what the job still has to do (nf_c 1200 s by its history + nf_d 600 s, no history) must fit."""
+    _stopped_before_nf_c(world, 1199)
+    job_id = _one([r["job_id"] for r in world.db.query("select distinct job_id from combos")])
+    world.clock.advance(24 * 3600)
+    world.ran.clear()
+    report = world.night(left_s=left_s)
+    if continued:
+        assert world.ran == ["nf_c", "nf_d"] and [j["job_id"] for j in report["jobs"]] == [job_id]
+        # its finished llama group is still taken (as before) but never refused for time, at most 1 s of wait
+        assert world.acquirer.calls[-1] == ("llama", 1)
+        return
+    assert world.ran == [] and report["jobs"] == [] and report["failures"] == []
+    left = _one(report.get("out_of_time") or [])
+    assert (left["job_id"], left["resumed"], left["need_s"], left["left_s"]) == (job_id, True, 1800, 1799)
+    assert "after-dark" in report["not_due"], "no new video of the channel starts beside the half-made one"
+    assert world.db.query("select count(*) n from combos where item='long'")[0]["n"] == 1
+    rec = ownership.read_record(world.paths, job_id) or {}
+    assert (rec.get("state"), rec.get("interrupted_at_stage")) == ("interrupted", "nf_c")
+    assert "half-made video (it needs about 30 min more, at nf_c, 29 min were left) continues next" in (
+        notifications.time_note(report) or "")
+    world.clock.advance(24 * 3600)
+    world.night(left_s=5 * 3600)
+    assert world.ran == ["nf_c", "nf_d"], "the next night continues it"
+
+
+def test_the_channel_left_for_time_goes_first_the_next_night(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = World(tmp_home, monkeypatch, slug="a-first", format="shorts_only", shorts_per_day_max=1)
+    world.add_channel(slug="b-second", display_name="B", format="shorts_only", shorts_per_day_max=1,
+                      niche="true stories of small towns that lost something")
+    world.history(jobs_s=1000, plan="shorts_only")  # one Short takes 1200 s here, 300 s a stage
+    for name, _tenant in PLAN:
+        world.history(stage=(name, 250))
+    world.seconds = {"nf_a": 250, "nf_b": 250, "nf_c": 250, "nf_d": 250}  # it takes 1000 s
+    one = world.night(left_s=1700)  # room for one: a-first comes first by name, b-second is left
+    assert [j["channel"] for j in one["jobs"]] == ["a-first"]
+    assert [x["channel"] for x in one["out_of_time"]] == ["b-second"]
+    world.clock.advance(24 * 3600)
+    two = world.night(left_s=1700)
+    assert [j["channel"] for j in two["jobs"]] == ["b-second"], "the channel left last night goes first"
+    assert [x["channel"] for x in two["out_of_time"]] == ["a-first"]
+
+
+# ------------------------------------------------------------------ 6. two nights in a row
+def test_two_nights_in_a_row_leave_nothing_behind(world: World) -> None:
+    def nothing_left() -> None:
+        owners = world.home / "data" / "owners"
+        open_records = [
+            r for r in ownership.list_records(world.paths) if r.get("state") in ("starting", "running")
+        ]
+        held = [f.name for f in owners.glob("*.lock") if f.name != "recover.lock"]  # (the scan's own guard)
+        assert open_records == [] and held == []
+        assert not (world.home / "run" / "night-beat.json").exists()
+
+    first = world.night(left_s=5 * 3600)
+    assert len(first["jobs"]) == 1 and (first.get("timing") or {}).get("left_s", 0) > 0
+    nothing_left()
+    world.clock.advance(24 * 3600)
+    second = world.night(left_s=5 * 3600)
+    nothing_left()
+    assert second["jobs"] == [] and "after-dark" in second["not_due"], "night 2 saw night 1's master"
+    assert [x["run_id"] for x in world.lines("night_end")] == [first["run_id"], second["run_id"]]
+    assert all("cut_expected" != x["kind"] for x in world.lines())
+
+
+# ------------------------------------------------------------------ 7. the GPU wait
+@pytest.mark.parametrize("nf_a_history, timeout", [(None, 7200), (5000, 3060), (9000, None)])
+def test_the_gpu_wait_never_runs_past_what_the_night_can_spend(
+    world: World, nf_a_history: int | None, timeout: int | None
+) -> None:
+    if nf_a_history is not None:  # the rest of the job: nf_a 1.2 x history + 3 x 600 s (no history)
+        world.history(stage=("nf_a", nf_a_history))
+    report = world.night(left_s=10860)
+    if timeout is not None:
+        assert world.acquirer.calls == [("llama", timeout)]
+        return
+    # 10860 - (10800 + 1800) is under 0: no wait at all, NS-E201 at once; the job is left at nf_a for time
+    assert world.acquirer.calls == [] and world.ran == []
+    assert report["failures"] == [] and report.get("skipped") is None
+    left = _one(report.get("out_of_time") or [])
+    assert left["stage"] == "nf_a"
+    assert world.lines("acquire") == [], "no wait was begun"
+    rec = ownership.read_record(world.paths, left["job_id"]) or {}
+    assert (rec.get("state"), rec.get("interrupted_at_stage")) == ("interrupted", "nf_a")
+
+
+# ------------------------------------------------------------------ 8, 9. the task's start
+def test_a_night_started_by_hand_has_no_deadline(world: World) -> None:
+    world.history(jobs_s=100 * 3600)  # a 120-hour estimate: no timed night could start it
+    report = world.night(started=None)
+    start = _one(world.lines("night_start"))
+    assert start["limit"] == "none" and start["deadline"] is None and start["start_basis"] == "process"
+    assert len(report["jobs"]) == 1 and not report.get("out_of_time"), "nothing is refused for time"
+    assert report["timing"]["limit_s"] is None and report["timing"]["left_s"] is None
+
+
+class Parent(FakeProcess):
+    pass
+
+
+def test_the_task_start_is_read_from_the_stub_then_the_ancestor_then_the_process(world: World) -> None:
+    now = world.clock.now()
+    task = now - timedelta(minutes=7)
+    chain = [
+        Parent(now - timedelta(minutes=6), name="powershell.exe", cmdline=["powershell.exe", "-File", "x"]),
+        Parent(task, name="cmd.exe", cmdline=["cmd.exe", "/d", "/s", "/c", "... -Nightly -Studio ..."]),
+        Parent(now - timedelta(days=3), name="svchost.exe"),
+    ]
+    stub = now - timedelta(minutes=5)
+    world.night(started=stub, process=FakeProcess(now, chain))
+    world.clock.advance(24 * 3600)
+    now = world.clock.now()
+    chain = [
+        Parent(now - timedelta(minutes=1), name="powershell.exe"),
+        Parent(now - timedelta(minutes=2), name="cmd.exe", cmdline=["cmd.exe", "/c", "x -Nightly"]),
+    ]
+    world.night(environ={"NS_NIGHT_STARTED": "last tuesday"}, process=FakeProcess(now, chain))
+    world.clock.advance(24 * 3600)
+    now = world.clock.now()
+    world.night(process=FakeProcess(now - timedelta(seconds=3), [Parent(now, name="cmd.exe")]))
+    starts = world.lines("night_start")
+    assert [(s["start_basis"], s["task_start"]) for s in starts] == [
+        ("stub", stub.isoformat(timespec="seconds")),
+        ("ancestor", (now - timedelta(days=1, minutes=2)).isoformat(timespec="seconds")),
+        ("process", (now - timedelta(seconds=3)).isoformat(timespec="seconds")),
+    ]
+    assert any("'last tuesday' is not this night's start" in s for s in starts[1]["said"]), starts[1]["said"]
+    assert [s["limit"] for s in starts] == [LIMIT_S, LIMIT_S, "none"]
+
+
+@pytest.mark.parametrize(
+    "raw, test_install, limit, said",
+    [
+        ("1800", True, 1800, False),
+        ("60", True, 60, False),
+        ("59", True, LIMIT_S, True),
+        ("21601", True, LIMIT_S, True),
+        ("21600", True, 21600, False),
+        ("1800", False, LIMIT_S, True),
+    ],
+)
+def test_the_test_limit_is_taken_only_on_a_test_install_and_inside_its_range(
+    world: World, raw: str, test_install: bool, limit: int, said: bool
+) -> None:
+    world.paths.runtime_file.parent.mkdir(parents=True, exist_ok=True)
+    world.paths.runtime_file.write_text(json.dumps({"dev_mode": test_install}), encoding="utf-8")
+    started = world.clock.now() - timedelta(seconds=30)
+    world.night(started=started, environ={"NS_TEST_NIGHT_LIMIT_S": raw})
+    start = _one(world.lines("night_start"))
+    assert start["limit"] == limit and start["start_basis"] == "stub"
+    margin = min(MARGIN_S, limit // 6)  # a test limit too short for 10 min keeps a sixth of it
+    deadline = datetime.fromisoformat(start["deadline"]) - datetime.fromisoformat(start["task_start"])
+    assert deadline == timedelta(seconds=limit - margin)
+    assert bool([s for s in start["said"] if "NS_TEST_NIGHT_LIMIT_S" in s]) == said
+
+
+# ------------------------------------------------------------------ 10. the hard mark
+def test_the_hard_mark_is_written_two_minutes_before_the_limit_when_still_running(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nightclock = _module("ns_studio.nightclock")
+    if nightclock is not None:
+        monkeypatch.setattr(nightclock, "BEAT_S", 0.01)
+
+    def wait_for_the_mark() -> None:  # the stage runs on past the mark; the beat thread looks meanwhile
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not world.lines("cut_expected"):
+            time.sleep(0.02)
+
+    # nf_d begins with exactly its floor (600 s) left and runs 1100 s: 20 s past the hard mark
+    world.seconds = {"nf_a": 3000, "nf_b": 3000, "nf_c": 10860 - 6000 - 600, "nf_d": 1100}
+    world.hold["nf_d"] = wait_for_the_mark
+    report = world.night(left_s=10860)
+    assert len(report["jobs"]) == 1
+    cuts = world.lines("cut_expected")
+    assert [(c["stage"], c["job_id"]) for c in cuts] == [("nf_d", report["jobs"][0]["job_id"])], cuts
+    # a night that ends before the mark writes none
+    world.clock.advance(24 * 3600)
+    world.night(left_s=10860)
+    assert len(world.lines("cut_expected")) == 1
+
+
+# ------------------------------------------------------------------ 11. what the owner reads
+REPORT = {
+    "jobs": [{"job_id": "j1", "channel": "after-dark", "stages": 19}],
+    "failures": [],
+    "out_of_time": [
+        {
+            "channel": "quiet-hours",
+            "fmt": "master_first",
+            "jobs": 1,
+            "need_s": 11400,
+            "left_s": 3120,
+            "basis": "history",
+        },
+        {
+            "channel": "after-dark",
+            "job_id": "j2",
+            "stage": "voice",
+            "jobs": 1,
+            "need_s": 900,
+            "left_s": 600,
+            "basis": "history",
+        },
+    ],
+    "timing": {"limit_s": 21600, "used_s": 20400, "left_s": 600, "gpu_s": 4200},
+}
+
+
+def test_the_morning_note_and_toast_say_what_was_left_for_time(world: World) -> None:
+    note = getattr(notifications, "time_note", lambda r: None)(REPORT)
+    assert note == (
+        "Last night's run used 5 h 40 min of the 6 hours Windows allows it, 1 h 10 min of it getting the "
+        "graphics card (waiting for it and loading its models). Left for the next night: quiet-hours's full "
+        "video (it takes about 3 h 10 min here, 52 min were left); after-dark's video stopped at voice and "
+        "continues next. The next nightly run continues what was left first (while Automatic runs are on in "
+        "Settings). To fit more into one night, set fewer Full videos per week for a channel in Channels, or "
+        "pause a channel. (NS-W211)"
+    )
+    toast = notifications.nightly_message(REPORT, 1, 4)
+    assert toast == (
+        "1 master + 4 Shorts ready for review; 2 videos not finished tonight, to end inside "
+        "Windows' 6-hour limit (NS-W211)"
+    )
+    from ns_supervisor import notify
+
+    assert not notify.is_routine(toast) and not notify.is_routine(note), "never pushed out by routine news"
+    assert (
+        notifications.nightly_message({**REPORT, "out_of_time": []}, 1, 4)
+        == "1 master + 4 Shorts ready for review"
+    )
+    # through a night: the note is left once, with the night's own numbers
+    world.history(jobs_s=100 * 60)
+    report = world.night(left_s=119 * 60)
+    only = _one([n for n in world.notes() if "(NS-W211)" in n["message"]])
+    assert "after-dark's full video (it takes about 2 h here, 1 h 59 min were left)" in only["message"]
+    assert report["out_of_time"][0]["left_s"] == 119 * 60
+
+
+def test_the_doctor_says_when_the_task_limit_differs(tmp_path: Path) -> None:
+    from ns_supervisor import doctor, schedule
+
+    row = getattr(doctor, "task_limit_row", None)
+    assert row is not None, "ns doctor has no row for the task's limit"
+    paths = Paths(tmp_path / "ns")
+
+    def task(limit: int | None) -> Any:
+        return lambda: schedule.TaskState(True, "03:00", limit_s=limit)
+
+    assert row(paths, task(21600)) == (
+        "nightly task limit",
+        True,
+        "6 h, the time each night is planned inside",
+    )
+    name, ok, words = row(paths, task(3 * 3600))
+    assert (
+        ok
+        and words.startswith("WARN: Windows stops the nightly task after 3 h")
+        and "Settings > Schedule" in words
+    )
+    assert "WARN" not in row(paths, task(0))[2] and "WARN" not in row(paths, task(72 * 3600))[2]
+    assert "not read" in row(paths)[2], "a test run never asks Task Scheduler"
+    # the ledger goes into the diagnostics zip the partner sends back
+    import zipfile
+
+    (paths.data / "ledger").mkdir(parents=True)
+    (paths.data / "ledger" / "ledger-202611.jsonl").write_text('{"kind": "night_end"}\n', encoding="utf-8")
+    out = doctor.build_bundle(paths, out_dir=tmp_path / "out", freeze=lambda p, v: None, smi=lambda: None,
+                              setup_dir=tmp_path / "setup", temp_dir=tmp_path / "temp")
+    with zipfile.ZipFile(out) as z:
+        assert "ledger/ledger-202611.jsonl" in z.namelist()
+
+
+# ------------------------------------------------------------------ 14. one bad file among good ones
+def test_the_ledger_survives_a_torn_last_line_and_a_locked_file(world: World) -> None:
+    month = world.ledger_dir() / f"ledger-{world.clock.now():%Y%m}.jsonl"
+    month.parent.mkdir(parents=True, exist_ok=True)
+    month.write_bytes(b'{"kind": "stage", "stage": "nf_a", "seco')  # a kill in the middle of a line
+    first = world.night(left_s=5 * 3600)
+    assert [x["kind"] for x in world.lines(run_id=first["run_id"])][:1] == ["night_start"], (
+        "starts on its own line"
+    )
+    assert len(world.lines("stage", first["run_id"])) == 4
+    ledger = _module("ns_studio.ledger")
+    assert ledger is not None and len([x for x in ledger.read(world.paths) if x.get("kind") == "stage"]) == 4
+    if sys.platform != "win32":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    create = ctypes.windll.kernel32.CreateFileW  # type: ignore[attr-defined]
+    create.restype = wintypes.HANDLE
+    handle = create(str(month), 0x80000000, 0, None, 3, 0x80, None)  # GENERIC_READ, no sharing, OPEN_EXISTING
+    assert handle not in (None, wintypes.HANDLE(-1).value)
+    try:
+        world.clock.advance(3600)
+        second = world.night(started=None)
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+    spare = month.with_name(month.stem + "-2.jsonl")
+    assert spare.exists() and any(
+        json.loads(x).get("run_id") == second["run_id"]
+        for x in spare.read_text(encoding="utf-8").splitlines()
+    )
+    warns = [
+        json.loads(x)
+        for f in world.paths.logs.glob("studio-*.jsonl")
+        for x in f.read_text(encoding="utf-8").splitlines()
+        if "ledger_file_busy" in x
+    ]
+    assert len(warns) == 1, warns
+
+
+# ------------------------------------------------------------------ 15. the Last night card
+def test_the_last_night_card_reads_what_was_left_and_the_time() -> None:
+    queue = (REPO / "ns_dashboard" / "ui" / "src" / "pages" / "Queue.tsx").read_text(encoding="utf-8")
+    types = (REPO / "ns_dashboard" / "ui" / "src" / "lib" / "types.ts").read_text(encoding="utf-8")
+    assert "out_of_time?: LeftForTime[]" in types and "timing?: NightTiming" in types
+    assert "r.summary?.out_of_time" in queue and "r.summary?.timing" in queue
+    bundle = (REPO / "ns_dashboard" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "Left for time: " in bundle and "until it has timed one on this PC" in bundle

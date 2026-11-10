@@ -99,8 +99,21 @@ def run_stage(ctx: JobContext, stage: Stage, *, force: bool = False) -> bool:
         if recheck is not None:
             recheck(ctx)
         return False
-    with ctx.log.timed("stage", stage=stage.name, job_id=ctx.job_id, tenant=stage.tenant):
-        stage.run(ctx)
+    if ctx.deadline is not None:  # the nightly: a stage that would end after its deadline is not begun
+        ctx.deadline.before_stage(ctx, stage.name)
+    t0, outcome = ctx.clock.monotonic(), "done"
+    try:
+        with ctx.log.timed("stage", stage=stage.name, job_id=ctx.job_id, tenant=stage.tenant):
+            stage.run(ctx)
+    except BaseException as e:
+        outcome = str(getattr(e, "code", None) or type(e).__name__)
+        raise
+    finally:  # every route: the ledger the night's estimates come from (`nightclock`)
+        from ns_studio.nightclock import job_line
+
+        seconds = round(ctx.clock.monotonic() - t0, 3)
+        job_line(ctx, "stage", stage=stage.name, fmt=str(ctx.fmt), tenant=stage.tenant, seconds=seconds,
+                 outcome=outcome)
     rewrites = rewritten_inputs(stage)
     if rewrites:  # the stage edited its own inputs on purpose (expansion): record the state it left behind
         h = inputs_hash(ctx, stage)

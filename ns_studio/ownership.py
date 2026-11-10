@@ -58,7 +58,7 @@ from ns_common.errors import describe
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.singleton import AlreadyRunning, FileLock
-from ns_studio.errors import PAUSED, UNEXPECTED, StudioError
+from ns_studio.errors import OUT_OF_TIME, PAUSED, UNEXPECTED, StudioError
 
 OWNERS = "owners"
 INTERRUPTED_CODE = "NS-E328"
@@ -136,6 +136,10 @@ OFFER_SOURCE = "nightly_recovery"
 #: Queue card says so, with NS-E330, instead of naming a restart that did not happen.
 PAUSED_OWNER = "its channel was paused"
 PAUSED_REASON = "its channel is paused"  # `resume_problem` of a job whose channel is paused
+#: The `owner` of a record the nightly closed itself before a stage, to end inside Windows' time limit for the
+#: nightly task (card night-fits, S6), and the `reason` that record carries: its card says so, with NS-W211.
+OUT_OF_TIME_OWNER = "it was left for time"
+OUT_OF_TIME_REASON = "out_of_time"
 
 Liveness = Literal["live", "dead", "interrupted", "ended", "unknown"]
 
@@ -887,6 +891,7 @@ def _card_text(
     owner: str | None = None,
     origin: str = NIGHTLY_ORIGIN,
     by: str = "nightly",
+    limit_s: int | None = None,
 ) -> str:
     """The words of an interrupted job's Queue card. Three things are said, each from its own fact:
 
@@ -899,12 +904,19 @@ def _card_text(
       is paused cannot be retried (Retry answers 409 `channel_paused`), so its card never says "press Retry"
       without "after the resume", and it says that the first nightly run after the resume continues it. The
       sentences stay true when the owner pauses or resumes later, because nothing rewrites a card then.
+
+    A job the night left before a stage for time (`OUT_OF_TIME_OWNER`, card night-fits) says that instead of a
+    stop, with the task's limit (`limit_s`, the one the night planned with; the registered one by default).
     """
     at = f"Interrupted at {stage}" if stage else "Interrupted"
     cause = "its channel was paused" if owner == PAUSED_OWNER else "the PC or Nightshift stopped"
     nightly = origin == NIGHTLY_ORIGIN
     during = "during the night's run" if nightly else "while this job ran"
     stopped = f"{at}: {cause} {during}."
+    if owner == OUT_OF_TIME_OWNER:
+        stopped = _left_words(stage, limit_s)
+        if resume == "pending" and reason is None and nightly:
+            return f"{stopped} The next nightly run continues it{IF_NIGHTLY_ON}, or press Retry."
     if resume == "resumed":
         if by == "hand":
             return f"{stopped} It was continued with studio run --resume and it finished."
@@ -928,14 +940,32 @@ def _card_text(
     return f"{stopped} Press Retry to continue it{why}."
 
 
+def _left_words(stage: str | None, limit_s: int | None) -> str:
+    """`Left at <stage> so the night's run would end inside Windows' 6-hour limit for the nightly task.`"""
+    from ns_studio.nightclock import limit_adjective
+
+    if limit_s is None:
+        from ns_supervisor.schedule_cfg import TASK_TIME_LIMIT_S
+
+        limit_s = int(TASK_TIME_LIMIT_S)
+    where = f" at {stage}" if stage else ""
+    return (
+        f"Left{where} so the night's run would end inside Windows' {limit_adjective(int(limit_s))} limit for "
+        "the nightly task."
+    )
+
+
 def _card_error(
     stage: str | None, owner: str | None, reason: str | None, origin: str = NIGHTLY_ORIGIN
 ) -> dict[str, Any]:
     """The code and hint of the card: NS-E330 when a pause stopped the job or holds it now (its hint says to
-    resume the channel first), else NS-E328 (its hint says to press Retry, which then works). The NS-E328 hint
-    names the night's run only for a job of the nightly run (`origin`)."""
+    resume the channel first), NS-W211 for a job the night left for time, else NS-E328 (its hint says to press
+    Retry, which then works). The NS-E328 hint names the night's run only for a job of the nightly run
+    (`origin`)."""
     if owner == PAUSED_OWNER or reason == PAUSED_REASON:
         return {"code": PAUSED, "hint": describe(PAUSED).hint, "stage": stage}
+    if owner == OUT_OF_TIME_OWNER:
+        return {"code": OUT_OF_TIME, "hint": describe(OUT_OF_TIME).hint, "stage": stage}
     hint = INTERRUPTED_HINT if origin == NIGHTLY_ORIGIN else INTERRUPTED_HINT_BY_HAND
     return {"code": INTERRUPTED_CODE, "hint": hint, "stage": stage}
 
@@ -981,6 +1011,7 @@ def _card_result(
             "resume": resume,
             "reason": reason,
             "at": _iso(),
+            "limit_s": rec.get("limit_s"),
         },
     }
 
@@ -1003,7 +1034,7 @@ def offer_job(
     if mine is None and rows:
         return None
     result = _card_result(job_id, stage, rec, resume, reason)
-    message = _card_text(stage, resume, reason, rec.get("owner"), _origin_of(rec))
+    message = _card_text(stage, resume, reason, rec.get("owner"), _origin_of(rec), limit_s=rec.get("limit_s"))
     stamp = _iso(when)
     if mine is not None:
         _write_card(db, str(mine["job_id"]), "failed", message, result, finished=stamp)
@@ -1048,10 +1079,12 @@ def _settle(
     failure: tuple[str, str] | None = None,
     output_ids: Sequence[str] | None = None,
     by: str = "nightly",
+    stopped: Mapping[str, Any] | None = None,
 ) -> None:
     """Rewrite the card of an interrupted job after somebody tried to continue it (no card, no change).
 
-    `by` is who: the nightly run (it continues only its own jobs), or `hand` for `studio run --resume`."""
+    `by` is who: the nightly run (it continues only its own jobs), or `hand` for `studio run --resume`.
+    `stopped` replaces what stopped it last (`owner`, `stage`, `limit_s`): the continuation stopped too."""
     mine = _our_row(_rows_for(db, job_id))
     if mine is None:
         return
@@ -1064,11 +1097,14 @@ def _settle(
     interrupted["resume"] = resume
     if reason is not None:
         interrupted["reason"] = reason
+    interrupted.update(stopped or {})
     result["interrupted"] = interrupted
     stage = interrupted.get("stage")
     origin = _origin_of(interrupted)
-    message = _card_text(stage, resume, reason, interrupted.get("owner"), origin, by)
-    if resume == "needs_retry":  # the code and hint follow the reason it waits now, like the words
+    message = _card_text(
+        stage, resume, reason, interrupted.get("owner"), origin, by, limit_s=interrupted.get("limit_s")
+    )
+    if resume == "needs_retry" or stopped:  # the code and hint follow why it waits now, like the words
         result["error"] = _card_error(stage, interrupted.get("owner"), reason, origin)
     if status == "done":
         result.pop("error", None)
@@ -1094,6 +1130,13 @@ def settle_resumed(db: SqlDb, job_id: str, output_ids: Sequence[str], *, by: str
 def settle_failed(db: SqlDb, job_id: str, code: str, detail: str) -> None:
     """The nightly continued the job and it failed for a reason of its own: the card shows that failure."""
     _settle(db, job_id, "failed", "retry", failure=(code, detail))
+
+
+def settle_left_for_time(db: SqlDb, job_id: str, stage: str | None, limit_s: int | None) -> None:
+    """The nightly continued the job and left it again before `stage` for time (card night-fits, S6): its card
+    says so, NS-W211, and that the next nightly run continues it."""
+    stopped = {"owner": OUT_OF_TIME_OWNER, "stage": stage, "limit_s": limit_s}
+    _settle(db, job_id, "failed", "pending", stopped=stopped)
 
 
 def settle_needs_retry(db: SqlDb, job_id: str, reason: str) -> None:
@@ -1492,6 +1535,12 @@ def recovery_message(
             )
         elif what == "busy":
             tail = "It is being continued right now from the Queue."
+        elif what == "out_of_time":
+            tail = (
+                "The night's run had too little time left to continue it inside Windows' limit for the "
+                "nightly task, so the next nightly run continues it first; "
+                f"or {_way_back(j)}. {WHILE_NIGHTLY_ON}"
+            )
         elif what == "paused":
             tail = (
                 "Its channel was paused during the night, so it waits; resume the channel and the next "

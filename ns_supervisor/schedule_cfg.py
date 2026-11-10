@@ -27,6 +27,10 @@ MODE_SWITCHED_OFF = "switched_off"
 _OFF_MODES = (MODE_DISABLED, MODE_SWITCHED_OFF)
 #: Automatic runs are on: Windows held an enabled task when `ns_supervisor.schedule` last looked.
 ON_MODES = ("registered", "interactive_only")
+#: How long Windows lets the nightly task run before it stops it (`-ExecutionTimeLimit` of the task that
+#: `schedule.build_install_script` registers). The night plans inside the same number
+#: (`ns_studio.nightclock.night_limit`): the one place both read.
+TASK_TIME_LIMIT_S = 6 * 3600
 
 
 def valid_time(text: str) -> bool:

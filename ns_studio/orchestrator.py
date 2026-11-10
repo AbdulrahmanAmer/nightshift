@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from itertools import groupby
 from pathlib import Path
 
 from ns_common.atomic import read_text_retry
 from ns_common.errors import NsError
+from ns_studio.acquirer import WAIT_CAP_S
 from ns_studio.context import JobContext, owner_script_of
 from ns_studio.media.job_formats import prepare_job_formats
+from ns_studio.nightclock import job_line
 from ns_studio.pause import require_not_paused
-from ns_studio.stages import REGISTRY, Stage, Tenant, needs_embed, run_stage
+from ns_studio.stages import REGISTRY, Stage, StageState, Tenant, needs_embed, run_stage
 from ns_studio.text.story_profile import note_job
 
 # Canonical stage order per format. Stage modules only `register()` their stages; the order lives here so
@@ -287,28 +289,84 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
             ch = ctx.channel
             require_not_paused(ctx.paths, ctx.log, ch.slug, ch.display_name, ctx.job_id, stage)
 
-    for tenant, group in groupby(stages, key=_tenant_of):
-        group_list = list(group)
-        if tenant is not None:
-            # Before the graphics card is asked for: a job paused between two groups must not make the engine
-            # swap tenants and load a model it will not use (the check before every stage, below, stays: the
-            # wait for the card can take hours, and a pause may come during it).
-            not_paused(group_list[0].name)
-            ctx.services.acquirer.acquire(tenant, owner, model_alias="story" if tenant == "llama" else None)
-        try:
-            for st in group_list:
-                if needs_embed(st):
-                    not_paused(st.name)  # likewise before the embed service is started for this stage
-                with embed_lease(ctx, st, owner):
-                    # The check no route gets past: immediately before EVERY stage, after any wait for the GPU
-                    # or the embed lease (up to hours); a pause waits for the stage under way only. Raising
-                    # here releases the tenant in the `finally` below, so a held job keeps no lease.
-                    not_paused(st.name)
-                    run_stage(ctx, st, force=not resume)
-                ran.append(st.name)
-        finally:
-            if tenant == "whisper":  # free the weights before the lock goes to the next tenant (llama)
-                ctx.services.transcriber.unload()
+    t0, outcome = ctx.clock.monotonic(), "done"
+    try:
+        for tenant, group in groupby(stages, key=_tenant_of):
+            group_list = list(group)
             if tenant is not None:
-                ctx.services.acquirer.release(tenant, owner)
+                # Before the graphics card is asked for: a job paused between two groups must not make the
+                # engine swap tenants and load a model it will not use (the check before every stage, below,
+                # stays: the wait for the card can take hours, and a pause may come during it).
+                not_paused(group_list[0].name)
+                _acquire(ctx, tenant, owner, [s.name for s in stages], [s.name for s in group_list])
+            _run_group(ctx, tenant, group_list, owner, ran, resume, not_paused)
+    except BaseException as e:
+        outcome = str(getattr(e, "code", None) or type(e).__name__)
+        raise
+    finally:
+        job_line(ctx, "job_end", plan=plan_format(ctx.fmt, ctx.job_dir), fmt=str(ctx.fmt),
+                 seconds=round(ctx.clock.monotonic() - t0, 3), outcome=outcome)
     return ran
+
+
+def _acquire(ctx: JobContext, tenant: str, owner: str, names: list[str], group: list[str]) -> None:
+    """Take `tenant` for the stages `group`, timed into the ledger. In the nightly the wait
+    for the graphics card is bounded by what the night can spend on it (`Night.wait_cap`, S7): the time
+    left after the estimate of the stages the job still has to run. At or under 0 it is NS-E201 at once,
+    marked `out_of_time` (`daily._attempt` then leaves the job at this stage for the next night)."""
+    first = group[0]
+    timeout: int | None = None
+    if ctx.deadline is not None:
+        done = {n for n, e in StageState.load(ctx.job_dir).entries.items() if e.get("status") == "done"}
+        rest = [n for n in names[names.index(first):] if n not in done]
+        timeout = ctx.deadline.wait_cap(rest, WAIT_CAP_S)
+        mine = [n for n in group if n not in done]
+        if timeout is not None and timeout <= 0 and mine:
+            raise NsError(
+                "NS-E201", f"the night has no time left to wait for the graphics card before {mine[0]}",
+                out_of_time=True, stage=mine[0],
+            )
+        if timeout is not None and not mine:  # a group a resume skips: never refused, never a long wait
+            timeout = max(1, timeout)
+    kwargs = {} if timeout is None else {"timeout_s": timeout}
+    t0, outcome = ctx.clock.monotonic(), "done"
+    try:
+        alias = "story" if tenant == "llama" else None
+        ctx.services.acquirer.acquire(tenant, owner, model_alias=alias, **kwargs)  # type: ignore[arg-type]
+    except BaseException as e:
+        outcome = str(getattr(e, "code", None) or type(e).__name__)
+        raise
+    finally:
+        timing = getattr(ctx.services.acquirer, "last_timing", None)
+        wait_s, load_s = timing if isinstance(timing, tuple) and len(timing) == 2 else (None, None)
+        job_line(ctx, "acquire", service=tenant, stage=first, seconds=round(ctx.clock.monotonic() - t0, 3),
+                 wait_s=wait_s, load_s=load_s, timeout_s=timeout, outcome=outcome)
+
+
+def _run_group(
+    ctx: JobContext,
+    tenant: Tenant,
+    group_list: list[Stage],
+    owner: str,
+    ran: list[str],
+    resume: bool,
+    not_paused: Callable[[str], None],
+) -> None:
+    """Run one tenant group's stages; the tenant is released whatever happens."""
+    try:
+        for st in group_list:
+            if needs_embed(st):
+                not_paused(st.name)  # likewise before the embed service is started for this stage
+            with embed_lease(ctx, st, owner):
+                # The check no route gets past: immediately before EVERY stage, after any wait for the GPU
+                # or the embed lease (up to hours); a pause waits for the stage under way only. Raising
+                # here releases the tenant in the `finally` below, so a held job keeps no lease. (The
+                # night's time check is inside `run_stage`, after it knows the stage really runs.)
+                not_paused(st.name)
+                run_stage(ctx, st, force=not resume)
+            ran.append(st.name)
+    finally:
+        if tenant == "whisper":  # free the weights before the lock goes to the next tenant (llama)
+            ctx.services.transcriber.unload()
+        if tenant is not None:
+            ctx.services.acquirer.release(tenant, owner)

@@ -22,7 +22,7 @@ def test_install_script_has_every_required_setting(tmp_path: Path) -> None:
     for token in (
         "-WakeToRun",
         "-StartWhenAvailable",
-        "New-TimeSpan -Hours 6",
+        "New-TimeSpan -Seconds 21600",
         "-LogonType S4U",
         "[datetime]'04:30'",
         "Register-ScheduledTask -TaskName 'Nightshift Daily'",
@@ -173,7 +173,7 @@ function New-ScheduledTaskTrigger { param([switch]$Daily, $At) 'trigger' }
 function New-ScheduledTaskSettingsSet { param([switch]$WakeToRun, [switch]$StartWhenAvailable,
     [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, $ExecutionTimeLimit,
     [switch]$Disable) 'settings' }
-function New-TimeSpan { param($Hours) 'span' }
+function New-TimeSpan { param($Hours, $Seconds) 'span' }
 function New-ScheduledTaskPrincipal {
     param($UserId, $LogonType, $RunLevel)
     [pscustomobject]@{ Logon = $LogonType }
@@ -220,3 +220,26 @@ def test_install_says_when_it_could_only_register_the_interactive_mode(
     assert schedule.INTERACTIVE_MARK in msg and "03:00" in msg
     fake.refuse_s4u = False
     assert schedule.INTERACTIVE_MARK not in schedule.install(Paths(tmp_path / "ns"), "03:00", tmp_path)
+
+
+# --- card night-fits: the task's limit and the night's budget are one number ---
+def test_the_task_limit_comes_from_one_constant(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib
+
+    from ns_supervisor import schedule_cfg
+
+    assert getattr(schedule_cfg, "TASK_TIME_LIMIT_S", None) == 6 * 3600, "the limit has no constant"
+    paths = Paths(tmp_path / "ns")
+    monkeypatch.setattr(schedule_cfg, "TASK_TIME_LIMIT_S", 4321)
+    script = schedule.build_install_script(paths, "03:00", tmp_path / "app")
+    assert "-ExecutionTimeLimit (New-TimeSpan -Seconds 4321)" in script
+    nightclock = importlib.import_module("ns_studio.nightclock")
+    assert nightclock.night_limit(paths, {}) == (4321, None), "the night reads the same constant"
+    # the limit Windows has is read with the task, the way `ns schedule` reads it
+    assert "$t.Settings.ExecutionTimeLimit" in schedule.build_read_script()
+    cases = (("PT6H", 21600), ("PT21600S", 21600), ("PT2H30M", 9000), ("P3D", 259200), ("PT0S", 0))
+    for raw, seconds in cases:
+        task = schedule.parse_task_state(f"state: Ready\nlimit: {raw}\n")
+        assert task is not None and task.limit_s == seconds, raw
+    task = schedule.parse_task_state("state: Ready\nlimit: soon\n")
+    assert task is not None and task.limit_s is None

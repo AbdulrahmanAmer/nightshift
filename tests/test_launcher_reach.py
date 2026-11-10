@@ -505,7 +505,7 @@ def test_a_rollback_to_a_version_without_the_reach_and_forward_again_keeps_worki
     inst.new_stamp()
     inst.run()
     assert (inst.home / "nightshift-launch.ps1").read_bytes() == newer
-    assert so.stub_schema(source) == so.STUB_SCHEMA == 5      # (5: D-39b's replay of an unfinished sync)
+    assert so.stub_schema(source) == so.STUB_SCHEMA == 6      # (6: night-fits' NS_NIGHT_STARTED)
 
 
 @pytest.mark.parametrize("logon", ["Interactive", "S4U", "Password"])

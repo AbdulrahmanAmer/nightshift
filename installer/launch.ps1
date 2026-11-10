@@ -1,4 +1,4 @@
-# STUB_SCHEMA: 5
+# STUB_SCHEMA: 6
 param(
     [string]$Launcher = '',
     [switch]$Nightly,
@@ -10,6 +10,10 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+# Format 6 (card night-fits): the nightly run's clock starts here, before any wait below. Windows stops the
+# task a fixed time after it started it, so the run plans its work inside that time from this moment
+# (ns_studio/nightclock.py reads NS_NIGHT_STARTED, in UTC).
+if ($Nightly) { $env:NS_NIGHT_STARTED = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture) }
 
 # What the Desktop shortcuts (-Launcher <script>) and the nightly task (-Nightly -Studio <studio.exe>) start.
 # Setup and the first start of a new version copy this file to <home>\nightshift-launch.ps1, BESIDE the

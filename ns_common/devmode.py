@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 
 from ns_common.atomic import read_text_retry
 from ns_common.paths import Paths
@@ -59,3 +60,42 @@ def fake_footage(paths: Paths) -> bool:
 def dev_fakes(paths: Paths) -> frozenset[str]:
     """The services to fake: all of `DEV_FAKES` in a dev install, none otherwise."""
     return frozenset(DEV_FAKES) if is_dev(paths) else frozenset()
+
+
+# ------------------------------------------------------------------------------ installs made for testing
+def test_settings(data: object) -> bool:
+    """True when the `runtime.json` content `data` (a parsed object) is that of a dev or an engine-test
+    install: `dev_mode`, `fake_footage` or `tiny_story` is `true`, or the voice engine is the fake one."""
+    if not isinstance(data, dict):
+        return False
+    if any(data.get(name) is True for name in ("dev_mode", "fake_footage", "tiny_story")):
+        return True
+    tts = data.get("tts")
+    return isinstance(tts, dict) and tts.get("engine") == "fake"
+
+
+def _runtime_data(paths: Paths) -> object:
+    """The parsed `runtime.json` of `paths`; None when it is missing or not JSON."""
+    try:
+        return json.loads(read_text_retry(paths.runtime_file, "utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+
+
+def install_kind(paths: Paths) -> Literal["test", "normal", "unreadable"]:
+    """`test` for a dev install and for an engine-test install (`test_settings`). `unreadable` when
+    `runtime.json` is missing, cannot be read or is not a JSON object (it is not taken for a test install).
+    `normal` for every other install. The one rule `NS_RELEASE_SOURCE` and `NS_TEST_NIGHT_LIMIT_S` follow."""
+    data = _runtime_data(paths)
+    if not isinstance(data, dict):
+        return "unreadable"
+    return "test" if test_settings(data) else "normal"
+
+
+def test_install(paths: Paths) -> bool:
+    """True for a dev or an engine-test install (`install_kind`); an unreadable `runtime.json` is neither."""
+    return install_kind(paths) == "test"
+
+
+test_settings.__test__ = False  # type: ignore[attr-defined]  # pytest: not a test, though named like one
+test_install.__test__ = False  # type: ignore[attr-defined]

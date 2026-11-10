@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import json
 import os
 import re
 from collections.abc import Mapping
@@ -32,7 +31,7 @@ from urllib.parse import urlparse
 import httpx
 
 from ns_common import devmode
-from ns_common.atomic import FileInUseError, read_text_retry, write_chunks_atomic, write_text_atomic
+from ns_common.atomic import FileInUseError, write_chunks_atomic, write_text_atomic
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
@@ -116,27 +115,9 @@ def _origin(url: str | httpx.URL) -> tuple[str, str, int] | None:
 
 
 def _install_kind(paths: Paths) -> Literal["test", "normal", "unreadable"]:
-    """`test` for a dev install and for an engine-test install: `dev_mode`, `fake_footage` or `tiny_story` is
-    `true` in its `runtime.json`, or its voice engine is the fake one. `unreadable` when that file is missing,
-    cannot be read or is not a JSON object (it is not taken for a test install, and the refusal says that this
-    is why). `normal` for every other install."""
-    if devmode.fake_footage(paths):  # dev_mode or fake_footage
-        return "test"
-    try:
-        data = json.loads(read_text_retry(paths.runtime_file, "utf-8-sig"))
-    except (OSError, ValueError):
-        return "unreadable"
-    if not isinstance(data, dict):
-        return "unreadable"
-    tts = data.get("tts")
-    if data.get("tiny_story") is True or (isinstance(tts, dict) and tts.get("engine") == "fake"):
-        return "test"
-    return "normal"
-
-
-def _test_install(paths: Paths) -> bool:
-    """True for a dev or an engine-test install (`_install_kind`); an unreadable file is neither."""
-    return _install_kind(paths) == "test"
+    """`devmode.install_kind`: the one rule for "an install made for testing" (the night's test limit follows
+    it too). `unreadable` is not taken for a test install, and the refusal says that this is why."""
+    return devmode.install_kind(paths)
 
 
 def _refused(reason: str, **words: Any) -> NsError:
