@@ -182,10 +182,13 @@ class S01Questions(Step):
 
     @staticmethod
     def _asked(ctx: StepContext, key: str, prompt: str, default: str | None = None) -> str | None:
-        """Value from answers.json, else asked when someone is there, else the default."""
+        """Value from answers.json, else asked when someone is there, else the default. A key the answers
+        name, also as blank (`load_raw` reads "" as None), is an answer: it is never asked for."""
         val = ctx.raw_answers.get(key)
         if val not in (None, ""):
             return str(val)
+        if key in ctx.raw_answers:
+            return default
         if ctx.ui.interactive:
             return ctx.ui.ask(prompt, default)
         return default
@@ -315,6 +318,10 @@ class S01Questions(Step):
             # Both keys are optional (Pexels stopped giving out new keys; Settings takes a key later).
             for name, label, url, validator, _code in specs:
                 provided = ctx.raw_answers.get(name)
+                # A key the answers name, also as "" (read as None), is answered: "" is skip. Only a key they
+                # leave out is asked for, and only where a person can answer (the Ui is not interactive in an
+                # unattended run).
+                named = name in ctx.raw_answers
                 value = provided or ctx.store.get(name)
                 if value and not provided:
                     # a key saved by an earlier setup or in Settings: when the service rejects it now, setup
@@ -335,7 +342,7 @@ class S01Questions(Step):
                             value = None
                 elif value:
                     validator(client, str(value))
-                elif ctx.ui.interactive:
+                elif ctx.ui.interactive and not named:
                     ctx.ui.say(f"{label} key (free, optional, Enter to skip): {url}")
                     for attempt in range(3):
                         value = ctx.ui.ask(f"Paste your {label} API key", "", secret=True).strip()
@@ -508,8 +515,10 @@ class S01Questions(Step):
 
         if "install_code" in raw and raw["install_code"] is not None:
             merged["install_code"] = bool(raw["install_code"])
-        else:
+        elif ctx.ui.interactive:
             merged["install_code"] = ctx.ui.confirm("Install Nightshift Code (offline assistant)?", True)
+        else:
+            merged["install_code"] = True       # nobody to ask: the question's own default
 
         flag = raw.get("include_voicedesign")
         merged["include_voicedesign"] = None if flag is None else bool(flag)

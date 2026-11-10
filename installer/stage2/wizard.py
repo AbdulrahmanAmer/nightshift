@@ -355,7 +355,13 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
 
     if bridge and not isinstance(ui, BridgeUi):
         ui = BridgeUi()
-    ui = ui or Ui(interactive=not non_interactive)
+    ui = ui or Ui()
+    if unattended:
+        # The one place that decides whether a person can answer: a run nobody answers for (an answers file
+        # outside the home, `--non-interactive`, no console) has a Ui that cannot prompt, whatever its stdin
+        # is: a redirected `< NUL` and a real console both report a tty, and a secret prompt reads the
+        # console, not stdin, so nothing piped could answer it (D-40). No step checks stdin on its own.
+        ui.interactive = False
     log = NsLogger("installer", paths.logs)
     warnings_sink: list[tuple[str, str]] = []  # the context's ``warnings`` (the store warns before it exists)
     if args.simulate_downloads:

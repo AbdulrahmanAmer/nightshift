@@ -941,3 +941,309 @@ def test_reregister_says_whose_task_it_left(tmp_path: Path, windows: FakeWindows
     # the second run (the next update): the record says off now, so Windows is not asked and nothing is said
     windows.calls.clear()
     assert cli._reregister(paths, tmp_path) == [] and windows.calls == []
+
+# ------------------------------------------------------ D-41: a switched-off task of another Nightshift (or of nobody)
+# The PC has ONE 'Nightshift Daily' task. One switched off in Task Scheduler runs nothing, but it still names a
+# Nightshift folder, and switching it on "there" would start that folder's nightly run. Setup reads whose it is
+# (`setup_apply`, then `nightly_view.outcome_line` words it): another install's is left and named; this folder's
+# or a deleted one's is removed on a first install, its time kept; one that names nothing is left as it is.
+SWITCHED_OFF_AT = "02:00"
+
+
+def switched_off(home: Path | str | None, at: str = SWITCHED_OFF_AT) -> dict[str, str]:
+    task = {"state": "Disabled", "at": at, "logon": "S4U"}
+    return {**task, "home": str(home)} if home is not None else task
+
+
+def an_install(folder: Path) -> Path:
+    """Another Nightshift folder that exists: it has a program with a VERSION."""
+    (folder / "app").mkdir(parents=True, exist_ok=True)
+    (folder / "app" / "VERSION").write_text("0.1.15\n", encoding="ascii")
+    return folder
+
+
+def a_missing_drive() -> str:
+    import os
+    import string
+
+    free = [f"{letter}:" for letter in reversed(string.ascii_uppercase) if not os.path.exists(f"{letter}:\\")]
+    if not free:
+        pytest.skip("every drive letter is in use on this PC")
+    return free[0]
+
+
+def this_install(tmp_path: Path) -> Paths:
+    paths = Paths(tmp_path / "home")
+    paths.ensure()
+    return paths
+
+
+class Said(dict):  # type: ignore[type-arg]
+    """What `ns schedule install --setup` prints (`SetupResult` as JSON) with attribute access; a field the
+    code under test does not have reads None, so a missing field is a failed assertion, not an AttributeError."""
+
+    def __getattr__(self, name: str) -> Any:
+        return self.get(name)
+
+
+def apply_setup(
+    paths: Paths, tmp_path: Path, *, first: bool = True, nightly: bool | None = None, seen: str | None = None,
+    was: str | None = None, run_time: str = "04:30",
+) -> tuple[Said, str]:
+    """What `ns schedule install --setup` answers (`setup_apply`) and the words setup says for it."""
+    import dataclasses
+
+    from installer.stage2.web import nightly_view
+
+    res = Said(dataclasses.asdict(schedule.setup_apply(
+        paths, tmp_path / "app", first=first, nightly=nightly, seen=seen, run_time=run_time, was=was
+    )))
+    return res, nightly_view.outcome_line(dict(res))
+
+
+LEFT_OFF = (
+    "Automatic runs: off. Nothing runs by itself; switch them on in Settings > Schedule when you want the "
+    "nightly run."
+)
+
+
+def test_a_first_install_names_a_switched_off_task_of_another_nightshift(tmp_path: Path, windows: FakeWindows):
+    other = an_install(tmp_path / "other-nightshift")
+    windows.task = switched_off(other)
+    paths = this_install(tmp_path)
+    res, line = apply_setup(paths, tmp_path)
+    assert windows.task == switched_off(other) and windows.changes() == []  # not registered, not removed
+    assert res.case == "first" and res.on is False and res.other_off is True
+    assert res.other_home == str(other) and not res.unreachable and res.removed_old is False
+    assert line == (
+        f"{LEFT_OFF} A switched-off nightly task of the Nightshift at {other} is in Task Scheduler; it was left "
+        "as it is. Switching Automatic runs on in this one's Settings moves it here."
+    )
+    assert record(paths) is None and saved_time(paths) == "04:30"  # this install records nothing; its time waits
+    # killed afterwards, run again: the same task, the same words, still nothing changed
+    again, again_line = apply_setup(paths, tmp_path)
+    assert (again.other_home, again.other_off, again_line) == (str(other), True, line) and windows.changes() == []
+
+
+@pytest.mark.parametrize("home", ["mine", "gone"])
+def test_a_first_install_removes_a_switched_off_task_of_this_folder_or_a_deleted_one(tmp_path: Path, windows: FakeWindows, home: str):
+    paths = this_install(tmp_path)
+    windows.task = switched_off(paths.home if home == "mine" else tmp_path / "deleted-nightshift")
+    res, line = apply_setup(paths, tmp_path)
+    assert windows.task is None and windows.changes() == ["unregister"] and record(paths) is None
+    assert saved_time(paths) == SWITCHED_OFF_AT  # its time waits for the switch
+    assert res.case == "first" and res.on is False and res.was_off is True and res.other_home is None
+    if home == "mine":
+        assert res.removed_old and res.gone_home is None
+        assert line.startswith(
+            "Automatic runs: off. An older Nightshift's switched-off nightly task was found and removed;"
+        )
+    else:
+        assert res.gone_home == str(tmp_path / "deleted-nightshift") and not res.removed_old
+        assert line == (
+            f"Automatic runs: off. A switched-off nightly task left by a deleted Nightshift ({res.gone_home}) was "
+            "removed. Switch Automatic runs on in Settings > Schedule to run this one every night."
+        )
+    assert "woke" not in line and "wakes" not in line  # a switched-off task woke nothing
+    # killed after the removal, run again (the step has not said it is done): nothing is there, and that is said
+    windows.calls.clear()
+    res2, line2 = apply_setup(paths, tmp_path)
+    assert windows.task is None and windows.changes() == [] and res2.case == "first" and line2 == LEFT_OFF
+
+
+def test_a_kill_between_the_kept_time_and_the_removal_removes_it_on_the_next_run(tmp_path: Path, windows: FakeWindows, monkeypatch: pytest.MonkeyPatch):
+    paths = this_install(tmp_path)
+    windows.task = switched_off(paths.home)
+    real = schedule._run
+
+    class Killed(BaseException):
+        pass
+
+    def die_at_the_removal(script: str, *a: Any, **kw: Any) -> str:
+        if "Unregister-ScheduledTask" in script:
+            raise Killed()
+        return real(script, *a, **kw)
+
+    monkeypatch.setattr(schedule, "_run", die_at_the_removal)
+    with pytest.raises(Killed):
+        apply_setup(paths, tmp_path)
+    assert windows.task == switched_off(paths.home) and saved_time(paths) == SWITCHED_OFF_AT  # time kept, task still there
+    monkeypatch.setattr(schedule, "_run", real)
+    res, line = apply_setup(paths, tmp_path)
+    assert windows.task is None and res.removed_old and line.startswith("Automatic runs: off. An older Nightshift's")
+
+
+def test_a_repair_names_a_switched_off_task_of_another_nightshift_and_changes_nothing(tmp_path: Path, windows: FakeWindows):
+    other = an_install(tmp_path / "other-nightshift")
+    windows.task = switched_off(other)
+    paths = this_install(tmp_path)
+    res, line = apply_setup(paths, tmp_path, first=False, was="04:30")
+    assert windows.task == switched_off(other) and windows.changes() == [] and record(paths) is None
+    assert (res.case, res.on, res.other_home, res.other_off) == ("kept", False, str(other), True)
+    assert line == (
+        "Automatic runs: off, kept as set in Settings (switch them on in Settings > Schedule). A switched-off "
+        f"nightly task of the Nightshift at {other} is in Task Scheduler; it was left as it is. Switching "
+        "Automatic runs on in this one's Settings moves it here."
+    )
+
+
+def test_a_repair_keeps_a_switched_off_task_of_this_folder_and_removes_one_of_a_deleted_nightshift(tmp_path: Path, windows: FakeWindows):
+    paths = this_install(tmp_path)
+    windows.task = switched_off(paths.home)  # the owner may have switched it off in Task Scheduler on purpose
+    res, line = apply_setup(paths, tmp_path, first=False, was="04:30")
+    assert windows.task == switched_off(paths.home) and windows.changes() == []
+    assert (res.case, res.on, res.removed_old, res.gone_home) == ("kept", False, False, None)
+    assert line == "Automatic runs: off, kept as set in Settings (switch them on in Settings > Schedule)."
+    gone = tmp_path / "deleted-nightshift"
+    windows.task = switched_off(gone)  # it starts nothing, and nobody's Settings can ever change it
+    res, line = apply_setup(paths, tmp_path, first=False, was="04:30")
+    assert windows.task is None and windows.changes() == ["unregister"]
+    assert (res.gone_home, res.was_off, res.on) == (str(gone), True, False)
+    assert line == (
+        f"Automatic runs: off. A switched-off nightly task left by a deleted Nightshift ({gone}) was removed. "
+        "Switch Automatic runs on in Settings > Schedule to run this one every night."
+    )
+
+
+def test_a_switched_off_task_on_a_drive_that_is_not_there_is_left_and_said(tmp_path: Path, windows: FakeWindows):
+    away = f"{a_missing_drive()}\\Nightshift"
+    windows.task = switched_off(away)
+    paths = this_install(tmp_path)
+    for first in (True, False):
+        res, line = apply_setup(paths, tmp_path, first=first, was="04:30")
+        assert windows.task == switched_off(away) and windows.changes() == []
+        assert (res.other_home, res.other_off, res.unreachable) == (away, True, True)
+        assert line.endswith(
+            f" A switched-off nightly task names the Nightshift at {away}, which cannot be reached now (its drive "
+            "is not there); it was left as it is."
+        )
+        assert "moves it here" not in line
+
+
+def test_a_switched_off_task_that_names_no_folder_is_left_as_today(tmp_path: Path, windows: FakeWindows):
+    windows.task = switched_off(None)  # made or edited by hand: its action does not say what it runs
+    paths = this_install(tmp_path)
+    res, line = apply_setup(paths, tmp_path)
+    assert windows.task == switched_off(None) and windows.changes() == []
+    assert (res.other_home, res.other_off, res.removed_old, res.gone_home, res.owner_unknown) == (None, False, False, None, False)
+    assert line == LEFT_OFF  # nothing added
+    res, line = apply_setup(paths, tmp_path, first=False, was="04:30")
+    assert windows.changes() == [] and line == "Automatic runs: off, kept as set in Settings (switch them on in Settings > Schedule)."
+
+
+def test_a_folder_that_cannot_be_looked_at_is_not_a_deleted_one(tmp_path: Path, windows: FakeWindows, monkeypatch: pytest.MonkeyPatch):
+    """`isdir` is False for a folder that is there but refuses a look: only an answer of Windows that the folder
+    is not there makes it a deleted Nightshift; a task that names anything else is left."""
+    import os
+
+    refusing = tmp_path / "locked-nightshift"
+    windows.task = switched_off(refusing)
+    real = os.stat
+
+    def stat(path: Any, *a: Any, **kw: Any) -> Any:
+        if str(path) == str(refusing):
+            raise PermissionError(5, "Access is denied")
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(os, "stat", stat)
+    paths = this_install(tmp_path)
+    res, line = apply_setup(paths, tmp_path)
+    assert windows.task == switched_off(refusing) and windows.changes() == []
+    assert (res.other_home, res.other_off, res.gone_home, res.removed_old) == (str(refusing), True, None, False)
+    assert "it was left as it is" in line
+
+
+def test_a_yes_over_a_switched_off_task_of_another_nightshift_says_whose_it_was(tmp_path: Path, windows: FakeWindows):
+    other = an_install(tmp_path / "other-nightshift")
+    windows.task = switched_off(other)
+    paths = this_install(tmp_path)
+    res, line = apply_setup(paths, tmp_path, nightly=True)
+    assert windows.task is not None and windows.task["home"] == str(paths.home) and windows.has == ("Ready", "04:30")
+    assert (res.case, res.on, res.took_from, res.took_off, res.other_home) == ("first", True, str(other), True, None)
+    assert line.startswith("Automatic runs: on at 04:30, every night")
+    assert line.endswith(
+        f" This PC has one nightly task: the switched-off one of the Nightshift at {other} now runs this "
+        "Nightshift, and that one's Settings still show Automatic runs off."
+    )
+    assert "no longer" not in line  # it never ran that Nightshift: nothing was taken from it
+    # the same yes, answered against the state the window showed, on a Repair
+    windows.task = switched_off(other)
+    res, line = apply_setup(paths, tmp_path, first=False, nightly=True, seen="off", was="04:30")
+    assert res.case == "applied" and res.on and res.took_from == str(other) and "switched-off one" in line
+
+
+def test_a_refused_removal_of_a_switched_off_task_says_it_is_off_and_still_there(tmp_path: Path, windows: FakeWindows):
+    paths = this_install(tmp_path)
+    windows.task = switched_off(paths.home)
+    windows.refuse_unregister = True
+    res, line = apply_setup(paths, tmp_path)
+    assert windows.task == switched_off(paths.home)
+    assert (res.case, res.on, res.was_off, res.wanted_off) == ("refused", False, True, False)
+    assert line.startswith("Automatic runs: off. A switched-off nightly task of an earlier install of this folder could not be removed")
+    assert "still on" not in line and "wakes" not in line and "Task Scheduler" in line
+    # the same on a Repair, and on a first install, over a deleted Nightshift's task
+    gone = tmp_path / "deleted-nightshift"
+    for first in (False, True):
+        windows.task = switched_off(gone)
+        res, line = apply_setup(paths, tmp_path, first=first, was="04:30")
+        assert windows.task == switched_off(gone) and (res.case, res.gone_home, res.was_off) == ("refused", str(gone), True)
+        assert "it is switched off, so it starts nothing" in line and "wakes" not in line and "deleted Nightshift" in line
+
+
+def test_a_removal_that_leaves_the_switched_off_task_in_place_is_not_called_a_removal(tmp_path: Path, windows: FakeWindows, monkeypatch: pytest.MonkeyPatch):
+    paths = this_install(tmp_path)
+    windows.task = switched_off(paths.home)
+    real = schedule._run
+
+    def does_nothing(script: str, *a: Any, **kw: Any) -> str:
+        return "removed" if "Unregister-ScheduledTask" in script else real(script, *a, **kw)
+
+    monkeypatch.setattr(schedule, "_run", does_nothing)
+    res, line = apply_setup(paths, tmp_path)
+    assert windows.task == switched_off(paths.home)
+    assert res.case == "refused" and not res.removed_old and "was found and removed" not in line
+
+
+def test_a_look_at_windows_that_fails_changes_nothing_of_a_switched_off_task(tmp_path: Path, windows: FakeWindows):
+    paths = this_install(tmp_path)
+    windows.task = switched_off(paths.home)
+    windows.hang = True
+    res, line = apply_setup(paths, tmp_path)
+    assert res.case == "unread" and res.on is None and not res.removed_old and not res.other_off
+    windows.hang = False
+    assert windows.task == switched_off(paths.home) and [c for c in windows.calls if c not in ("read", "hang")] == []
+    assert line.startswith("Automatic runs: not checked")
+
+
+def test_a_switch_on_that_cannot_be_recorded_gives_another_installs_switched_off_task_back_to_it(tmp_path: Path, windows: FakeWindows):
+    other = an_install(tmp_path / "other-nightshift")
+    windows.task = switched_off(other)
+    paths = this_install(tmp_path)
+    unopenable(schedule_file(paths))  # config/schedule.json cannot be written: the registration is undone
+    res, line = apply_setup(paths, tmp_path, nightly=True)
+    assert res.case == "undone" and res.on is False
+    assert windows.task is not None and windows.task["state"] == "Disabled"
+    assert windows.task["home"] == str(other), "the task went back to this install, not to the Nightshift it belonged to"
+    assert windows.task["at"] == SWITCHED_OFF_AT
+
+
+def test_ns_schedule_install_names_the_nightshift_a_switched_off_task_belongs_to(tmp_path: Path, tmp_home: Path, windows: FakeWindows):
+    other = an_install(tmp_path / "other-nightshift")
+    windows.task = switched_off(other)
+    res = CliRunner().invoke(cli.app, ["schedule", "install", "--time", "04:30"])
+    assert res.exit_code == 0 and windows.task == switched_off(other) and windows.changes() == []
+    assert f"it names the Nightshift at {other}" in res.output and "kept SWITCHED OFF" in res.output
+    assert "'ns schedule install --enable' from this one moves the task here" in res.output
+    windows.task = switched_off(None)  # a task that names nothing keeps the old sentence
+    res = CliRunner().invoke(cli.app, ["schedule", "install", "--time", "04:30"])
+    assert "it names the Nightshift" not in res.output and "kept SWITCHED OFF, as it was in Task Scheduler" in res.output
+
+
+def test_a_switch_on_that_cannot_be_recorded_removes_a_switched_off_task_of_a_deleted_nightshift(tmp_path: Path, windows: FakeWindows):
+    gone = tmp_path / "deleted-nightshift"
+    windows.task = switched_off(gone)
+    paths = this_install(tmp_path)
+    unopenable(schedule_file(paths))
+    res, _line = apply_setup(paths, tmp_path, nightly=True)
+    assert res.case == "undone" and res.on is False
+    assert windows.task is None, "a task that starts nothing is not given back as one that names this install"
