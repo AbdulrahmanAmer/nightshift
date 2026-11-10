@@ -17,6 +17,7 @@ from ns_supervisor import (
     backup,
     control,
     doctor,
+    homecheck,
     models_get,
     notify,
     relaunch,
@@ -32,7 +33,7 @@ from ns_supervisor.client import SupervisorClient, ensure_running
 from ns_supervisor.schedule_cfg import read_run_time
 from ns_supervisor.services import venv_python
 
-app = typer.Typer(help="Nightshift runtime tools", add_completion=False)
+app = typer.Typer(help="Nightshift runtime tools", add_completion=False, cls=homecheck.InstallGuardGroup)
 schedule_app = typer.Typer(help="The nightly scheduled task 'Nightshift Daily'", add_completion=False)
 app.add_typer(schedule_app, name="schedule")
 models_app = typer.Typer(help="Optional model downloads (VoiceDesign, the story model)", add_completion=False)
@@ -57,6 +58,11 @@ def _client(paths: Paths) -> SupervisorClient:
 def _root(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
         typer.echo(f"ns {__version__}")
+        return
+    try:    # D-35: no install named or found: NS-E123 before any command opens or writes a home
+        homecheck.check_root(ctx)
+    except NsError as e:
+        raise _die(e) from e
 
 
 @app.command("stop")

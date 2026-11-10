@@ -69,6 +69,7 @@ def test_get_uses_the_installer_downloader_and_points_runtime_at_the_story_model
 
 def test_an_already_verified_file_is_not_downloaded_again(tmp_path: Path) -> None:
     paths = Paths(tmp_path)
+    save_runtime(paths, Runtime.default("gpu"))     # D-35: get_model reads the profile, it never assumes one
     (item,) = models_get.plan_items("voicedesign", manifest(), "gpu", paths)
     item.dest.parent.mkdir(parents=True)
     item.dest.write_bytes(b"x")

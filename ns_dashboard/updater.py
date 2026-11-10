@@ -129,8 +129,8 @@ class RealUpdateAdapter:
 
         Nothing is decided (None) when `runtime.json`, `install_state.json` or `manifest.json` is missing, torn
         or invalid (NsError, OSError, or ValueError, which a pydantic ValidationError and a bad UTF-8 read
-        are): the request goes on and `ns models get` reports the problem itself, as before (its no-install
-        fallback is `models_get.get_model`'s, defect D-35).
+        are): the request goes on and `ns models get` reports the problem itself (NS-E203 naming the file, or NS-E123
+        when no install is found at all; it never assumes a profile, defect D-35).
         """
         from ns_common.config import load_manifest, load_runtime
         from ns_common.errors import NsError
