@@ -21,7 +21,7 @@ from ns_dashboard.adapters import RealKeyringAdapter
 UI = Path(__file__).resolve().parents[1] / "ns_dashboard" / "ui" / "src"
 KEY_DIALOG = (
     "Paste the free key from your account page. It is saved in Windows Credential Manager and, for nightly "
-    "runs that cannot reach Credential Manager, in an encrypted copy in the Nightshift folder "
+    "runs that cannot reach Credential Manager, in an encrypted copy in this install's folder "
     "(config\\secrets.dpapi); on a drive that keeps permissions only your Windows account and Windows itself "
     "can open that copy"
 )
