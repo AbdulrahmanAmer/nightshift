@@ -11,6 +11,7 @@ import contextlib
 import importlib
 import json
 import os
+import re
 import shutil
 import time
 from collections.abc import Callable, Collection, Iterator, Mapping
@@ -20,13 +21,15 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+import yaml
 
 from ns_common.acquire import Acquirer, Service
 from ns_common.atomic import read_text_retry
-from ns_common.config import load_runtime
+from ns_common.config import load_channel, load_runtime
 from ns_common.errors import NsError
 from ns_common.errors import describe as describe_error
 from ns_common.logging import NsLogger
+from ns_common.models import VOICE_NAME_PATTERN
 from ns_common.paths import Paths
 from ns_common.secrets_names import KEYRING_SERVICE
 from ns_dashboard import studio_bridge
@@ -923,9 +926,10 @@ class RealVoiceMaker:
                     with contextlib.suppress(Exception):  # an engine that is down holds nothing
                         self.link.release_owner(owner)
                 raise
-            # a name setup asked for and could not have is said here, in the job the owner pressed
-            renamed = bool(done.get("renamed_from")) and bool(done.get("message"))
-            ctl.progress(1.0, str(done["message"]) if renamed else "The voice is ready")
+            # a name setup asked for and could not have, and a request dropped without making a voice,
+            # are said here, in the job the owner pressed
+            special = bool(done.get("message")) and (bool(done.get("renamed_from")) or not done.get("name"))
+            ctl.progress(1.0, str(done["message"]) if special else "The voice is ready")
         name = done.get("name")
         return str(name) if name else None
 
@@ -949,20 +953,42 @@ CLONE_NOTE = "Cloned from your recording"
 
 
 def read_pending_voice(paths: Paths) -> dict[str, Any] | None:
-    """`config/pending_voice.json` as the page shows it; None when absent, unreadable or already made."""
+    """`config/pending_voice.json` as the page shows it; None when absent, unreadable, already made, or
+    not needed any more.
+
+    A request under a name the voice library refuses (0.1.13 and 0.1.14 setup queued "Night Narrator";
+    `voice_setup.apply_pending_report` makes it under the name the request then records, with
+    `renamed_from`) is shown while its channel still names the name setup asked for, or cannot be read: only
+    then does Create it now have something to make or repoint. Once the channel uses another voice the card
+    goes; the next run removes the file.
+    """
     try:
         raw = json.loads(read_text_retry(paths.config / "pending_voice.json"))
     except (OSError, ValueError):
         return None
     name = raw.get("name") if isinstance(raw, dict) else None
-    if not isinstance(name, str) or not name or (paths.models_tts_voices / name / "voice.json").is_file():
+    if not isinstance(name, str) or not name:
         return None
+    before = raw.get("renamed_from")
+    asked = before if isinstance(before, str) and before else name
+    if (paths.models_tts_voices / asked / "voice.json").is_file():
+        return None
+    channel = raw.get("channel") if isinstance(raw.get("channel"), str) else None
+    if asked != name or not re.fullmatch(VOICE_NAME_PATTERN, name):
+        try:
+            voice = load_channel(paths, channel or "").voice
+            if voice.mode == "preset" or voice.name != asked:
+                return None
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, yaml.YAMLError):
+            pass  # a profile that cannot be read: the request waits, and pressing the button says why
     mode = "clone" if raw.get("mode") == "clone" else "design"
     return {
         "name": name,
         "mode": mode,
         "description": str(raw.get("description") or "") if mode == "design" else CLONE_NOTE,
-        "channel": raw.get("channel") if isinstance(raw.get("channel"), str) else None,
+        "channel": channel,
     }
 
 

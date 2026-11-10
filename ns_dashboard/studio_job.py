@@ -226,6 +226,8 @@ def do_apply_voice(args: dict[str, Any]) -> dict[str, Any]:
     made = studio_bridge.apply_pending_voice_report(**_common(args))
     if made is None:
         return {"name": None}
+    # `message` is the sentence for the owner when it is not the plain "created": a changed name, or why
+    # the request was dropped without making a voice (`name` None)
     return {"name": made.name, "renamed_from": made.renamed_from, "message": made.said()}
 
 

@@ -568,21 +568,17 @@ def voice_apply_pending(fake_services: FakeOpt = None) -> None:
 
 def _setup_voice(env: jobs.Env) -> None:
     """Before a real run: create the voice setup queued. A failure is a warning here; the job that needs
-    the voice then fails with its own message."""
+    the voice then fails with its own message. The nightly comes this way with nobody at the console, so a
+    changed name and a failure are also left as a morning note, in the same words (`apply_for_run`)."""
     if env.fake:
         return
-    try:
-        made = voice_setup.apply_pending_report(env)
-    except (NsError, StudioError) as e:
-        env.log.warn("pending_voice_failed", str(e))
-        typer.echo(
-            f"warning: the voice chosen during setup is not created yet ({e}); "
-            "try: studio voice apply-pending",
-            err=True,
-        )
-        return
-    if made:
-        typer.echo(made.said() if made.renamed_from else f"voice {made.name} created from your setup choice")
+    made, failed = voice_setup.apply_for_run(env)
+    if failed is not None:
+        typer.echo(f"warning: {voice_setup.problem_said(failed)}", err=True)
+    elif made is not None and made.renamed_from is None and made.name:
+        typer.echo(f"voice {made.name} created from your setup choice")
+    elif made is not None:
+        typer.echo(made.said())
 
 
 # ---------------------------------------------------------------- review, status, learn, pause
