@@ -505,6 +505,7 @@ const FULL_PLANS = ["master_first", "master_from_script", "master_from_owner_scr
 /** One thing the night left for time (NS-W211), in the morning note's words (ns_studio/notifications.py). */
 function leftWords(x: LeftForTime, channelName: (s?: string | null) => string, status: ReturnType<typeof useApp>["status"]): string {
   const ch = channelName(x.channel); const was = x.left_s == null ? "" : `, ${hm(x.left_s)} ${x.left_s < 120 ? "was" : "were"} left`;
+  if (x.reason === "stage_too_long") return `${ch}: ${x.job_id ? "a half-made video waits" : "not started"}: its ${x.stage || "longest"} stage takes longer than a whole night on this PC (make it from Create, where a run has no time limit)`;
   const way = (first: string) => nightComes(status) ? `the next nightly run continues it${first}` : "press Retry on its card to continue it";
   if (x.job_id && !x.resumed) return `${ch}: stopped at ${x.stage || "a stage"}; ${way("")}`;
   if (x.job_id) return `${ch}: its half-made video was not continued (${x.need_s == null ? "it needs more time" : `it needs about ${hm(x.need_s)} more`}${was}); ${way(" first")}`;

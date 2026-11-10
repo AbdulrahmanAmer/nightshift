@@ -117,31 +117,28 @@ def read(paths: Paths, *, months: int | None = HISTORY_MONTHS) -> list[dict[str,
     return [item for _at, _n, item in sorted(out, key=lambda t: (t[0], t[1]))]
 
 
-def job_totals(lines: Iterable[Mapping[str, Any]], plan: str) -> list[float]:
-    """Total seconds of the finished jobs of `plan`, in the order they finished: every run of a job counts
-    (a job continued by the next night is the sum of its nights)."""
-    spent: dict[str, float] = {}
-    finished: list[str] = []
+def stage_samples(lines: Iterable[Mapping[str, Any]], plan: str, stage: str) -> list[float]:
+    """THE one rule for what the estimates count: the WORK of one pass of `stage` in a job of `plan`.
+
+    Counted, one sample per job (its latest), oldest job first:
+    - a `stage` line of that plan and stage with `outcome: done` (its `seconds` is the stage alone: never a
+      wait for the graphics card, which has its own `acquire` line, and never another stage);
+    - a `cut_expected` line of that plan and stage: the stage was still running at the hard mark, so its
+      `seconds` so far is a lower bound (a stage longer than a night never writes a `done` line).
+    Not counted: failed stages, `acquire` waits and loads, `job_end` totals, other plans (a Short's `voice` is
+    not a master's) and the earlier runs of a stage a job ran again."""
+    latest: dict[str, float] = {}
     for line in lines:
-        if line.get("kind") != "job_end" or line.get("plan") != plan:
+        kind = line.get("kind")
+        if line.get("plan") != plan or line.get("stage") != stage:
+            continue
+        if not ((kind == "stage" and line.get("outcome") == "done") or kind == "cut_expected"):
+            continue
+        try:
+            seconds = float(line["seconds"])
+        except (KeyError, TypeError, ValueError):
             continue
         job = str(line.get("job_id") or "")
-        try:
-            spent[job] = spent.get(job, 0.0) + float(line.get("seconds") or 0.0)
-        except (TypeError, ValueError):
-            continue
-        if line.get("outcome") == "done" and job not in finished:
-            finished.append(job)
-    return [spent[j] for j in finished]
-
-
-def stage_seconds(lines: Iterable[Mapping[str, Any]], stage: str) -> list[float]:
-    """Seconds of every finished run of `stage`, oldest first."""
-    out: list[float] = []
-    for line in lines:
-        if line.get("kind") == "stage" and line.get("stage") == stage and line.get("outcome") == "done":
-            try:
-                out.append(float(line["seconds"]))
-            except (KeyError, TypeError, ValueError):
-                continue
-    return out
+        latest.pop(job, None)  # re-inserted: the job's order is that of its latest sample
+        latest[job] = seconds
+    return list(latest.values())

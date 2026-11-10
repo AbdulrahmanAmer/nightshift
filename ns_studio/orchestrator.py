@@ -338,14 +338,19 @@ def _job_timed(ctx: JobContext) -> Iterator[None]:
 def _wait_cap(ctx: JobContext, names: list[str], group: list[str]) -> dict[str, int]:
     """The `timeout_s` of the wait for the graphics card before the stages `group` ({} outside the nightly).
     In the nightly it is bounded by what the night can spend on it (`Night.wait_cap`, S7): the time left after
-    the estimate of the stages the job still has to run. At or under 0 it is NS-E201 at once, marked
-    `out_of_time` (`daily._attempt` then leaves the job at that stage for the next night)."""
+    the estimate of the stages the job still has to run; when even that is gone (a job too long for what is
+    left, begun as the night's first: it is made over two nights), the time left after the group's next stage,
+    so the night still makes progress. At or under 0 it is NS-E201 at once, marked `out_of_time`
+    (`daily._attempt` then leaves the job at that stage for the next night)."""
     timeout: int | None = None
     if ctx.deadline is not None:
+        plan = plan_format(ctx.fmt, ctx.job_dir)
         done = {n for n, e in StageState.load(ctx.job_dir).entries.items() if e.get("status") == "done"}
         rest = [n for n in names[names.index(group[0]):] if n not in done]
-        timeout = ctx.deadline.wait_cap(rest, WAIT_CAP_S)
         mine = [n for n in group if n not in done]
+        timeout = ctx.deadline.wait_cap(plan, rest, WAIT_CAP_S)
+        if timeout is not None and timeout <= 0 and mine:
+            timeout = ctx.deadline.wait_cap(plan, mine[:1], WAIT_CAP_S)
         if timeout is not None and timeout <= 0 and mine:
             raise NsError(
                 "NS-E201", f"the night has no time left to wait for the graphics card before {mine[0]}",

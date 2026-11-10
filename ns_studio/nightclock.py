@@ -9,10 +9,16 @@ the next night, at a stage boundary, and the owner reads in the morning what was
 Time is an input: everything here reads the injected `Clock` (`now()` wall time for the deadline, which a
 sleep shortens; `monotonic()` for durations); nothing reads the PC's clock in the middle of a decision.
 
-Estimates come from this install's own ledger (`ledger.py`): a job is `ESTIMATE_FACTOR` x the median of the
-last `HISTORY_N` finished jobs of its plan, a stage the same over that stage's last runs. Without a
-measurement (the first nights on a new PC) a job is `DEFAULT_JOB_S` of its plan and a stage `STAGE_FLOOR_S`,
-deliberately large, and the report says `basis: default`.
+Estimates come from this install's own ledger (`ledger.stage_samples`, the one rule for what counts):
+a stage of a plan is the WORST of its last `HISTORY_N` measured passes in jobs of that plan (an estimate
+must err long: a wrong "does not fit" costs one job a night, a wrong "fits" gets the task killed
+mid-stage), and a job is the work of one pass: the sum of its plan's stage estimates, never its waits. A
+plan this PC never measured is `DEFAULT_JOB_S`, a stage of it `STAGE_FLOOR_S`, and the report says
+`basis: default`.
+
+Within one plan a stage's time also follows the length of the story (voice, captions and render with its
+words, clips and the Short combos with the number of Shorts); the channel's length band bounds that spread and
+the ledger does not record those counts yet, so the worst recent pass of the same plan stands for it.
 """
 
 from __future__ import annotations
@@ -25,7 +31,6 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from statistics import median
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ns_common.atomic import write_text_atomic
@@ -46,7 +51,6 @@ TEST_LIMIT_MIN_S, TEST_LIMIT_MAX_S = 60, 21600
 CLOSE_MARGIN_S = 10 * 60
 #: The hard mark: still running this long before Windows' limit, the night says so (`cut_expected`).
 HARD_MARK_S = 120
-ESTIMATE_FACTOR = 1.2
 HISTORY_N = 5
 #: A job's estimate before this install has finished one of its plan (`basis: default`), by plan.
 DEFAULT_JOB_S: dict[str, int] = {"master_first": 3 * 3600, "master_from_script": 9000, "shorts_only": 3600}
@@ -110,8 +114,12 @@ class OutOfTime(StudioError):
     """A stage would end after the night's deadline: the job stops before it (NS-W211), its finished stages
     kept, and the next night continues it from this stage."""
 
-    def __init__(self, stage: str, need_s: float, left_s: float, basis: str) -> None:
+    def __init__(
+        self, stage: str, need_s: float, left_s: float, basis: str, *, too_long: bool = False
+    ) -> None:
         self.stage, self.need_s, self.left_s, self.basis = stage, need_s, left_s, basis
+        #: the stage takes longer than a whole night here: no night can run it (`Night.capacity_s`)
+        self.too_long = too_long
         super().__init__(
             OUT_OF_TIME, f"{stage} needs about {words(need_s)}, {words(left_s)} were left before the deadline"
         )
@@ -221,32 +229,42 @@ def margins(limit_s: int) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------------------------- estimates
-def job_estimate(lines: Sequence[Mapping[str, Any]], plan: str) -> tuple[float, str]:
-    """(seconds, basis) one job of `plan` needs on this install."""
-    history = ledger.job_totals(lines, plan)[-HISTORY_N:]
-    if history:
-        return ESTIMATE_FACTOR * median(history), "history"
-    return float(DEFAULT_JOB_S.get(plan, DEFAULT_OTHER_JOB_S)), "default"
-
-
-def stage_estimate(lines: Sequence[Mapping[str, Any]], stage: str) -> tuple[float, str]:
-    """(seconds, basis) one run of `stage` needs on this install."""
-    history = ledger.stage_seconds(lines, stage)[-HISTORY_N:]
-    if history:
-        return ESTIMATE_FACTOR * median(history), "history"
+def stage_estimate(lines: Sequence[Mapping[str, Any]], plan: str, stage: str) -> tuple[float, str]:
+    """(seconds, basis) one pass of `stage` needs in a job of `plan` on this install: the worst of its last
+    `HISTORY_N` samples (`ledger.stage_samples`), else `STAGE_FLOOR_S`."""
+    samples = ledger.stage_samples(lines, plan, stage)[-HISTORY_N:]
+    if samples:
+        return max(samples), "history"
     return float(STAGE_FLOOR_S), "default"
 
 
-def stages_estimate(lines: Sequence[Mapping[str, Any]], stages: Sequence[str]) -> tuple[float, str]:
-    """(seconds, basis) of a run of `stages` (what a resumed job has left): the sum of their estimates;
-    `default` when any of them has no measurement."""
+def stages_estimate(
+    lines: Sequence[Mapping[str, Any]], plan: str, stages: Sequence[str]
+) -> tuple[float, str]:
+    """(seconds, basis) of a run of `stages` of `plan` (what a resumed job has left): the sum of their
+    estimates; `default` when any of them has no measurement."""
     total, basis = 0.0, "history"
     for name in stages:
-        need, how = stage_estimate(lines, name)
+        need, how = stage_estimate(lines, plan, name)
         total += need
         if how == "default":
             basis = "default"
     return total, basis
+
+
+def job_estimate(lines: Sequence[Mapping[str, Any]], plan: str, stages: Sequence[str]) -> tuple[float, str]:
+    """(seconds, basis) of the WORK of one pass of a job of `plan` with these `stages`: the sum of the stage
+    estimates; `DEFAULT_JOB_S` of the plan when this PC has measured none of its stages."""
+    if not any(ledger.stage_samples(lines, plan, name) for name in stages):
+        return float(DEFAULT_JOB_S.get(plan, DEFAULT_OTHER_JOB_S)), "default"
+    return stages_estimate(lines, plan, stages)
+
+
+def plan_of(fmt: str, job_dir: Any) -> str:
+    """The plan a job runs (`orchestrator.plan_format`: its format, or its script variant)."""
+    from ns_studio.orchestrator import plan_format
+
+    return plan_format(fmt, job_dir)
 
 
 # ---------------------------------------------------------------------------------------------- the night
@@ -265,7 +283,7 @@ class Night:
     limit_s: int | None
     log: NsLogger | None = None
     lines: list[dict[str, Any]] = field(default_factory=list)
-    current: tuple[str, str, str] | None = None  # (job, channel, stage) of the stage under way
+    current: tuple[str, str, str, str, float] | None = None  # (job, channel, stage, plan, began) under way
     sums: dict[str, float] = field(default_factory=dict)
     cut_written: bool = False
     _beat_warned: bool = False
@@ -294,6 +312,24 @@ class Night:
         left = self.left_s()
         return left is None or need_s <= left
 
+    @property
+    def capacity_s(self) -> float | None:
+        """What a whole night can give work: from the task's start to the deadline (5 h 50 min)."""
+        if self.limit_s is None:
+            return None
+        return float(self.limit_s - margins(self.limit_s)[0])
+
+    @property
+    def fresh(self) -> bool:
+        """True while no stage has been finished tonight: the night's first job is begun whatever its
+        estimate (the stage check then stops it at a boundary), so no plan is ever locked out."""
+        return self.sums.get("stages_done", 0.0) == 0.0
+
+    def too_long(self, need_s: float) -> bool:
+        """True for one stage that takes longer than a whole night here: no night can run it."""
+        capacity = self.capacity_s
+        return capacity is not None and need_s > capacity
+
     # ------------------------------------------------------------------ the ledger
     def write(self, kind: str, **fields: Any) -> None:
         """One ledger line of this night (never raises)."""
@@ -307,6 +343,8 @@ class Night:
                 if kind in ("stage", "acquire") and isinstance(value, int | float):
                     name = f"{kind}_s" if key == "seconds" else key
                     self.sums[name] = self.sums.get(name, 0.0) + float(value)
+            if kind == "stage" and line.get("outcome") == "done":
+                self.sums["stages_done"] = self.sums.get("stages_done", 0.0) + 1
         if kind == "stage":
             self.current = None
         try:
@@ -337,23 +375,24 @@ class Night:
     def before_stage(self, ctx: JobContext, stage: str) -> None:
         """S6: called immediately before a stage really runs. Raises `OutOfTime` when its estimate ends
         after the deadline; else the stage is the one under way (for the hard mark)."""
-        self.current = (ctx.job_id, ctx.channel.slug, stage)
+        plan = plan_of(str(ctx.fmt), ctx.job_dir)
+        self.current = (ctx.job_id, ctx.channel.slug, stage, plan, self.clock.monotonic())
         left = self.left_s()
         if left is None:
             return
-        need, basis = stage_estimate(self.lines, stage)
+        need, basis = stage_estimate(self.lines, plan, stage)
         if need > left:
             self.current = None
-            raise OutOfTime(stage, need, left, basis)
+            raise OutOfTime(stage, need, left, basis, too_long=basis == "history" and self.too_long(need))
 
-    def wait_cap(self, rest: Sequence[str], cap_s: int) -> int | None:
+    def wait_cap(self, plan: str, rest: Sequence[str], cap_s: int) -> int | None:
         """S7: how long the wait for the graphics card may take: `cap_s` (the acquirer's own cap), or the time
         left after the estimate of `rest` (the stages the job still has to run) when that is less. At or under
         0 nothing can be waited for. None without a deadline."""
         left = self.left_s()
         if left is None:
             return None
-        need, _basis = stages_estimate(self.lines, rest)
+        need, _basis = stages_estimate(self.lines, plan, rest)
         return min(int(cap_s), int(left - need))
 
     # ------------------------------------------------------------------ the beat and the hard mark
@@ -373,8 +412,10 @@ class Night:
         mark = self.hard_mark
         if mark is not None and not self.cut_written and now >= mark:
             self.cut_written = True
-            job, channel, stage = self.current or (None, None, None)
-            self.write("cut_expected", job_id=job, channel=channel, stage=stage)
+            job, channel, stage, plan, began = self.current or (None, None, None, None, None)
+            seconds = None if began is None else round(self.clock.monotonic() - began, 3)
+            # `seconds` so far is a lower bound of the stage (`ledger.stage_samples` counts it as one)
+            self.write("cut_expected", job_id=job, channel=channel, stage=stage, plan=plan, seconds=seconds)
             if self.log is not None:
                 self.log.warn("night_cut_expected", "the night still works at the hard mark", stage=stage)
 

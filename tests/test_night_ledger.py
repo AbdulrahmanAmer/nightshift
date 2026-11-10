@@ -140,6 +140,7 @@ class World:
         self.seconds: dict[str, float] = {}
         self.hold: dict[str, Any] = {}
         self.ran: list[str] = []
+        self.old_jobs = 0
         self.monkeypatch = monkeypatch
         prev = ()
         for i, (name, tenant) in enumerate(PLAN):
@@ -190,39 +191,24 @@ class World:
     def history(
         self,
         *,
-        jobs_s: float | None = None,
-        plan: str = "master_first",
         stage: tuple[str, float] | None = None,
+        each_s: float | None = None,
+        plan: str = "master_first",
         n: int = 5,
+        kind: str = "stage",
     ) -> None:
-        """Ledger lines an earlier night of this install wrote: `n` finished jobs, or `n` runs of a stage."""
+        """Ledger lines an earlier night of this install wrote, in jobs of `plan`: `n` finished passes of
+        one `stage`, or of every stage of the plan at `each_s` seconds (a whole job's work)."""
         at = (self.clock.now() - timedelta(days=2)).isoformat(timespec="seconds")
+        runs = [stage] if stage is not None else [(name, each_s) for name, _t in PLAN]
         lines = []
-        for i in range(n):
-            if jobs_s is not None:
-                lines.append(
-                    {
-                        "kind": "job_end",
-                        "at": at,
-                        "job_id": f"old-{plan}-{i}",
-                        "plan": plan,
-                        "seconds": jobs_s,
-                        "outcome": "done",
-                        "origin": "daily",
-                    }
-                )
-            if stage is not None:
-                lines.append(
-                    {
-                        "kind": "stage",
-                        "at": at,
-                        "job_id": f"old-{i}",
-                        "stage": stage[0],
-                        "seconds": stage[1],
-                        "outcome": "done",
-                        "origin": "daily",
-                    }
-                )
+        for _i in range(n):
+            self.old_jobs += 1  # every pass is a job of its own (the samples are one per job)
+            lines += [
+                {"kind": kind, "at": at, "job_id": f"old-{plan}-{self.old_jobs}", "plan": plan, "stage": name,
+                 "seconds": seconds, "outcome": "done", "origin": "daily"}
+                for name, seconds in runs
+            ]
         f = self.ledger_dir() / f"ledger-{self.clock.now():%Y%m}.jsonl"
         f.parent.mkdir(parents=True, exist_ok=True)
         with f.open("a", encoding="utf-8") as fh:
@@ -337,32 +323,39 @@ def test_every_stage_acquire_and_load_is_written_to_the_ledger(world: World) -> 
 
 
 # ------------------------------------------------------------------ 2, 3. the job budget, both ends
+def _a_short_first(world: World) -> None:
+    """A Shorts channel that comes first by name: its Short (4 x 25 s) is made before the master is weighed,
+    so the master is not the night's first work (a night's first job is always begun: rule (b))."""
+    world.add_channel(slug="a-shorts", display_name="Shorts", format="shorts_only", shorts_per_day_max=1,
+                      niche="true stories of small towns that lost something")
+    world.seconds = {name: 25 for name, _t in PLAN}
+
+
 @pytest.mark.parametrize("left_min, started", [(121, True), (120, True), (119, False)])
 def test_a_job_that_would_end_after_the_deadline_is_not_started(
     world: World, left_min: int, started: bool
 ) -> None:
-    world.history(jobs_s=100 * 60)  # five finished jobs of 100 min: the estimate is 1.2 x 100 = 120 min
-    report = world.night(left_s=left_min * 60)
+    _a_short_first(world)
+    world.history(each_s=30 * 60)  # every master stage took at most 30 min: the job's work is 2 h
+    world.history(each_s=25, plan="shorts_only")
+    report = world.night(left_s=left_min * 60 + 100)  # the Short takes 100 s first
+    assert [j["channel"] for j in report["jobs"]][:1] == ["a-shorts"]
     if started:
-        assert len(report["jobs"]) == 1 and not report.get("out_of_time")
+        assert len(report["jobs"]) == 2 and not report.get("out_of_time")
         return
-    assert report["jobs"] == [] and report["failures"] == []
+    assert [j["channel"] for j in report["jobs"]] == ["a-shorts"] and report["failures"] == []
     assert report.get("out_of_time") == [
-        {
-            "channel": "after-dark",
-            "fmt": "master_first",
-            "jobs": 1,
-            "need_s": 7200,
-            "left_s": 7140,
-            "basis": "history",
-        }
+        {"channel": "after-dark", "fmt": "master_first", "jobs": 1, "need_s": 7200, "left_s": 7140,
+         "basis": "history"}
     ]
-    assert world.db.query("select * from combos") == [] and world.ran == [], "nothing was created"
-    assert [r for r in ownership.list_records(world.paths) if r.get("kind") == "job"] == []
+    masters = world.db.query("select * from combos where channel='after-dark'")
+    assert masters == [], "nothing of the master was created"
+    note = notifications.time_note(report) or ""
+    assert "after-dark's full video (it takes about 2 h here, 1 h 59 min were left)" in note
+    assert len([n for n in world.notes() if "(NS-W211)" in n["message"]]) == 1
     world.clock.advance(24 * 3600)
-    assert [d.channel.slug for d in cadence.plan_daily(world.paths, world.db, world.clock.now())] == [
-        "after-dark"
-    ], "the channel is planned again the next night"
+    due = cadence.plan_daily(world.paths, world.db, world.clock.now())
+    assert "after-dark" in [d.channel.slug for d in due], "the channel is planned again the next night"
 
 
 @pytest.mark.parametrize("left_min, started", [(180, True), (179, False)])
@@ -372,20 +365,93 @@ def test_with_no_history_the_default_estimate_is_used_and_said(
     nightclock = _module("ns_studio.nightclock")
     default = getattr(nightclock, "DEFAULT_JOB_S", {}).get("master_first")
     assert default == 3 * 3600, "a first night on a new PC plans a full video at 3 h"
-    report = world.night(left_s=left_min * 60)
+    _a_short_first(world)
+    world.history(each_s=25, plan="shorts_only")  # the Shorts are measured, the masters never were
+    report = world.night(left_s=left_min * 60 + 100)
     if started:
-        assert len(report["jobs"]) == 1
+        assert len(report["jobs"]) == 2
         return
     left = _one(report.get("out_of_time") or [])
     assert (left["basis"], left["need_s"], left["left_s"]) == ("default", default, left_min * 60)
-    note = notifications.time_note(report)
+    note = notifications.time_note(report) or ""
     assert "Nightshift plans 3 h for one until it has timed one on this PC, 2 h 59 min were left" in note
+
+
+def test_a_job_longer_than_what_is_left_is_begun_when_it_is_the_nights_first(world: World) -> None:
+    """Rule (b): a fresh night always begins its first job; the stage check cuts it at a boundary and the
+    next night continues it, so an estimate longer than what is left never locks a plan out."""
+    world.history(each_s=30 * 60)  # 2 h of work
+    world.seconds = {name: 30 * 60 for name, _t in PLAN}
+    report = world.night(left_s=3700)  # the first stage (30 min) fits, the job (2 h) does not
+    assert world.ran == ["nf_a", "nf_b"], "begun, then cut before the stage that no longer fits"
+    left = _one(report.get("out_of_time") or [])
+    assert (left["stage"], left.get("resumed")) == ("nf_c", None) and report["failures"] == []
+    world.clock.advance(24 * 3600)
+    world.ran.clear()
+    world.night(left_s=5 * 3600)
+    assert world.ran == ["nf_c", "nf_d"]
+
+
+def test_a_video_longer_than_three_nights_is_said_and_never_ages_out(world: World) -> None:
+    """Rule (c): a job left for time ages from the night that last worked on it, so a video that needs four
+    nights is continued every night (the 3-day rule counts from its creation for every other job)."""
+    world.history(each_s=16000)  # 4 x 16000 s: more than three nights of 5 h 50 min
+    world.seconds = {name: 16000 for name, _t in PLAN}
+    first = world.night(left_s=21000)
+    long_job = _one(first.get("long_jobs") or [])
+    assert (long_job["need_s"], long_job["capacity_s"], long_job["nights"]) == (64000, 21000, 4)
+    note = notifications.time_note(first) or ""
+    assert "after-dark's full video takes about 17 h 46 min of work here, more than the 5 h 50 min one " \
+           "night can give, so it is made over 4 nights" in note
+    assert "That is more than 3 nights for one video; to make videos in fewer nights, set Default type to " \
+           "Shorts only for that channel in Channels" in note
+    assert world.ran == ["nf_a"]
+    for night in range(2, 5):  # 25 h apart: the fourth night is more than 3 days after the job was made
+        world.clock.advance(25 * 3600)
+        report = world.night(left_s=21000)
+        assert report["failures"] == [] and not report.get("long_jobs"), night
+    assert world.ran == ["nf_a", "nf_b", "nf_c", "nf_d"], "continued every night until it finished"
+    assert len(world.db.query("select * from outputs where kind='long'")) == 1
+
+
+def test_a_stage_longer_than_a_whole_night_is_said_once_and_never_begun(world: World) -> None:
+    """Rule (d): measured from the ledger (here the hard mark's lower bound of an earlier night)."""
+    world.history(stage=("nf_c", 21600), kind="cut_expected", n=1)
+    report = world.night(left_s=21000)
+    assert world.ran == [] and report["jobs"] == [] and report["failures"] == []
+    left = _one(report.get("out_of_time") or [])
+    assert (left["reason"], left["stage"]) == ("stage_too_long", "nf_c")
+    told = _one(report.get("too_long_stages") or [])
+    assert (told["stage"], told["measured_s"], told["capacity_s"]) == ("nf_c", 21600, 21000)
+    note = notifications.time_note(report) or ""
+    assert "The nf_c stage of after-dark's full videos took at least 6 h on this PC, longer than the " \
+           "5 h 50 min one night can give" in note and "Make them from Create" in note
+    world.clock.advance(24 * 3600)
+    again = world.night(left_s=21000)
+    assert _one(again.get("out_of_time") or [])["reason"] == "stage_too_long", "the card says it each night"
+    assert not again.get("too_long_stages") and notifications.time_note(again) is None, "said once"
+
+
+def test_a_stage_is_estimated_from_jobs_of_its_own_plan_at_its_worst(world: World) -> None:
+    """Blocker 2: `nf_c` is a stage of Shorts and of masters; a master's is not estimated from Shorts, and
+    the estimate is the worst recent pass, not the mean."""
+    nightclock = _module("ns_studio.nightclock")
+    world.history(stage=("nf_c", 100), plan="shorts_only")
+    for seconds in (100, 100, 100, 100, 2500):
+        world.history(stage=("nf_c", seconds), n=1)
+    lines = [x for x in world.lines() if x.get("kind") == "stage"]
+    assert nightclock.stage_estimate(lines, "master_first", "nf_c") == (2500, "history")
+    assert nightclock.stage_estimate(lines, "shorts_only", "nf_c") == (100, "history")
+    assert nightclock.stage_estimate(lines, "master_first", "nf_a") == (600.0, "default")
+    world.seconds = {"nf_a": 4000, "nf_b": 10860 - 4000 - 2000}
+    report = world.night(left_s=10860)  # 2000 s left before nf_c: a Short's 100 s would say it fits
+    assert world.ran == ["nf_a", "nf_b"] and _one(report["out_of_time"])["stage"] == "nf_c"
 
 
 # ------------------------------------------------------------------ 4, 5. the stage budget and the next night
 def _stopped_before_nf_c(world: World, left_before_c: int) -> dict[str, Any]:
     """A night whose job reaches nf_c (estimate 1.2 x 1000 = 1200 s) with `left_before_c` seconds left."""
-    world.history(stage=("nf_c", 1000))
+    world.history(stage=("nf_c", 1200))
     world.seconds = {"nf_a": 4830, "nf_b": 10860 - 4830 - left_before_c, "nf_c": 500, "nf_d": 100}
     return world.night(left_s=10860)  # 181 min: the job's default estimate (3 h) fits
 
@@ -453,11 +519,13 @@ def test_the_next_night_continues_the_job_left_for_time_first(world: World) -> N
     assert last["run_id"] == second["run_id"] and last["summary"]["timing"]["left_s"] is not None
 
 
-@pytest.mark.parametrize("left_s, continued", [(1800, True), (1799, False)])
+@pytest.mark.parametrize("left_s, continued", [(1800, True), (1200, True), (1199, False)])
 def test_a_half_made_job_that_would_not_fit_tonight_waits_for_the_next_night(
     world: World, left_s: int, continued: bool
 ) -> None:
-    """S3: what the job still has to do (nf_c 1200 s by its history + nf_d 600 s, no history) must fit."""
+    """S3: what the job still has to do (nf_c 1200 s by its history + nf_d 600 s, no history) fits (1800), or
+    it is the night's first work and its next stage fits (1200: rule (b), the night makes progress); else
+    (1199) it waits for the next night."""
     _stopped_before_nf_c(world, 1199)
     job_id = _one([r["job_id"] for r in world.db.query("select distinct job_id from combos")])
     world.clock.advance(24 * 3600)
@@ -470,14 +538,14 @@ def test_a_half_made_job_that_would_not_fit_tonight_waits_for_the_next_night(
         return
     assert world.ran == [] and report["jobs"] == [] and report["failures"] == []
     left = _one(report.get("out_of_time") or [])
-    assert (left["job_id"], left["resumed"], left["need_s"], left["left_s"]) == (job_id, True, 1800, 1799)
+    assert (left["job_id"], left["resumed"], left["need_s"], left["left_s"]) == (job_id, True, 1800, 1199)
     assert "after-dark" in report["not_due"], "no new video of the channel starts beside the half-made one"
     assert world.db.query("select count(*) n from combos where item='long'")[0]["n"] == 1
     rec = ownership.read_record(world.paths, job_id) or {}
     assert (rec.get("state"), rec.get("interrupted_at_stage")) == ("interrupted", "nf_c")
     words = (
         "half-made video (it needs about 30 min more by Nightshift's first estimate, at nf_c, "
-        "29 min were left)"
+        "19 min were left)"
     )
     assert words in (notifications.time_note(report) or "")
     world.clock.advance(24 * 3600)
@@ -491,9 +559,7 @@ def test_the_channel_left_for_time_goes_first_the_next_night(
     world = World(tmp_home, monkeypatch, slug="a-first", format="shorts_only", shorts_per_day_max=1)
     world.add_channel(slug="b-second", display_name="B", format="shorts_only", shorts_per_day_max=1,
                       niche="true stories of small towns that lost something")
-    world.history(jobs_s=1000, plan="shorts_only")  # one Short takes 1200 s here, 300 s a stage
-    for name, _tenant in PLAN:
-        world.history(stage=(name, 250))
+    world.history(each_s=250, plan="shorts_only")  # one Short's work is 1000 s here, 250 s a stage
     world.seconds = {"nf_a": 250, "nf_b": 250, "nf_c": 250, "nf_d": 250}  # it takes 1000 s
     one = world.night(left_s=1700)  # room for one: a-first comes first by name, b-second is left
     assert [j["channel"] for j in one["jobs"]] == ["a-first"]
@@ -527,29 +593,46 @@ def test_two_nights_in_a_row_leave_nothing_behind(world: World) -> None:
 
 
 # ------------------------------------------------------------------ 7. the GPU wait
-@pytest.mark.parametrize("nf_a_history, timeout", [(None, 7200), (5000, 3060), (9000, None)])
+@pytest.mark.parametrize("nf_a_history, timeout", [(None, 7200), (5000, 4060)])
 def test_the_gpu_wait_never_runs_past_what_the_night_can_spend(
-    world: World, nf_a_history: int | None, timeout: int | None
+    world: World, nf_a_history: int | None, timeout: int
 ) -> None:
-    if nf_a_history is not None:  # the rest of the job: nf_a 1.2 x history + 3 x 600 s (no history)
+    if nf_a_history is not None:  # the rest of the job: nf_a's worst pass + 3 x 600 s (never measured)
         world.history(stage=("nf_a", nf_a_history))
+    world.night(left_s=10860)
+    assert world.acquirer.calls == [("llama", timeout)]
+
+
+@pytest.mark.parametrize("nf_d_history, timeout", [(2000, 860), (None, None)])
+def test_a_wait_the_rest_of_the_job_has_no_time_for_waits_only_for_the_next_stage_or_not_at_all(
+    world: World, monkeypatch: pytest.MonkeyPatch, nf_d_history: int | None, timeout: int | None
+) -> None:
+    """S7 between two tenant groups (nf_c takes the tts tenant here), 4860 s left after nf_a and nf_b.
+    nf_c 4000 + nf_d 2000: the rest of the job does not fit, so the wait only leaves room for nf_c: 860 s.
+    nf_c 5000 (+ nf_d 600, never measured): not even nf_c fits, so no wait is begun: NS-E201 at once, and the
+    job is left at nf_c for the next night."""
+    monkeypatch.setattr(REGISTRY["nf_c"], "tenant", "tts")
+    world.history(stage=("nf_c", 4000 if nf_d_history else 5000))
+    if nf_d_history:
+        world.history(stage=("nf_d", nf_d_history))
+    world.seconds = {"nf_a": 3000, "nf_b": 3000}
     report = world.night(left_s=10860)
+    assert world.acquirer.calls[0][0] == "llama" and world.ran[:2] == ["nf_a", "nf_b"]
     if timeout is not None:
-        assert world.acquirer.calls == [("llama", timeout)]
+        assert world.acquirer.calls[1] == ("tts", timeout)
         return
-    # 10860 - (10800 + 1800) is under 0: no wait at all, NS-E201 at once; the job is left at nf_a for time
-    assert world.acquirer.calls == [] and world.ran == []
+    assert [c[0] for c in world.acquirer.calls] == ["llama"] and world.ran == ["nf_a", "nf_b"]
     assert report["failures"] == [] and report.get("skipped") is None
     left = _one(report.get("out_of_time") or [])
-    assert left["stage"] == "nf_a"
-    assert world.lines("acquire") == [], "no wait was begun"
+    assert left["stage"] == "nf_c"
+    assert [a["service"] for a in world.lines("acquire")] == ["llama"], "no wait was begun for tts"
     rec = ownership.read_record(world.paths, left["job_id"]) or {}
-    assert (rec.get("state"), rec.get("interrupted_at_stage")) == ("interrupted", "nf_a")
+    assert (rec.get("state"), rec.get("interrupted_at_stage")) == ("interrupted", "nf_c")
 
 
 # ------------------------------------------------------------------ 8, 9. the task's start
 def test_a_night_started_by_hand_has_no_deadline(world: World) -> None:
-    world.history(jobs_s=100 * 3600)  # a 120-hour estimate: no timed night could start it
+    world.history(each_s=30 * 3600)  # a 120-hour estimate: no timed night could make it
     report = world.night(started=None)
     start = _one(world.lines("night_start"))
     assert start["limit"] == "none" and start["deadline"] is None and start["start_basis"] == "process"
@@ -692,12 +775,7 @@ def test_the_morning_note_and_toast_say_what_was_left_for_time(world: World) -> 
         notifications.nightly_message({**REPORT, "out_of_time": []}, 1, 4)
         == "1 master + 4 Shorts ready for review"
     )
-    # through a night: the note is left once, with the night's own numbers
-    world.history(jobs_s=100 * 60)
-    report = world.night(left_s=119 * 60)
-    only = _one([n for n in world.notes() if "(NS-W211)" in n["message"]])
-    assert "after-dark's full video (it takes about 2 h here, 1 h 59 min were left)" in only["message"]
-    assert report["out_of_time"][0]["left_s"] == 119 * 60
+    # (through a night with its own numbers: test_a_job_that_would_end_after_the_deadline_is_not_started)
 
 
 def test_the_doctor_says_when_the_task_limit_differs(tmp_path: Path) -> None:

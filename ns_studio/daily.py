@@ -9,6 +9,7 @@ import sqlite3
 import traceback
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, ExitStack
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from functools import partial
 from pathlib import Path
@@ -507,19 +508,79 @@ def _paused_mid_job(env: jobs.Env, report: dict, job_id: str, slug: str, *, resu
     _hold_for_pause(env, report, None, slug, 1, job_id=job_id)
 
 
-Cut = tuple[str, Any, Any, str]
+Cut = tuple[str, Any, Any, str, bool]
 
 
 def _cut_for_time(e: NsError | StudioError, night: nightclock.Night | None) -> Cut | None:
-    """`(stage, need_s, left_s, basis)` when the night stopped the job for lack of time: before a stage (S6,
-    `nightclock.OutOfTime`) or before a wait for the graphics card it had no time left for (S7, the NS-E201
-    the orchestrator raises at once, marked `out_of_time`); None for any other error."""
+    """`(stage, need_s, left_s, basis, too_long)` when the night stopped the job for lack of time: before a
+    stage (S6, `nightclock.OutOfTime`; `too_long`: that stage is longer than any night here) or before a wait
+    for the graphics card it had no time left for (S7, the NS-E201 the orchestrator raises at once, marked
+    `out_of_time`); None for any other error."""
     if isinstance(e, nightclock.OutOfTime):
-        return e.stage, e.need_s, e.left_s, e.basis
+        return e.stage, e.need_s, e.left_s, e.basis, e.too_long
     if isinstance(e, NsError) and e.code == "NS-E201" and e.data.get("out_of_time") is True:
         left = night.left_s() if night is not None else None
-        return str(e.data.get("stage") or ""), None, left, "history"
+        return str(e.data.get("stage") or ""), None, left, "history", False
     return None
+
+
+#: The reason of an `out_of_time` entry whose job holds a stage longer than a whole night on this PC.
+STAGE_TOO_LONG = "stage_too_long"
+
+
+@dataclass
+class Budget:
+    """What the night decides about a job before it begins or continues it (S3, S5)."""
+
+    plan: str
+    need: float  # the work of what is left of one pass, never waits (`nightclock.job_estimate`)
+    basis: str
+    go: bool  # it fits, or it is the night's first work and its next stage fits (it is made over nights)
+    long_stage: tuple[str, float] | None  # a measured stage longer than a whole night: it is never begun
+
+
+def _budget(night: nightclock.Night, plan: str, stages: list[str], *, whole: bool) -> Budget:
+    """The night's one rule for starting work (S3, S5). A job whose estimate fits what is left goes. One
+    that does not goes only when nothing was finished tonight yet (`Night.fresh`) and its next stage fits:
+    the stage check then stops it at a boundary and the next night continues it first, so no plan is locked
+    out by an estimate longer than a night and every night makes progress. A job holding a stage MEASURED
+    longer than a whole night never goes (no night can finish that stage)."""
+    lines = night.lines
+    need, basis = (nightclock.job_estimate if whole else nightclock.stages_estimate)(lines, plan, stages)
+    for name in stages:
+        seconds, how = nightclock.stage_estimate(lines, plan, name)
+        if how == "history" and night.too_long(seconds):
+            return Budget(plan, need, basis, False, (name, seconds))
+    first = nightclock.stage_estimate(lines, plan, stages[0])[0] if stages else 0.0
+    go = night.fits(need) or (night.fresh and night.fits(first))
+    return Budget(plan, need, basis, go, None)
+
+
+def _too_long_stage(
+    report: dict, night: nightclock.Night, slug: str, plan: str, stage: str, seconds: float
+) -> None:
+    """(d) A stage of `plan` measured longer than a whole night: said ONCE per plan and stage on this install
+    (a `too_long_told` ledger line remembers it), with the stage and the time measured."""
+    if any(x.get("kind") == "too_long_told" and x.get("plan") == plan and x.get("stage") == stage
+           for x in night.lines):
+        return
+    night.write("too_long_told", plan=plan, stage=stage, seconds=round(seconds))
+    report.setdefault("too_long_stages", []).append(
+        {"channel": slug, "plan": plan, "stage": stage, "measured_s": round(seconds),
+         "capacity_s": _seconds(night.capacity_s)}
+    )
+
+
+def _long_job(report: dict, night: nightclock.Night, slug: str, fmt: str, need: float) -> None:
+    """(c) A job whose work is more than one night can give is made over several nights: said with the
+    numbers when it is begun."""
+    capacity = night.capacity_s
+    if capacity is None or need <= capacity:
+        return
+    nights = int(-(-need // capacity))
+    report.setdefault("long_jobs", []).append(
+        {"channel": slug, "fmt": fmt, "need_s": round(need), "capacity_s": round(capacity), "nights": nights}
+    )
 
 
 def _seconds(value: Any) -> int | None:
@@ -540,13 +601,18 @@ def _left_for_time(
     job is closed as interrupted (reason `out_of_time`, its finished stages kept), so the next nightly run
     continues it from that stage first (`_resume_interrupted`, within `RESUME_WITHIN_DAYS`); its Queue card
     says so and offers Retry; the report lists it under `out_of_time` with the stage."""
-    stage, need_s, left_s, basis = left
+    stage, need_s, left_s, basis, too_long = left
     entry: dict[str, Any] = {
         "channel": slug, "job_id": job_id, "stage": stage, "jobs": 1, "need_s": _seconds(need_s),
         "left_s": _seconds(left_s), "basis": basis,
     }
     if resumed:
         entry["resumed"] = True
+    if too_long and need_s is not None:
+        entry["reason"] = STAGE_TOO_LONG
+        plan = nightclock.plan_of(str((ownership.read_record(env.paths, job_id) or {}).get("fmt") or ""),
+                                  env.paths.job_dir(job_id))
+        _too_long_stage(report, night, slug, plan, stage, float(need_s))
     report.setdefault("out_of_time", []).append(entry)
     env.log.info("daily_job_left_for_time", job_id=job_id, channel=slug, stage=stage, need_s=entry["need_s"],
                  left_s=entry["left_s"])
@@ -573,19 +639,28 @@ def _left_for_time(
 
 
 def _not_for_time(
-    report: dict, night: nightclock.Night, slug: str, fmt: str, count: int, need: float, basis: str
+    report: dict, night: nightclock.Night, slug: str, fmt: str, count: int, budget: Budget
 ) -> None:
-    """S5: `count` jobs of `slug` not started: one would end after the deadline. Nothing is created, so the
-    channel stays due and the next night plans it again (first: `_left_last_night`)."""
-    report.setdefault("out_of_time", []).append(
-        {"channel": slug, "fmt": fmt, "jobs": count, "need_s": _seconds(need),
-         "left_s": _seconds(night.left_s()), "basis": basis}
-    )
+    """S5: `count` jobs of `slug` not started: one would end after the deadline (or holds a stage longer than
+    any night: `reason`). Nothing is created, so the channel stays due and the next night plans it again
+    (first: `_left_last_night`)."""
+    entry: dict[str, Any] = {"channel": slug, "fmt": fmt, "jobs": count, "need_s": _seconds(budget.need),
+                             "left_s": _seconds(night.left_s()), "basis": budget.basis}
+    if budget.long_stage is not None:
+        entry.update(reason=STAGE_TOO_LONG, stage=budget.long_stage[0])
+    report.setdefault("out_of_time", []).append(entry)
 
 
-def _resume_need(env: jobs.Env, night: nightclock.Night, rec: Mapping[str, Any]) -> tuple[float, str]:
-    """S3: what an interrupted job still needs: the estimates of the stages it has not finished. (0, ...)
-    when that cannot be read: `_attempt` then meets the same trouble and reports it."""
+def _plan_budget(night: nightclock.Night, fmt: str) -> Budget:
+    """S5: the budget of one new job of `fmt` (its whole plan, gates included: an estimate errs long)."""
+    from ns_studio.orchestrator import plan_names
+
+    return _budget(night, fmt, plan_names(fmt, True), whole=True)
+
+
+def _resume_budget(env: jobs.Env, night: nightclock.Night, rec: Mapping[str, Any]) -> Budget:
+    """S3: the budget of what an interrupted job has not finished. A job whose stages cannot be read goes
+    (0 s): `_attempt` then meets the same trouble and reports it."""
     from ns_studio.orchestrator import stage_names
 
     job_id = str(rec["id"])
@@ -594,10 +669,11 @@ def _resume_need(env: jobs.Env, night: nightclock.Night, rec: Mapping[str, Any])
         fmt = str(rec.get("fmt") or ownership.job_info(env.paths, job_id).get("fmt") or "")
         done = {n for n, e in StageState.load(job_dir).entries.items() if e.get("status") == "done"}
         rest = [n for n in stage_names(fmt, job_dir) if n not in done]
+        plan = nightclock.plan_of(fmt, job_dir)
     except Exception as e:  # noqa: BLE001
         env.log.warn("resume_estimate_failed", str(e), job_id=job_id)
-        return 0.0, "default"
-    return nightclock.stages_estimate(night.lines, rest)
+        return Budget("", 0.0, "default", True, None)
+    return _budget(night, plan, rest, whole=False)
 
 
 def _left_last_night(env: jobs.Env, run_id: str) -> set[str]:
@@ -676,13 +752,17 @@ def _resume_interrupted(
             _hold_for_pause(env, report, None, slug, 1, job_id=job_id)
             outcomes[job_id] = ("paused", None)
             continue
-        need, basis = _resume_need(env, night, rec)
-        if not night.fits(need):  # S3: what it still has to do would end after the deadline
-            report.setdefault("out_of_time", []).append(
-                {"channel": slug, "job_id": job_id, "stage": stage, "jobs": 1, "resumed": True,
-                 "need_s": _seconds(need), "left_s": _seconds(night.left_s()), "basis": basis}
-            )
-            env.log.info("daily_resume_left_for_time", job_id=job_id, channel=slug, need_s=_seconds(need))
+        budget = _resume_budget(env, night, rec)
+        if not budget.go:  # S3: what it still has to do would end after the deadline (`_budget`)
+            entry: dict[str, Any] = {
+                "channel": slug, "job_id": job_id, "stage": stage, "jobs": 1, "resumed": True,
+                "need_s": _seconds(budget.need), "left_s": _seconds(night.left_s()), "basis": budget.basis,
+            }
+            if budget.long_stage is not None:
+                entry.update(reason=STAGE_TOO_LONG, stage=budget.long_stage[0])
+                _too_long_stage(report, night, slug, budget.plan, *budget.long_stage)
+            report.setdefault("out_of_time", []).append(entry)
+            env.log.info("daily_resume_left_for_time", job_id=job_id, channel=slug, need_s=entry["need_s"])
             outcomes[job_id] = ("out_of_time", None)
             left_channels.add(slug)
             continue
@@ -801,16 +881,19 @@ def _tonight(
                 break
             # S5: one more job of this plan would end after the deadline: nothing is created, the channel
             # stays due, and the next night plans it again, first
-            need, basis = nightclock.job_estimate(night.lines, dj.fmt)
-            if not night.fits(need):
-                _not_for_time(report, night, ch.slug, dj.fmt, dj.count - n, need, basis)
+            budget = _plan_budget(night, dj.fmt)
+            if budget.long_stage is not None:
+                _too_long_stage(report, night, ch.slug, budget.plan, *budget.long_stage)
+            if not budget.go:
+                _not_for_time(report, night, ch.slug, dj.fmt, dj.count - n, budget)
                 break
+            _long_job(report, night, ch.slug, dj.fmt, budget.need)
             make = partial(jobs.make_job, env, ch, dj.fmt, now=now, rng=rng, origin="daily", run_id=run_id)
             code = _attempt(env, run, report, make, ch.slug, run_id=run_id, night=night)
             if code == OUT_OF_TIME:  # S6: left at a stage boundary; the rest of this channel waits too
                 if dj.count - n - 1:
-                    need, basis = nightclock.job_estimate(night.lines, dj.fmt)
-                    _not_for_time(report, night, ch.slug, dj.fmt, dj.count - n - 1, need, basis)
+                    rest = _plan_budget(night, dj.fmt)
+                    _not_for_time(report, night, ch.slug, dj.fmt, dj.count - n - 1, rest)
                 break
             if code == PAUSED:  # paused while this job ran: it waits for the resume, the others do not start
                 if dj.count - n - 1:

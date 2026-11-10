@@ -1199,6 +1199,11 @@ def resume_problem(paths: Paths, rec: Mapping[str, Any], now: datetime | None = 
     if str(info.get("fmt")) != ch.format:
         return "its channel now makes another type of video"
     created = _parse(info.get("created_at"))
+    if rec.get("owner") == OUT_OF_TIME_OWNER:
+        # A job the night left for time (card night-fits) ages from the night that last worked on it and left
+        # it, not from its creation: a video longer than one night, cut at a stage each night, is continued
+        # every night for as long as it makes progress, and never ages out half made.
+        created = _parse(rec.get("closed_at")) or created
     if created is not None and now - created > timedelta(days=RESUME_WITHIN_DAYS):
         return f"it is more than {RESUME_WITHIN_DAYS} days old"
     return None

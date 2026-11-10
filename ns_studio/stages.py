@@ -109,11 +109,11 @@ def run_stage(ctx: JobContext, stage: Stage, *, force: bool = False) -> bool:
         outcome = str(getattr(e, "code", None) or type(e).__name__)
         raise
     finally:  # every route: the ledger the night's estimates come from (`nightclock`)
-        from ns_studio.nightclock import job_line
+        from ns_studio.nightclock import job_line, plan_of
 
         seconds = round(ctx.clock.monotonic() - t0, 3)
-        job_line(ctx, "stage", stage=stage.name, fmt=str(ctx.fmt), tenant=stage.tenant, seconds=seconds,
-                 outcome=outcome)
+        job_line(ctx, "stage", stage=stage.name, plan=plan_of(str(ctx.fmt), ctx.job_dir), fmt=str(ctx.fmt),
+                 tenant=stage.tenant, seconds=seconds, outcome=outcome)
     rewrites = rewritten_inputs(stage)
     if rewrites:  # the stage edited its own inputs on purpose (expansion): record the state it left behind
         h = inputs_hash(ctx, stage)

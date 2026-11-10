@@ -109,7 +109,7 @@ def time_part(report: dict[str, Any]) -> str | None:
     """The toast's part about work the night left for time (card night-fits, S10), or None."""
     from ns_studio.nightclock import limit_adjective
 
-    items: list[dict[str, Any]] = report.get("out_of_time") or []
+    items = [i for i in report.get("out_of_time") or [] if i.get("reason") != STAGE_TOO_LONG]
     if not items:
         return None
     n = sum(int(i.get("jobs") or 1) for i in items)
@@ -146,14 +146,57 @@ def _left_words(item: dict[str, Any]) -> str:
     return f"{channel}'s {what} ({took}{was})"
 
 
+#: `out_of_time[].reason` of a job holding a stage longer than a whole night here (`daily.STAGE_TOO_LONG`).
+STAGE_TOO_LONG = "stage_too_long"
+
+
+def _long_job_words(item: dict[str, Any]) -> str:
+    """(c) A video more work than one night can give: made over several nights."""
+    from ns_studio.nightclock import words
+    from ns_studio.ownership import RESUME_WITHIN_DAYS
+
+    channel = str(item.get("channel") or "a channel")
+    what = "full video" if str(item.get("fmt") or "") in FULL_VIDEO_PLANS else "Short"
+    nights = int(item.get("nights") or 2)
+    out = (
+        f"{channel}'s {what} takes about {words(item.get('need_s') or 0)} of work here, more than the "
+        f"{words(item.get('capacity_s') or 0)} one night can give, so it is made over {nights} nights: each "
+        "night continues it where the last one stopped"
+    )
+    if nights > RESUME_WITHIN_DAYS:
+        out += (
+            f". That is more than {RESUME_WITHIN_DAYS} nights for one video; to make videos in fewer nights, "
+            "set Default type to Shorts only for that channel in Channels"
+        )
+    return out
+
+
+def _too_long_words(item: dict[str, Any]) -> str:
+    """(d) A stage measured longer than a whole night: the night cannot finish it, ever, on this PC."""
+    from ns_studio.nightclock import words
+
+    channel = str(item.get("channel") or "a channel")
+    what = "full videos" if str(item.get("plan") or "") in FULL_VIDEO_PLANS else "Shorts"
+    took, night = words(item.get("measured_s") or 0), words(item.get("capacity_s") or 0)
+    return (
+        f"the {item.get('stage')} stage of {channel}'s {what} took at least {took} on this PC, longer than "
+        f"the {night} one night can give, so the nightly run no longer begins it and {channel}'s {what} are "
+        "not made at night. Make them from Create (a run you start yourself has no time limit), or set "
+        "Default type to Shorts only for that channel in Channels"
+    )
+
+
 def time_note(report: dict[str, Any]) -> str | None:
     """The morning note of a night that left work for time (card night-fits, S10): how long the night took
     of the time Windows allows the task, what was left with the numbers it was decided on, how it continues
-    and what the owner can change. None when nothing was left."""
+    and what the owner can change; a video made over several nights (c) and a stage longer than any night (d,
+    said once). None when there is nothing of that."""
     from ns_studio.nightclock import limit_words, words
 
-    items: list[dict[str, Any]] = report.get("out_of_time") or []
-    if not items:
+    items = [i for i in report.get("out_of_time") or [] if i.get("reason") != STAGE_TOO_LONG]
+    long_jobs: list[dict[str, Any]] = report.get("long_jobs") or []
+    too_long: list[dict[str, Any]] = report.get("too_long_stages") or []
+    if not (items or long_jobs or too_long):
         return None
     timing: dict[str, Any] = report.get("timing") or {}
     limit, used = _limit(report), timing.get("used_s")
@@ -167,12 +210,17 @@ def time_note(report: dict[str, Any]) -> str | None:
     gpu = timing.get("gpu_s") or 0
     if gpu >= 60:
         head += f", {words(gpu)} of it getting the graphics card (waiting for it and loading its models)"
-    left = "; ".join(_left_words(i) for i in items)
-    return (
-        f"{head}. Left for the next night: {left}. The next nightly run continues what was left first "
-        f"({WHILE_NIGHTLY_ON_CLAUSE}). To fit more into one night, set fewer Full videos per week for a "
-        "channel in Channels, or pause a channel. (NS-W211)"
-    )
+    parts = [f"{head}."]
+    if items:
+        parts.append(f"Left for the next night: {'; '.join(_left_words(i) for i in items)}.")
+    parts += [f"{_long_job_words(i)}." for i in long_jobs]
+    parts += [f"{_too_long_words(i)[:1].upper()}{_too_long_words(i)[1:]}." for i in too_long]
+    if items or long_jobs:
+        parts.append(
+            f"The next nightly run continues what was left first ({WHILE_NIGHTLY_ON_CLAUSE}). To fit more "
+            "into one night, set fewer Full videos per week for a channel in Channels, or pause a channel."
+        )
+    return " ".join(parts) + " (NS-W211)"
 
 
 def _fate(item: dict[str, Any]) -> str:
