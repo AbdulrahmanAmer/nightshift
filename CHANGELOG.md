@@ -135,7 +135,8 @@ the render. Below is everything merged since 0.1.14; each "Not covered" line is 
   a row have failed and the process that started it is gone; a record with no process number counts as dead an
   hour after it was announced; a process that is still alive keeps it held. While it is held for that reason you
   get one morning note with NS-W117 and `studio status` shows a `held:` line. Not covered: nothing is closed or
-  restarted for you while it stays held.
+  restarted for you while it stays held; a job or night whose owner record is missing or cannot be read either
+  stays held until it can be read again (NS-W117 says so once).
 - A file Nightshift saves is no longer written over in place while another program reads it: the diagnostics
   zips, the backup zip and restored files, the config and state files, the job `stage_state.json` and the outbox
   videos and sheets are written beside the file and swapped in whole, and readers retry while Windows refuses an
@@ -263,9 +264,9 @@ the render. Below is everything merged since 0.1.14; each "Not covered" line is 
   the log and the render report; a channel whose `formats_allowed` lists `square_1x1` but no Short format now
   gets 1080x1080 Shorts where it got 9:16; the editor has no fields for region, caption style or canvas.
 - A new job takes its id by making its folder, so two jobs never share one (pull request 207, D-ids,
-  `ns_common/db.py` `claim_job_id`). Before, an id was 16 random bits per channel and day and nothing checked that
-  it was free: two videos, two uploads or two linked videos for one channel on one day could write into the same
-  folder, one over the other (about 1 in 300 days at 20 jobs a day). The folder is made in one step the file
+  `ns_common/db.py` `claim_job_id`). Before, an id was 16 random bits per name and day and nothing checked that
+  it was free: two videos for one channel on one day, or two uploads or two linked videos on one day (their ids
+  are shared by all channels), could write into the same folder, one over the other (about 1 in 300 days at 20 jobs a day). The folder is made in one step the file
   system settles, the id format is unchanged, and after 64 refusals in a row the job stops with NS-E205. Used by
   new videos, clip jobs, the series workshop's produce, uploads and linked videos; the nightly's run id is checked
   against the runs table and the owner files. Not covered: the nightly run id is checked, not claimed, so two

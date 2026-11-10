@@ -131,3 +131,13 @@ def test_setup_never_installs_git() -> None:
     names = [(key + " " + winget).lower() for key, winget, *_ in bootstrap.TOOLS]
     assert not any("git" in name for name in names)
     assert "git" not in {row["key"] for row in plan.tool_rows()}
+
+
+def test_section_5_says_detached_checkout_and_main_on_git_only():
+    """F-H22 and F-H40 were closed by changing the spec, not the code: the `ns update` line of BUILD_SPEC.md
+    section 5 must keep saying so (a detached checkout, main on --git only) and must not go back to a pull."""
+    spec = (Path(__file__).resolve().parent.parent / "BUILD_SPEC.md").read_text(encoding="utf-8")
+    line = next(ln for ln in spec.splitlines() if ln.startswith("**`ns update`**"))
+    assert "checks out (detached)" in line
+    assert "which works with `--git` only" in line
+    assert "git pull" not in line
