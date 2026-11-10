@@ -91,7 +91,7 @@ from pathlib import Path
 from typing import Any
 
 import ns_common.config_snapshot as config_snapshot
-from ns_common.atomic import read_text_retry, write_text_atomic
+from ns_common.atomic import read_text_retry, write_bytes_atomic, write_text_atomic
 
 SUFFIX = ".rollback-pending.json"
 SWAP_SUFFIX = ".swap"
@@ -116,6 +116,26 @@ def swap_for(app: Path) -> Path:
 def prev_for(app: Path) -> Path:
     """`<app>.prev`, the program backup."""
     return app.with_name(app.name + ".prev")
+
+
+#: `<app>.rollback-settings-<yyyymmdd-hhmm>.zip`: the settings a stale record held (`recover`).
+SETTINGS_INFIX = ".rollback-settings-"
+
+
+def saved_settings(app: Path) -> list[Path]:
+    """The zips `recover` saved beside `app` before it removed a stale record (Nightshift never deletes
+    them; the uninstall does)."""
+    try:
+        return sorted(p for p in app.parent.glob(f"{app.name}{SETTINGS_INFIX}*.zip") if p.is_file())
+    except OSError:
+        return []
+
+
+def saved_settings_sentence(file: Path, config: Path) -> str:
+    return (
+        f"The settings saved before the interrupted rollback are in {file}. To use them, stop Nightshift "
+        f"and unzip it into {config}."
+    )
 
 
 def swap_waits(app: Path) -> bool:
@@ -568,7 +588,28 @@ def recover(app: Path, config: Path, *, may_undo: bool = True) -> Recovery:
                 "copy to put back and keeps the settings files as they are).",
                 "failed",
             )
-    return _cleared(app, f"{stale}: it was removed, and the settings files were left as they are.{marked}")
+    saved = ""
+    if intent.live:
+        # The record is the only place that holds the settings from before the rollback (a rollback that
+        # lost power, `app.swap` moved away by hand, a fresh program folder from INSTALL.cmd). They go into a
+        # file of their own BEFORE the record is removed; a start that could not remove the record afterwards
+        # finds the same bytes saved and does not save them again.
+        try:
+            have = [f for f in saved_settings(app) if f.read_bytes() == intent.live]
+            name = f"{app.name}{SETTINGS_INFIX}{datetime.now():%Y%m%d-%H%M}.zip"
+            file = have[0] if have else app.with_name(name)
+            if not have:
+                write_bytes_atomic(file, intent.live)
+        except OSError as e:
+            return Recovery(
+                f"{stale}, and the settings files it holds from before that rollback could not be saved "
+                f"beside the program ({e}). The record stays and the next start tries again.",
+                "failed",
+            )
+        saved = " " + saved_settings_sentence(file, config)
+    return _cleared(
+        app, f"{stale}: it was removed, and the settings files were left as they are.{marked}{saved}"
+    )
 
 
 def _cleared(app: Path, sentence: str) -> Recovery:

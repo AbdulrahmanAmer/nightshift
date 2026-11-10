@@ -312,6 +312,11 @@ def program_folders(
     failed = any(event in ("rollback_recovery_failed", "first_start_check_failed") for event, _ in told)
     waiting = rollback_intent.swap_note(app)
     left = [rollback_intent.left_sentence(f) for f in rollback_intent.left_folders(app) if str(f) not in did]
+    # (and the settings a stale rollback record held, saved beside the program before the record went)
+    left += [
+        rollback_intent.saved_settings_sentence(f, paths.config)
+        for f in rollback_intent.saved_settings(app) if str(f) not in did
+    ]
     now = f"This check: {did}" if did else ""
     if waiting or left or failed:
         said = [waiting, *left, now]
