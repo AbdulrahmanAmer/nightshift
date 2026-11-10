@@ -1111,3 +1111,40 @@ def test_switching_the_mode_keeps_the_old_file_as_other_and_never_over_an_earlie
     assert aside(real) == ["runtime.json.other", "runtime.json.other.1"]
     assert (real.paths.config / "runtime.json.other").read_bytes() == dev_bytes
     assert (real.paths.config / "runtime.json.other.1").read_bytes() == real_bytes
+
+
+@pytest.mark.parametrize("taken", [False, True], ids=["first", "other-taken"])
+@pytest.mark.parametrize("change", ["dev_to_real", "real_to_dev"])
+def test_a_mode_switch_names_the_kept_file_on_the_tuning_row(
+    tmp_path: Path, change: str, taken: bool
+) -> None:
+    """The route of INSTALL.cmd over an install of the other mode: ``reset_for_mode_switch`` runs before the
+    steps (``wizard.build_context``) and sets the old file aside, so the tuning step finds none. Its row, the
+    console and install-report.json name the file that is on disk, with its number when .other was taken."""
+    from installer.stage2.devmode import reset_for_mode_switch
+
+    ctx, _settings = first_install(tmp_path, change)
+    old = ctx.paths.runtime_file.read_bytes()
+    if taken:
+        (ctx.paths.config / "runtime.json.other").write_bytes(b"an earlier one")
+    answers, dev = answers_of(change, second=True)
+    assert reset_for_mode_switch(ctx.paths.home, dev) is True
+    name = "runtime.json.other.1" if taken else "runtime.json.other"
+    again, ui, code = run_setup(tmp_path, answers, dev)
+    assert code == EXIT_OK
+    plain_and_final(again, expected(again, None, change))
+    assert (again.paths.config / name).read_bytes() == old              # the file the row names is there
+    status, detail = row_of(ui, "s06_tune")[1:]
+    said = (
+        "The settings of the other kind of install (real or dev) were not carried over: config\\runtime.json "
+        f"is written new from your answers. The old file is kept as {name}. A port or an engine you changed "
+        "by hand or in Settings, and the tuned numbers, are in it: set them again in Settings, or copy them "
+        "from that file."
+    )
+    assert (status, detail) == ("warning", said) and said in ui.text
+    assert report(again)["steps"]["s06_tune"]["note"] == said
+    if taken:
+        assert (again.paths.config / "runtime.json.other").read_bytes() == b"an earlier one"
+    third, ui3, code3 = run_setup(tmp_path, answers, dev)               # said once
+    assert code3 == EXIT_OK and row_of(ui3, "s06_tune")[1:] == ("done", "already complete")
+    assert third.flag("runtime_other") is None

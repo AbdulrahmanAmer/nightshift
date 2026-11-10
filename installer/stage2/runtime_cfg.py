@@ -42,6 +42,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from installer.stage2.context import StepContext
+from installer.stage2.devmode import OTHER_FLAG
 from ns_common import first_start
 from ns_common.atomic import read_bytes_retry
 from ns_common.config import load_runtime, save_runtime
@@ -306,6 +307,30 @@ def newer_sentence(kept_as: str, removed: tuple[str, ...], *, whole: bool = Fals
 OTHER_NAME = ".other"
 
 
+def switched_sentence(kept_as: str) -> str:
+    """What the owner is told (console, the tuning step's row, report) after a switch between a dev and a
+    real install set the old mode's runtime.json aside before the steps ran."""
+    return (
+        "The settings of the other kind of install (real or dev) were not carried over: config\\runtime.json "
+        f"is written new from your answers. The old file is kept as {kept_as}. A port or an engine you "
+        "changed by hand or in Settings, and the tuned numbers, are in it: set them again in Settings, or "
+        "copy them from that file."
+    )
+
+
+def _tell_switched(ctx: StepContext) -> None:
+    """The tuning step: name the file a mode switch set aside (``devmode.reset_for_mode_switch``), once."""
+    name = ctx.flag(OTHER_FLAG)
+    if name is None:
+        return
+    if isinstance(name, str) and (ctx.paths.config / name).is_file():
+        sentence = switched_sentence(name)
+        ctx.log.warn("runtime_other_kept", f"{ctx.paths.runtime_file}: the other mode's file is at {name}")
+        ctx.ui.say(sentence, "yellow")
+        ctx.note_step(sentence)
+    ctx.clear_flags(OTHER_FLAG)
+
+
 def whole_sentence(kept_as: str | None) -> str:
     """What the owner is told (console, row, report) when the file is built again because it was made for
     another kind of install. ``kept_as``: the name the old file is kept under (None: it was gone by then)."""
@@ -505,6 +530,8 @@ def ensure_baseline(ctx: StepContext, *, follow_answers: bool = False) -> Runtim
     for a model or engine-test change the answers asked for, which the console names)."""
     path = ctx.paths.runtime_file
     found = existing_runtime(ctx)
+    if follow_answers:
+        _tell_switched(ctx)     # after the refusal above: a Retry still has it to say
     kept_rt = found.runtime
     if kept_rt is None:     # missing or damaged: nothing is kept
         if found.state == "damaged":
