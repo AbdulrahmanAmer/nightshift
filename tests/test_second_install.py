@@ -720,7 +720,7 @@ def test_a_launcher_inside_an_install_runs_it_and_says_so_when_the_variable_name
     assert lines == [said, str(b), str(b), str(b)]  # said once; every child inherits this install's folder
 
 
-def test_a_program_inside_an_install_uses_it_whatever_the_variable_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+def test_a_program_inside_an_install_uses_it_when_the_variable_is_only_the_pcs_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
     import ns_common.paths as paths_mod
 
     assert hasattr(paths_mod, "home_of_place"), "the base knows its home from the variable only"
@@ -735,6 +735,8 @@ def test_a_program_inside_an_install_uses_it_whatever_the_variable_names(tmp_pat
     monkeypatch.setattr(paths_mod, "repo_root", lambda: b / "app")
     monkeypatch.setattr(paths_mod, "_said_place", [])
     monkeypatch.setenv(HOME_VAR, str(a))
+    monkeypatch.setenv("NS_TEST_USER_HOME", str(a))  # the PC's one default names A; nothing set it for this process
+    monkeypatch.delenv("NS_HOME_EXPLICIT", raising=False)
     assert Paths.from_env().home == b and Paths.from_env().home == b
     err = capsys.readouterr().err
     assert err.count(f"Nightshift: using the install in {b} (this program is in it); NIGHTSHIFT_HOME names {a}") == 1

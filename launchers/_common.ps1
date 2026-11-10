@@ -151,6 +151,10 @@ function Get-NsHome {
     # launcher that is inside an install (<home>\app\launchers) runs THAT install, whatever the variable names,
     # and says so once when the variable names another install. Only a launcher that is in no install (a dev install's, in a
     # repository) follows the variable, which its launch script sets to the install it was started for.
+    # This is stricter than 'ns' and 'studio' on purpose (ns_common.paths.Paths.from_env follows a variable
+    # that was set FOR its process, such as $env:NIGHTSHIFT_HOME typed in a terminal): a launcher starts the
+    # programs of an install and belongs to that install's version, and nothing in the product hands a
+    # launcher inside one install the home of another. To start another install, use its own launchers.
     $fromEnv = $env:NIGHTSHIFT_HOME
     $fromHere = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
     if ((Split-Path -Leaf (Split-Path -Parent $PSScriptRoot)) -ieq 'app' -and (Test-NsHomeFolder $fromHere)) {

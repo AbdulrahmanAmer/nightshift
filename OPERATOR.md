@@ -610,11 +610,15 @@ without your yes:
   later repair of either install does not move them again. Shortcuts of a Nightshift folder that was deleted are
   taken without a question, and setup says which folder they opened. A file under one of those names that
   Nightshift did not make is left alone.
-- **NIGHTSHIFT_HOME.** It is only the default for a command typed in a terminal that belongs to no install. A
-  program that is inside an install uses that install: the shortcuts, the nightly task, INSTALL.cmd and
-  UNINSTALL.cmd started from an install's `app` folder, and `ns` or `studio` started from an install's own
-  `venvs` folder. When such a program finds the variable naming another folder it uses its own install and says so
-  in one line ("Nightshift: using the install in ..."). The variable follows the same yes as the shortcuts, and
+- **NIGHTSHIFT_HOME.** The value Windows keeps for your account is only the PC's default, for a command typed in
+  a terminal that belongs to no install. The shortcuts, the nightly task, and INSTALL.cmd and UNINSTALL.cmd
+  started from an install's `app` folder always work on the install they are in. `ns` or `studio` started from
+  an install's own `venvs` folder works on that install too when the variable is only that default, and says so
+  in one line ("Nightshift: using the install in ..."). To work on another install from the same terminal, set
+  the variable in that window first (`$env:NIGHTSHIFT_HOME = 'D:/Other'`): a value that differs from the PC's
+  default was set on purpose and is followed, again with one line ("Nightshift: using D:/Other: ..."). A value
+  equal to the PC's default cannot be told from the default: start the other install's own programs or
+  shortcuts instead. The variable follows the same yes as the shortcuts, and
   the switch (or the console question) is offered while either the shortcuts or the variable are another
   install's; its line says what it moves. After it moved, open a new terminal: programs that are already open
   keep the old value.

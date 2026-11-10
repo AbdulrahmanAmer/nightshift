@@ -279,6 +279,8 @@ $nsHome = $HomeDir
 if (-not $nsHome) {
     # UNINSTALL.cmd passes no folder. Run from an install's own program folder (<home>\app) it removes THAT
     # install, whatever NIGHTSHIFT_HOME names: on a PC with two Nightshift folders the variable names one.
+    # A NIGHTSHIFT_HOME typed in this window does not change that either ('ns' and 'studio' follow one):
+    # removing an install is never done on the word of a variable; -HomeDir is the explicit way.
     $programDir = Split-Path -Parent $PSScriptRoot
     if ((Split-Path -Leaf $programDir) -ieq 'app') {
         $above = Split-Path -Parent $programDir

@@ -942,7 +942,9 @@ function Resolve-NsHome {
     if ($fromAnswers) { return $fromAnswers }
     # INSTALL.cmd started from an install's own program folder (<home>\app) repairs THAT install. A PC can hold
     # several Nightshift folders and has one NIGHTSHIFT_HOME, which may name another of them: following it
-    # from here would copy this program over the other install's.
+    # from here would copy this program over the other install's. That holds for a NIGHTSHIFT_HOME typed in
+    # this window too ('ns' and 'studio' follow one, ns_common.paths.Paths.from_env): setup replaces a
+    # program folder, so its only explicit ways to name another folder are -HomePath and the answers file.
     if ($AppFolder -and ((Split-Path -Leaf $AppFolder.TrimEnd('\')) -ieq 'app')) {
         $above = Split-Path -Parent $AppFolder.TrimEnd('\')
         if ($above -and (Test-Path -LiteralPath (Join-Path $above 'config') -PathType Container)) { return $above }
