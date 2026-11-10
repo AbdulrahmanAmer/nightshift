@@ -12,6 +12,7 @@ from typing import Any, BinaryIO
 
 from pydantic import ValidationError
 
+from ns_common import devmode
 from ns_common.atomic import write_bytes_atomic
 from ns_common.commandline import render, typed
 from ns_common.config import save_runtime
@@ -128,6 +129,9 @@ class SettingsService:
             "fake_footage": bool((runtime or {}).get("fake_footage")),
             # engine test (docs/DEV_MODE.md): the story text stages use a 1 to 2 GB model's thresholds
             "tiny_story": bool((runtime or {}).get("tiny_story")),
+            # test install (H-10): the simulated graphics card, true only where it is in effect (a dev or
+            # engine-test install); set by setup's answers, never by this page
+            "fake_gpu": devmode.fake_gpu_in(runtime),
             "flags": flags,
             "keys": self._key_flags(),
             # a key whose copy for nightly runs (config/secrets.dpapi) could not be saved or locked, with the

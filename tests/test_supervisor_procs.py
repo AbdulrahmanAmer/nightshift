@@ -118,14 +118,14 @@ def test_start_assigns_to_job(tmp_path: Path) -> None:
 
 def test_vram_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
     out = "1234, 8000 MiB\n55, 100 MiB\n1234, 500 MiB\nnoise\n"
-    monkeypatch.setattr(procs, "_nvsmi", lambda args: out)
+    monkeypatch.setattr(procs, "_nvsmi", lambda args, smi=None: out)
     assert procs.vram_mb(1234) == 8500
     assert procs.vram_mb(55) == 100
     assert procs.vram_mb(999) == 0
 
 
 def test_vram_unknown_when_driver_reports_na(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(procs, "_nvsmi", lambda args: "77, [N/A]\n")
+    monkeypatch.setattr(procs, "_nvsmi", lambda args, smi=None: "77, [N/A]\n")
     assert procs.vram_mb(77) is None
 
 
@@ -140,9 +140,9 @@ def test_vram_none_without_nvidia_smi(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_gpu_memory_used_sums_gpus(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(procs, "_nvsmi", lambda args: "250\n50\n")
+    monkeypatch.setattr(procs, "_nvsmi", lambda args, smi=None: "250\n50\n")
     assert procs.gpu_memory_used_mb() == 300
-    monkeypatch.setattr(procs, "_nvsmi", lambda args: "")
+    monkeypatch.setattr(procs, "_nvsmi", lambda args, smi=None: "")
     assert procs.gpu_memory_used_mb() is None
 
 
@@ -158,7 +158,7 @@ def test_rtx_5060_ti_readouts(monkeypatch: pytest.MonkeyPatch) -> None:
         "--query-compute-apps=pid,used_memory": "4242, 9100 MiB\n",
     }
 
-    def fake(args: list[str]) -> str:
+    def fake(args: list[str], smi: object = None) -> str:
         return answers[args[0]] if args else full
 
     monkeypatch.setattr(procs, "_nvsmi", fake)

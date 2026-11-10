@@ -12,7 +12,7 @@ from typing import Any
 
 #: The switches of an install made for testing (docs/DEV_MODE.md). Settings shows them; only setup writes them
 #: (from `answers.json`), so no call from the dashboard may set one.
-TEST_SWITCHES = ("dev_mode", "fake_footage", "tiny_story")
+TEST_SWITCHES = ("dev_mode", "fake_footage", "tiny_story", "fake_gpu")
 #: Top-level keys the page does not edit as engine flags.
 HIDDEN = ("profile", "supervisor_port", *TEST_SWITCHES)
 

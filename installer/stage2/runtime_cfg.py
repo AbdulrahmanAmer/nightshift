@@ -23,8 +23,9 @@ unreadable  not known: NS-E125, nothing is guessed     nothing is changed
 The invariant: the final runtime.json is what a fresh install with these answers writes (``build_runtime``)
 plus exactly the settings of the existing file that setup keeps by design: every one when the answers did not
 change and the file is of this kind of install; all but ``llama.model_path`` and ``llama.flags`` when the tier
-or the custom model changed; all but ``fake_footage``, ``tiny_story`` and ``tts.engine`` when an engine-test
-answer changed; none when the file was made for another kind of install (real or dev, GPU or not), is
+or the custom model changed; all but ``fake_footage``, ``tiny_story``, ``fake_gpu`` and ``tts.engine`` when
+an engine-test answer changed; none when the file was made for another kind of install (real or dev, GPU or
+not), is
 missing or is damaged. What the answers changed is recorded by s01 (``PENDING_FLAG``) against the settings
 ``Found.runtime`` names and applied by s06 (``ensure_baseline(follow_answers=True)``) to the settings the same
 field names then; the kind of install is compared by s06 itself on every run, so no state of the old file and
@@ -105,6 +106,7 @@ def build_runtime(ctx: StepContext) -> Runtime:
         rt.tts.engine = "fake"
     rt.fake_footage = ctx.fake_footage      # engine test: placeholder footage instead of a stock-footage key
     rt.tiny_story = ctx.tiny_story          # engine test: the text stages' thresholds of a 1 to 2 GB model
+    rt.fake_gpu = ctx.fake_gpu              # test install: the simulated graphics card (s01 says NS-W121)
     if ctx.dev_mode:
         # docs/DEV_MODE.md: fake engines. The voice service runs in the supervisor venv (there is no PyTorch
         # venv), and every consumer of runtime.json reads dev_mode to start the fakes.
@@ -501,10 +503,11 @@ def _follow(ctx: StepContext, rt: Runtime) -> _Follow:
         changed.append("the language model")
     if engine:
         out.fake_footage, out.tiny_story = fresh.fake_footage, fresh.tiny_story
+        out.fake_gpu = fresh.fake_gpu
         out.tts.engine = fresh.tts.engine
         lines.append(
-            "Engine test: config\\runtime.json now follows your fake_voice, fake_footage and tiny_story "
-            "answers."
+            "Engine test: config\\runtime.json now follows your fake_voice, fake_footage, tiny_story and "
+            "fake_gpu answers."
         )
         changed.append("the engine test")
     return _Follow(out, lines=tuple(lines), changed=" and ".join(changed))

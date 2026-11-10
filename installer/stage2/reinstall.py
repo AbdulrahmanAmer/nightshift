@@ -69,6 +69,7 @@ SIMPLE_KEYS = (
     "fake_voice",
     "fake_footage",
     "tiny_story",
+    "fake_gpu",
     "owner_name",
     "ui_theme",
 )
@@ -322,11 +323,11 @@ def _runtime(ctx: StepContext, keys: set[str], compared: bool) -> list[str]:
                 f"{now} is downloaded and checked, then points at {now} with that model's settings, and "
                 f"tuning runs again. {was} stays in models\\llm; delete it by hand to free space."
             )
-        if keys & {"fake_voice", "fake_footage", "tiny_story"}:
+        if keys & {"fake_voice", "fake_footage", "tiny_story", "fake_gpu"}:
             owed["engine"] = True
             lines.append(
-                "Engine test: config\\runtime.json follows your fake_voice, fake_footage and tiny_story "
-                "answers once the voice engine is in place."
+                "Engine test: config\\runtime.json follows your fake_voice, fake_footage, tiny_story and "
+                "fake_gpu answers once the voice engine is in place."
             )
     if owed:
         ctx.set_flag(PENDING_FLAG, owed)

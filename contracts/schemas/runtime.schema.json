@@ -369,6 +369,11 @@
       "default": false,
       "title": "Tiny Story",
       "type": "boolean"
+    },
+    "fake_gpu": {
+      "default": false,
+      "title": "Fake Gpu",
+      "type": "boolean"
     }
   },
   "title": "Runtime",

@@ -101,6 +101,7 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         tmpsweep.sweep_state_tmp(sup.paths)  # a crash between "create" and "swap" left a ~ns*.tmp behind
         sup.write_state()
+        sup.tell_fake_gpu_ignored()  # NS-W121 as a morning note, once while it waits
         tasks: list[asyncio.Task[Any]] = []
         if run_monitor:
             tasks.append(asyncio.create_task(sup.run_monitor()))
