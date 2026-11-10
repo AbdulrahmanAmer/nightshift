@@ -11,6 +11,13 @@ system drops when the process ends can (`ns_common.singleton.FileLock`, the one 
   `done`, `failed`, `interrupted`. The OS releases the lock with the process, so a recycled pid can never
   pass for a live owner. No column was added to studio.db: owner info lives beside the job, so nothing
   needs a migration.
+* A lock that cannot be looked at (its file cannot be opened: an antivirus, a lost permission) is the one
+  place where the record's pid is asked, and there a pid alone proves nothing: Windows hands a dead process's
+  pid to the next one. So the work is held without a bound only while that pid is alive AND its process
+  started no later than the record says the work did (`_unprobed`, NS-W117, cleared by ending that process).
+  Every other state of such a lock (no pid, a pid that cannot be checked, a record that cannot be read) ends
+  `UNPROBED_UNKNOWN_PID_S` after the last time known from disk, with NS-W118; a pid that is gone or reused
+  ends after `UNPROBED_LIMIT` looks or at that same time, whichever comes first.
 * `liveness` is `live` while the lock is held (or a job was announced a moment ago and has not taken it
   yet), `dead` when a run or job that said `running` has no holder, `ended` after a clean end,
   `interrupted` once `recover` has closed it, and `unknown` for rows with no owner file (studio.db written
@@ -81,13 +88,24 @@ OPEN_RETRY_WAITS_S = (0.1, 0.2, 0.3, 0.4)
 #: The same for a liveness probe, which is asked often (every `/api/status`) and must stay quick.
 PROBE_RETRY_WAITS_S = (0.05, 0.1)
 #: A lock that cannot be probed at all (an `OSError` that lasts: an antivirus or backup tool holding the file,
-#: a permission the folder lost) counts as HELD, so nobody closes work that may be running. That has a bound:
-#: after this many probes in a row that failed, and the owner's pid (from its record) is gone, the owner is
-#: dead; when the record has no pid the bound is `UNPROBED_UNKNOWN_PID_S` after the job was announced. A pid
-#: that is still alive keeps it held, with a coded note (`UNPROBED_CODE`) saying why work is held.
+#: a permission the folder lost) counts as HELD, so nobody closes work that may be running. Every such hold
+#: has a bound but one (`_unprobed` is the one place that decides):
+#: * the record's pid is alive and its process started no later than the record's own time (plus
+#:   `PID_START_SLACK_S`): held for as long as that process lives, with the note `UNPROBED_CODE`;
+#: * the pid is gone, or alive but started later (a reused pid): dead after `UNPROBED_LIMIT` failed probes in
+#:   a row in this process, or at the time bound below, whichever comes first (a process that asks once, such
+#:   as the nightly's `recover`, never reaches the count);
+#: * anything else (no pid, a pid that cannot be checked, no readable record): dead `UNPROBED_UNKNOWN_PID_S`
+#:   after the last time known from disk (the record's `started_at`/`announced_at`, else the record file's
+#:   mtime, else the lock file's), with the note `UNPROBED_UNOWNED_CODE`. The clock is on disk because most
+#:   askers live for seconds (`studio status`, `recover`): a clock in memory would start again in each.
 UNPROBED_LIMIT = 3
 UNPROBED_UNKNOWN_PID_S = 3600.0
 UNPROBED_CODE = "NS-W117"
+UNPROBED_UNOWNED_CODE = "NS-W118"
+#: Record times are written in whole seconds, after the process started: a process that started up to this
+#: long after the record's time is still its writer.
+PID_START_SLACK_S = 2.0
 #: `recover` waits this long for another process that is closing the same things (the engine and the nightly
 #: start together after a power cut), then scans again: the nightly must not plan before the job is closed.
 RECOVER_WAIT_S = 20.0
@@ -227,28 +245,54 @@ def _acquire(lock: FileLock, waits: Sequence[float] | None = None) -> None:
     lock.acquire()
 
 
-#: Per owner (home + id), probes in a row whose lock could not be opened, and whether the owner has been told.
+#: Per owner (home + id): [failed probes in a row, the codes the owner was told, when the first of them
+#: failed, the live pid that keeps it held (None when none does)]. A good probe removes the entry.
 _UNPROBED: dict[tuple[str, str], list[Any]] = {}
 
 
-def _pid_alive(pid: int) -> bool:
-    """True while a process with this pid exists. Tests replace this; a check that itself fails says alive."""
-    if pid == os.getpid():
-        return True
+def _pid_alive(pid: int) -> bool | None:
+    """True while a process with this pid exists, False when none does, None when that cannot be checked.
+
+    Never "alive" (and never "gone") because the check itself failed: `_unprobed` bounds an unknown by time.
+    Tests replace this.
+    """
     try:
         from ns_supervisor.update_job import pid_alive
 
         return bool(pid_alive(pid))
-    except Exception:  # noqa: BLE001 - cannot tell: the owner may be alive (fail closed)
-        return True
+    except Exception:  # noqa: BLE001 - cannot tell
+        return None
+
+
+def _pid_started(pid: int) -> datetime | None:
+    """When the process that has this pid now was started; None when there is none or it cannot be read."""
+    try:
+        import psutil
+
+        return datetime.fromtimestamp(psutil.Process(pid).create_time(), UTC)
+    except Exception:  # noqa: BLE001 - no psutil, no such process, access denied: not known
+        return None
 
 
 def unprobed_message(owner_id: str, pid: int | None = None) -> str:
     """The sentence the owner reads (morning note, `studio status`) while `owner_id` is held only because its
-    lock cannot be probed: the code's message and hint, and which work it is."""
-    d = describe(UNPROBED_CODE)
-    who = f" (process {pid} is still running)" if pid else ""
-    return f"{UNPROBED_CODE}: {d.message} {owner_id}{who}. {d.hint}"
+    lock cannot be probed: the code's message and hint, and which work it is.
+
+    NS-W117 when a live process is known to own it (`pid`, or the one `_unprobed` found), with how to clear
+    it; NS-W118 when none is, which says the hold ends by itself within the hour.
+    """
+    if pid is None:
+        pid = next((st[3] for (_, o), st in _UNPROBED.items() if o == owner_id and st[3]), None)
+    if pid:
+        d = describe(UNPROBED_CODE)
+        return (
+            f"{UNPROBED_CODE}: {d.message} {owner_id} (process {pid} is still running). {d.hint} Ending "
+            f"process {pid} in Task Manager clears it too: the next start of Nightshift or the next nightly "
+            "run then closes it as interrupted. Release in the Queue does not clear it (it frees the "
+            "graphics card only)."
+        )
+    d = describe(UNPROBED_UNOWNED_CODE)
+    return f"{UNPROBED_UNOWNED_CODE}: {d.message} {owner_id}. {d.hint}"
 
 
 def unprobed_owners(paths: Paths) -> list[str]:
@@ -256,44 +300,85 @@ def unprobed_owners(paths: Paths) -> list[str]:
     return sorted(o for (home, o), st in _UNPROBED.items() if home == str(paths.home) and st[0] > 0)
 
 
-def _unprobed(paths: Paths, owner_id: str) -> bool:
+def _unprobed(paths: Paths, owner_id: str, handed: Mapping[str, Any] | None = None) -> bool:
     """The answer of `lock_held` when the lock cannot be probed: True (held) or, once bounded, False (dead).
 
-    Dead when the record's pid is gone after `UNPROBED_LIMIT` failed probes in a row, or (a record with no
-    pid) `UNPROBED_UNKNOWN_PID_S` after it was announced. While it stays held the owner is told once, in a
-    coded morning note (`UNPROBED_CODE`), and `studio status` lists it.
+    The one place that decides it, for every state the record can be in (`handed` is the record `liveness`
+    had, used when the file can no longer be read: missing, locked or half written):
+
+    * its pid is this process: held exactly while this process holds the work (`_HELD`), else gone;
+    * its pid is alive and that process started no later than the record's newest time (`started_at`,
+      `announced_at`) plus `PID_START_SLACK_S`: held, with no bound, and the owner is told once per process
+      with NS-W117 (which process, and that ending it or restarting the PC clears it). Live work is never
+      released here;
+    * its pid is gone, or alive but started later (the pid was given to another program): gone. Dead after
+      `UNPROBED_LIMIT` failed probes in a row in this process, or at the time bound, whichever is first;
+    * no pid, a pid whose state or start time cannot be read, a pid with no time in the record to compare
+      with, no record: unknown. Held until `UNPROBED_UNKNOWN_PID_S` after the last known time, then dead;
+      the owner is told once per process with NS-W118 (it ends by itself; `recover` then closes the work).
+
+    The last known time is on disk, so a process that lives for seconds decides the same as one that has
+    watched for an hour: the record's newest time, else the record file's mtime, else the lock file's
+    (`stat` works where opening does not). Only when none of them can be read does it count from this
+    process's first failed probe. Limits: the times are wall-clock, so a clock set back by more than the
+    slack between a process's start and its record makes a live owner look reused (it is then closed as
+    interrupted; the lock that cannot be opened still refuses a second start, `_take`).
     """
     key = (str(paths.home), owner_id)
-    state = _UNPROBED.setdefault(key, [0, False])
+    now = _now()
+    state = _UNPROBED.setdefault(key, [0, set(), now, None])
     state[0] += 1
-    rec = read_record(paths, owner_id) or {}
+    rec = read_record(paths, owner_id) or handed or {}
     pid = rec.get("pid")
     pid = pid if isinstance(pid, int) and pid > 0 else None
-    if pid is not None:
-        gone = not _pid_alive(pid)
-    else:
-        announced = _parse(rec.get("announced_at")) or _parse(rec.get("started_at"))
-        gone = announced is not None and (_now() - announced).total_seconds() > UNPROBED_UNKNOWN_PID_S
-    if gone and (state[0] >= UNPROBED_LIMIT or pid is None):
+    times = [t for t in (_parse(rec.get(k)) for k in ("started_at", "announced_at")) if t is not None]
+    known = max(times) if times else None
+    alive: bool | None = None  # True: provably its owner; False: gone or reused; None: cannot tell
+    if pid == os.getpid():
+        with _HELD_GUARD:
+            alive = (str(owners_dir(paths)), owner_id) in _HELD
+    elif pid is not None:
+        started = _pid_started(pid)
+        if started is None:
+            alive = False if _pid_alive(pid) is False else None  # alive with no start time proves nothing
+        elif known is not None:
+            alive = (started - known).total_seconds() <= PID_START_SLACK_S
+    state[3] = pid if alive else None
+
+    def tell(code: str) -> None:
+        if code not in state[1]:
+            state[1].add(code)
+            with contextlib.suppress(Exception):  # a note must never make the probe fail
+                leave_note(paths, None, unprobed_message(owner_id, state[3]))
+
+    if alive:
+        tell(UNPROBED_CODE)
+        return True
+    last = known
+    for f in (record_path(paths, owner_id), lock_path(paths, owner_id)):
+        if last is None:
+            with contextlib.suppress(Exception):
+                last = datetime.fromtimestamp(f.stat().st_mtime, UTC)
+    if last is None:
+        last = state[2]
+    if (now - last).total_seconds() > UNPROBED_UNKNOWN_PID_S:
         return False
-    if gone:
-        return True  # its process is gone: a probe or two more settles it, nothing to tell the owner
-    if not state[1]:
-        state[1] = True
-        with contextlib.suppress(Exception):  # a note must never make the probe fail
-            leave_note(paths, None, unprobed_message(owner_id, pid))
+    if alive is False:
+        return state[0] < UNPROBED_LIMIT  # a probe or two more settles it: nothing to tell the owner
+    tell(UNPROBED_UNOWNED_CODE)
     return True
 
 
-def lock_held(paths: Paths, owner_id: str) -> bool:
+def lock_held(paths: Paths, owner_id: str, rec: Mapping[str, Any] | None = None) -> bool:
     """True while some process (this one too) holds the lock of `owner_id`, or when it cannot be probed.
 
     Fails closed, with a bound: an `OSError` while looking at or opening the lock file (another program holds
     it, the folder lost a permission) is "held", never "free", so `liveness` says "live" and nobody closes
     work that may be running: `recover` leaves it open for its next call, the planner (`in_progress`, cadence)
-    counts it, `run_state` says running and `studio status` lists it as working. The bound is `_unprobed`: the
-    owner's process gone (its pid, from its record) after `UNPROBED_LIMIT` failed probes in a row means dead,
-    and while it is held for this reason the owner sees the coded note `NS-W117`.
+    counts it, `run_state` says running and `studio status` lists it as working. The bound is `_unprobed`
+    (which gets `rec`, the record the caller had, for when the file can no longer be read): only a live
+    process that provably started the work keeps it held for good (note `NS-W117`); every other state ends
+    within `UNPROBED_UNKNOWN_PID_S` of its last known time (note `NS-W118`).
     """
     path = lock_path(paths, owner_id)
     key = (str(paths.home), owner_id)
@@ -302,7 +387,7 @@ def lock_held(paths: Paths, owner_id: str) -> bool:
             _UNPROBED.pop(key, None)
             return False
     except OSError:
-        return _unprobed(paths, owner_id)
+        return _unprobed(paths, owner_id, rec)
     probe = FileLock(path)
     try:
         _acquire(probe, PROBE_RETRY_WAITS_S)  # a file that cannot be opened for a moment is not "not held"
@@ -310,14 +395,20 @@ def lock_held(paths: Paths, owner_id: str) -> bool:
         _UNPROBED.pop(key, None)
         return True
     except OSError:
-        return _unprobed(paths, owner_id)  # could not look: held, within the bound
+        return _unprobed(paths, owner_id, rec)  # could not look: held, within the bound
     probe.release()
     _UNPROBED.pop(key, None)
     return False
 
 
 def liveness(paths: Paths, owner_id: str, rec: Mapping[str, Any] | None = None) -> Liveness:
-    """Whether `owner_id` has a live owner, from its record and its lock (see the module note)."""
+    """Whether `owner_id` has a live owner, from its record and its lock (see the module note).
+
+    A record that is missing or cannot be read when this starts is `unknown`, not live: its callers bound it
+    by age (`LEGACY_IN_PROGRESS_H`, in `in_progress`, `run_state` and `_recover_legacy`), so the lock is not
+    asked. A record this call did get is passed on to `lock_held`, which needs it when the lock cannot be
+    probed and the file can no longer be read.
+    """
     rec = rec if rec is not None else read_record(paths, owner_id)
     if rec is None:
         return "unknown"
@@ -326,7 +417,7 @@ def liveness(paths: Paths, owner_id: str, rec: Mapping[str, Any] | None = None) 
         return "interrupted"
     if state not in OPEN_STATES:
         return "ended"
-    if lock_held(paths, owner_id):
+    if lock_held(paths, owner_id, rec):
         return "live"
     announced = _parse(rec.get("announced_at"))
     if (

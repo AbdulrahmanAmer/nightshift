@@ -9,6 +9,8 @@ answer:
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -62,10 +64,20 @@ class Pids:
         return pid in self.alive
 
 
+#: The product's own pid check, kept for the tests that need it (the fixture below replaces it).
+REAL_PID_ALIVE = ownership._pid_alive  # noqa: SLF001
+#: When the fake live processes started: long before any record of these tests, so they are its owners.
+LONG_AGO = datetime(2026, 11, 1, tzinfo=UTC)
+
+
 @pytest.fixture(autouse=True)
 def pids(monkeypatch: pytest.MonkeyPatch) -> Pids:
     fake = Pids()
     monkeypatch.setattr(ownership, "_pid_alive", fake)
+    # raising=False: the name does not exist on the base, where these tests must fail at an assertion
+    monkeypatch.setattr(
+        ownership, "_pid_started", lambda pid: LONG_AGO if pid in fake.alive else None, raising=False
+    )
     ownership._UNPROBED.clear()  # noqa: SLF001 - per-process state of the bound
     return fake
 
@@ -81,7 +93,8 @@ def running_job(tmp_path: Path) -> tuple[Paths, str]:
         state="running",
         pid=4242,
         channel="c1",
-        announced_at=datetime(2026, 11, 9, 1, 0, tzinfo=UTC).isoformat(),
+        # a minute ago: inside the hour, so the tests of the probe count are not decided by the time bound
+        announced_at=(datetime.now(UTC) - timedelta(seconds=60)).isoformat(),
     )
     ownership.lock_path(paths, job_id).write_text("4242", encoding="utf-8")
     return paths, job_id
@@ -216,3 +229,277 @@ def test_a_record_without_a_pid_is_held_for_an_hour_and_then_dead(
         ownership.lock_path(paths, owner).write_text("", encoding="utf-8")
     assert ownership.lock_held(paths, "j-young") is True
     assert ownership.lock_held(paths, "j-old") is False
+
+
+# ------------------------------------------------------------------- every hold has a bound (card lock-bound)
+BOUND = ownership.UNPROBED_UNKNOWN_PID_S  # 3600 s; each bound is asked 60 s before it and 60 s after it
+
+
+class Clock:
+    """`ownership._now`, moved by hand."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.start = datetime.now(UTC).replace(microsecond=0)
+        self.now = self.start
+        monkeypatch.setattr(ownership, "_now", lambda: self.now)
+
+    def at(self, seconds: float) -> None:
+        self.now = self.start + timedelta(seconds=seconds)
+
+
+class Rows(NoRows):
+    """`NoRows` that keeps what was written."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.written: list[tuple[str, Any]] = []
+
+    def execute(self, sql: str, params: Sequence[Any] | Mapping[str, Any] = ()) -> Any:
+        self.written.append((sql, params))
+        return None
+
+
+def unopenable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ownership, "FileLock", UnopenableLock)
+
+
+def job(paths: Paths, job_id: str, **fields: Any) -> None:
+    """A running job record and its lock file, with exactly `fields` beside id, kind, state and channel."""
+    ownership.write_record(paths, job_id, kind="job", state="running", channel="c1", **fields)
+    ownership.lock_path(paths, job_id).write_text("", encoding="utf-8")
+
+
+def held_through(paths: Paths, clock: Clock, owner: str, rec: Mapping[str, Any] | None = None) -> list[bool]:
+    """Whether `owner` counts as live now, 60 s before the bound and 60 s after it."""
+    out = []
+    for seconds in (0, BOUND - 60, BOUND + 60):
+        clock.at(seconds)
+        if rec is None:
+            out.append(ownership.lock_held(paths, owner))
+        else:
+            out.append(ownership.liveness(paths, owner, rec) == "live")
+    return out
+
+
+def test_a_record_that_cannot_be_read_is_held_at_most_the_bound_then_released(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One bad file among good ones: `recover` read the record, then it was torn (a half-written file)."""
+    paths = Paths(tmp_path / "home")
+    clock = Clock(monkeypatch)
+    job(paths, "j-1", started_at=clock.start.isoformat())  # a Ctrl+C record: `hold` wrote pid=None
+    ownership.write_record(paths, "j-2", kind="job", state="done", channel="c1")
+    [rec] = [r for r in ownership.list_records(paths) if r["id"] == "j-1"]
+    unopenable(monkeypatch)
+    torn = ownership.record_path(paths, "j-1")
+    torn.write_text('{"id": "j-1",', encoding="utf-8")
+    os.utime(torn, (clock.start.timestamp(), clock.start.timestamp()))
+    assert ownership.read_record(paths, "j-1") is None
+    assert held_through(paths, clock, "j-1", rec) == [True, True, False]  # by the record it was handed
+    assert ownership.liveness(paths, "j-1", rec) == "dead"
+    [note] = notes(paths)
+    assert note.startswith("NS-W118:") and "j-1" in note, note
+    ownership._UNPROBED.clear()  # noqa: SLF001 - asked with no record at all: the torn file's own time
+    assert held_through(paths, clock, "j-1") == [True, True, False]
+    assert [r["id"] for r in ownership.list_records(paths)] == ["j-2"], "the good record is still listed"
+
+
+def test_a_record_without_pid_or_times_is_held_at_most_the_bound_then_released(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Killed halfway and asked again; also what a record written by an earlier build may look like."""
+    paths = Paths(tmp_path / "home")
+    clock = Clock(monkeypatch)
+    job(paths, "j-1")
+    assert set(ownership.read_record(paths, "j-1") or {}) == {"id", "kind", "state", "channel"}
+    for f in (ownership.record_path(paths, "j-1"), ownership.lock_path(paths, "j-1")):
+        os.utime(f, (clock.start.timestamp(), clock.start.timestamp()))
+    unopenable(monkeypatch)
+    assert held_through(paths, clock, "j-1") == [True, True, False]
+    assert ownership.liveness(paths, "j-1") == "dead"
+    [note] = notes(paths)
+    assert note.startswith("NS-W118:") and "j-1" in note, note
+    for seconds, held in ((BOUND - 60, True), (BOUND + 60, False)):
+        ownership._UNPROBED.clear()  # noqa: SLF001 - a new process: its first look decides the same
+        clock.at(seconds)
+        assert ownership.lock_held(paths, "j-1") is held, seconds
+
+
+class NoFile:
+    """A path nothing can be asked of (the folder lost every permission)."""
+
+    def exists(self) -> bool:
+        raise PermissionError(13, "Access is denied")
+
+    def read_text(self, encoding: str = "utf-8") -> str:
+        raise PermissionError(13, "Access is denied")
+
+    def stat(self) -> Any:
+        raise PermissionError(13, "Access is denied")
+
+
+def test_with_no_time_readable_on_disk_the_bound_counts_from_the_first_failed_look(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = Paths(tmp_path / "home")
+    clock = Clock(monkeypatch)
+    monkeypatch.setattr(ownership, "lock_path", lambda p, owner: NoFile())
+    monkeypatch.setattr(ownership, "record_path", lambda p, owner: NoFile())
+    assert held_through(paths, clock, "j-1") == [True, True, False]
+    assert ownership.liveness(paths, "j-1") == "unknown", "no record to start from: its callers' 12 h rule"
+
+
+def test_a_reused_pid_is_not_the_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pid 4242 is alive in all three, but only a process that started before the record wrote it."""
+    paths = Paths(tmp_path / "home")
+    clock = Clock(monkeypatch)
+    started = {"j-reused": timedelta(hours=2), "j-late": timedelta(seconds=3), "j-mine": timedelta(seconds=1)}
+    for owner in started:
+        job(paths, owner, pid=4242, started_at=clock.start.isoformat())
+    unopenable(monkeypatch)
+    limit = ownership.UNPROBED_LIMIT
+    for owner, after in started.items():
+        monkeypatch.setattr(ownership, "_pid_started", lambda pid, a=after: clock.start + a, raising=False)
+        answers = [ownership.lock_held(paths, owner) for _ in range(limit * 2)]
+        if owner == "j-mine":  # inside the 2 s slack: record times are whole seconds
+            assert answers == [True] * (limit * 2), owner
+        else:
+            assert answers == [True] * (limit - 1) + [False] * (limit + 1), owner
+    said = notes(paths)
+    assert len(said) == 1 and said[0].startswith("NS-W117:") and "j-mine" in said[0], said
+
+
+def test_a_pid_that_cannot_be_checked_falls_back_to_the_time_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows and runner differences: tasklist or psutil missing, refused or failing is "cannot tell"."""
+    import ns_supervisor.update_job as update_job
+
+    def refused(pid: int) -> bool:
+        raise OSError("tasklist cannot be started")
+
+    paths = Paths(tmp_path / "home")
+    clock = Clock(monkeypatch)
+    job(paths, "j-nocheck", pid=4243, started_at=clock.start.isoformat())
+    job(paths, "j-nostart", pid=4242, started_at=clock.start.isoformat())
+    unopenable(monkeypatch)
+    monkeypatch.setattr(ownership, "_pid_started", lambda pid: None, raising=False)
+    monkeypatch.setattr(ownership, "_pid_alive", REAL_PID_ALIVE)
+    monkeypatch.setattr(update_job, "pid_alive", refused)
+    assert held_through(paths, clock, "j-nocheck") == [True, True, False], "the check itself failed"
+    monkeypatch.setattr(update_job, "pid_alive", lambda pid: True)
+    assert held_through(paths, clock, "j-nostart") == [True, True, False], "alive, start time not readable"
+    said = notes(paths)
+    assert len(said) == 2 and all(n.startswith("NS-W118:") for n in said), said
+
+
+def test_our_own_pid_is_alive_only_while_this_process_holds_the_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine's pid in a record whose `done` could not be written must not hold the work for weeks."""
+    paths = Paths(tmp_path / "home")
+    clock = Clock(monkeypatch)
+    monkeypatch.setattr(ownership, "_pid_alive", REAL_PID_ALIVE)
+    job(paths, "j-left", pid=os.getpid(), started_at=clock.start.isoformat())
+    limit = ownership.UNPROBED_LIMIT
+    with ownership.hold_job(paths, "j-held", channel="c1"):
+        unopenable(monkeypatch)
+        clock.at(24 * 3600)
+        assert ownership.lock_held(paths, "j-held") is True, "this process is running it"
+        clock.at(0)
+        assert [ownership.lock_held(paths, "j-left") for _ in range(limit)] == [True] * (limit - 1) + [False]
+    [note] = notes(paths)
+    assert note.startswith("NS-W117:") and "j-held" in note and f"process {os.getpid()}" in note, note
+
+
+def story_job(paths: Paths, job_id: str, when: datetime, **fields: Any) -> None:
+    """A job `make_job` announced (it gets a Queue card), with its folder."""
+    job(paths, job_id, origin="manual", fmt="long", announced_at=when.isoformat(), **fields)
+    folder = paths.job_dir(job_id)
+    folder.mkdir(parents=True)
+    info = {"channel": "c1", "fmt": "long", "created_at": when.isoformat()}
+    (folder / "job.json").write_text(json.dumps(info), encoding="utf-8")
+
+
+def test_recover_closes_work_released_by_the_bound_with_its_retry_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failed, then retried, by the route that closes: ONE `recover` in a new process (it asks once, so it
+    never reaches the probe count), for a job and the night that made it, two hours after they started."""
+    paths = Paths(tmp_path / "home")
+    clock = Clock(monkeypatch)
+    began = clock.start - timedelta(hours=2)
+    story_job(paths, "j-1", began, pid=4243)  # its process is gone
+    listed = [{"job_id": "j-1", "channel": "c1"}]
+    ownership.write_record(
+        paths, "r-1", kind="run", state="running", pid=4243, started_at=began.isoformat(), jobs=listed
+    )
+    ownership.lock_path(paths, "r-1").write_text("", encoding="utf-8")
+    unopenable(monkeypatch)
+    db = Rows()
+    out = ownership.recover(paths, db)
+    assert [j.job_id for j in out.jobs] == ["j-1"] and [r["run_id"] for r in out.runs] == ["r-1"]
+    for owner in ("j-1", "r-1"):
+        rec = ownership.read_record(paths, owner)
+        assert rec is not None and rec["state"] == "interrupted", owner
+    [card] = [params for sql, params in db.written if sql.startswith("insert into dashboard_jobs")]
+    assert "NS-E328" in str(card) and "j-1" in str(card)
+    [note] = notes(paths)
+    assert "interrupted" in note and "Press Retry in the Queue" in note, note
+    assert ownership.recover(paths, db).any is False, "a second call finds nothing"
+
+
+def test_a_live_owner_stays_held_past_every_bound_and_its_note_says_how_to_clear_it(
+    running_job: tuple[Paths, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one state with no bound: releasing it would let `recover` close a job a process still writes."""
+    paths, job_id = running_job
+    clock = Clock(monkeypatch)
+    unopenable(monkeypatch)
+    clock.at(24 * 3600)
+    for _ in range(ownership.UNPROBED_LIMIT * 4):
+        assert ownership.lock_held(paths, job_id) is True
+    assert ownership.recover(paths, NoRows(), note=False).any is False
+    [note] = notes(paths)
+    assert note.startswith("NS-W117:") and "process 4242" in note and "restart" in note, note
+
+
+def test_the_live_owner_note_names_the_process_to_end_and_says_that_release_does_not_clear_it(
+    running_job: tuple[Paths, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, job_id = running_job
+    unopenable(monkeypatch)
+    assert ownership.lock_held(paths, job_id) is True
+    [note] = notes(paths)
+    assert "Ending process 4242 in Task Manager clears it" in note, note
+    assert "Release in the Queue does not clear it" in note, note
+    [held] = [ln for ln in ownership.status_lines(paths, NoRows(), "c1") if ln.startswith("  held:")]
+    assert held == f"  held: {note}", "studio status says the same words as the note"
+
+
+def test_work_with_no_known_process_says_ns_w118_once_with_the_bound_and_what_follows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = Paths(tmp_path / "home")
+    job(paths, "j-1", announced_at=datetime.now(UTC).isoformat())
+    unopenable(monkeypatch)
+    for _ in range(ownership.UNPROBED_LIMIT * 4):
+        assert ownership.lock_held(paths, "j-1") is True
+    [note] = notes(paths)  # once, not once per look
+    assert note.startswith("NS-W118: Nightshift cannot tell whether this work is still running, and no ")
+    for words in ("j-1", "at most an hour", "interrupted", "Retry", "Release in the Queue does", "owners"):
+        assert words in note, (words, note)
+    lines = ownership.status_lines(paths, NoRows(), "c1")
+    assert f"  held: {note}" in lines and any(ln.startswith("  working:") for ln in lines), lines
+
+
+def test_a_gone_process_short_of_the_limit_is_listed_by_studio_status_and_leaves_no_note(
+    running_job: tuple[Paths, str], monkeypatch: pytest.MonkeyPatch, pids: Pids
+) -> None:
+    """`studio status` looks twice and exits: it never reaches the count, so it says what the hold is."""
+    paths, job_id = running_job
+    pids.alive.clear()
+    unopenable(monkeypatch)
+    lines = ownership.status_lines(paths, NoRows(), "c1")
+    assert any(ln.startswith("  held: NS-W118:") for ln in lines), lines
+    assert notes(paths) == []
