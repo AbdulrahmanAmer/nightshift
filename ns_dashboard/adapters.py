@@ -923,7 +923,9 @@ class RealVoiceMaker:
                     with contextlib.suppress(Exception):  # an engine that is down holds nothing
                         self.link.release_owner(owner)
                 raise
-            ctl.progress(1.0, "The voice is ready")
+            # a name setup asked for and could not have is said here, in the job the owner pressed
+            renamed = bool(done.get("renamed_from")) and bool(done.get("message"))
+            ctl.progress(1.0, str(done["message"]) if renamed else "The voice is ready")
         name = done.get("name")
         return str(name) if name else None
 

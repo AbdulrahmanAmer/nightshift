@@ -11,7 +11,7 @@ from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_me
 from ns_common import first_start
 from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.config_compat import disk_dict
-from ns_common.models import VOICE_NAME_PATTERN, VOICE_NAME_RULE, Answers
+from ns_common.models import VOICE_NAME_PATTERN, VOICE_NAME_RULE, Answers, suggest_voice_name
 from ns_common.paths import Paths
 from ns_common.secrets_names import KEY_NAMES
 
@@ -77,12 +77,6 @@ def load_raw(path: Path) -> dict[str, Any]:
         if isinstance(data.get(key), str) and not data[key].strip():
             data[key] = None
     return data
-
-
-def suggest_voice_name(typed: str) -> str:
-    """A name the voice library accepts, made from what was typed ("Night Narrator" -> "Night-Narrator")."""
-    name = re.sub(r"[^A-Za-z0-9_-]+", "-", typed.strip()).strip("-_")[:40].rstrip("-_")
-    return name or "my-voice"
 
 
 def _check_voice_name(raw: dict[str, Any]) -> None:

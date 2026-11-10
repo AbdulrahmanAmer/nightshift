@@ -17,15 +17,16 @@ import re
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 import yaml
 
-from ns_common.config import load_channel
+from ns_common.atomic import write_text_atomic
+from ns_common.config import load_channel, save_channel
 from ns_common.errors import NsError
 from ns_common.languages import qwen_language
-from ns_common.models import VOICE_NAME_PATTERN, VOICE_NAME_RULE
+from ns_common.models import VOICE_NAME_PATTERN, VOICE_NAME_RULE, suggest_voice_name
 from ns_common.paths import Paths
 from ns_studio.context import JobContext
 from ns_studio.errors import StudioError
@@ -215,32 +216,112 @@ def apply_pending_voices(ctx: JobContext) -> str | None:
     return made
 
 
+class Applied(NamedTuple):
+    """The voice `apply_pending_report` made, and the name setup asked for when that was not usable."""
+
+    name: str
+    renamed_from: str | None = None
+
+    def said(self) -> str:
+        """The line the owner reads (CLI) or the job message (dashboard); says so when the name changed."""
+        if self.renamed_from is None:
+            return f"voice {self.name} created"
+        why = (
+            "voice names cannot have spaces"
+            if any(c.isspace() for c in self.renamed_from)
+            else VOICE_NAME_RULE
+        )
+        return f"voice {self.name} created (setup asked for '{self.renamed_from}'; {why})"
+
+
+def _channel_voice_name(env: Env, req: dict[str, Any]) -> str | None:
+    """The voice name the request's channel uses now, or None (no channel, unreadable)."""
+    try:
+        return load_channel(env.paths, str(req["channel"])).voice.name if req.get("channel") else None
+    except (OSError, ValueError, yaml.YAMLError):
+        return None
+
+
+def _point_channel(env: Env, req: dict[str, Any], old: str, new: str) -> None:
+    """Make the request's channel use `new`, only when it still names `old` (a profile the owner changed
+    meanwhile is left alone, and so is a channel that is gone). A failed save (`NS-E119`) propagates: the
+    request stays and the next run points it."""
+    slug = req.get("channel")
+    if not isinstance(slug, str) or not slug:
+        return
+    try:
+        channel = load_channel(env.paths, slug)
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        env.log.warn("pending_voice_channel_unread", str(e), channel=slug, voice=new)
+        return
+    if channel.voice.name != old:
+        return
+    voice = channel.voice.model_copy(update={"name": new})
+    save_channel(env.paths, channel.model_copy(update={"voice": voice}))
+
+
 def apply_pending(env: Env, *, post: Post | None = None, owner: str | None = None) -> str | None:
     """Create the voice setup queued, then forget the request. Returns its name, or None when nothing was
     queued or the voice already exists. On a failure the request stays queued and the error propagates."""
+    made = apply_pending_report(env, post=post, owner=owner)
+    return made.name if made else None
+
+
+def apply_pending_report(env: Env, *, post: Post | None = None, owner: str | None = None) -> Applied | None:
+    """`apply_pending` that also says whether the name had to change (queued by 0.1.13/0.1.14 setup as "Night
+    Narrator", a name the voice library refuses). Invariant: the voice made from a request is the one the
+    request names at that moment, and a name is taken over only when this request made it (`renamed_from`)
+    or the channel already uses it.
+
+    Steps, each safe to run again after a kill: refuse or drop when the suggested name is taken; rewrite the
+    request with the new `name` and `renamed_from` (atomic); make the voice; point the channel; remove the
+    request. Returns None when nothing was queued or the request was dropped.
+    """
     req = read_pending(env.paths)
     if req is None:
         return None
     name = str(req["name"])
-    if voice_exists(env.paths, name):
+    old = req.get("renamed_from")
+    old = old if isinstance(old, str) and old else None
+    if old is None and not NAME_RE.fullmatch(name):
+        old, name = name, suggest_voice_name(name)
+        if voice_exists(env.paths, name):
+            if _channel_voice_name(env, req) == name:  # s07 queued the old name again after the rename
+                pending_file(env.paths).unlink(missing_ok=True)
+                env.log.info("pending_voice_dropped", voice=name, asked_for=old)
+                return None
+            raise NsError(
+                "NS-E310",
+                f"setup asked for a voice '{old}'; that name cannot be used and '{name}' is already another "
+                "voice. Rename or delete that voice in Library > Voices, then press Create it now "
+                "(or run: studio voice apply-pending)",
+            )
+        req = {**req, "name": name, "renamed_from": old}
+        write_text_atomic(pending_file(env.paths), json.dumps(req, indent=2, ensure_ascii=False) + "\n")
+    if not voice_exists(env.paths, name):
+        language = str(req.get("language") or "") or _channel_language(env, req.get("channel"))
+        if req.get("mode") == "clone":
+            clone_voice(
+                env,
+                name,
+                Path(str(req.get("ref_audio_path") or "")),
+                str(req.get("ref_text") or ""),
+                rights_confirmed=bool(req.get("rights_confirmed")),
+                language=language,
+                post=post,
+                owner=owner,
+            )
+        else:
+            design_voice(
+                env, name, str(req.get("description") or ""), language=language, post=post, owner=owner
+            )
+    elif old is None:  # made already (by the owner, or an earlier run that was killed before it forgot)
         pending_file(env.paths).unlink(missing_ok=True)
         return None
-    language = str(req.get("language") or "") or _channel_language(env, req.get("channel"))
-    if req.get("mode") == "clone":
-        clone_voice(
-            env,
-            name,
-            Path(str(req.get("ref_audio_path") or "")),
-            str(req.get("ref_text") or ""),
-            rights_confirmed=bool(req.get("rights_confirmed")),
-            language=language,
-            post=post,
-            owner=owner,
-        )
-    else:
-        design_voice(
-            env, name, str(req.get("description") or ""), language=language, post=post, owner=owner
-        )
+    if old is not None:
+        _point_channel(env, req, old, name)
     pending_file(env.paths).unlink(missing_ok=True)
     env.log.info("voice_created_from_setup", voice=name, mode=req.get("mode"))
-    return name
+    if old is not None:
+        env.log.info("pending_voice_renamed", voice=name, renamed_from=old)
+    return Applied(name, old)

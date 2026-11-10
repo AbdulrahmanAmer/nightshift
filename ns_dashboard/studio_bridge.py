@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from ns_studio.context import JobContext
     from ns_studio.jobs import Env
     from ns_studio.series.workshop import Workshop
+    from ns_studio.voice_setup import Applied
 
 #: `report(stage_name, stage_index, stage_total, job_index, job_total)`; may raise to cancel the job.
 Report = Callable[[str, int, int, int, int], None]
@@ -620,10 +621,18 @@ def apply_pending_voice(
     Returns its name, or None when nothing was queued or the voice exists already. A failure leaves the
     request queued and propagates (`NS-E314` when the VoiceDesign model is missing).
     """
+    made = apply_pending_voice_report(acquirer=acquirer, fake=fake, paths=paths)
+    return made.name if made else None
+
+
+def apply_pending_voice_report(
+    *, acquirer: Acquirer | None = None, fake: Collection[str] = (), paths: Paths | None = None
+) -> Applied | None:
+    """`apply_pending_voice` that also tells whether setup's name had to change (`voice_setup.Applied`)."""
     from ns_studio import voice_setup
 
     env = open_env(fake, acquirer, paths=paths)
     try:
-        return voice_setup.apply_pending(env, post=None if "tts" in env.fake else _voice_post)
+        return voice_setup.apply_pending_report(env, post=None if "tts" in env.fake else _voice_post)
     finally:
         env.db.close()

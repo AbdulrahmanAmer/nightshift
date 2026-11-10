@@ -27,6 +27,12 @@ VOICE_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$"
 VOICE_NAME_RULE = "voice names are 1 to 40 letters, digits, - or _, starting with a letter or digit"
 
 
+def suggest_voice_name(typed: str) -> str:
+    """A name the voice library accepts, made from what was typed ("Night Narrator" -> "Night-Narrator")."""
+    name = re.sub(r"[^A-Za-z0-9_-]+", "-", typed.strip()).strip("-_")[:40].rstrip("-_")
+    return name or "my-voice"
+
+
 class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

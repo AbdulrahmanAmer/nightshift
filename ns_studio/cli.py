@@ -562,8 +562,8 @@ def voice_apply_pending(fake_services: FakeOpt = None) -> None:
     """Create the voice chosen during setup (queued in config/pending_voice.json), if it is not there yet."""
     with guarded():
         env = jobs.open_env(fake_set(fake_services))
-        made = voice_setup.apply_pending(env)
-        typer.echo(f"voice {made} created" if made else "no voice is waiting to be created")
+        made = voice_setup.apply_pending_report(env)
+        typer.echo(made.said() if made else "no voice is waiting to be created")
 
 
 def _setup_voice(env: jobs.Env) -> None:
@@ -572,7 +572,7 @@ def _setup_voice(env: jobs.Env) -> None:
     if env.fake:
         return
     try:
-        made = voice_setup.apply_pending(env)
+        made = voice_setup.apply_pending_report(env)
     except (NsError, StudioError) as e:
         env.log.warn("pending_voice_failed", str(e))
         typer.echo(
@@ -582,7 +582,7 @@ def _setup_voice(env: jobs.Env) -> None:
         )
         return
     if made:
-        typer.echo(f"voice {made} created from your setup choice")
+        typer.echo(made.said() if made.renamed_from else f"voice {made.name} created from your setup choice")
 
 
 # ---------------------------------------------------------------- review, status, learn, pause
