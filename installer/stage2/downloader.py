@@ -2,7 +2,8 @@
 
 Every download: HEAD for the size, stream to ``<file>.part`` with HTTP ``Range`` resume, SHA256 verify
 (``NS-E109``), atomic rename, three attempts with capped exponential backoff, two files at a time.
-``models_source`` folder mode copies files whose name and SHA256 match instead of downloading them.
+``models_source`` folder mode copies files whose name and SHA256 match instead of downloading them, and so
+does the ``files`` folder beside INSTALL.cmd for every pinned file, programs included (``run_plan``).
 
 Crash and rerun rules (the installer may be closed or killed at any moment, then INSTALL.cmd run again):
 
@@ -33,7 +34,7 @@ import socket
 import threading
 import time
 import zipfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -46,6 +47,7 @@ import httpx
 
 from installer.stage2.devmode import STUB_BYTES
 from installer.stage2.errors import make_error
+from installer.stage2.web.filesdir import KIT_HINT, copy_checked, find, label, take, url_leaf
 from ns_common.avblock import is_blocked_error
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
@@ -659,17 +661,7 @@ def download(
 
 
 def _find_in_source(root: Path, name: str, max_depth: int = 4) -> list[Path]:
-    direct = root / name
-    found = [direct] if direct.is_file() else []
-    base = len(root.parts)
-    for current, dirs, files in os.walk(root):
-        if len(Path(current).parts) - base >= max_depth:
-            dirs[:] = []
-        if name in files:
-            p = Path(current) / name
-            if p not in found:
-                found.append(p)
-    return found
+    return find(root, name, max_depth)
 
 
 def copy_from_source(
@@ -678,45 +670,23 @@ def copy_from_source(
     """Copy ``dest.name`` from a pre-downloaded folder when its SHA256 matches. True when copied.
 
     A file with no pinned hash matches on name alone. A mismatching candidate is ignored (the caller then
-    downloads the file), never copied.
+    downloads the file), never copied. The copy itself is ``filesdir.copy_checked``: to ``<file>.copy``,
+    hashed while it is written, renamed after the check, removed when Stop is pressed mid-copy.
     """
     root = Path(models_source)
     dest = Path(dest)
     if not root.is_dir():
         return False
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    # Not ``<file>.part``: that name belongs to a download in progress, which a copy must not overwrite.
-    part = dest.with_name(dest.name + ".copy")
     for src in _find_in_source(root, dest.name):
-        total = src.stat().st_size
-        h = hashlib.sha256()
-        done = 0
         try:
-            with src.open("rb") as fin, part.open("wb") as fout:
-                while True:
-                    block = fin.read(CHUNK)
-                    if not block:
-                        break
-                    h.update(block)
-                    fout.write(block)
-                    done += len(block)
-                    if progress:
-                        progress(done, total)
+            digest = copy_checked(src, dest, sha256, progress)
         except OSError as e:
-            part.unlink(missing_ok=True)
             if is_disk_full(e):
                 raise disk_full_error(dest, e) from e
             raise
-        except BaseException:
-            # Stop pressed mid-copy: a half copy of a file that was not hash-checked yet is not a resumable
-            # download, so it must not be mistaken for one next time.
-            part.unlink(missing_ok=True)
-            raise
-        if sha256 is None or h.hexdigest() == sha256.lower():
-            os.replace(part, dest)
-            write_marker(dest, h.hexdigest())
+        if digest is not None:
+            write_marker(dest, digest)
             return True
-        part.unlink(missing_ok=True)
     return False
 
 
@@ -1107,8 +1077,22 @@ def run_plan(
     gate: threading.Event | None = None,
     log: NsLogger | None = None,
     site_window_s: float = SITE_WINDOW_S,
+    sources: Sequence[Path | str] = (),
+    say: Callable[[str], None] | None = None,
+    kit_hint: bool = False,
 ) -> PlanResult:
-    """Fetch every item (copy from ``models_source`` when possible), two at a time, then extract zips.
+    """Fetch every item (copy from a source folder when possible), two at a time, then extract zips.
+
+    Per item, in this order: what the install already holds (``is_done``, a verified file); each folder of
+    ``sources`` (the ``files`` folder beside INSTALL.cmd); ``models_source``; the item's URL. From a folder
+    of ``sources`` a file is taken only against a real pinned SHA256, whatever its kind, and an archive is
+    then unpacked exactly like a downloaded one; a file that does not match is skipped and told once to
+    ``say`` and ``log``, and the one that was taken is told once too. ``models_source`` keeps its old rule
+    for plain files (a file with no pin matches on its name) and gives an archive only against a pin. An
+    archive with no pin (the voice engine's ``latest`` probe) never comes from a folder.
+
+    ``kit_hint``: the plan is pinned programs, so an NS-E105 of a pinned item also says how to get the file
+    from a files folder (``filesdir.KIT_HINT``).
 
     All items are attempted even if one fails; the first failure is raised afterwards so a rerun resumes.
     ``fetch`` replaces ``download`` (simulate mode and tests). ``gate`` is the pause switch.
@@ -1165,13 +1149,46 @@ def run_plan(
                 retrying(item.name, w.tries, "site", w.wait_s)
 
         host = urlsplit(item.url).hostname or ""
-        try:
-            copied = False
-            if models_source and item.kind == "file" and not is_verified(item.dest, item.sha256):
-                copied = copy_from_source(
-                    models_source, item.dest, item.sha256, progress=lambda d, t: rep.update(item.name, d, t)
+        pinned = pinned_sha256(item.sha256)
+
+        def copy_progress(done: int, total: int | None) -> None:
+            rep.update(item.name, done, total)
+
+        def tell(event: str, line: str, *, warn: bool = False) -> None:
+            if log is not None:
+                (log.warn if warn else log.info)(event, line, file=item.name)
+            if say is not None:
+                say(line)
+
+        def from_folder() -> bool:
+            """Take the item from the first folder that has it; nothing unchecked (see the docstring)."""
+            if is_verified(item.dest, item.sha256):
+                return False                    # the install's own copy comes first (today's resume)
+            for root in [Path(s) for s in sources if s] if pinned else []:
+                src = take(
+                    root, (url_leaf(item.url), item.dest.name), pinned, item.dest,
+                    lambda line: tell("files_folder_skip", line, warn=True), progress=copy_progress,
+                    fatal=is_disk_full,
                 )
+                if src is not None:
+                    write_marker(item.dest, pinned)
+                    tell("files_folder_taken", f"{item.name}: taken from {label(root, src)} (SHA256 checked)")
+                    return True
+            if models_source and (item.kind == "file" or pinned):
+                return copy_from_source(models_source, item.dest, item.sha256, progress=copy_progress)
+            return False
+
+        try:
+            try:
+                copied = from_folder()
+            except OSError as e:
+                if is_disk_full(e):
+                    raise disk_full_error(item.dest, e) from e
+                raise
             if copied:
+                _part(item.dest).unlink(missing_ok=True)    # a half download of the same file is void now
+                if item.kind in ("zip", "nupkg"):
+                    _extract_item(item)
                 outcome(item, "copied")
                 return
             with lock:
@@ -1191,6 +1208,8 @@ def run_plan(
             with lock:
                 if e.code == "NS-E105" and e.data.get("side") == "site":
                     dead_hosts.add(host)
+                if kit_hint and pinned and e.code == "NS-E105":
+                    e = make_error("NS-E105", f"{e.detail} {KIT_HINT}", **e.data)      # the way out
                 result.failed[item.name] = e
             rep.finish(item.name, "failed")
         except OSError as e:        # unpacking or saving: a scanner (WinError 225) is NS-E113

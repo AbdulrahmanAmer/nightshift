@@ -33,6 +33,7 @@ from installer.stage2.simulate import FakeRunner
 from installer.stage2.state import StateStore
 from installer.stage2.sysinfo import free_gb, load_preflight, sample_preflight
 from installer.stage2.ui import Ui
+from installer.stage2.web.filesdir import beside as files_beside
 from ns_common import __version__
 from ns_common.config import load_manifest
 from ns_common.errors import NsError
@@ -305,7 +306,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--ui-bridge", choices=["stdio"], help="talk JSON lines to the setup window (P1) on stdio")
     p.add_argument("--dev", action="store_true",
                    help="dev install (docs/DEV_MODE.md): stub models, fake engines, no GPU packages")
+    p.add_argument("--files-dir", help="the files folder beside INSTALL.cmd (default: <app-path>/files)")
     return p.parse_args(list(argv) if argv is not None else None)
+
+
+def files_dir_of(args: argparse.Namespace, app_path: Path) -> Path | None:
+    """The folder of pinned programs this run may take files from, or None (D-17).
+
+    ``--files-dir`` when the setup window names it (the wizard then runs from ``<home>/app``, which never
+    holds the folder), else ``files`` in the program folder (the console wizard run from the bundle). A
+    folder that is not there is no folder.
+    """
+    named = getattr(args, "files_dir", None)
+    if not named:
+        return files_beside(app_path)
+    try:
+        return Path(named) if Path(named).is_dir() else None
+    except OSError:
+        return None
 
 
 def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext:
@@ -387,6 +405,7 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
         free_gb_fn=(lambda _p: 500.0) if args.simulate_downloads else free_gb,
         gate=ui.gate if isinstance(ui, BridgeUi) else None,
         stop_requested=ui.stop if isinstance(ui, BridgeUi) else threading.Event(),
+        files_dir=files_dir_of(args, app_path),
     )
 
 

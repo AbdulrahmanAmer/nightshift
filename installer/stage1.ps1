@@ -75,6 +75,7 @@ $script:FallbackErrors = @{
     'NS-W112' = @('Windows long paths are disabled.', 'Run setup once as administrator to enable them, or keep NIGHTSHIFT_HOME on a short path such as D:\Nightshift.')
 }
 $script:SplashLabels = @('This PC', 'uv', 'Python', 'Setup window')
+$script:UvFrom = 'downloaded'       # Install-Uv sets it: where the uv it returned came from
 $script:SplashTop = -1
 $script:CanMove = $false
 
@@ -913,6 +914,64 @@ function Resolve-NsHome {
     return $default
 }
 
+function Get-KitHint {
+    # The way out every failed download of a pinned program names (the same words as stage 2: filesdir.KIT_HINT).
+    return 'Setup can take this file from a files folder instead: on a PC with internet run tools\make-files-kit.ps1 (from this bundle), copy its folder files next to INSTALL.cmd, and run INSTALL.cmd again.'
+}
+
+function Get-UrlLeaf {
+    # The file name a pin's URL ends with: the name tools\make-files-kit.ps1 saves the file under.
+    param([string]$Url)
+    try { return [System.Uri]::UnescapeDataString([System.IO.Path]::GetFileName(([System.Uri]$Url).AbsolutePath)) }
+    catch { return '' }
+}
+
+function Get-FilesDir {
+    # The files folder beside INSTALL.cmd (D-17), or '' when there is none or it cannot be seen.
+    param([string]$App)
+    try {
+        $dir = Join-Path $App 'files'
+        if (Test-Path -LiteralPath $dir -PathType Container) { return $dir }
+    }
+    catch { Write-Verbose "files folder not readable: $($_.Exception.Message)" }
+    return ''
+}
+
+function Copy-PinnedFile {
+    # The one place stage 1 takes a file from the files folder. A file called -Name (in the folder or up to four
+    # folders below it) is copied to <Dest>.copy, THE COPY is hashed, and only a copy whose SHA256 is the pin gets
+    # the name -Dest. Returns $true when -Dest then holds the pinned bytes. No folder, no file, no real pin:
+    # $false and not a word. A file with other bytes, or one that cannot be copied: one line that names it, and
+    # $false, so the caller downloads. The .copy is removed whatever happens (Ctrl+C runs the finally block; a
+    # killed console leaves it, nothing ever reads that name, and the next run writes over it).
+    param([string]$FilesDir, [string]$Name, [string]$Sha256, [string]$Dest)
+    if (-not $FilesDir -or -not $Name -or $Sha256 -notmatch '^[0-9A-Fa-f]{64}$') { return $false }
+    $found = @(Get-ChildItem -LiteralPath $FilesDir -File -Recurse -Depth 4 -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $Name })
+    $copy = $Dest + '.copy'
+    foreach ($f in $found) {
+        $shown = 'files\' + $f.FullName.Substring($FilesDir.Length).TrimStart('\')
+        $same = $false
+        try {
+            Copy-Item -LiteralPath $f.FullName -Destination $copy -Force
+            $same = ((Get-FileHash -Algorithm SHA256 -LiteralPath $copy).Hash -eq $Sha256)
+            if ($same) { Move-Item -LiteralPath $copy -Destination $Dest -Force }
+            else { Write-Host ('{0} does not match its pin; downloading it' -f $shown) -ForegroundColor Yellow }
+        }
+        catch {
+            $same = $false
+            Write-Host ('{0} could not be copied ({1}); downloading it' -f $shown, $_.Exception.Message) -ForegroundColor Yellow
+        }
+        finally {
+            if (Test-Path -LiteralPath $copy) { Remove-Item -LiteralPath $copy -Force -ErrorAction SilentlyContinue }
+        }
+        if ($same) {
+            Write-Host ('{0}: taken from {1} (SHA256 checked)' -f $Name, $shown)
+            return $true
+        }
+    }
+    return $false
+}
+
 function Find-Uv {
     # The pinned uv (manifest.json bins.uv) is preferred: setup relies on flags (`uv venv --clear`,
     # `--require-hashes` with a direct URL, UV_CACHE_DIR) that an older uv on PATH does not have. A copy
@@ -933,7 +992,9 @@ function Find-Uv {
 }
 
 function Install-Uv {
-    param($Manifest)
+    # The pinned uv: from the files folder beside INSTALL.cmd when it holds the pinned zip (SHA256 checked),
+    # else the download, else winget. $script:UvFrom says which.
+    param($Manifest, [string]$FilesDir = '')
     $pin = $Manifest.bins.uv
     # Get-Prop, not $pin.version: under StrictMode a manifest pin without a version would throw here.
     $pinVersion = [string](Get-Prop $pin 'version' '')
@@ -945,9 +1006,15 @@ function Install-Uv {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $zip = Join-Path $env:TEMP 'nightshift-uv.zip'
     try {
-        Invoke-WebRequest -Uri $pin.url -OutFile $zip -UseBasicParsing
-        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
-        if ($actual -ne ([string]$pin.sha256).ToLower()) { throw "SHA256 mismatch for the uv download ($actual)" }
+        $script:UvFrom = 'downloaded'
+        if (Copy-PinnedFile -FilesDir $FilesDir -Name (Get-UrlLeaf ([string]$pin.url)) -Sha256 ([string]$pin.sha256) -Dest $zip) {
+            $script:UvFrom = 'from the files folder'
+        }
+        else {
+            Invoke-WebRequest -Uri $pin.url -OutFile $zip -UseBasicParsing
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
+            if ($actual -ne ([string]$pin.sha256).ToLower()) { throw "SHA256 mismatch for the uv download ($actual)" }
+        }
         Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force
         $found = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'uv.exe' | Select-Object -First 1
         if ($null -eq $found) { throw 'uv.exe not found in the downloaded archive' }
@@ -959,6 +1026,8 @@ function Install-Uv {
     }
     catch {
         $downloadError = $_.Exception.Message
+        $script:UvFrom = 'installed with winget'
+        Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
         Write-Verbose "uv direct download failed: $downloadError; trying winget"
         $c = $null
         $haveWinget = Test-Tool 'winget.exe'
@@ -987,9 +1056,9 @@ function Install-Uv {
         if ($null -eq $c) {
             Set-Status -Index 1 -Tag 'fail' -Text 'could not be downloaded or installed'
             if ($haveWinget) {
-                Stop-Setup -Code 'NS-E110' -Detail "uv could not be installed (direct download: $downloadError; winget failed too)." -ExitCode 13
+                Stop-Setup -Code 'NS-E110' -Detail "uv could not be installed (direct download: $downloadError; winget failed too). $(Get-KitHint)" -ExitCode 13
             }
-            Stop-Setup -Code 'NS-E105' -Detail "uv could not be downloaded ($downloadError) and winget is not available." -ExitCode 13
+            Stop-Setup -Code 'NS-E105' -Detail "uv could not be downloaded ($downloadError) and winget is not available. $(Get-KitHint)" -ExitCode 13
         }
         # Stage 2 accepts only the pinned uv, so a uv of another version (winget's latest, an older one on
         # PATH) is refused here, before Python and the VC++ prompt, not late in the "Home" step.
@@ -997,7 +1066,7 @@ function Install-Uv {
             $foundVersion = Get-UvVersion -Uv $c.Source
             if ($foundVersion -ne $pinVersion) {
                 Set-Status -Index 1 -Tag 'fail' -Text ('{0} found, {1} needed' -f $foundVersion, $pinVersion)
-                Stop-Setup -Code 'NS-E105' -Detail "uv $pinVersion could not be downloaded ($downloadError) and the uv at $($c.Source) is version $foundVersion. Run INSTALL.cmd again when $($pin.url) is reachable." -ExitCode 13
+                Stop-Setup -Code 'NS-E105' -Detail "uv $pinVersion could not be downloaded ($downloadError) and the uv at $($c.Source) is version $foundVersion. Run INSTALL.cmd again when $($pin.url) is reachable. $(Get-KitHint)" -ExitCode 13
             }
         }
         return $c.Source
@@ -1008,8 +1077,9 @@ function Install-VcRuntime {
     # The runtime is installed here, with this console in front, because Windows shows the permission prompt of
     # a hidden background process only as a flashing taskbar button that nobody finds. Returns $true when the
     # runtime is there afterwards. A refusal or a failure is not fatal: the setup window tries again in its
-    # "Visual C++ runtime" row and says how to install it by hand.
-    param($Manifest)
+    # "Visual C++ runtime" row and says how to install it by hand. The pinned installer is taken from the files
+    # folder beside INSTALL.cmd when it is there with the pinned SHA256, else downloaded.
+    param($Manifest, [string]$FilesDir = '')
     $pin = Get-Prop (Get-Prop $Manifest 'bins' $null) 'vcredist' $null
     if ($null -eq $pin -or -not $pin.url -or -not $pin.sha256) {
         Write-Host 'The Visual C++ runtime is missing and manifest.json pins no download for it; the setup window will try.'
@@ -1023,14 +1093,17 @@ function Install-VcRuntime {
     Write-Host ''
     Write-Host 'The Microsoft Visual C++ runtime is not installed on this PC. Nightshift needs it (about 25 MB).'
     try {
-        Invoke-WebRequest -Uri $pin.url -OutFile $exe -UseBasicParsing
-        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLower()
-        if ($actual -ne ([string]$pin.sha256).ToLower()) { throw "SHA256 mismatch for the download ($actual)" }
+        if (-not (Copy-PinnedFile -FilesDir $FilesDir -Name (Get-UrlLeaf ([string]$pin.url)) -Sha256 ([string]$pin.sha256) -Dest $exe)) {
+            Invoke-WebRequest -Uri $pin.url -OutFile $exe -UseBasicParsing
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLower()
+            if ($actual -ne ([string]$pin.sha256).ToLower()) { throw "SHA256 mismatch for the download ($actual)" }
+        }
     }
     catch {
         Remove-Item -LiteralPath $exe -Force -ErrorAction SilentlyContinue
         Write-Host ('Could not download the Visual C++ runtime: {0}' -f $_.Exception.Message) -ForegroundColor Yellow
         Write-Host '    Fix: install it from https://aka.ms/vs/17/release/vc_redist.x64.exe, or let the setup window try again.'
+        Write-Host ('    ' + (Get-KitHint))
         return $false
     }
     Write-Host 'Windows will ask for permission to install the Microsoft Visual C++ runtime; press Yes.' -ForegroundColor Cyan
@@ -1086,6 +1159,40 @@ function Find-PythonExe {
     }
     catch { Write-Verbose "uv python find failed: $($_.Exception.Message)" }
     return $null
+}
+
+function Install-ManagedPython {
+    # `uv python install <version>`. With a files\python folder beside INSTALL.cmd (laid out as uv asks a mirror:
+    # files\python\<tag>\<file>) uv is pointed at it through UV_PYTHON_INSTALL_MIRROR for that ONE call: the
+    # variable is put back to what it was (unset, or the owner's own mirror) in the finally block, whatever
+    # happens, so no later uv call and no child process sees it. uv checks the archive against the SHA256 it
+    # carries for that build, so nothing unchecked is installed. When uv does not accept the folder (no file for
+    # its build, or other bytes) that is said once and uv is run once more without it. Returns where Python came
+    # from; a failure of the last call stops setup with NS-E105 and the way out.
+    param([string]$Uv, [string]$Version, [string]$FilesDir = '', [bool]$Splash = $false)
+    $mirror = ''
+    if ($FilesDir) { $mirror = Join-Path $FilesDir 'python' }
+    if ($mirror -and (Test-Path -LiteralPath $mirror -PathType Container)) {
+        $before = $env:UV_PYTHON_INSTALL_MIRROR
+        $code = 1
+        try {
+            $env:UV_PYTHON_INSTALL_MIRROR = ([System.Uri]$mirror).AbsoluteUri
+            $null = & $Uv python install $Version
+            $code = $LASTEXITCODE
+        }
+        finally { $env:UV_PYTHON_INSTALL_MIRROR = $before }
+        if ($code -eq 0) {
+            Write-Host ('Python {0}: taken from files\python (uv checked its SHA256)' -f $Version)
+            return 'from the files folder'
+        }
+        Write-Host ('files\python was not accepted by uv (exit code {0}); downloading Python {1}' -f $code, $Version) -ForegroundColor Yellow
+    }
+    $null = & $Uv python install $Version
+    if ($LASTEXITCODE -ne 0) {
+        if ($Splash) { Set-Status -Index 2 -Tag 'fail' -Text 'could not be installed' }
+        Stop-Setup -Code 'NS-E105' -Detail "uv python install $Version failed (exit code $LASTEXITCODE). $(Get-KitHint)" -ExitCode 13
+    }
+    return 'downloaded'
 }
 
 function Unblock-ExtractedFiles {
@@ -1248,6 +1355,9 @@ if (Test-Path -LiteralPath $versionPath) { $Version = (Get-Content -Raw -Literal
 if ($script:IsDry) { Show-Action "unblock the extracted program files in $App (remove the Mark of the Web)" }
 else { Unblock-ExtractedFiles -Folder $App }
 
+# the files folder beside INSTALL.cmd (D-17): pinned programs are taken from it when their SHA256 matches
+$filesDir = Get-FilesDir -App $App
+
 # answers.json (unattended mode)
 $answersPath = ''
 if ($Answers) { $answersPath = $Answers }
@@ -1279,6 +1389,10 @@ elseif (-not $ProbeOnly) {
     if ($script:DevMode) { Write-Host $script:DevBanner -ForegroundColor Yellow }
     if ($script:IsDry) { Write-Host 'Dry run: nothing will be changed on this PC.' }
     if ($answersPath) { Write-Host "Using answers from $answersPath (unattended mode)." }
+}
+if ($filesDir -and -not $ProbeOnly) {
+    if ($script:IsDry) { Show-Action "take the pinned programs from $filesDir when their SHA256 matches, before any download" }
+    else { Write-Host "Found $filesDir : pinned programs are taken from it when their SHA256 matches." }
 }
 
 # probe and the default install folder
@@ -1353,9 +1467,11 @@ if ($null -ne $uv) {
     else { Write-Host "  uv : already present, skipped ($uv)" }
 }
 else {
-    if ($showSplash) { Set-Status -Index 1 -Tag 'working' -Text ('{0}, downloading' -f (Get-Prop $Manifest.bins.uv 'version' 'the pinned uv')) }
-    $uv = Install-Uv -Manifest $Manifest
-    if ($showSplash -and -not $script:IsDry) { Set-Status -Index 1 -Tag 'ok' -Text ('{0}, downloaded' -f (Get-UvVersion -Uv $uv)) }
+    $how = 'downloading'
+    if ($filesDir) { $how = 'looking in the files folder, then downloading' }
+    if ($showSplash) { Set-Status -Index 1 -Tag 'working' -Text ('{0}, {1}' -f (Get-Prop $Manifest.bins.uv 'version' 'the pinned uv'), $how) }
+    $uv = Install-Uv -Manifest $Manifest -FilesDir $filesDir
+    if ($showSplash -and -not $script:IsDry) { Set-Status -Index 1 -Tag 'ok' -Text ('{0}, {1}' -f (Get-UvVersion -Uv $uv), $script:UvFrom) }
 }
 
 # Hand the uv path to the setup server: its window copies uv into <home>\bin\uv and ns_common.uv reads this.
@@ -1375,13 +1491,10 @@ else {
     $py = Find-PythonExe -Uv $uv -Version $pyVersion
     $pyNote = 'already here'
     if ($null -eq $py) {
-        if ($showSplash) { Set-Status -Index 2 -Tag 'working' -Text ('{0}, downloading (about 30 MB)' -f $pyVersion) }
-        $pyNote = 'downloaded'
-        $null = & $uv python install $pyVersion
-        if ($LASTEXITCODE -ne 0) {
-            if ($showSplash) { Set-Status -Index 2 -Tag 'fail' -Text 'could not be installed' }
-            Stop-Setup -Code 'NS-E105' -Detail "uv python install $pyVersion failed (exit code $LASTEXITCODE)." -ExitCode 13
-        }
+        $how = 'downloading (about 30 MB)'
+        if ($filesDir) { $how = 'looking in the files folder, then downloading (about 30 MB)' }
+        if ($showSplash) { Set-Status -Index 2 -Tag 'working' -Text ('{0}, {1}' -f $pyVersion, $how) }
+        $pyNote = Install-ManagedPython -Uv $uv -Version $pyVersion -FilesDir $filesDir -Splash ([bool]$showSplash)
         $py = Find-PythonExe -Uv $uv -Version $pyVersion
         if ($null -eq $py) {
             if ($showSplash) { Set-Status -Index 2 -Tag 'fail' -Text 'could not be found after the install' }
@@ -1394,7 +1507,7 @@ else {
 # Visual C++ runtime (stage 1 so the permission prompt appears in front of this console)
 if (-not [bool]$probe.vc_runtime) {
     if ($showSplash -and -not $script:IsDry) { Write-Host '' }
-    if (Install-VcRuntime -Manifest $Manifest) {
+    if (Install-VcRuntime -Manifest $Manifest -FilesDir $filesDir) {
         $probe.vc_runtime = $true
         $probe.tools.vcruntime = $true
         $rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu -DevMode $script:DevMode

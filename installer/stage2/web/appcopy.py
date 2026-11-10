@@ -37,7 +37,8 @@ APP_DIR = "app"
 MARKER = ".ns-app.done"
 CARRY_OVER = (".git", "config", "answers.json")
 # answers.json is the owner's input next to INSTALL.cmd and may hold API keys: it is not duplicated
-SKIP_TOP = frozenset({"venvs", "models", "answers.json"})
+# ``files`` is the folder of pinned programs beside INSTALL.cmd (D-17): setup reads it where it is
+SKIP_TOP = frozenset({"venvs", "models", "answers.json", "files"})
 KEEP_IN_BIN = frozenset({"webview2"})
 SKIP_ANYWHERE = frozenset(
     {"__pycache__", "node_modules", ".venv", ".pytest_cache", ".ruff_cache", ".mypy_cache"}

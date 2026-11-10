@@ -105,6 +105,39 @@ or **Pause**, or you close the Nightshift setup window.
   `bad hash`, with what to do for each (almost always: run INSTALL.cmd again). It changes nothing and needs no
   internet. It takes a few minutes because it reads about 20 GB.
 
+## If GitHub is down on install day
+
+The models can come from a folder (**Model files come from**, above). The programs can too: setup takes them from a
+folder called `files` next to `INSTALL.cmd`, so an outage at GitHub does not stop the install.
+
+1. **Make the folder, on any PC with internet** (before install day, or on another PC while GitHub is down for
+   you). Extract the Nightshift zip there, open PowerShell in the extracted folder and run
+   `powershell -ExecutionPolicy Bypass -File tools/make-files-kit.ps1`. It reads `manifest.json`, downloads every
+   pinned program (uv, the Python build uv installs, the Visual C++ runtime, FFmpeg, every llama.cpp build with its
+   CUDA runtime, the voice engine, OpenCode, yt-dlp, the window files, the face finder and the spaCy language
+   model), checks each SHA256 and writes them to a folder called `files`, with a list in `files/files.json`. Add
+   `-Only uv,python,ffmpeg,yt-dlp,spacy,webview2` (any keys) to fetch only some of them. A file that is already
+   there and matches is kept, so you can run it again after a failure; it ends with exit code 1 and names what is
+   still missing.
+2. **Copy the folder `files` next to `INSTALL.cmd`** on the PC you are setting up.
+3. **Run INSTALL.cmd** (again, if setup had stopped: it carries on at the failed step).
+
+What setup does with it:
+
+- For each program it looks in `files` first (by the file's name), then in your models folder, then uses winget
+  where it always did, then the internet. A program it already installed is not looked for again.
+- A file is used only when its SHA256 is the one `manifest.json` pins, and setup says so once per program:
+  `llama_cpu: taken from files\llama-...zip (SHA256 checked)` in the console, the setup window's log and
+  `logs`; the window's row says *copied from your folder* or *installed from the files folder*. Python is
+  checked by uv itself, against the SHA256 uv carries for that build.
+- A file with other bytes is never used. Setup says `files\llama-...zip does not match its pin; downloading it`
+  once and goes on to the next source. Run `tools/make-files-kit.ps1` again to replace it.
+- When a program is not in the folder and its site is down, the step stops with `NS-E105` as before, and the
+  message now ends with these steps. What was copied or downloaded so far is kept.
+- The folder is read where it is. It is not copied into the install folder; delete it after setup if you like.
+- Not in the folder: the Python packages (PyPI), the models (Hugging Face: use **Model files come from**),
+  Windows Terminal, and a voice engine that `manifest.json` does not pin.
+
 ## If a row is red or a message shows an error code
 
 Every message has a code like `NS-E104`, a sentence and a "What to do". In the setup window press **Retry** where this table says "run INSTALL.cmd again". The usual ones:
