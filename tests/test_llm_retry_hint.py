@@ -13,8 +13,9 @@ from ns_studio.text import llm_retry
 
 DECIDED_HINT = (
     "Check that llama-server is healthy (ns doctor). A story job tries once more after a few seconds "
-    "when the model sent a server error, dropped the connection or gave an empty answer; "
-    "a timeout or a refused request is not tried again, so run the job again once the model answers."
+    "when the model sent a server error, the connection dropped or was refused, or the answer was empty; "
+    "a timeout or a request the model rejects (a 4xx answer) is not tried again, "
+    "so run the job again once the model answers."
 )
 
 
@@ -57,4 +58,4 @@ def test_the_hint_names_no_retry_for_the_routes_that_have_none():
     hint = describe("NS-E301").hint
     assert "will retry" not in hint.lower() or "story job" in hint
     assert "story job" in hint
-    assert "timeout" in hint and "refused request" in hint
+    assert "timeout" in hint and "request the model rejects" in hint
