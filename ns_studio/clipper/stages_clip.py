@@ -333,9 +333,25 @@ def prompt_video_kind(p: ClipParams, an: Analysis) -> str:
 CAPTION_WORDS_FILE = "clip_caption_words.json"  # per clip: the model's cleaned spelling of each ASR word
 # The answer now holds the spoken text of every candidate besides the thinking, so it needs more room than the
 # 4096 tokens `complete_json` allows by default (a cut-off answer is NS-E302 and loses the whole window). The
-# llama server runs with at least 16K of context on the gpu profile and 8K on cpu-dev
-# (`ns_supervisor.tune.min_ctx_for`); a 720 s window prompt is about 4K tokens, so cpu-dev never reaches 8192.
+# prompt of a 720 s window at 4 words a second is about 5,500 tokens, so one request needs about 13,700 of
+# context: `ns_supervisor.tune.CONTEXT_USES` declares it ("clip selection") and the tune's floor, 16384 on
+# both profiles, holds it (`tests/test_llm_context_budget.py` renders the prompt and checks both).
 CLIP_SELECT_MAX_TOKENS = 8192
+# `complete_json` repairs a cut answer once by sending it back, so that request holds the prompt, the cut
+# answer and a new one. For a window of nonstop fast speech (4 words a second, every word in some candidate's
+# caption text) that is about 17,000 tokens, more than the 16384 floor: the repair is cut too (NS-E302). The
+# window is then asked once more as two halves that overlap by `select.OVERLAP_S` (`split_window`); each
+# half's request, repair included, is about half as large, so the window is not lost. A half that is cut
+# again fails the stage as before.
+SPLIT_MIN_S = 2 * select.OVERLAP_S
+
+
+def split_window(ws: float, we: float) -> list[tuple[float, float]]:
+    """The two halves of window [ws, we] that `SelectStage` asks when its answer was cut: they overlap by
+    `select.OVERLAP_S` around the middle, as neighbouring windows do, so a moment there is in one of them."""
+    mid = (ws + we) / 2
+    half = select.OVERLAP_S / 2
+    return [(ws, min(we, mid + half)), (max(ws, mid - half), we)]
 
 
 def load_caption_words(ctx: JobContext) -> dict[str, list[str]]:
@@ -385,7 +401,7 @@ class SelectStage:
             else {}
         )
 
-        def ask(ws: float, we: float) -> dict[str, Any]:
+        def ask_once(ws: float, we: float) -> dict[str, Any]:
             return call_json(
                 ctx,
                 "clip_select",
@@ -399,6 +415,20 @@ class SelectStage:
                 analysis=analyze.prompt_view(an, ws, we),
                 max_tokens=CLIP_SELECT_MAX_TOKENS,
             )
+
+        def ask(ws: float, we: float) -> dict[str, Any]:
+            try:
+                return ask_once(ws, we)
+            except NsError as e:
+                if e.code != "NS-E302" or we - ws <= SPLIT_MIN_S:
+                    raise
+                halves = split_window(ws, we)
+                ctx.log.warn(
+                    "clip_window_split", "the answer for a window was cut: asking its two halves",
+                    job_id=ctx.job_id, window=[round(ws, 1), round(we, 1)], halves=halves,
+                    detail=e.detail[:200],
+                )  # fmt: skip
+                return {"clips": [c for h in halves for c in select.extract_items(ask_once(*h))]}
 
         judged = {"n": 0}
 

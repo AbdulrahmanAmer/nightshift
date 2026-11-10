@@ -9,7 +9,8 @@ only if faster than plain decoding (`NS-W302` otherwise). Speed is tokens/s from
 On the gpu profile the roomiest context among equal results wins. On `cpu-dev` (a PC that runs on the
 processor) the SMALLEST that does the work wins, then q8_0 before f16: the probe runs on an empty prompt,
 where a larger context costs nothing, but every token of context is KV memory held for the whole night
-(D-44). The floor is 8192, and 16384 when Nightshift Code is installed (it refuses below that, D-34).
+(D-44). The floor is the smallest size that holds the largest request of every user of the model
+(`CONTEXT_USES`, `min_ctx_for`), the same whether or not an optional tool is installed.
 """
 
 from __future__ import annotations
@@ -60,23 +61,85 @@ def is_moe(model_path: str) -> bool:
     return "a3b" in low or "moe" in low
 
 
-def code_installed(paths: Paths) -> bool:
-    """True unless `config/answers.json` says `"install_code": false`. A missing, unreadable or odd file
-    counts as installed: Nightshift Code refuses below `CODE_MIN_CONTEXT`, so the larger floor is the safe
-    side (and `Answers.install_code` defaults to True)."""
-    try:
-        data = json.loads((paths.config / "answers.json").read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return True
-    return not (isinstance(data, dict) and data.get("install_code") is False)
+@dataclass(frozen=True)
+class ContextUse:
+    """One user of the language model's context and the largest request it can make: prompt, thinking and
+    answer together, in tokens (the answer limit counts the thinking). `prompts` names the prompt files of
+    `ns_studio/prompts` it sends; `tests/test_llm_context_budget.py` renders each at its largest input and
+    fails when one needs more than `tokens`."""
+
+    name: str
+    where: str
+    tokens: int
+    prompts: tuple[str, ...] = ()
+    profiles: tuple[str, ...] = ("gpu", "cpu-dev")
 
 
-def min_ctx_for(rt: Runtime, *, code: bool = False) -> int:
-    """The story pipeline needs 16K on the gpu profile; cpu-dev runs 8K, or `CODE_MIN_CONTEXT` when Nightshift
-    Code is installed (`code`; callers that know the install pass `code_installed(paths)`)."""
-    if rt.profile != "cpu-dev":
-        return 16384
-    return max(8192, CODE_MIN_CONTEXT) if code else 8192
+#: Every user of the language model's context (D-44). Optional tools count: an install can add Nightshift
+#: Code later through Repair, and the night's context must not change with that.
+CONTEXT_USES: tuple[ContextUse, ...] = (
+    ContextUse("Nightshift Code", "launchers/nightshift-code.ps1 $minCtx", CODE_MIN_CONTEXT),
+    ContextUse(
+        "clip selection",
+        "ns_studio/clipper/stages_clip.py:SelectStage (a 720 s window, thinking)",
+        14000,
+        ("clip_select",),
+    ),
+    ContextUse(
+        "whole-story checks",
+        "ns_studio/policy (policy_check), stages_master and series.workshop (shorts_select, continuity)",
+        15000,
+        ("policy_check", "shorts_select", "continuity"),
+    ),
+    ContextUse(
+        "story writing",
+        "ns_studio/text/stages_shorts.py, stages_master.py, series/workshop.py (chapters, critic, revisions)",
+        13500,
+        (
+            "ideas",
+            "story_plan",
+            "story_draft",
+            "long_plan",
+            "chapter_draft",
+            "critic",
+            "revise",
+            "expand",
+            "split",
+            "hook",
+            "judge",
+            "workshop_concepts",
+            "workshop_regenerate",
+            "workshop_map",
+            "workshop_part_outline",
+            "workshop_revise",
+        ),
+    ),
+    ContextUse(
+        "pictures and titles",
+        "ns_studio/text (visual_plan, seo, long_seo, short_hook), ns_studio/clipper (clip_judge, clip_seo)",
+        13500,
+        ("visual_plan", "seo", "long_seo", "short_hook", "clip_judge", "clip_seo"),
+    ),
+    ContextUse(
+        "the Assistant",
+        "ns_dashboard/assistant/prompt.py:budget_for (sizes itself to the context; 16K plan)",
+        16384,
+    ),
+    ContextUse("ns verify and ns tune probes", "ns_supervisor/verify.py, ns_supervisor/benchmark.py", 1024),
+)
+
+
+def largest_use(rt: Runtime) -> ContextUse:
+    """The use of `CONTEXT_USES` with the largest request on `rt`'s profile (the first of equals)."""
+    uses = [u for u in CONTEXT_USES if rt.profile in u.profiles]
+    return max(uses, key=lambda u: u.tokens)
+
+
+def min_ctx_for(rt: Runtime) -> int:
+    """The smallest of `CTX_OPTIONS` that holds the largest request of every use the install can run
+    (`largest_use`). The largest option when even that is too small, which the budget test forbids."""
+    need = largest_use(rt).tokens
+    return next((c for c in CTX_OPTIONS if c >= need), CTX_OPTIONS[-1])
 
 
 def ctx_preference(rt: Runtime) -> Callable[[LlamaFlags], tuple[Any, ...]]:
@@ -87,13 +150,14 @@ def ctx_preference(rt: Runtime) -> Callable[[LlamaFlags], tuple[Any, ...]]:
     return lambda f: (-f.ctx, f.kv_type != "f16")
 
 
-def context_note(rt: Runtime, flags: LlamaFlags, floor: int, *, code: bool) -> str:
+def context_note(rt: Runtime, flags: LlamaFlags, floor: int) -> str:
     """The line `ns tune` prints about the context it chose, for a cpu-dev PC ("" on the gpu profile): what it
-    is and why it is not larger. True in each state: the floor was chosen, or a larger one because the floor
-    was more than 5 % slower or did not load."""
+    is, which use sets the floor and why it is not larger. True in each state: the floor was chosen, or a
+    larger one because the floor was more than 5 % slower or did not load."""
     if rt.profile != "cpu-dev":
         return ""
-    needs = "Nightshift Code works with" if code else "the story pipeline needs"
+    big = largest_use(rt)
+    needs = f"every use of the language model fits in (the largest, {big.name}, needs up to {big.tokens})"
     if flags.ctx == floor:
         return f"context {flags.ctx} tokens: the smallest that {needs}; {CPU_WHY}."
     return (
@@ -102,9 +166,9 @@ def context_note(rt: Runtime, flags: LlamaFlags, floor: int, *, code: bool) -> s
     )
 
 
-def plan_matrix(rt: Runtime, *, code: bool = False) -> dict[str, list[Any]]:
+def plan_matrix(rt: Runtime) -> dict[str, list[Any]]:
     """The candidates per stage (what `--dry-run` prints)."""
-    floor = min_ctx_for(rt, code=code)
+    floor = min_ctx_for(rt)
     return {
         "ngl": [0] if rt.profile == "cpu-dev" else list(NGL_STEPS),
         "ctx_kv": [(c, kv) for c in CTX_OPTIONS if c >= floor for kv in KV_OPTIONS],
@@ -113,9 +177,9 @@ def plan_matrix(rt: Runtime, *, code: bool = False) -> dict[str, list[Any]]:
     }
 
 
-def matrix_lines(rt: Runtime, *, code: bool = False) -> list[str]:
+def matrix_lines(rt: Runtime) -> list[str]:
     """Human-readable matrix for `--dry-run`."""
-    m = plan_matrix(rt, code=code)
+    m = plan_matrix(rt)
     runs = 1 + max(0, len(m["ctx_kv"]) - 1) + max(0, len(m["n_cpu_moe"]) - 1) + len(m["mtp_draft_n_max"])
     return [
         f"model: {rt.llama.model_path or '(not configured)'}  profile: {rt.profile}",
@@ -166,11 +230,10 @@ def tune(paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = No
     """Run the staged sweep with `runner`; on success write the winner to runtime.json."""
     lg = log or NsLogger("tune", paths.logs)
     out = TuneOutcome(ok=False)
-    code = code_installed(paths)
-    matrix = plan_matrix(rt, code=code)
+    matrix = plan_matrix(rt)
     if rt.llama.story_model_path:
         out.warnings.append("two-model mode: only the primary (code) model was tuned; see CR-C2-5")
-    floor = min_ctx_for(rt, code=code)
+    floor = min_ctx_for(rt)
 
     def attempt(stage: str, flags: LlamaFlags) -> float | None:
         cand = rt.model_copy(deep=True)
@@ -241,7 +304,7 @@ def tune(paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = No
         lg.warn("mtp_disabled", "MTP was not faster; keeping plain decoding", code="NS-W302")
 
     out.ok, out.flags, out.tok_s = True, current, current_tok
-    out.context_note = context_note(rt, current, floor, code=code)
+    out.context_note = context_note(rt, current, floor)
     new_rt = rt.model_copy(deep=True)
     new_rt.llama.flags = current
     save_runtime(paths, new_rt)

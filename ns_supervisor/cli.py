@@ -188,7 +188,7 @@ def cmd_tune(
     except NsError as e:
         raise _die(e) from e
     if dry_run:
-        for line in tune.matrix_lines(rt, code=tune.code_installed(paths)):
+        for line in tune.matrix_lines(rt):
             echo(line)
         return
     if rt.dev_mode:

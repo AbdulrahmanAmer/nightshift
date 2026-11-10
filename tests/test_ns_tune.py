@@ -29,7 +29,7 @@ def test_matrix_for_moe_and_cpu_dev() -> None:
     moe = tune.plan_matrix(rt_for("C:/m/Qwen3.6-35B-A3B-Q4.gguf"))
     assert moe["n_cpu_moe"] == [0, 4, 8, 12, 16]
     cpu = tune.plan_matrix(rt_for(profile="cpu-dev"))
-    assert cpu["ngl"] == [0] and (8192, "f16") in cpu["ctx_kv"] and len(cpu["ctx_kv"]) == 6
+    assert cpu["ngl"] == [0] and cpu["ctx_kv"][0] == (16384, "f16") and len(cpu["ctx_kv"]) == 4
 
 
 def test_dry_run_lines_list_every_stage() -> None:
@@ -218,10 +218,14 @@ def install(tmp_path: Path, profile: str, code: bool | str | None) -> tuple[Path
     return paths, rt
 
 
-@pytest.mark.parametrize(("code", "ctx"), [(False, 8192), (True, 16384), (None, 16384)])
+@pytest.mark.parametrize(
+    ("code", "ctx"), [(False, 16384), (True, 16384), (None, 16384), ("{not json", 16384)]
+)
 def test_on_the_cpu_profile_the_smallest_context_that_does_the_work_wins(
-    tmp_path: Path, code: bool | None, ctx: int
+    tmp_path: Path, code: bool | str | None, ctx: int
 ) -> None:
+    """One floor whatever answers.json says about Nightshift Code (D-44): the night's context does not depend
+    on an optional tool, and a damaged answers file changes nothing."""
     paths, rt = install(tmp_path, "cpu-dev", code)
     runner = Flat()
     out = tune.tune(paths, rt, runner)
@@ -242,33 +246,11 @@ def test_on_the_gpu_profile_the_roomier_context_still_wins_among_equals(tmp_path
 
 def test_a_slower_floor_or_a_bigger_size_that_does_not_load_is_decided_by_the_numbers(tmp_path: Path) -> None:
     paths, rt = install(tmp_path / "a", "cpu-dev", False)
-    out = tune.tune(paths, rt, Flat(factor={8192: 0.8}))                # the floor is more than 5 % slower
-    assert out.flags is not None and out.flags.ctx == 16384
+    out = tune.tune(paths, rt, Flat(factor={16384: 0.8}))               # the floor is more than 5 % slower
+    assert out.flags is not None and out.flags.ctx == 32768
     paths, rt = install(tmp_path / "b", "cpu-dev", False)
     out = tune.tune(paths, rt, Flat(fail_ctx=(32768,)))                 # a bigger one that does not load
-    assert out.flags is not None and out.flags.ctx == 8192
-
-
-@pytest.mark.parametrize(
-    ("answers", "code"),
-    [(None, True), (False, False), (True, True), ("no", True), ("false", True), (0, True)],
-)
-def test_nightshift_code_counts_as_installed_unless_the_answers_say_false(
-    tmp_path: Path, answers: object, code: bool
-) -> None:
-    paths = Paths(tmp_path / "ns")
-    paths.config.mkdir(parents=True)
-    if answers is not None:
-        (paths.config / "answers.json").write_text(json.dumps({"install_code": answers}), encoding="utf-8")
-    assert tune.code_installed(paths) is code
-
-
-@pytest.mark.parametrize("text", ["{not json", "[1, 2]", "null", '{"channel": {}}', ""])
-def test_unreadable_answers_do_not_make_the_tune_forget_nightshift_code(tmp_path: Path, text: str) -> None:
-    paths = Paths(tmp_path / "ns")
-    paths.config.mkdir(parents=True)
-    (paths.config / "answers.json").write_text(text, encoding="utf-8")
-    assert tune.code_installed(paths) is True       # the larger context is the safe side
+    assert out.flags is not None and out.flags.ctx == 16384
 
 
 def down_client(paths: Paths):  # type: ignore[no-untyped-def]
@@ -299,15 +281,16 @@ def ns_tune(
 
 
 WHY = "a larger one would take memory this PC needs for the jobs."
+FITS = "every use of the language model fits in (the largest, Nightshift Code, needs up to 16384)"
 
 
 def test_the_tune_line_says_the_context_and_why_on_the_cpu_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    said = ns_tune(tmp_path / "a", monkeypatch, Flat(), "cpu-dev", False)
-    assert f"context 8192 tokens: the smallest that the story pipeline needs; {WHY}" in said
-    said = ns_tune(tmp_path / "b", monkeypatch, Flat(), "cpu-dev", True)
-    assert f"context 16384 tokens: the smallest that Nightshift Code works with; {WHY}" in said
+    said = ""
+    for i, code in enumerate((False, True)):
+        said = ns_tune(tmp_path / str(i), monkeypatch, Flat(), "cpu-dev", code)
+        assert f"context 16384 tokens: the smallest that {FITS}; {WHY}" in said
     # setup shows the last eight lines of `ns tune`: the line is among them, before the closing one
     lines = said.strip().splitlines()
     assert lines[-2].startswith("context 16384 tokens") and lines[-1] == "Saved to runtime.json."
@@ -316,12 +299,10 @@ def test_the_tune_line_says_the_context_and_why_on_the_cpu_profile(
 def test_the_tune_line_is_true_when_the_smallest_context_was_slower_or_did_not_load(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    said = ns_tune(tmp_path / "a", monkeypatch, Flat(factor={8192: 0.8}), "cpu-dev", False)
-    assert "context 16384 tokens: the smallest that the story pipeline needs is 8192" in said
+    said = ns_tune(tmp_path / "a", monkeypatch, Flat(factor={16384: 0.8}), "cpu-dev", False)
+    assert f"context 32768 tokens: the smallest that {FITS} is 16384" in said
     assert "more than 5 % slower or did not load" in said
-    assert "smallest that the story pipeline needs;" not in said
-    said = ns_tune(tmp_path / "b", monkeypatch, Flat(factor={16384: 0.8}), "cpu-dev", True)
-    assert "context 32768 tokens: the smallest that Nightshift Code works with is 16384" in said
+    assert f"smallest that {FITS};" not in said
 
 
 def test_the_gpu_profile_says_nothing_new_about_the_context(
