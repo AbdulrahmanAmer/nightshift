@@ -13,7 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROMISE = "next nightly run"
-CONDITION = ("WHILE_NIGHTLY_ON", "Automatic runs are on")
+CONDITION = ("WHILE_NIGHTLY_ON", "IF_NIGHTLY_ON", "Automatic runs are on")
 NEAR = 6  # lines after the promise within which the same message must carry the condition
 
 
@@ -39,6 +39,7 @@ def test_a_promised_nightly_run_names_the_switch(rel: str, at: int) -> None:
 
 
 def test_the_condition_names_the_place_to_change_it() -> None:
-    from ns_studio.ownership import WHILE_NIGHTLY_ON
+    from ns_studio.ownership import IF_NIGHTLY_ON, WHILE_NIGHTLY_ON
 
-    assert "Automatic runs" in WHILE_NIGHTLY_ON and "Settings" in WHILE_NIGHTLY_ON
+    for words in (WHILE_NIGHTLY_ON, IF_NIGHTLY_ON):
+        assert "Automatic runs" in words and "Settings" in words
