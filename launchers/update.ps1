@@ -12,6 +12,8 @@ $dlg.InitialDirectory = Join-Path ([Environment]::GetFolderPath('UserProfile')) 
 if ($dlg.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { exit 0 }
 
 $py = Get-NsVenvExe 'supervisor' 'python.exe'
+# What this window shows names commands by this install's full path (FN-3: the files hold the plain words)
+$nsHome = Get-NsHome
 if (-not (Test-Path -LiteralPath $py)) { Exit-NsWithPause ('Nightshift is not installed (missing ' + $py + ').') }
 
 # The swap renames the app folder, and Windows refuses while any process has it as its working directory.
@@ -44,7 +46,7 @@ $waited = 0
 while ($null -eq $final -and $waited -lt 14400) {
     if (Test-Path -LiteralPath $logFile) {
         $lines = @(Get-Content -LiteralPath $logFile -ErrorAction SilentlyContinue)
-        for ($i = $seen; $i -lt $lines.Count; $i++) { Write-Host $lines[$i] }
+        for ($i = $seen; $i -lt $lines.Count; $i++) { Write-Host (Format-NsCommands $lines[$i] $nsHome) }
         $seen = $lines.Count
     }
     $state = $null
@@ -74,7 +76,7 @@ while ($null -eq $final -and $waited -lt 14400) {
             if ($workerPid -gt 0 -and -not (Get-Process -Id $workerPid -ErrorAction SilentlyContinue)) {
                 $left = 'The update process stopped before it finished. Its log: ' + $logFile
                 if ($state.PSObject.Properties['if_stopped_here'] -and $state.if_stopped_here) {
-                    $left = [string]$state.if_stopped_here
+                    $left = Format-NsCommands ([string]$state.if_stopped_here) $nsHome
                 }
                 Exit-NsWithPause $left
             }
@@ -91,9 +93,9 @@ if ($null -eq $final) {
 # the last lines of the log can arrive just after the state changes
 if (Test-Path -LiteralPath $logFile) {
     $lines = @(Get-Content -LiteralPath $logFile -ErrorAction SilentlyContinue)
-    for ($i = $seen; $i -lt $lines.Count; $i++) { Write-Host $lines[$i] }
+    for ($i = $seen; $i -lt $lines.Count; $i++) { Write-Host (Format-NsCommands $lines[$i] $nsHome) }
 }
 if ($final.state -eq 'failed') {
-    Exit-NsWithPause ('The update did not complete: ' + [string]$final.message) 1
+    Exit-NsWithPause ('The update did not complete: ' + (Format-NsCommands ([string]$final.message) $nsHome)) 1
 }
 Read-Host 'Update finished. Press Enter to close' | Out-Null

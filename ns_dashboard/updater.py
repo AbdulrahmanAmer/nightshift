@@ -319,6 +319,8 @@ def read_update_state(
     for key in ("old", "new", "message", "updated_at"):
         value = raw.get(key)
         out[key] = str(value) if value is not None else None
+    if out["message"]:      # the page shows it now: stored with the plain words, rendered here (FN-3)
+        out["message"] = render(out["message"], paths.home)
     out["state"] = raw["state"]
     if isinstance(raw.get("release_notes"), str) and raw["release_notes"]:
         out["release_notes"] = raw["release_notes"]       # added only when there is some: the shape is unchanged

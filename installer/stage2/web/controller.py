@@ -60,6 +60,7 @@ from ns_common.atomic import (
     write_text_atomic,
     write_zip_atomic,
 )
+from ns_common.commandline import render
 from ns_common.errors import describe as describe_error
 from ns_common.paths import Paths
 from ns_common.secret_file import stored_names
@@ -738,8 +739,9 @@ class SetupController:
 
     # ---- logging ----
     def log(self, level: str, text: str) -> None:
-        """Add a line to the window's log, the console and the log file."""
-        line = {"t": datetime.now().strftime("%H:%M:%S"), "level": level, "text": text}
+        """Add a line to the window's log, the console and the log file. The window and the console show it
+        now, with the commands it names as this owner types them; the file keeps the plain words (FN-3)."""
+        line = {"t": datetime.now().strftime("%H:%M:%S"), "level": level, "text": render(text, self.home)}
 
         def fn(s: dict[str, Any]) -> None:
             s["log"].append(line)
@@ -747,7 +749,7 @@ class SetupController:
 
         self.store.update(fn)
         prefix = "" if level == "info" else f"{level}  "
-        self.fx.console(f"{line['t']}  {prefix}{text}", level)
+        self.fx.console(f"{line['t']}  {prefix}{line['text']}", level)
         if self._log_path is not None:
             try:
                 self._log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1331,9 +1333,12 @@ class SetupController:
                     "Press Retry to wait for it again, or close setup and run INSTALL.cmd later: "
                     "it continues where it stopped")
         self._attempts[step] = self._attempts.get(step, 0) + 1
+        # the Failed screen shows it now: the commands it names as this owner types them (FN-3); the log and
+        # install-report.json keep the plain words
         view = {
-            "step": step, "stepTitle": labels.STEP_TITLES.get(step, step), "code": code, "title": title,
-            "whatToDo": what, "detail": detail, "canSkip": optional, "attempts": self._attempts[step],
+            "step": step, "stepTitle": labels.STEP_TITLES.get(step, step), "code": code,
+            "title": render(title, self.home), "whatToDo": render(what, self.home),
+            "detail": render(detail, self.home), "canSkip": optional, "attempts": self._attempts[step],
             "at": hhmm(),
         }
 
@@ -1873,7 +1878,10 @@ class SetupController:
 
         def fn(s: dict[str, Any]) -> None:
             if not any(n["code"] == code for n in s["notices"]):
-                s["notices"].append({"code": code, "title": title, "whatToDo": what, "step": step})
+                s["notices"].append({   # shown now: its commands as this owner types them (FN-3)
+                    "code": code, "title": render(title, self.home), "whatToDo": render(what, self.home),
+                    "step": step,
+                })
 
         self.store.update(fn)
         self.log("warn", f"{code}  {title}" + (f" ({detail[:300]})" if detail else ""))
@@ -2037,7 +2045,9 @@ class SetupController:
             "shortcutsLine": shortcuts["line"],
             "homeVarLine": var_line if isinstance(var_line, str) else None,
             # whose the `ns` and `studio` commands are (card FN-3), in the scheduler step's own sentence
-            "commandsLine": commands_line if isinstance(commands_line, str) and commands_line else None,
+            "commandsLine": (
+                render(commands_line, self.home) if isinstance(commands_line, str) and commands_line else None
+            ),
             "devMode": self.dev,
             "diagnosticsZip": self._bundle or flags.get("bundle"),
             "durationS": duration, "warnings": warnings, "stockKeyMissing": not self._stock_key_stored(),

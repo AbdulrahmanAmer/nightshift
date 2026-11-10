@@ -638,7 +638,11 @@ they open now. Setup also says so when another program's `ns` or `studio` comes 
 NativeScript `ns`, an Android Studio or JetBrains `studio`). While a plain `ns` does not reach this install, the
 messages, notes and pages of this install name its own command file by its full path instead of the plain
 word, so the command they give is always this install's; this guide keeps the plain words: put the full path
-in their place in that case.
+in their place in that case. They decide that when they are shown, so a note written before a second install
+took the commands names the right file when you read it, and they also give the full path when Windows does
+not say what your PATH holds (the Update window always does). A path with a space is given with its drive
+outside the quotes, `D:"\My Videos\Nightshift\cmd\ns.cmd" doctor`, which a Command Prompt and PowerShell both
+run as it is.
 
 - **Quotes and special characters.** In Windows PowerShell 5.1, an argument that holds `&`, `|`, `<`, `>` or `^`
   and no space reaches the command file without quotes, so cmd.exe splits it or drops the `^` before Nightshift

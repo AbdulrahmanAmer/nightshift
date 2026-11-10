@@ -23,7 +23,8 @@ import sys
 import time
 import venv
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import httpx
 import psutil
@@ -740,53 +741,172 @@ def two_installs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path,
 
 def test_an_update_way_out_names_this_installs_own_command_when_another_install_has_the_plain_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """B's failed update must not tell its owner to type a plain `ns update --rollback --detach`: with A's
-    commands first that rolls A back. Every route of a sentence names B's own file: the update's way out, an
-    error's hint and detail, a studio error and a morning note."""
+    commands first that rolls A back. The rule (FN-3 review of b6b2394): every text is STORED with the plain
+    words (what a plain `ns` reaches changes after it is written, and once-only checks compare the words) and
+    RENDERED where it is shown: the CLI, the dashboard's answers (notes, job card, error, update state), the
+    toast. Stored: the update's way out, an error's hint and detail, a studio error, a morning note, the
+    update's state file."""
     commandline = _module("ns_common.commandline")
     assert commandline is not None, "the base has no ns_common.commandline"
+    assert hasattr(commandline, "command_form"), "the base has no commandline.command_form"
+    from ns_common import errors
     from ns_common.errors import NsError
+    from ns_dashboard import updater
+    from ns_dashboard.errors import ApiError
+    from ns_dashboard.jobs import JobRecord
+    from ns_dashboard.svc_engine import EngineService
     from ns_studio.errors import StudioError
-    from ns_supervisor import notify
+    from ns_supervisor import notify, update_job
 
     a, b = two_installs(tmp_path, monkeypatch)
-    own = f"{b}\\cmd\\ns.cmd"
+    ns_form = commandline.command_form(f"{b}\\cmd\\ns.cmd")
+    studio_form = commandline.command_form(f"{b}\\cmd\\studio.cmd")
     assert commandline.reach(b).ok is False and commandline.reach(b).other == str(a)
-    assert commandline.typed(b, "ns update --rollback --detach") == f"{own} update --rollback --detach"
+    assert commandline.typed(b, "ns update --rollback --detach") == f"{ns_form} update --rollback --detach"
+    # stored: the plain words
     monkeypatch.setattr(update, "takes_detach", lambda _app: True)
     way = update.rollback_way_out(Paths(b), b / "app", "0.1.15", "0.1.14")
-    assert f"run '{own} update --rollback --detach'" in way and "'ns update" not in way
-    assert f"'{own} update <zip> --detach'" in update.update_way_out(Paths(b), b / "app", "0.1.15", "0.1.14")
-    assert f"Run '{own} doctor'" in describe("NS-E202").hint               # errors.json, as every reader gets it
-    assert f"run {own} update again" in describe("NS-E124").hint           # unquoted words too
-    assert f"{b}\\cmd\\studio.cmd channel edit" in describe("NS-E320").hint
+    assert "run 'ns update --rollback --detach'" in way
+    assert "'ns update <zip> --detach'" in update.update_way_out(Paths(b), b / "app", "0.1.15", "0.1.14")
+    assert describe("NS-E202").hint == "Run 'ns doctor' and check logs\\supervisor-*.jsonl."
     err = NsError("NS-E702", "Run ns update --rollback again to go back.")
-    assert f"Run {own} update --rollback again" in err.detail
-    assert f"'{b}\\cmd\\studio.cmd calibrate'" in StudioError("NS-E324", "run 'studio calibrate' first").detail
+    assert err.detail == "Run ns update --rollback again to go back." and "Run 'ns doctor'" not in str(err)
+    assert StudioError("NS-E324", "run 'studio calibrate' first").detail == "run 'studio calibrate' first"
     paths = Paths(b)
     notify.leave_note(paths, "Nightshift", "continue it with studio run --resume <id>")
-    assert any(f"{b}\\cmd\\studio.cmd run --resume <id>" in n["message"] for n in notify.read_notes(paths))
-    # B's commands reach B again (its entry first): every text keeps its plain words
+    on_disk = json.loads(notify.note_path(paths).read_text(encoding="utf-8"))["notes"]
+    assert on_disk == [{"at": on_disk[0]["at"], "title": "Nightshift", "message": "continue it with studio run --resume <id>"}]
+    (b / "run").mkdir(parents=True, exist_ok=True)
+    update_job.status_file(paths).write_text(json.dumps({"state": "running", "pid": os.getpid(), "log": "x.log"}), encoding="utf-8")
+    update_job.step(paths, "Refreshing the Python environments.", way)
+    state = json.loads(update_job.status_file(paths).read_text(encoding="utf-8"))
+    assert state["if_stopped_here"] == way                                   # the update's state file: plain
+    # shown: B's own command files by full path, on every route that shows a text
+    assert f"run '{ns_form} update --rollback --detach'" in commandline.render(way, b)
+    assert f"Run '{ns_form} doctor'" in errors.describe_shown("NS-E202").hint
+    assert f"run {ns_form} update again" in errors.describe_shown("NS-E124").hint   # unquoted words too
+    assert f"{studio_form} channel edit" in errors.describe_shown("NS-E320").hint
+    shown = notify.shown_notes(paths)
+    assert shown[0]["message"] == f"continue it with {studio_form} run --resume <id>"
+    assert shown[0]["id"] == notify.read_notes(paths)[0]["id"]            # the bell dismisses the stored note
+    assert EngineService.notes(cast(Any, SimpleNamespace(s=SimpleNamespace(paths=paths)))) == shown
+    body = ApiError(409, err.code, str(err), hint=err.definition.hint).to_body()["error"]
+    assert f"Run {ns_form} update --rollback again" in body["message"]
+    card = JobRecord("j1", "run_now", None, "failed", 0.0, err.detail, "t", None, None,
+                     result={"error": {"code": "NS-E202", "hint": describe("NS-E202").hint}}).to_dict()
+    assert card["message"].startswith(f"Run {ns_form} update --rollback") and f"'{ns_form} doctor'" in card["result"]["error"]["hint"]
+    state["message"] = err.detail
+    update_job.status_file(paths).write_text(json.dumps(state), encoding="utf-8")
+    assert updater.read_update_state(paths, alive=lambda _p: True)["message"] == f"Run {ns_form} update --rollback again to go back."
+    echoed: list[str] = []
+    monkeypatch.setattr(cli.typer, "echo", lambda text, **_k: echoed.append(text))
+    cli.echo(err.detail)
+    assert echoed == [f"Run {ns_form} update --rollback again to go back."]
+    # B's commands reach B again (its entry first): every text keeps its plain words, the stored note too
     monkeypatch.setenv("NS_TEST_USER_PATH", rf"{b}\cmd;{a}\cmd")
-    assert describe("NS-E202").hint == "Run 'ns doctor' and check logs\\supervisor-*.jsonl."
+    assert commandline.render(way, b) == way and errors.describe_shown("NS-E202").hint == describe("NS-E202").hint
+    assert notify.shown_notes(paths)[0]["message"] == "continue it with studio run --resume <id>"
     assert commandline.typed(b, "ns update --rollback --detach") == "ns update --rollback --detach"
-    # nothing known (no stand-in: as when Windows does not answer): unchanged, never a guess
-    monkeypatch.delenv("NS_TEST_USER_PATH")
-    assert commandline.render("Run 'ns doctor'.", b) == "Run 'ns doctor'."
 
 
-def test_a_folder_with_a_space_is_given_in_powershells_form_and_the_venv_program_without_command_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_render_gives_the_full_path_when_what_a_plain_command_reaches_is_not_known_and_never_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Not known (Windows does not say what the user PATH holds): the full path, which is right whatever the
+    PATH holds. No home: the plain words. An error while rendering an error never hides it."""
     commandline = _module("ns_common.commandline")
     assert commandline is not None, "the base has no ns_common.commandline"
+    assert hasattr(commandline, "TEST_UNKNOWN"), "the base has no stand-in for a PATH Windows does not tell"
+    from ns_common import errors
 
-    monkeypatch.setenv("NS_TEST_USER_PATH", "")
-    home = tmp_path / "Jo's Nightshift"
-    (home / "config").mkdir(parents=True)
-    (home / "config" / "runtime.json").write_text("{}", encoding="utf-8")
-    exe = home / "venvs" / "supervisor" / "Scripts" / "ns.exe"
-    assert commandline.typed(home, "ns doctor --bundle") == f'& "{exe}" doctor --bundle'   # no files yet
-    assert commandline.render("run 'ns doctor --bundle' and send it", home) == f"run '& \"{exe}\" doctor --bundle' and send it"
-    (home / "config" / "runtime.json").write_text('{"dev_mode": true}', encoding="utf-8")
-    assert commandline.reach(home).why == "a dev install does not put them on your PATH"
+    home = stand_alone(tmp_path / "B")
+    form = commandline.command_form(f"{home}\\cmd\\ns.cmd")
+    monkeypatch.setenv("NIGHTSHIFT_HOME", str(home))
+    monkeypatch.setenv("NS_TEST_USER_PATH", commandline.TEST_UNKNOWN)
+    assert commandline.reach(home).ok is None
+    assert commandline.render("Run 'ns doctor'.") == f"Run '{form} doctor'."
+    assert commandline.typed(home, "ns doctor") == f"{form} doctor"
+    assert f"'{form} doctor'" in errors.describe_shown("NS-E202").hint
+    monkeypatch.delenv("NIGHTSHIFT_HOME")                                   # no home: nothing else to give
+    assert commandline.render("Run 'ns doctor'.") == "Run 'ns doctor'."
+
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("a bug while rendering")
+
+    monkeypatch.setattr(commandline, "reach_now", boom)                     # the full path, never a raise
+    assert commandline.render("Run 'ns doctor'.", home) == f"Run '{form} doctor'."
+    assert commandline.typed(home, "ns doctor") == f"{form} doctor"
+    monkeypatch.setattr(commandline, "own_file", boom)                      # even that fails: the text
+    assert commandline.render("Run 'ns doctor'.", home) == "Run 'ns doctor'."
+    assert commandline.typed(home, "ns doctor") == "ns doctor"
+    assert commandline.render(cast(Any, None), home) is None
+
+
+@windows_only
+def test_a_full_path_with_a_space_is_given_in_a_form_a_command_prompt_and_powershell_both_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The shown command, typed as it is, runs this install's program in cmd.exe and in Windows PowerShell 5.1
+    (a home with a space, an apostrophe, & ( ) ^). The forms it replaced do not: PowerShell's `& "..."` is
+    cmd.exe's "& was unexpected", the plain quoted path is PowerShell's "Unexpected token"."""
+    import base64
+
+    commandline = _module("ns_common.commandline")
+    assert commandline is not None, "the base has no ns_common.commandline"
+    assert hasattr(commandline, "command_form"), "the base has no commandline.command_form"
+    home = tmp_path / HARD
+    shim = stand_in_install(home)
+    show = tmp_path / "show.py"
+    show.write_text(SHOW, encoding="ascii")
+    monkeypatch.setenv("NS_TEST_USER_PATH", "")                             # known: nothing reaches this install
+    form = commandline.command_form(str(shim))
+    assert form == f'{str(shim)[:2]}"{str(shim)[2:]}"'
+    assert commandline.render("run 'ns doctor --bundle' and send it", home) == f"run '{form} doctor --bundle' and send it"
+    typed_line = f'{form} "{show}" doctor --bundle'           # the shown command, the stand-in's script first
+    want = [str(home), json.dumps(["doctor", "--bundle"])]
+    env = {**os.environ, "NS_EXIT": "0", "NIGHTSHIFT_HOME": str(tmp_path / "another install")}
+
+    def powershell(line: str) -> subprocess.CompletedProcess[str]:
+        encoded = base64.b64encode(line.encode("utf-16-le")).decode("ascii")     # the line byte for byte
+        assert PS is not None
+        return subprocess.run([PS, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], capture_output=True, text=True, timeout=120, env=env)
+
+    proc = run_cmd(typed_line, env)
+    assert proc.stdout.splitlines()[:2] == want, proc.stdout + proc.stderr
+    proc = powershell(typed_line)
+    assert proc.stdout.splitlines()[:2] == want, proc.stdout + proc.stderr
+    assert run_cmd(f'& "{shim}" "{show}" doctor', env).stdout.splitlines()[:1] != [str(home)]
+    assert "Unexpected token" in powershell(f'"{shim}" "{show}" doctor').stderr
+    # a $ or a backtick (setup allows both): PowerShell's single-quoted form, its quote doubled
+    assert commandline.command_form("D:\\a$b 'c\\cmd\\ns.cmd") == "& 'D:\\a$b ''c\\cmd\\ns.cmd'"
+    assert commandline.command_form("D:\\Nightshift\\cmd\\ns.cmd") == "D:\\Nightshift\\cmd\\ns.cmd"
+
+
+@needs_powershell
+def test_the_windows_without_python_show_the_same_full_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The Update window (launchers/update.ps1) and the update's progress window show what the update's state
+    and log files hold, with no Python: `Format-NsCommands` gives the full path always, in render's form."""
+    import base64
+
+    commandline = _module("ns_common.commandline")
+    assert commandline is not None, "the base has no ns_common.commandline"
+    assert hasattr(commandline, "ps_formatter"), "the base has no PowerShell formatter"
+    from ns_supervisor import update_job
+
+    monkeypatch.setenv("NS_TEST_USER_PATH", commandline.TEST_UNKNOWN)
+    text = "Run 'ns update --rollback --detach', then studio run --resume <id>; ns.cmd and a word ns stay"
+    script = commandline.ps_formatter() + "\nWrite-Output (Format-NsCommands $env:NS_T $env:NS_H)\n"
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    assert PS is not None
+    for home in (stand_alone(tmp_path / HARD), tmp_path / "no files" / "home"):   # command files; the venv program
+        env = {**os.environ, "NS_T": text, "NS_H": str(home)}
+        proc = subprocess.run([PS, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], capture_output=True, text=True, timeout=120, env=env)
+        assert proc.stdout.rstrip("\r\n") == commandline.render(text, home) != text, proc.stdout + proc.stderr
+    common = (ROOT / "launchers" / "_common.ps1").read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert commandline.ps_formatter() in common                              # the launchers' copy is this one
+    follower = update_job.follower_script(Path("s.json"), Path("u.log"), 1, home=tmp_path)
+    assert commandline.ps_formatter() in follower and follower.isascii()
+    assert "Format-NsCommands ([string]$state.if_stopped_here) $nsHome" in follower
+    shortcut = (ROOT / "launchers" / "update.ps1").read_text(encoding="utf-8")
+    for shown in ("Format-NsCommands $lines[$i] $nsHome", "Format-NsCommands ([string]$state.if_stopped_here) $nsHome",
+                  "Format-NsCommands ([string]$final.message) $nsHome"):
+        assert shown in shortcut, shown
 
 
 def test_the_command_table_is_the_clis_own():

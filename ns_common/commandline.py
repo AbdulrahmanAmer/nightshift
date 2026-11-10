@@ -12,13 +12,27 @@ for example roll ANOTHER install back. So:
   PATH, then the user PATH, each folder with every PATHEXT ending in order;
 * `typed(home, words)`: the command as the owner should type it: the plain words when they reach this
   install, else this install's own command file by its full path (its venv program when there is none);
-* `render(text, home)`: every command a text names, given the same way. The sinks call it: the hints and
-  messages of `contracts/errors.json` (`ns_common.errors.describe`), an error's detail (`NsError`), the
-  morning notes and toasts (`ns_supervisor.notify`). A text whose commands reach this install is returned
-  unchanged, and so is any text when the PATH or the home is not known (nothing is changed on a guess).
+* `render(text, home)`: every command a text names, given the same way.
+
+THE RULE: text is STORED raw and RENDERED where it is SHOWN. The raw form is the plain words
+(`ns update --rollback`), what 0.1.14 stored and still shows after a rollback. What a plain `ns` reaches is
+machine state that changes after a text is written (a second install takes the PATH, a dev install, another
+program's `ns`), so a rendered text must never be kept: the notes file, an error's detail or a job's message
+in the database, the update's state and result files, the setup flags, install-report.json and the logs hold
+the plain words, and every once-only or equality check on a text compares the plain words. The readers
+render when they show: both CLIs' `echo`, a toast, the dashboard's answers (the notes, a job card, an
+error), the setup console and window, and the Update window (`launchers/_common.ps1` `Format-NsCommands`,
+PowerShell, which always gives the full path). `render` never raises: an error while rendering an error
+would hide the error.
+
+When what a plain command reaches is not known (Windows does not say what the user PATH holds), the full
+path is given: it is right whatever the PATH holds, while the install stays where it is. Without a home
+nothing can be given but the plain words.
 
 A test run never reads the registry: `NS_TEST_USER_PATH` and `NS_TEST_MACHINE_PATH` stand for the two
-PATH values (`NS_TEST_USER_PATH` unset: not known) and `NS_TEST_PROFILE` for the user folder.
+PATH values (`NS_TEST_USER_PATH` = `TEST_UNKNOWN`: Windows does not say) and `NS_TEST_PROFILE` for the user
+folder. A test that sets no `NS_TEST_USER_PATH` sees the plain words from `typed` and `render` (an install
+whose setup put its commands on the PATH); `reach` and `registry_user_path` then answer "not known".
 """
 
 from __future__ import annotations
@@ -46,6 +60,8 @@ FOLDER = "cmd"
 TEST_USER_PATH_ENV = "NS_TEST_USER_PATH"
 TEST_MACHINE_PATH_ENV = "NS_TEST_MACHINE_PATH"
 TEST_PROFILE_ENV = "NS_TEST_PROFILE"
+#: `NS_TEST_USER_PATH` with this value: Windows does not say what the user PATH holds.
+TEST_UNKNOWN = "<unknown>"
 HOME_ENV = "NIGHTSHIFT_HOME"
 #: (command name, venv, program in its Scripts folder)
 PROGRAMS = (("ns", "supervisor", "ns.exe"), ("studio", "studio", "studio.exe"))
@@ -108,7 +124,7 @@ def registry_user_path() -> tuple[str, str] | None:
     None when it is not known (Windows did not say; a test run that set no stand-in)."""
     if testguard.under_test():
         value = os.environ.get(TEST_USER_PATH_ENV)
-        return None if value is None else (value, "REG_EXPAND_SZ")
+        return None if value is None or value == TEST_UNKNOWN else (value, "REG_EXPAND_SZ")
     try:
         import winreg
 
@@ -210,11 +226,18 @@ _cached: list[tuple[str, float, Reach]] = []
 CACHE_S = 30.0
 
 
+#: What `reach_now` answers in a test that set no `NS_TEST_USER_PATH`: the plain words (see the module text).
+NOT_JUDGED = Reach(True, "not judged: a test that set no PATH stand-in")
+
+
 def reach_now(home: Path | str) -> Reach:
     """`reach(home)` as Windows has the PATH now, kept for `CACHE_S` (never under a test run)."""
     key = os.path.normcase(str(home))
     now = time.monotonic()
-    if not testguard.under_test():
+    if testguard.under_test():
+        if TEST_USER_PATH_ENV not in os.environ:
+            return NOT_JUDGED
+    else:
         for k, until, found in _cached:
             if k == key and until > now:
                 return found
@@ -224,29 +247,62 @@ def reach_now(home: Path | str) -> Reach:
 
 
 def own_file(home: Path | str, tool: str) -> Path:
-    """This install's own command file for `tool`; its venv program when the file is not there."""
+    """This install's own command file for `tool`; its venv program when the file is not there (or cannot
+    be looked at)."""
     shim = Path(home) / FOLDER / f"{tool}.cmd"
-    if shim.is_file():
-        return shim
+    try:
+        if shim.is_file():
+            return shim
+    except OSError:
+        pass
     venv, exe = next((v, e) for n, v, e in PROGRAMS if n == tool)
     return Path(home) / "venvs" / venv / "Scripts" / exe
 
 
+_BARE = re.compile(r"[A-Za-z0-9:\\._-]+")
+_DRIVE = re.compile(r"[A-Za-z]:\\")
+
+
+def command_form(path: str) -> str:
+    """A program's full path as the first word of a command the owner types, the SAME in a Command Prompt
+    and in Windows PowerShell 5.1 (tests/test_commands_on_path.py runs it in both):
+
+    * only letters, digits and ``: \\ . _ -``: the path as it is;
+    * else ``D:"\\rest of the path"``: the drive stays outside the quotes, because PowerShell reads a line
+      that starts with a quote as a string (``"C:\\a b\\ns.cmd" doctor`` is its parse error "Unexpected
+      token"), and PowerShell's ``& "..."`` is cmd.exe's "& was unexpected"; inside the quotes both take a
+      space and ``& ( ) ^ ' ! ;`` as they are;
+    * a ``$`` or a backtick, which PowerShell reads inside double quotes and cmd.exe has no other quotes for:
+      PowerShell's single-quoted ``& '...'`` (the texts that name commands say PowerShell). Setup's folder
+      rules allow both characters; a home that has one is rare.
+    """
+    if _BARE.fullmatch(path):
+        return path
+    if "$" not in path and "`" not in path and _DRIVE.match(path):
+        return f'{path[:2]}"{path[2:]}"'
+    return "& '" + path.replace("'", "''") + "'"
+
+
 def by_full_path(home: Path | str, words: str) -> str:
-    """`words` (`ns update --rollback`) with this install's own program in place of the plain name. A path
-    with a space or a character PowerShell reads is given in PowerShell's form (`& "<path>" ...`)."""
+    """`words` (`ns update --rollback`) with this install's own program in place of the plain name, its path
+    in `command_form`."""
     tool, _, rest = words.partition(" ")
-    path = str(own_file(home, tool))
-    head = path if re.fullmatch(r"[A-Za-z0-9:\\._-]+", path) else f'& "{path}"'
-    return f"{head} {rest}".rstrip()
+    return f"{command_form(str(own_file(home, tool)))} {rest}".rstrip()
 
 
 def typed(home: Path | str | None, words: str) -> str:
-    """The command `words` as the owner should type it in a new terminal to reach the install `home`."""
+    """The command `words` as the owner should type it in a new terminal to reach the install `home`: the
+    plain words only when they are KNOWN to reach it, else its own program by full path. For a text shown
+    now (never stored: see the module text). Never raises."""
     if not home:
         return words
-    found = reach_now(home)
-    return by_full_path(home, words) if found.ok is False else words
+    try:
+        return words if reach_now(home).ok is True else by_full_path(home, words)
+    except Exception:  # noqa: BLE001 - a text about a failure must still be said: the full path is right
+        try:
+            return by_full_path(home, words)
+        except Exception:  # noqa: BLE001
+            return words
 
 
 def _mention(m: re.Match[str]) -> str | None:
@@ -259,21 +315,79 @@ def _mention(m: re.Match[str]) -> str | None:
     return f"{tool} {command}" + (f" {sub}" if sub else "") + rest
 
 
-def render(text: str, home: Path | str | None = None) -> str:
-    """`text` with every `ns ...` and `studio ...` it names given as `typed` gives it (unchanged when they
-    reach `home`, or nothing is known). `home` defaults to this process's NIGHTSHIFT_HOME."""
-    where = home or os.environ.get(HOME_ENV)
-    if not text or not where or ("ns " not in text and "studio " not in text):
-        return text
-    found = reach_now(where)
-    if found.ok is not False:
-        return text
-
+def _by_full_path_all(text: str, home: Path | str) -> str:
     def swap(m: re.Match[str]) -> str:
         words = _mention(m)
         if words is None:
             return m.group(0)
         tail = m.group(0)[len(words):]
-        return by_full_path(where, words) + tail
+        return by_full_path(home, words) + tail
 
     return _MENTION.sub(swap, text)
+
+
+def render(text: str, home: Path | str | None = None) -> str:
+    """`text` (stored raw: the plain words) as it is SHOWN to the owner of the install `home` now: every
+    `ns ...` and `studio ...` it names as `typed` gives it. Unchanged when they are known to reach `home`;
+    this install's own program by full path when they reach something else or what they reach is not
+    known; unchanged when no home is known. `home` defaults to this process's NIGHTSHIFT_HOME. Never
+    raises: on any error the full path, and without even that the text as it is."""
+    if not isinstance(text, str) or not text or ("ns " not in text and "studio " not in text):
+        return text
+    try:
+        where = home or os.environ.get(HOME_ENV)
+    except Exception:  # noqa: BLE001
+        return text
+    if not where:
+        return text
+    try:
+        if reach_now(where).ok is True:
+            return text
+        return _by_full_path_all(text, where)
+    except Exception:  # noqa: BLE001 - an error while rendering an error must not hide it
+        try:
+            return _by_full_path_all(text, where)
+        except Exception:  # noqa: BLE001
+            return text
+
+
+# --- the same, in PowerShell (the Update window and the update's progress window have no Python) -----------
+#: The markers around the copy of `ps_formatter()` in `launchers/_common.ps1` (tests keep the copy equal).
+PS_BEGIN = "# --- Format-NsCommands: generated by ns_common.commandline.ps_formatter (FN-3); do not edit ---"
+PS_END = "# --- end of Format-NsCommands ---"
+
+
+def ps_formatter() -> str:
+    """PowerShell 5.1 source (pure ASCII) of `Format-NsCommands $Text $NsHome`: `render` for a window with
+    no Python. It cannot read what a plain command reaches, so it ALWAYS gives this install's own program by
+    full path, in `command_form`'s form (right whatever the PATH holds, while the install stays where it
+    is). Never throws: on any error the text as it is."""
+    tools = ", ".join(
+        f"@('{name}', '{venv}', '{exe}', '{'|'.join(sorted(COMMANDS[name]))}')"
+        for name, venv, exe in PROGRAMS
+    )
+    body = r'''function Format-NsCommands {
+    # A stored text names the plain 'ns ...' and 'studio ...' words; shown here, each names this
+    # install's own program by its full path, which a Command Prompt and PowerShell both take.
+    param([string]$Text, [string]$NsHome)
+    if (-not $Text -or -not $NsHome) { return $Text }
+    try {
+        $out = $Text
+        foreach ($tool in @(TOOLS)) {
+            $file = Join-Path $NsHome ('cmd\' + $tool[0] + '.cmd')
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+                $file = Join-Path $NsHome ('venvs\' + $tool[1] + '\Scripts\' + $tool[2])
+            }
+            if ($file -cmatch '^[A-Za-z0-9:\\._-]+$') { $form = $file }
+            elseif (($file -notmatch '[$`]') -and ($file -match '^[A-Za-z]:\\')) {
+                $form = $file.Substring(0, 2) + '"' + $file.Substring(2) + '"'
+            }
+            else { $form = "& '" + $file.Replace("'", "''") + "'" }
+            $pattern = '(?<![\w.\\/:%-])' + $tool[0] + ' (?=(?:' + $tool[3] + ')(?![\w-]))'
+            $out = [regex]::Replace($out, $pattern, $form.Replace('$', '$$') + ' ')
+        }
+        return $out
+    }
+    catch { return $Text }
+}'''
+    return "\n".join([PS_BEGIN, body.replace("TOOLS", tools), PS_END])

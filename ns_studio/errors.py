@@ -6,7 +6,6 @@ hint from `contracts/errors.json` through `ns_common.errors.describe` (CR-C7-1 i
 
 from __future__ import annotations
 
-from ns_common.commandline import render
 from ns_common.errors import NsError, describe
 
 #: Code used when a job dies on an exception that carries no code of its own (a bug or a corrupt file).
@@ -39,7 +38,7 @@ class StudioError(Exception):
 
     def __init__(self, code: str, detail: str = "") -> None:
         self.code = code
-        self.detail = render(detail)        # the commands it names, as this install's owner types them (FN-3)
+        self.detail = detail                # raw: stored as it is, rendered where shown (FN-3)
         definition = describe(code)
         self.message, self.hint = definition.message, definition.hint
         super().__init__(str(self))

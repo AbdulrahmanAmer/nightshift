@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from ns_common.commandline import render
 from ns_common.db import new_job_id
 from ns_common.errors import NsError
 from ns_common.keepawake import keep_awake
@@ -173,16 +174,28 @@ class JobRecord:
             "stage": _stage_of(self.message) or self.failed_stage(),
             "step": _steps_of(self.message)[0],
             "steps": _steps_of(self.message)[1],
-            "message": self.message,
+            "message": render(self.message),     # stored raw; shown as this owner types its commands (FN-3)
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "params": public_params(self.params),
-            "result": self.result,
+            "result": shown_result(self.result),
             "cancel_requested": self.cancel_requested,
             "schedule_at": self.schedule_at,
             "dismissed_at": self.dismissed_at,
         }
+
+
+def shown_result(result: Any) -> Any:
+    """A job's stored result as the card shows it: the error's hint and message (stored with the plain
+    `ns ...` words) given as this install's owner types the commands now (FN-3). Never written back."""
+    if not isinstance(result, dict) or not isinstance(result.get("error"), dict):
+        return result
+    error = {
+        k: render(v) if k in ("hint", "message", "detail") and isinstance(v, str) else v
+        for k, v in result["error"].items()
+    }
+    return {**result, "error": error}
 
 
 def public_params(params: dict[str, Any]) -> dict[str, Any]:

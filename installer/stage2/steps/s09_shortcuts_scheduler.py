@@ -545,13 +545,14 @@ class S09ShortcutsScheduler(Step):
                 ctx.warn("NS-W206", str(out.get("reason") or "")[:200])
             elif only and case in ("first", "applied"):
                 ctx.warn("NS-W205", f"registered for {out.get('run_time')}")
-        line = render(line, ctx.paths.home)     # the command it names, as this owner types it (FN-3)
+        # stored with the plain words (a later run reuses and compares it); said as this owner types the
+        # command it names now (FN-3: `ns_common.commandline.render`)
         ctx.set_flag("nightly_line", line)
         ctx.set_flag("nightly_state", nightly_view.state_word(ctx.paths.home))
         ctx.set_flag("nightly_time", (out or {}).get("run_time"))
         if answer["nightly"] is not None:   # which answer was acted on, and the state that made
             ctx.set_flag("nightly_done", {**answer, "state": nightly_view.state_word(ctx.paths.home)})
-        ctx.ui.say(line)
+        ctx.ui.say(render(line, ctx.paths.home))
 
     @staticmethod
     def _register_toast_identity(ctx: StepContext, lnk: Path, icon: Path | None, *, keep_other: bool) -> None:

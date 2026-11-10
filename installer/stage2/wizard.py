@@ -35,6 +35,7 @@ from installer.stage2.sysinfo import free_gb, load_preflight, sample_preflight
 from installer.stage2.ui import Ui
 from installer.stage2.web.filesdir import beside as files_beside
 from ns_common import __version__
+from ns_common.commandline import render
 from ns_common.config import load_manifest
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
@@ -223,7 +224,8 @@ class Wizard:
             # the site had its ten minutes: the generic "check the internet" would contradict the detail
             hint = "Run INSTALL.cmd again later: setup continues where it stopped."
         body += f"\n\nWhat to do: {hint}"
-        self.ctx.ui.panel(body, title=f"{step.title} failed")
+        # shown now: the commands it names as this owner types them (FN-3); the error keeps the plain words
+        self.ctx.ui.panel(render(body, self.ctx.paths.home), title=f"{step.title} failed")
 
     def _on_failure(self, step: Step, failure: Failure, attempts: int) -> str:
         """Decide retry / skip / quit for a failed step."""
