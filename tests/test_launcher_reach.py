@@ -455,7 +455,10 @@ def test_task_owner_reads_the_home_from_the_new_action_and_from_the_0_1_14_one(i
 def test_the_task_home_is_read_in_utf8(tmp_path: Path):
     home = tmp_path / HARD
     home.mkdir()
+    # A PC whose console writes the OEM code page 437, as most do (this laptop's may be UTF-8 already): the
+    # letters of the home do not exist in it.
     stand_in = (
+        "[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(437)\n"
         "function Get-ScheduledTask { [CmdletBinding()] param([string]$TaskName)\n"
         "  [pscustomobject]@{ State = 'Ready'; Triggers = @([pscustomobject]@{ StartBoundary = '2026-11-09T05:30:00' });\n"
         "    Principal = [pscustomobject]@{ LogonType = 'S4U' }; Actions = @([pscustomobject]@{ Arguments = $env:NS_TEST_ACTION }) } }\n"

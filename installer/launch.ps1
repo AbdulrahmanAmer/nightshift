@@ -45,15 +45,43 @@ function Get-MoveBack {
     return ''
 }
 
-function Write-Whole {
-    param([string]$Path, [string]$Text, $Encoding)
-    $tmp = Join-Path (Split-Path -Parent $Path) ('~nslaunch' + $PID + '.tmp')
+function Write-NsFileSwap {
+    # A file another program reads (the count, the Dashboard's notes, the note on the Desktop) is either the
+    # old one or the new one, never half of either: the text goes to a temp file in the same folder, is
+    # flushed, and is then swapped over -Path (File.Replace, or Move for a new file). While another process
+    # has -Path open the swap is refused for a moment: retried, the error thrown after the last try, the old
+    # file untouched. The same function as in pick-folder.ps1 and stage1.ps1 (this script loads no other
+    # file: it must work when the program folder is gone). UTF-8; -Bom for a file the owner opens in Notepad.
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [int]$Tries = 20,
+        [switch]$Bom
+    )
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $tmp = Join-Path ([System.IO.Path]::GetDirectoryName($full)) ('~ns' + $PID + '-0-' + (Get-Random -Maximum 2000000000) + '.tmp')
     try {
-        [IO.File]::WriteAllText($tmp, $Text, $Encoding)
-        if ([IO.File]::Exists($Path)) { [IO.File]::Replace($tmp, $Path, [NullString]::Value) } else { [IO.File]::Move($tmp, $Path) }
-    } catch {
-        if ([IO.File]::Exists($tmp)) { [IO.File]::Delete($tmp) }
-        throw
+        $encoding = New-Object System.Text.UTF8Encoding([bool]$Bom)
+        $bytes = $encoding.GetPreamble() + $encoding.GetBytes($Text)
+        $fs = New-Object System.IO.FileStream($tmp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush($true) }
+        finally { $fs.Dispose() }
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                if ([System.IO.File]::Exists($full)) { [System.IO.File]::Replace($tmp, $full, [NullString]::Value) }
+                else { [System.IO.File]::Move($tmp, $full) }
+                break
+            }
+            catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+                # a sharing or lock violation, or access denied while a reader has the target open
+                if ($attempt -ge $Tries) { throw }
+                Start-Sleep -Milliseconds ([Math]::Min(10 * $attempt, 100))
+            }
+        }
+    }
+    finally {
+        try { if ([System.IO.File]::Exists($tmp)) { [System.IO.File]::Delete($tmp) } }
+        catch { Write-Verbose ('temp file not removed: ' + $tmp) }
     }
 }
 
@@ -156,7 +184,7 @@ function Restore-AfterMiss {
                     ' was missing until it was put back on ' + $today + '.'
                 $all = @($notes) + @([ordered]@{ at = [DateTime]::Now.ToString('s'); title = 'Nightshift'; message = $message })
                 if ($all.Count -gt 20) { $all = @($all[($all.Count - 20)..($all.Count - 1)]) }
-                Write-Whole $notesFile ((ConvertTo-Json -InputObject ([ordered]@{ notes = $all }) -Depth 5) + "`n") $utf8
+                Write-NsFileSwap -Path $notesFile -Text ((ConvertTo-Json -InputObject ([ordered]@{ notes = $all }) -Depth 5) + "`n")
             }
         }
         $desk = Get-NoteFolder
@@ -179,7 +207,7 @@ function Write-Miss {
     try {
         [void][IO.Directory]::CreateDirectory((Split-Path -Parent $missedFile))
         $json = '{"first":"' + $m.first + '","last":"' + $m.last + '","nights":' + $m.nights + ',"what":"' + $m.what + '"}'
-        Write-Whole $missedFile $json $utf8
+        Write-NsFileSwap -Path $missedFile -Text $json
     } catch { }
     $note = 'test-run'
     try {
@@ -189,7 +217,7 @@ function Write-Miss {
             if (-not (Test-Path -LiteralPath $desk -PathType Container)) { $note = 'failed: the Desktop folder ' + $desk + ' is not there' }
             elseif ((Test-Path -LiteralPath $file) -and -not (Test-OurNote $file)) { $note = 'failed: ' + $file + ' is there and is not a note from Nightshift; it was left alone' }
             else {
-                [IO.File]::WriteAllLines($file, [string[]](Get-NoteLines $m), (New-Object System.Text.UTF8Encoding($true)))
+                Write-NsFileSwap -Path $file -Text (((Get-NoteLines $m) -join "`r`n") + "`r`n") -Bom
                 $note = 'written'
             }
         } elseif (-not $underTest) { $note = 'failed: Windows named no Desktop folder for this session' }
@@ -207,7 +235,12 @@ function Write-Miss {
             msg = 'The nightly run could not start: the ' + $thing + ' is missing.'; data = $data }
         $logs = Join-Path $nsHome 'logs'
         [void][IO.Directory]::CreateDirectory($logs)
-        [IO.File]::AppendAllText((Join-Path $logs ('launch-' + $now.ToString('yyyyMMdd', $inv) + '.jsonl')), ((ConvertTo-Json -InputObject $rec -Compress -Depth 4) + "`n"), $utf8)
+        # one line, one write, at the end of the day's file (UTF-8 without a BOM, like every Nightshift log)
+        $bytes = $utf8.GetBytes((ConvertTo-Json -InputObject $rec -Compress -Depth 4) + "`n")
+        $file = Join-Path $logs ('launch-' + $now.ToString('yyyyMMdd', $inv) + '.jsonl')
+        $fs = New-Object System.IO.FileStream($file, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+        try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush($true) }
+        finally { $fs.Dispose() }
     } catch { }
 }
 

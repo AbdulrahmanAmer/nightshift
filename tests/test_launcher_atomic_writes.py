@@ -687,7 +687,8 @@ def test_no_launcher_writes_a_file_except_through_the_helper() -> None:
 
 def test_no_installer_script_writes_a_file_another_process_reads_in_place() -> None:
     """stage1.ps1 (the hand-over files the setup server reads) and pick-folder.ps1 (the dialog's result file)
-    write through their own `Write-NsFileSwap`; the other installer scripts write nothing."""
+    write through their own `Write-NsFileSwap`, and so does launch.ps1 (the count of missed nights, the
+    Dashboard's notes, the Desktop note; its log line is one appended write); the others write nothing."""
     for script in sorted(INSTALLER.glob("*.ps1")):
         text = script.read_text(encoding="utf-8")
         for needle in FORBIDDEN_WRITES:
@@ -699,7 +700,7 @@ def test_no_installer_script_writes_a_file_another_process_reads_in_place() -> N
 
 
 @needs_powershell
-@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1"])
+@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1", "launch.ps1"])
 def test_the_installer_swap_writes_whole_files_and_leaves_the_old_one_on_failure(
     tmp_path: Path, script: str
 ) -> None:
@@ -748,7 +749,7 @@ function Start-Sleep {{
 
 
 @needs_powershell
-@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1"])
+@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1", "launch.ps1"])
 def test_the_installer_swap_rides_out_a_target_that_is_refused_twice_then_allowed(
     tmp_path: Path, script: str
 ) -> None:
@@ -773,7 +774,7 @@ finally {{ if ($global:holder) {{ $global:holder.Dispose() }} }}
 
 
 @needs_powershell
-@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1"])
+@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1", "launch.ps1"])
 def test_the_installer_swap_gives_up_on_a_target_that_stays_shut_and_leaves_the_old_file(
     tmp_path: Path, script: str
 ) -> None:
