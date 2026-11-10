@@ -480,7 +480,7 @@ ROWS_DAMAGED = {
     "json number": b"5",
     "json null": b"null",
     "json string": b'"runtime"',
-    "too large to be real": b" " * (runtime_cfg.MAX_BYTES + 1),
+    "too large to be real": b" " * (getattr(runtime_cfg, "MAX_BYTES", 1_000_000) + 1),
 }
 
 
