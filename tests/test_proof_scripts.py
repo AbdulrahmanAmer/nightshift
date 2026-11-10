@@ -51,6 +51,10 @@ COVERED = {
         "passes": "test_f_c1_passes_on_the_fake_services_home",
         "fails": ["test_f_c1_fails_when_an_events_frame_differs_from_the_status"],
     },
+    "f-h47-closed-code-window": {
+        "passes": "test_fh47_proof_runs_against_a_fake_home",
+        "fails": ["test_fh47_proof_fails_when_a_closed_console_keeps_the_card"],
+    },
 }
 
 
@@ -311,6 +315,68 @@ def test_f_c1_fails_when_an_events_frame_differs_from_the_status(
     monkeypatch.setattr(svc_engine, "iter_sse", other_status)
     result = proof_home.run("f_c1_status_events")
     assert_fails_at(result, "the frame's status equals GET /api/status")
+
+
+# ------------------------------------------------------------------------------- F-H47 on the simulated card
+class RealEngine:
+    """The REAL engine (`Supervisor` and `create_app`, the real holder probe and monitor) over the proof home,
+    made an engine-test install with `fake_gpu` (H-10), on its own free port. The services are stub processes
+    with the gpu flags of the real service table; the proof home's fake engine is stopped first."""
+
+    def __init__(self, ph: ProofHome) -> None:
+        from ns_common.config import save_runtime
+        from ns_common.models import Runtime
+        from ns_supervisor.app import create_app
+        from ns_supervisor.core import Supervisor
+        from ns_supervisor.services import SERVICES, build_service
+        from ns_supervisor.testing import fast_config, free_port, stub_def
+        from tests.proofhome import _Server
+
+        rt = Runtime.default("cpu-dev").model_copy(update={"fake_footage": True, "fake_gpu": True})
+        rt.tts.engine = "fake"
+        save_runtime(ph.paths, rt)
+        ports = {n: free_port() for n in SERVICES}
+
+        def resolve(name: str, alias: str | None) -> Any:
+            real = build_service(rt, ph.paths, name, alias)
+            return stub_def(name, ports[name], gpu=real.gpu, variant=real.variant,
+                            model_alias=real.model_alias, persistent=real.persistent)  # fmt: skip
+
+        self.sup = Supervisor(ph.paths, rt, config=fast_config(idle_unload_s=60), resolver=resolve)
+        self.server = _Server(create_app(self.sup))
+        self.url = f"http://127.0.0.1:{self.server.port}"
+
+    def stop(self) -> None:
+        self.server.stop()  # its lifespan stops the services and closes the job
+
+
+@pytest.fixture
+def fh47_home(proof_home: ProofHome) -> ProofHome:
+    proof_home.supervisor.stop()
+    proof_home.supervisor = RealEngine(proof_home)  # type: ignore[assignment]  # stopped by proof_home.close
+    proof_home.allow_spawn = True  # the console stand-in: a real child, ended by its pid
+    return proof_home
+
+
+def test_fh47_proof_runs_against_a_fake_home(fh47_home: ProofHome):
+    result = fh47_home.run("f_h47_closed_code_window")
+    assert_passed(result, at_least_checks=10)
+    names = step_names(result)
+    assert "the card is free within 5 s of the console closing" in names
+    assert "the next nightly job gets the card at once (wait false)" in names
+
+
+def test_fh47_proof_fails_when_a_closed_console_keeps_the_card(
+    fh47_home: ProofHome, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_supervisor.core import Supervisor
+
+    async def never(self: Supervisor) -> None:  # the F-H47 defect: nobody looks at the holder's process
+        return None
+
+    monkeypatch.setattr(Supervisor, "_release_gone_holder", never)
+    result = fh47_home.run("f_h47_closed_code_window")
+    assert_fails_at(result, "the card is free within 5 s of the console closing")
 
 
 # ------------------------------------------------------------------------------------------ the rule

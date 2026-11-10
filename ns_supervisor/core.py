@@ -7,6 +7,7 @@ Plain asyncio, no web framework: `app.py` wraps it for HTTP (spec 15.3). Timers 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
 import time
@@ -20,16 +21,18 @@ from typing import Any
 import httpx
 import psutil
 
+from ns_common import devmode
 from ns_common.atomic import write_text_atomic
-from ns_common.errors import NsError
+from ns_common.errors import NsError, describe
 from ns_common.logging import NsLogger
 from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_supervisor import notify, presence, procs
-from ns_supervisor.gpu import GpuProbe, NullGpuProbe, NvidiaSmiGpuProbe
+from ns_supervisor.gpu import GpuProbe, NullGpuProbe, SmiSource, simulated_mark, smi_source, source_probe
 from ns_supervisor.lock import GpuLock
 from ns_supervisor.schedule_cfg import read_run_time, seconds_until_next_run
 from ns_supervisor.services import SERVICES, ServiceDef, build_service
+from ns_supervisor.services import fake_gpu as fake_gpu_on
 
 Resolver = Callable[[str, str | None], ServiceDef]
 
@@ -140,10 +143,29 @@ class Supervisor:
         self.clock = clock
         self.now = now
         self._start_proc = starter or procs.start
-        self.gpu_probe: GpuProbe = gpu_probe or (
-            NvidiaSmiGpuProbe() if runtime.profile == "gpu" else NullGpuProbe()
-        )
         self.log = NsLogger("supervisor", paths.logs)
+        # H-10, decided once per engine start from this engine's settings: the simulated graphics card (the
+        # switch on a dev or engine-test install). Only nvidia-smi's answers and the service table's `gpu`
+        # flags follow it; the lock, guard, lease and release code is the same either way.
+        self.fake_gpu = fake_gpu_on(runtime)
+        self.fake_gpu_ignored = runtime.fake_gpu and not self.fake_gpu  # NS-W121
+        self.smi: SmiSource = smi_source(paths, runtime, tenants=self._gpu_tenants, log=self.log)
+        self.gpu_probe: GpuProbe = gpu_probe or (
+            source_probe(self.smi) if runtime.profile == "gpu" or self.fake_gpu else NullGpuProbe()
+        )
+        if self.fake_gpu:
+            lease, why = devmode.fake_gpu_lease_s(os.environ, self.cfg.lease_expiry_s)
+            if why is not None:
+                self.log.warn("fake_gpu_lease", why, variable=devmode.FAKE_GPU_LEASE_ENV)
+            self.cfg = dataclasses.replace(self.cfg, lease_expiry_s=lease)
+            self.log.info(
+                "fake_gpu_on",
+                f"the engine runs on the simulated graphics card (fake_gpu); its numbers come from "
+                f"{devmode.fake_gpu_file(paths)}; GPU lease time {lease:.0f} s",
+                lease_s=lease,
+            )
+        elif self.fake_gpu_ignored:
+            self.log.warn("fake_gpu_ignored", describe("NS-W121").message, code="NS-W121")
         self.lock = GpuLock()
         self.services: dict[str, ServiceRuntime] = {
             n: ServiceRuntime(n, self.resolver(n, None)) for n in SERVICES
@@ -243,7 +265,27 @@ class Supervisor:
         self.last_activity = self.clock()
 
     def _whisper_gpu(self) -> bool:
-        return self.runtime.whisper.device == "cuda"
+        return self.runtime.whisper.device == "cuda" or self.fake_gpu
+
+    def _gpu_tenants(self) -> dict[int, str]:
+        """pid -> service of every running process that holds the card (what the simulated card lists)."""
+        running = [r for r in list(self.services.values()) if r.proc is not None and r.definition.gpu]
+        return {r.proc.pid: r.name for r in running if r.proc is not None}
+
+    def tell_fake_gpu_ignored(self) -> None:
+        """At engine start: `fake_gpu` set on an install that is not made for testing (NS-W121) is said once
+        as a morning note (the Queue page shows it) while an earlier one still waits; the WARN is in the log
+        and `ns doctor` shows the row. Never raises."""
+        if not self.fake_gpu_ignored:
+            return
+        info = describe("NS-W121")
+        line = f"NS-W121: {info.message} {info.hint}"
+        try:
+            notify.leave_note(self.paths, "Nightshift", line, once=lambda notes: any(
+                n["message"].startswith("NS-W121:") for n in notes
+            ))
+        except OSError as e:
+            self.log.warn("morning_note_failed", str(e), message=line)
 
     def _prune(self, rt: ServiceRuntime) -> None:
         cutoff = self.clock() - self.cfg.crash_window_s
@@ -357,10 +399,12 @@ class Supervisor:
             raise
         rt.state = "ready"
         rt.starting_since = None
-        rt.vram_mb = await asyncio.to_thread(procs.vram_mb, proc.pid)
+        rt.vram_mb = await asyncio.to_thread(procs.vram_mb, proc.pid, self.smi)
         self.write_state()
-        self.log.info("service_ready", service=rt.name, pid=proc.pid, vram_mb=rt.vram_mb)
-        self._emit(rt, "ready", pid=proc.pid, vram_mb=rt.vram_mb)
+        mark = simulated_mark(self.smi)  # a simulated card's number says so wherever it is written (H-10)
+        card = {} if mark is None else {"card": mark}
+        self.log.info("service_ready", service=rt.name, pid=proc.pid, vram_mb=rt.vram_mb, **card)
+        self._emit(rt, "ready", pid=proc.pid, vram_mb=rt.vram_mb, **card)
 
     async def _ensure(self, rt: ServiceRuntime, d: ServiceDef, owner: str | None = None) -> None:
         """Make `rt` ready with definition `d`: reuse, restart on variant change, or start."""

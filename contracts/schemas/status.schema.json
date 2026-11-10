@@ -54,6 +54,11 @@
           ],
           "default": null,
           "title": "Temp C"
+        },
+        "simulated": {
+          "default": false,
+          "title": "Simulated",
+          "type": "boolean"
         }
       },
       "required": [

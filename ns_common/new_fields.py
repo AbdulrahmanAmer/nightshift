@@ -65,6 +65,20 @@ NEW_FIELDS: tuple[NewField, ...] = (
         None,
     ),
     NewField(
+        "Runtime",
+        "fake_gpu",
+        "0.1.16",
+        "H-10: the simulated graphics card of a dev or engine-test install; false in every normal install.",
+        False,
+    ),
+    NewField(
+        "InstallerAnswers",
+        "fake_gpu",
+        "0.1.16",
+        "H-10: the answers.json switch behind Runtime.fake_gpu; false unless a test install asks for it.",
+        False,
+    ),
+    NewField(
         "InstallerAnswers",
         "shortcuts_here",
         "0.1.15",

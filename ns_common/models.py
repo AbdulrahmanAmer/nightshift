@@ -212,6 +212,11 @@ class Runtime(Strict):
     # GB model can meet (`ns_studio.text.story_profile`). The answer needs `allow_cpu`; a real install never
     # sets it, and the dashboard cannot.
     tiny_story: bool = False
+    # Simulated graphics card (answer `fake_gpu`, docs/DEV_MODE.md "A simulated graphics card"): on a dev or
+    # engine-test install the engine treats llama, the voice service and whisper as GPU tenants with the real
+    # lock, lease and release code, and nvidia-smi is answered from run\fake_gpu.json. Ignored on any other
+    # install (NS-W121); the dashboard cannot set it.
+    fake_gpu: bool = False
 
     @classmethod
     def default(cls, profile: Literal["gpu", "cpu-dev"]) -> Runtime:
@@ -819,6 +824,16 @@ class GpuStatus(Strict):
     vram_used_mb: int | None = None
     vram_total_mb: int | None = None
     temp_c: float | None = None
+    # True: the numbers come from the simulated graphics card (`fake_gpu`, docs/DEV_MODE.md). Written only
+    # when true, so a real card's block is what every older reader knows.
+    simulated: bool = False
+
+    @model_serializer(mode="wrap")
+    def _simulated_only_when_true(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        out: dict[str, Any] = handler(self)
+        if not self.simulated:
+            out.pop("simulated", None)
+        return out
 
 
 class StatusEngine(Strict):

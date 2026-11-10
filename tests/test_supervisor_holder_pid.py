@@ -667,7 +667,7 @@ def test_a_holder_gone_during_the_ready_step_gets_no_endpoint(
     gone = {"v": False}
     sup, _clock = make(tmp_path, probe=lambda pid: None if gone["v"] else 7.0)
 
-    def slow_vram(pid: int) -> int | None:
+    def slow_vram(pid: int, *_smi: object) -> int | None:
         import time
 
         time.sleep(1.5)

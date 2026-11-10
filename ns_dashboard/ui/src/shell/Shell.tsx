@@ -31,6 +31,8 @@ export function engineText(s: Status | null) {
   return { text: clean(e.detail) === "Engine stopped" ? "Engine stopped" : "Idle", tone: "muted" as const };
 }
 const DOT = { muted: "muted", accent: "accent", ok: "online", bad: "danger" } as const;
+/** The header chip on the simulated graphics card (fake_gpu): it is never shown for a real card. */
+export const SIMULATED_TITLE = "This install runs on a simulated graphics card for testing (fake_gpu). Its GPU numbers come from run\\fake_gpu.json, not from a real card";
 
 const TITLES: Record<string, [string, string]> = {
   queue: ["Queue", "Watch, approve, then post"],
@@ -164,6 +166,7 @@ function TopBar() {
         <AskField className="order-last basis-full @min-[760px]:order-none @min-[760px]:basis-auto @min-[760px]:flex-[1_1_220px] @min-[1100px]:max-w-[340px]" />
         <div className="hidden min-w-0 items-center gap-2 @min-[760px]:flex @min-[1100px]:ml-auto">
           <StatusChip tone={DOT[eng.tone]} live title="What the engine is doing">{eng.text}</StatusChip>
+          {status?.gpu?.simulated && <StatusChip tone="attention" title={SIMULATED_TITLE}>Simulated card</StatusChip>}
           <span className="hidden @min-[960px]:contents"><StatusChip tone="muted" title={runsOff ? `${RUNS_OFF}. Switch Automatic runs on in Settings` : "Next automatic run"}>{runsOff ? "Automatic runs off" : status?.next_run ? <>Next run <span className="ds-num">{fmtWhen(status.next_run)}</span></> : status?.schedule_registered ? `Automatic runs on at ${status.schedule_time || "the set time"}, no active channel` : "Automatic runs"}</StatusChip></span>
           {interactive && <span className="hidden @min-[960px]:contents"><StatusChip tone="attention" title="Windows would not run the nightly task while you are signed out (NS-W205)">{interactiveOnly(status?.schedule_time)}</StatusChip></span>}
         </div>
@@ -177,6 +180,7 @@ function TopBar() {
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2 @min-[760px]:hidden">
         <StatusChip tone={DOT[eng.tone]} live>{eng.text}</StatusChip>
+        {status?.gpu?.simulated && <StatusChip tone="attention" title={SIMULATED_TITLE}>Simulated card</StatusChip>}
         <SegmentedControl label="Theme" value={theme} onChange={setTheme} options={THEMES} />
       </div>
     </header>

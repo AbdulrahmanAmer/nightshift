@@ -498,7 +498,7 @@ def test_doctor_does_not_ask_a_dev_install_for_nvidia_smi(tmp_path: Path, monkey
         def is_up(self) -> bool:
             return False
 
-    monkeypatch.setattr(procs, "nvidia_smi_report", lambda: None)
+    monkeypatch.setattr(procs, "nvidia_smi_report", lambda smi=None: None)
     paths = Paths(tmp_path / "ns")
     save_runtime(paths, dev_runtime())
     rows = {name: (ok, detail) for name, ok, detail in doctor.diagnose(paths, Down())}  # type: ignore[arg-type]

@@ -151,7 +151,7 @@ def stand_ins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, list
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
     (tmp_path / "temp").mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "temp"))
-    monkeypatch.setattr(procs, "nvidia_smi_report", lambda: None)
+    monkeypatch.setattr(procs, "nvidia_smi_report", lambda smi=None: None)
     monkeypatch.setattr(doctor.ffmpeg, "available", lambda: True)
     task = "Nightshift Daily: Ready, next run 03:00"
     monkeypatch.setattr(schedule, "_run", lambda script, timeout_s=60: task)

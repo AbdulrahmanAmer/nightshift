@@ -25,6 +25,7 @@ from ns_common.logging import NsLogger
 from ns_supervisor.childenv import LAUNCHER_ONLY_ENV as LAUNCHER_ONLY_ENV  # re-exported
 from ns_supervisor.childenv import child_env
 from ns_supervisor.childenv import scrubbed as scrubbed  # re-exported
+from ns_supervisor.gpu import QUERY_TIMEOUT_S, REAL_SMI, SmiSource
 from ns_supervisor.services import ServiceDef
 
 #: Tells `ns update` it runs below the engine, so it must detach from the engine's process tree.
@@ -313,29 +314,18 @@ def terminate(
 # ---------------------------------------------------------------------------------------------
 # nvidia-smi probes
 # ---------------------------------------------------------------------------------------------
-def _nvsmi(args: list[str]) -> str | None:
-    """Run nvidia-smi; None when it is absent or fails."""
-    try:
-        r = subprocess.run(
-            ["nvidia-smi", *args],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-            env=child_env(),
-            creationflags=_NO_WINDOW,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return r.stdout if r.returncode == 0 else None
+def _nvsmi(args: list[str], smi: SmiSource | None = None) -> str | None:
+    """nvidia-smi's answer through the one seam (`gpu.SmiSource`: the real tool unless `smi` is the install's
+    simulated card); None when it is absent, fails or does not answer within 20 s."""
+    return (smi or REAL_SMI).query(args, QUERY_TIMEOUT_S)
 
 
-def vram_mb(pid: int) -> int | None:
+def vram_mb(pid: int, smi: SmiSource | None = None) -> int | None:
     """VRAM (MiB) used by `pid` per `nvidia-smi --query-compute-apps`; None if nvidia-smi is absent.
 
     Under WDDM the driver may report `[N/A]` per process; then None is returned (unknown).
     """
-    out = _nvsmi(["--query-compute-apps=pid,used_memory", "--format=csv,noheader"])
+    out = _nvsmi(["--query-compute-apps=pid,used_memory", "--format=csv,noheader"], smi)
     if out is None:
         return None
     total = 0
@@ -354,23 +344,23 @@ def vram_mb(pid: int) -> int | None:
     return total
 
 
-def gpu_memory_used_mb() -> int | None:
+def gpu_memory_used_mb(smi: SmiSource | None = None) -> int | None:
     """Total used GPU memory (MiB) across GPUs; None if nvidia-smi is absent."""
-    out = _nvsmi(["--query-gpu=memory.used", "--format=csv,noheader,nounits"])
+    out = _nvsmi(["--query-gpu=memory.used", "--format=csv,noheader,nounits"], smi)
     if out is None:
         return None
     vals = [int(m.group(1)) for line in out.splitlines() if (m := re.match(r"\s*(\d+)", line))]
     return sum(vals) if vals else None
 
 
-def nvidia_smi_report() -> str | None:
+def nvidia_smi_report(smi: SmiSource | None = None) -> str | None:
     """Full `nvidia-smi` text (for the diagnostics bundle); None if absent."""
-    return _nvsmi([])
+    return _nvsmi([], smi)
 
 
-def gpu_name() -> str | None:
+def gpu_name(smi: SmiSource | None = None) -> str | None:
     """Name of the first GPU per `nvidia-smi`; None if absent."""
-    out = _nvsmi(["--query-gpu=name", "--format=csv,noheader"])
+    out = _nvsmi(["--query-gpu=name", "--format=csv,noheader"], smi)
     if out is None:
         return None
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]

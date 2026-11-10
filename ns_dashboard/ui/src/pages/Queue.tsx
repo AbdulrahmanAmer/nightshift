@@ -469,14 +469,14 @@ function MachineMeters({ className }: { className?: string }) {
   const vramGb = status?.engine?.vram_gb ?? (vramMb ? Math.round(vramMb / 1024) : null);
   const temp = gpu?.temp_c;
   const meters: MeterDatum[] = [
-    { label: "GPU", value: load == null ? null : Math.round(load), source: load == null ? "not reported by the engine yet" : `${gpu!.name}, ${Math.round(load)}% busy` },
+    { label: "GPU", value: load == null ? null : Math.round(load), source: load == null ? "not reported by the engine yet" : `${gpu!.simulated ? "simulated: " : ""}${gpu!.name}, ${Math.round(load)}% busy` },
     vramPct != null
       ? { label: "VRAM", value: vramPct, display: `${gb(used!)} GB`, source: `${gb(used!)} of ${gb(total!)} GB in use` }
       : { label: "VRAM", value: null, display: used != null ? `${gb(used)} GB` : vramGb ? `${vramGb} GB` : undefined, source: used != null ? `${gb(used)} GB in use, total not reported` : vramGb ? `${vramGb} GB in use` : "no model loaded" },
     { label: "Disk", value: disk && disk.total_gb != null && disk.free_gb != null ? Math.round(((disk.total_gb - disk.free_gb) / Math.max(1, disk.total_gb)) * 100) : null, source: disk ? `${disk.free_gb} GB free of ${disk.total_gb} GB` : "unknown until the engine answers" },
   ];
   const diskLine = disk ? `${disk.free_gb} GB free on ${disk.home}` : null;
-  const gpuLine = gpu ? `${gpu.name}${temp != null ? ` · ${Math.round(temp)} °C` : ""}` : null;
+  const gpuLine = gpu ? `${gpu.simulated ? "Simulated card (fake_gpu): " : ""}${gpu.name}${temp != null ? ` · ${Math.round(temp)} °C` : ""}` : null;
   return <MeterGroup className={className} title="This PC" meters={meters}
     caption={gpuLine ? [gpuLine, diskLine].filter(Boolean).join(". ") : diskLine ? `${diskLine}. GPU load appears once the engine reports it` : "Readings appear once the engine answers"} />;
 }

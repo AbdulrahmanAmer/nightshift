@@ -114,10 +114,12 @@ def snapshot_file(app: Path) -> Path:
 
 def without_new_keys(config: dict[str, bytes]) -> dict[str, bytes]:
     """`config` as a rollback without a usable copy leaves it (F-10c): runtime.json without the keys the
-    older version never had (`tiny_story`, which `NewVersion` writes), every other file as it was."""
+    older version never had (`tiny_story` and `fake_gpu`, which `NewVersion` writes), every other file as it
+    was."""
     out = dict(config)
     data = json.loads(out["runtime.json"])
-    if data.pop("tiny_story", None) is not None:
+    gone = [data.pop(key, None) is not None for key in ("tiny_story", "fake_gpu")]
+    if any(gone):
         out["runtime.json"] = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
     return out
 
@@ -189,7 +191,7 @@ def test_without_the_snapshot_the_rollback_removes_what_the_older_version_lacks(
     snapshot_file(app).unlink()
     res = update.rollback_app(app, Env().env(), paths=paths)
     OldRuntime.model_validate_json((paths.config / "runtime.json").read_text(encoding="utf-8"))
-    assert "runtime.json (tiny_story)" in res.settings
+    assert "runtime.json (tiny_story, fake_gpu)" in res.settings
 
 
 # --------------------------------------------------------------------------------------- owner changes

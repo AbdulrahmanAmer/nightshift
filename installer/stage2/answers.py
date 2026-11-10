@@ -48,6 +48,10 @@ class InstallerAnswers(Answers):
     # tiny model can get a story past the text validators. runtime.json says `tiny_story: true`. Needs
     # `allow_cpu`. An answers.json setting only: the setup window never asks it, the dashboard cannot set it.
     tiny_story: bool = False
+    # Test install: the simulated graphics card (docs/DEV_MODE.md, "A simulated graphics card"). On a dev or
+    # engine-test install runtime.json says `fake_gpu: true`; on any other install setup refuses it with
+    # NS-W121. An answers.json setting only: the setup window never asks it, the dashboard cannot set it.
+    fake_gpu: bool = False
     # What the setup window showed for Automatic runs when the owner answered `nightly`: `new` (no install
     # there), `off`, or `on@HH:MM`. Only the window writes it. The scheduler step applies the window's answer
     # only while Windows still has that state (a Settings change made meanwhile wins), then removes both keys.

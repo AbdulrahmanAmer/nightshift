@@ -547,6 +547,14 @@ class S01Questions(Step):
                 "Engine test (tiny_story): the story text stages use the thresholds of a 1 to 2 GB "
                 "model, so a tiny model can finish a story. For testing only."
             )
+        if ctx.fake_gpu:
+            ctx.ui.say(
+                "Test install (fake_gpu): the engine runs on a simulated graphics card, so the hand-over "
+                "of the card can be tested on a PC without one. Every place that shows the card says "
+                "'simulated'."
+            )
+        elif ctx.fake_gpu_asked:    # a normal install: the switch would do nothing, and setup says so
+            ctx.warn("NS-W121", "answers.json says fake_gpu: true")
         if ans.voice.mode == "design" and ans.include_voicedesign is False:
             ctx.warn("NS-W114", ans.voice.name or ans.voice.description or "")
         # What comes from the changed choices is applied BEFORE the answers are saved: when that fails, the

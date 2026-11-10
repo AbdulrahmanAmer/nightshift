@@ -197,6 +197,21 @@ class StepContext:
         return not self.dev_mode and self.ensure_answers().tiny_story
 
     @property
+    def fake_gpu_asked(self) -> bool:
+        """The answers say ``fake_gpu: true`` (docs/DEV_MODE.md, "A simulated graphics card"), whatever the
+        install."""
+        return self.ensure_answers().fake_gpu
+
+    @property
+    def fake_gpu(self) -> bool:
+        """The simulated graphics card: asked for AND this is an install made for testing (a dev install, or
+        an engine test: ``fake_voice``, ``fake_footage`` or ``tiny_story``), the rule
+        ``ns_common.devmode.fake_gpu_in`` applies to the runtime.json this gives. Asked for on any other
+        install: False, and setup says NS-W121 (s07)."""
+        test = self.dev_mode or self.fake_voice or self.fake_footage or self.tiny_story
+        return self.fake_gpu_asked and test
+
+    @property
     def tier(self) -> str:
         """LLM tier from the answers (small, balanced, best)."""
         return self.ensure_answers().llm_tier

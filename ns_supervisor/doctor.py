@@ -26,6 +26,7 @@ from ns_common import (
     __version__,
     commandline,
     config_snapshot,
+    devmode,
     ffmpeg,
     first_start,
     rollback_intent,
@@ -34,7 +35,7 @@ from ns_common import (
 from ns_common.atomic import read_text_retry, retry_busy, write_zip_atomic
 from ns_common.config import load_install_state
 from ns_common.devmode import is_dev
-from ns_common.errors import NsError
+from ns_common.errors import NsError, describe
 from ns_common.models import InstallState, Runtime
 from ns_common.paths import Paths, repo_root
 from ns_common.runtime_read import read_runtime
@@ -42,6 +43,7 @@ from ns_common.uv import find_uv
 from ns_supervisor import launch_reach, procs
 from ns_supervisor.childenv import child_env, window_flags
 from ns_supervisor.client import SupervisorClient
+from ns_supervisor.gpu import simulated_mark, smi_source
 
 MEDIA_SUFFIXES = frozenset(
     {".mp4", ".mkv", ".mov", ".webm", ".avi", ".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg"}
@@ -168,7 +170,7 @@ def build_bundle(
     out_dir: Path | None = None,
     now: datetime | None = None,
     freeze: Callable[[Paths, str], str | None] = freeze_venv,
-    smi: Callable[[], str | None] = procs.nvidia_smi_report,
+    smi: Callable[[], str | None] | None = None,
     app: Path | None = None,
     setup_dir: Path | None = None,
     temp_dir: Path | None = None,
@@ -205,7 +207,14 @@ def build_bundle(
         _add_setup_evidence(
             z, paths, skipped, setup_dir or setup_data_dir(), temp_dir or Path(tempfile.gettempdir())
         )
-        report = smi()
+        if smi is not None:
+            report = smi()
+        else:  # this install's nvidia-smi: the simulated card says so on its first line (H-10)
+            source = smi_source(paths)
+            report = procs.nvidia_smi_report(source)
+            mark = simulated_mark(source)
+            if report is not None and mark is not None:
+                report = simulated_header(mark) + report
         z.writestr("nvidia-smi.txt", report if report is not None else "nvidia-smi is not available\n")
         for venv in VENVS:
             text = freeze(paths, venv)
@@ -245,15 +254,25 @@ def diagnose(
     up = client.is_up()
     where = client.base_url if up else "not running (opening the Dashboard starts it)"
     rows.append(("supervisor", up, where))
-    if is_dev(paths):       # docs/DEV_MODE.md: a dev install has no graphics card to ask
+    source = smi_source(paths)
+    mark = simulated_mark(source)
+    if mark is not None:    # H-10: the simulated graphics card answers, and the row says it is one
+        name = procs.gpu_name(source)
+        rows.append(("nvidia-smi", name is not None,
+                     f"{mark}: {name}" if name is not None
+                     else f"{mark}: run\\fake_gpu.json makes it fail (\"fail\")"))  # fmt: skip
+    elif is_dev(paths):     # docs/DEV_MODE.md: a dev install has no graphics card to ask
         rows.append(("nvidia-smi", True, "not needed (dev mode)"))
     elif profile == "cpu-dev":
         # D-44: an install that runs on the processor (the engine test, a PC with no NVIDIA card) has no
         # driver to ask for; a gpu install, or one whose runtime.json cannot be read, still asks
         rows.append(("nvidia-smi", True, "not needed (this install runs on the processor: profile cpu-dev)"))
     else:
-        smi = procs.nvidia_smi_report()
+        smi = procs.nvidia_smi_report(source)
         rows.append(("nvidia-smi", smi is not None, "ok" if smi is not None else "no NVIDIA driver found"))
+    row = fake_gpu_row(paths)
+    if row is not None:
+        rows.append(row)
     have_ffmpeg = ffmpeg.available()
     rows.append(("ffmpeg", have_ffmpeg, "on PATH" if have_ffmpeg else "ffmpeg/ffprobe not found"))
     rows.append(launch_reach.doctor_row(paths))
@@ -309,6 +328,29 @@ def bundle_notes(paths: Paths) -> list[str]:
     _, rows = runtime_rows_of(paths)
     rows = [r for r in rows if r[0] == "runtime.json"] + [install_state_row(paths)[1]]
     return [f"[FAIL] {name}: {detail}" for name, ok, detail in rows if not ok]
+
+
+#: The first line of `nvidia-smi.txt` in a diagnostics zip made on the simulated graphics card.
+def simulated_header(mark: str) -> str:
+    """The first line of `nvidia-smi.txt` in a diagnostics zip made on the simulated graphics card."""
+    return (
+        f"{mark}: not a real graphics card. These numbers come from run\\fake_gpu.json "
+        "(docs/DEV_MODE.md, 'A simulated graphics card').\n"
+    )
+
+
+def fake_gpu_row(paths: Paths) -> tuple[str, bool, str] | None:
+    """The row "fake_gpu" (H-10), only when runtime.json sets the switch: ok on a dev or engine-test install
+    (the simulated card is on, and says where its numbers come from), FAIL with NS-W121 on any other install
+    (the switch is ignored there). None when the switch is not set."""
+    if devmode.fake_gpu(paths):
+        return ("fake_gpu", True,
+                f"on: the simulated graphics card; nvidia-smi is answered from "
+                f"{devmode.fake_gpu_file(paths)} (docs/DEV_MODE.md)")  # fmt: skip
+    if devmode.fake_gpu_ignored(paths):
+        info = describe("NS-W121")
+        return ("fake_gpu", False, f"NS-W121: {info.message} {info.hint}")
+    return None
 
 
 ENV_ROW = "python environments"

@@ -122,6 +122,7 @@ def apply_engine_test(ctx: StepContext, rt: Runtime) -> None:
     """
     rt.fake_footage = ctx.fake_footage
     rt.tiny_story = ctx.tiny_story
+    rt.fake_gpu = ctx.fake_gpu      # only on a test install: anywhere else s01 said NS-W121 and it stays off
     if ctx.fake_voice:
         rt.tts.engine = "fake"
 
