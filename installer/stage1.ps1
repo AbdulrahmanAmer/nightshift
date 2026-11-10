@@ -940,6 +940,15 @@ function Resolve-NsHome {
     if ($Forced) { return $Forced }
     $fromAnswers = [string](Get-Prop $AnswersObj 'home_path' '')
     if ($fromAnswers) { return $fromAnswers }
+    # INSTALL.cmd started from an install's own program folder (<home>\app) repairs THAT install. A PC can hold
+    # several Nightshift folders and has one NIGHTSHIFT_HOME, which may name another of them: following it
+    # from here would copy this program over the other install's. That holds for a NIGHTSHIFT_HOME typed in
+    # this window too ('ns' and 'studio' follow one, ns_common.paths.Paths.from_env): setup replaces a
+    # program folder, so its only explicit ways to name another folder are -HomePath and the answers file.
+    if ($AppFolder -and ((Split-Path -Leaf $AppFolder.TrimEnd('\')) -ieq 'app')) {
+        $above = Split-Path -Parent $AppFolder.TrimEnd('\')
+        if ($above -and (Test-Path -LiteralPath (Join-Path $above 'config') -PathType Container)) { return $above }
+    }
     # A previous install's home (the user variable setup writes) wins, so a rerun lands in the same folder.
     # Not under -FakeProbe: that is CI and the tests, which describe the machine themselves and must not see
     # whatever install the developer's PC carries.

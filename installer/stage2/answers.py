@@ -52,6 +52,11 @@ class InstallerAnswers(Answers):
     # there), `off`, or `on@HH:MM`. Only the window writes it. The scheduler step applies the window's answer
     # only while Windows still has that state (a Settings change made meanwhile wins), then removes both keys.
     nightly_seen: str | None = Field(default=None, pattern=r"^(new|off|on@([01]\d|2[0-3]):[0-5]\d)$")
+    # A second Nightshift on a PC (card second-install-takeover): true is the owner's yes, in this run, to
+    # "make the Desktop shortcuts open this install" when they open another Nightshift folder (NIGHTSHIFT_HOME
+    # and the toast registration follow the same yes). Absent or false keeps them. Used once by the scheduler
+    # step and then removed, so an old answers file never takes them back at a later Repair.
+    shortcuts_here: bool | None = None
 
 
 def wants_voicedesign(ans: InstallerAnswers) -> bool:
@@ -166,7 +171,7 @@ def write_answers(path: Path, ans: InstallerAnswers) -> Path:
 
 #: Setup input that is used once (the scheduler step, s09) and then removed from the saved answers: it
 #: answers a question about the moment setup ran, and must never be read again by a later run.
-SETUP_INPUT = ("nightly", "nightly_seen")
+SETUP_INPUT = ("nightly", "nightly_seen", "shortcuts_here")
 
 
 def forget_setup_input(path: Path) -> bool:

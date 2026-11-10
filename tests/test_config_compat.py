@@ -88,6 +88,7 @@ def test_every_field_a_settings_model_gained_since_0_1_14_is_in_the_table() -> N
     assert found == {
         ("Runtime", "tiny_story"), ("InstallerAnswers", "tiny_story"),
         ("Answers", "nightly"), ("InstallerAnswers", "nightly_seen"),  # setup's nightly question (used once)
+        ("InstallerAnswers", "shortcuts_here"),  # the yes to moving another install's shortcuts (used once)
     }  # what 0.1.15 adds
 
 

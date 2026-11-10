@@ -65,6 +65,8 @@ class StepContext:
     resumed: bool = False
     free_gb_fn: Callable[[Path], float] = free_gb
     desktop_override: Path | None = None
+    #: The PC's list of Nightshift folders (`shortcut_owner.LIST_NAME`); None is the one under LOCALAPPDATA.
+    installs_list: Path | None = None
     warnings: list[tuple[str, str]] = field(default_factory=list)
     # sentences a step wants on its own row and in the install report (it finished, but the owner must know
     # something): the wizard takes them when the step ends (``note_step`` / ``take_notes``)

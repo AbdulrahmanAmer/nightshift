@@ -12,7 +12,7 @@ from ns_common import __version__
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
-from ns_common.paths import Paths
+from ns_common.paths import Paths, home_env
 from ns_supervisor import (
     backup,
     control,
@@ -309,7 +309,7 @@ def cmd_update(
     if channel != "stable" and not git:
         raise _die("--channel main works with --git only", 2)
     if home is not None:
-        os.environ["NIGHTSHIFT_HOME"] = str(home)
+        os.environ.update(home_env(home))   # named on the command line: for this process and its children
     paths = Paths.from_env()
     if check:
         _update_check(update.current_version(control.app_path(paths)))
