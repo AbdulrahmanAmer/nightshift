@@ -122,8 +122,8 @@ def session_is_interactive() -> bool:
 #     kept from the notes by a writer that hangs;
 #   - a note leaves the file when the owner dismissed it, by id, or at the bound (`NOTES_FULL` notes wait):
 #     then the oldest ROUTINE note goes (`is_routine`), a failure or a note that asks something of the owner
-#     only to make room for a newer one of its kind, never for a routine one; one note at the top of the list
-#     says how many were removed (`removed_message`), updated in place;
+#     only to make room for a newer one of its kind, never for a routine one (that one is kept out); one note
+#     at the top of the list says how many were removed or kept out (`removed_message`), updated in place;
 #   - the file's format is what 0.1.14 wrote and reads (`{"notes": [{"at", "title", "message"}]}`, UTF-8
 #     without a byte order mark), plus two keys 0.1.14 ignores: `routine: true` on a routine note (written
 #     here from `is_routine`, so the launch script needs no copy of the rule) and `removed: <n>` on the one
@@ -342,36 +342,37 @@ def _add(paths: Paths, entries: Entries, new: dict[str, Any]) -> tuple[Entries, 
 
     The rule, while more than `NOTES_FULL` notes would wait: the oldest routine note goes; when none is
     left, the oldest note goes (a failure makes room for a newer failure). A routine `new` never pushes out
-    a note that is not routine: when the routine notes that wait cannot make its room, it is not added and
-    nothing changes (logged with its text). So the newest note that matters is never the one lost. Every
-    removed note is logged with its text (`morning_note_dropped`), and one note (`removed: <n>`, first in the
-    file, so the bell lists it last) says how many went; it is replaced, never repeated, and goes only when
-    the owner dismisses it.
+    a note that is not routine: when the routine notes that wait cannot make its room, it is not added (logged
+    with its text). So the newest note that matters is never the one lost. Every removed note, and every
+    routine note kept out, is logged with its text (`morning_note_dropped`) and counted by one note
+    (`removed: <n>`, first in the file, so the bell lists it last); it is replaced, never repeated, and goes
+    only when the owner dismisses it. The entries returned are always to be stored: the count may have moved
+    even when `new` is not among them.
     """
     count = next((e for e in entries if _is_count(e)), None)
     kept = [e for e in entries if not _is_count(e)]
     over = len(kept) + 1 - NOTES_FULL
-    if over > 0 and _routine(new) and sum(1 for e in kept if _routine(e)) < over:
-        _say(
-            paths, "WARN", "morning_note_dropped", f"a routine note was not added: {NOTES_FULL} notes wait",
-            notes=[{k: new.get(k) for k in ("at", "title", "message")}],
-        )
-        return entries, False
-    kept.append(new)
     gone: list[dict[str, Any]] = []
-    while len(kept) > NOTES_FULL:
-        drop = next((i for i, e in enumerate(kept[:-1]) if _routine(e)), 0)
-        gone.append(kept.pop(drop))
-    if not gone:
-        return ([count] if count else []) + kept, True
+    added = not (over > 0 and _routine(new) and sum(1 for e in kept if _routine(e)) < over)
+    if added:
+        kept.append(new)
+        while len(kept) > NOTES_FULL:
+            drop = next((i for i, e in enumerate(kept[:-1]) if _routine(e)), 0)
+            gone.append(kept.pop(drop))
+        if not gone:
+            return ([count] if count else []) + kept, True
+    else:
+        gone.append(new)
     total = (int(count["removed"]) if count else 0) + len(gone)
     at = datetime.now().isoformat(timespec="seconds")
     _say(
-        paths, "WARN", "morning_note_dropped", f"{len(gone)} unread note(s) removed, bound {NOTES_FULL}",
+        paths, "WARN", "morning_note_dropped",
+        f"{len(gone)} unread note(s) removed, bound {NOTES_FULL}" if added
+        else f"a routine note was not added: {NOTES_FULL} notes wait",
         notes=[{k: e.get(k) for k in ("at", "title", "message")} for e in gone], removed_in_all=total,
     )
     said = {"at": at, "title": "Nightshift", "message": removed_message(paths, total), "removed": total}
-    return [said, *kept], True
+    return [said, *kept], added
 
 
 # --- the spool: notes that could not be written when they were left ----------------------------------------
@@ -532,10 +533,10 @@ def _leave(
         entry: dict[str, Any] = {"at": at, "title": title, "message": message}
         if is_routine(message):
             entry["routine"] = True
+        # (a routine note the bound kept out is not added, but the count note says one more: stored too)
         entries, added = _add(paths, entries, entry)
-        if added or taken:  # a routine note the bound kept out changes nothing on disk
-            _store(note_path(paths), entries)
-            _remove(taken)
+        _store(note_path(paths), entries)
+        _remove(taken)
     return message, added
 
 

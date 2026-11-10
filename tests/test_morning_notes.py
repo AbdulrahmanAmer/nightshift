@@ -747,12 +747,32 @@ def test_at_the_bound_of_failures_the_newest_is_kept_and_a_routine_note_moves_no
     assert notify.leave_note(paths, "Nightshift", "run failed (NS-E204), open Dashboard") is True
     got = messages(paths)
     assert got[0] == notify.removed_message(paths, 1) and got[1:] == [*failures[1:], "run failed (NS-E204), open Dashboard"]
-    # a routine note never makes room by pushing out a failure: it is not added, and the file is not touched
-    before = notes_file(paths).read_bytes()
+    # a routine note never makes room by pushing out a failure: it is not added, every failure stays, and the
+    # one count note says one more (updated in place), so the bell shows that a note was kept out
+    before = raw_notes(paths)
     assert notify.leave_note(paths, "Nightshift", ROUTINE) is False
-    assert notes_file(paths).read_bytes() == before
+    got = raw_notes(paths)
+    assert got[1:] == before[1:] and ROUTINE not in [n["message"] for n in got]
+    assert [n for n in got if "removed" in n] == [got[0]] and got[0]["removed"] == 2
+    assert got[0]["message"] == notify.removed_message(paths, 2)
     last = [r for r in log_records(paths) if r["event"] == "morning_note_dropped"][-1]
-    assert [n["message"] for n in last["data"]["notes"]] == [ROUTINE]
+    assert [n["message"] for n in last["data"]["notes"]] == [ROUTINE] and last["data"]["removed_in_all"] == 2
+
+
+def test_a_routine_note_kept_out_raises_the_count_note_even_when_nothing_was_removed_before(tmp_path: Path) -> None:
+    """FN-2 review note: 200 waiting failures and no count note yet; the routine note is kept out and the
+    count note appears (1), so "removed unread" counts every note the owner will not see."""
+    paths = Paths(tmp_path / "home")
+    failures = [f"{FAILED} (night {i})" for i in range(200)]
+    full_file(paths, failures)
+    assert notify.leave_note(paths, "Nightshift", ROUTINE) is False
+    got = raw_notes(paths)
+    assert len(got) == 201 and [n["message"] for n in got[1:]] == failures
+    assert got[0]["removed"] == 1 and got[0]["message"] == notify.removed_message(paths, 1)
+    # a second one: the same count note, updated in place, never a second one
+    assert notify.leave_note(paths, "Nightshift", ROUTINE) is False
+    got = raw_notes(paths)
+    assert len(got) == 201 and [n for n in got if "removed" in n] == [got[0]] and got[0]["removed"] == 2
 
 
 @needs_powershell

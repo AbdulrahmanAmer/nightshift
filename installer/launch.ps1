@@ -245,6 +245,9 @@ function Add-NsMorningNote {
     # marked routine goes; when none is, the oldest note goes (this script's notes are never routine). Each
     # removed note is logged with its text (morning_note_dropped) and one note, first in the file, says how
     # many went in all (notify.removed_message's words), replaced and never repeated. The newest is kept.
+    # The program's other counted case, a routine note kept out because every waiting note is not routine
+    # (it raises the same count note), cannot arise here: this script never leaves a routine note, so its
+    # note is always added.
     # A damaged file is never emptied: it is first copied to a file of the same name plus .bad-<its time>,
     # then replaced by what could be read of it plus a note that says so (notify.damaged_message's words).
     # Returns true when the note was added and false when it was said already; throws when it could not be
