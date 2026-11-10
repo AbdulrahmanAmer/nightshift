@@ -241,7 +241,7 @@ def _save_settings_copy(
         ) from e
     kept = slot.copy
     if action == config_snapshot.KEEP and kept is not None:
-        say(
+        say(        # the plain words: the window renders what it shows (FN-3), its log keeps them
             f"The settings copy for {old_version} (made {kept.created.replace('T', ' ')}) is kept in "
             f"{zip_path} for ns update --rollback: the last rollback could not put it back, so the settings "
             "files now may be a newer version's"

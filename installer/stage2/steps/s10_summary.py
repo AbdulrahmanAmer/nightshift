@@ -13,6 +13,7 @@ from installer.stage2.devmode import BANNER
 from installer.stage2.errors import make_error
 from installer.stage2.web import nightly_view, shortcuts_view
 from installer.stage2.winenv import desktop_dir
+from ns_common.commandline import render
 
 NEXT_STEPS = (
     "Next: open 'Nightshift Dashboard' on your Desktop and press Run now to make your first video."
@@ -86,6 +87,10 @@ class S10Summary(Step):
         var_line = ctx.flag("home_var_line")
         if isinstance(var_line, str) and var_line:
             ui.say(var_line)
+        # whose the `ns` and `studio` commands are (card FN-3): the scheduler step's sentence
+        commands_line = ctx.flag("commands_line")
+        if isinstance(commands_line, str) and commands_line:
+            ui.say(render(commands_line, ctx.paths.home))     # stored plain, said as typed now (FN-3)
         ui.say(DEV_NEXT_STEPS if ctx.dev_mode else NEXT_STEPS, "bold green")
 
         res = ctx.run_tool("ns", ["doctor", "--bundle"], timeout=900)

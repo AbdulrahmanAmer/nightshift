@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ns_common.atomic import read_text_retry
+from ns_common.commandline import render
 from ns_common.paths import Paths
 
 Runner = Callable[[list[str], int], tuple[int, str, str]]
@@ -201,7 +202,10 @@ def classify_update(result: dict[str, Any]) -> dict[str, Any]:
         state, message = "up_to_date", "You have the newest version."
     else:
         state, message = "unknown", "The update check finished but did not say whether a new version exists."
-    return {**result, "state": state, "up_to_date": state == "up_to_date", "message": message}
+    notes = result.get("notes")
+    if isinstance(notes, list):         # an update's JSON is not rendered by `ns`: its commands are, here (FN-3)
+        result = {**result, "notes": [render(n) if isinstance(n, str) else n for n in notes]}
+    return {**result, "state": state, "up_to_date": state == "up_to_date", "message": render(message)}
 
 
 def ns_command(paths: Paths, *args: str) -> list[str]:
@@ -315,6 +319,8 @@ def read_update_state(
     for key in ("old", "new", "message", "updated_at"):
         value = raw.get(key)
         out[key] = str(value) if value is not None else None
+    if out["message"]:      # the page shows it now: stored with the plain words, rendered here (FN-3)
+        out["message"] = render(out["message"], paths.home)
     out["state"] = raw["state"]
     if isinstance(raw.get("release_notes"), str) and raw["release_notes"]:
         out["release_notes"] = raw["release_notes"]       # added only when there is some: the shape is unchanged

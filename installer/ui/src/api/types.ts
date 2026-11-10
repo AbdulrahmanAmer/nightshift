@@ -121,7 +121,7 @@ export interface ChoicesDraft {
   runTime: string;                   // "03:00"
   nightly: boolean;                  // the switch "Run Nightshift by itself every night"; off on a new install
   nightlySeen: string;               // what Automatic runs were when the page showed the switch: "new", "off" or "on@HH:MM"; sent back unchanged
-  shortcutsHere: boolean;            // the switch "Make the Desktop shortcuts open this install": only shown while they open another Nightshift folder; off keeps them
+  shortcutsHere: boolean;            // the switch "Make the Desktop shortcuts and the ns and studio commands open this install": only shown while one of them is another Nightshift folder's; off keeps them
   mastersPerWeek: 1 | 2 | 3;
   installCode: boolean;
   includeVoicedesign: boolean;       // download the voice design model now (about 2 GB); otherwise it comes with the first design
@@ -228,6 +228,7 @@ export interface ResultView {
   nightlyLine?: string | null;       // the sentence the end of setup says about Automatic runs
   shortcutsLine?: string | null;     // the sentence about whose the Desktop shortcuts are (NS-W119 when another install's were kept)
   homeVarLine?: string | null;       // the sentence about NIGHTSHIFT_HOME when it names, or named, another Nightshift folder
+  commandsLine?: string | null;      // the sentence about the ns and studio commands: on the PATH, another install's (NS-W120), or why not
   diagnosticsZip: string | null;
   stockKeyMissing: boolean;          // neither a Pexels nor a Pixabay key is stored
   durationS: number;

@@ -27,6 +27,7 @@ from installer.stage2.state import (
 from installer.stage2.sysinfo import free_gb
 from installer.stage2.ui import Ui
 from installer.stage2.winenv import HOME_VAR
+from ns_common.commandline import render
 from ns_common.logging import NsLogger
 from ns_common.models import LlmCustom, Manifest
 from ns_common.paths import Paths
@@ -83,9 +84,10 @@ class StepContext:
         """Show and record a warning (NS-W code); warnings never stop the install."""
         info = describe_code(code)
         text = f"{code}: {info.message}" + (f" ({detail})" if detail else "")
-        self.ui.say(f"  ! {text}", style="yellow")
+        # said with the commands as this owner types them now; logged with the plain words (FN-3)
+        self.ui.say(f"  ! {render(text, self.paths.home)}", style="yellow")
         if info.hint:
-            self.ui.say(f"    {info.hint}", style="dim")
+            self.ui.say(f"    {render(info.hint, self.paths.home)}", style="dim")
         self.log.warn("warning", text, code=code)
         self.warnings.append((code, detail))
         self.ui.notice(code, detail)

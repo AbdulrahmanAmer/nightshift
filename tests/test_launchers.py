@@ -1678,7 +1678,14 @@ def test_the_diagnostics_shortcut_says_which_zip_it_made(tmp_path: Path) -> None
     said = _words(proc.stdout)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "(NS-W210)" in said and "The diagnostics zip is on your Desktop" not in said
-    assert "The full diagnostics zip could not be made (ns doctor --bundle ended with exit code 1" in said
+    # the command it names is shown by this install's full path (FN-3: PowerShell windows always give it, in
+    # `commandline.command_form`'s form; the home's Arabic letters may reach the captured stdout as '?')
+    told = re.search(
+        r'could not be made \([A-Za-z]:"\\[^"]*\\venvs\\supervisor\\Scripts\\ns\.exe" '
+        r"doctor --bundle ended with exit code 1",
+        said,
+    )
+    assert told is not None, said
     (small,) = list(desk.glob("nightshift-diagnostics-small-*.zip"))
     assert f"A smaller diagnostics zip was made without Python instead: {small}" in said
     with zipfile.ZipFile(small) as z:

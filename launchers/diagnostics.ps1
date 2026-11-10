@@ -112,7 +112,8 @@ if ($full.zip) {
     Exit-NsWithPause ('The diagnostics zip is on your Desktop: ' + $full.zip) 0
 }
 Write-Host ''
-Write-Host ('The full diagnostics zip could not be made (' + $full.why + ').')
+# shown here: the command it names by this install's full path (FN-3, Format-NsCommands in _common.ps1)
+Write-Host ('The full diagnostics zip could not be made (' + (Format-NsCommands $full.why $nsHome) + ').')
 $small = Get-SmallZip
 if ($small.zip) {
     Show-Zip $small.zip

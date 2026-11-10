@@ -60,6 +60,7 @@ DOC_TESTS: tuple[str, ...] = (
     "tests/test_change_requests_status.py",  # contracts/CHANGE_REQUESTS.md, docs/ENGINEERING.md
     "tests/test_ci_changes.py",  # this list against what the tests name (reads the docs/ tree)
     "tests/test_ci_workflow.py",  # docs/REPO_SETTINGS.md names the required checks
+    "tests/test_commands_on_path.py",  # OPERATOR.md "Commands": the PowerShell 5.1 quoting limit
     "tests/test_dashboard_assistant.py",  # search_docs over the real README.md and OPERATOR.md
     "tests/test_devfake_tool_cue.py",  # the assistant-tool rows of docs/VERIFICATION_INVENTORY.md
     "tests/test_diskneed.py",  # BUILD_SPEC.md, docs/FEATURE_STATUS.md carry the tier numbers

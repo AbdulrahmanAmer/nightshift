@@ -4,7 +4,9 @@
 
 .DESCRIPTION
     Removes the scheduled task, desktop shortcuts, venvs\, bin\, the program folder (app, app.new, app.prev, app.failed, app.swap, app.swap-left-*),
-    the FFmpeg fallback's user PATH entry and the NIGHTSHIFT_HOME user environment
+    the user PATH entries of the FFmpeg fallback and of this install's ns and studio commands (<home>\cmd, card
+    FN-3; another install's entry is never touched, and the rest of the PATH stays byte for byte), the cmd folder
+    and the NIGHTSHIFT_HOME user environment
     variable. models\ and the user data (outbox, rejected, data, imports, cache) are kept unless you answer
     yes (default No) or pass -DeleteModels / -DeleteData. Safe to run more than once.
 
@@ -19,7 +21,7 @@
                  (then %LOCALAPPDATA%\Nightshift) only when that install runs THIS program folder; otherwise it
                  changes nothing and asks for -HomeDir: the variable may name another Nightshift folder.
     -DesktopDir  the Desktop folder to look in, instead of this user's and the public one.
-    -StateFile   with -DryRun only: a JSON file {task: {arguments} or null, userHome, toastKey, installs,
+    -StateFile   with -DryRun only: a JSON file {task: {arguments} or null, userHome, userPath, toastKey, installs,
                  credentials} that stands in for what Windows has, so a dry run reads nothing of this PC (the
                  tests use it; credentials: the names of Nightshift's entries in Credential Manager).
     -DryRun      print "[dry-run] <action>" lines, change nothing, exit 0.
@@ -251,28 +253,37 @@ function Remove-Tree {
 }
 
 function Remove-UserPathEntry {
-    # Takes $Directory out of the user's PATH (the FFmpeg fallback adds <home>\bin\ffmpeg there). The value is
-    # read and written unexpanded, so %VAR% entries and the REG_EXPAND_SZ kind survive. $SubKey is below HKCU.
-    param([string]$Directory, [string]$SubKey = 'Environment')
+    # Takes $Directory out of the user's PATH (setup puts <home>\cmd there, the FFmpeg fallback <home>\bin\ffmpeg).
+    # Only the entries that name that folder go (case and one trailing backslash aside); every other byte of the
+    # value stays: empty entries, a trailing ';', duplicates, %VAR% entries. The value is read and written
+    # unexpanded and keeps its kind (REG_EXPAND_SZ or REG_SZ). A described PC (-StateFile) gives it as 'userPath'.
+    # $Key: the user's Environment key by default (opened for writing only when not a dry run), or a stand-in
+    # with GetValue, GetValueKind, SetValue and Close (the tests: they never open the registry).
+    param([string]$Directory, $Key = $null)
     $wanted = $Directory.Trim().TrimEnd('\')
-    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($SubKey, $true)
-    if ($null -eq $key) { return $false }
+    $value = $null
+    if ($null -ne $Key) { $value = $Key.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
+    elseif ($null -ne $machine) { $value = Get-MachineValue 'userPath' }
+    else {
+        $Key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', (-not $script:IsDry))
+        if ($null -eq $Key) { return $false }
+        $value = $Key.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    }
     try {
-        $value = $key.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
         if ($null -eq $value) { return $false }
-        $kind = $key.GetValueKind('Path')
-        $parts = @(([string]$value).Split(';') | Where-Object { $_ })
+        $parts = ([string]$value).Split(';')
         $kept = @($parts | Where-Object { $_.Trim().TrimEnd('\') -ine $wanted })
         if ($kept.Count -eq $parts.Count) { return $false }
         if ($script:IsDry) {
             Show-Action "remove $Directory from the user PATH"
             return $true
         }
-        $key.SetValue('Path', ($kept -join ';'), $kind)
+        $kind = $Key.GetValueKind('Path')
+        $Key.SetValue('Path', ($kept -join ';'), $kind)
         Write-Host "  removed $Directory from the user PATH"
         return $true
     }
-    finally { $key.Close() }
+    finally { if ($null -ne $Key) { $Key.Close() } }
 }
 
 # ---- where is the install -------------------------------------------------------------------------------
@@ -423,6 +434,9 @@ if (-not $SkipSystem) {
     }
     # The FFmpeg fallback put its folder on the user PATH; the environment variable change below broadcasts it.
     [void](Remove-UserPathEntry -Directory (Join-Path (Join-Path $nsHome 'bin') 'ffmpeg'))
+    # Setup put this install's command folder (ns.cmd, studio.cmd) on the user PATH (card FN-3). Only that entry
+    # goes: another install's command folder is that install's.
+    $commandsGone = [bool](Remove-UserPathEntry -Directory (Join-Path $nsHome 'cmd'))
     $desktops = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'))
     if ($DesktopDir) { $desktops = @($DesktopDir) }
     $leftFor = New-Object System.Collections.Specialized.OrderedDictionary
@@ -656,7 +670,8 @@ else {
     # it, so the deferred cleanup of the window removes these.
     # app.failed and app.swap are what an interrupted `ns update` leaves beside the program folder;
     # app.prev-config.zip is the copy of the settings files an update keeps for `ns update --rollback`
-    foreach ($leaf in @('app', 'app.new', 'app.prev', 'app.prev-config.zip', 'app.prev-config.zip.unrestored', 'app.prev-config.zip.lock', 'app.rollback-pending.json', 'app.failed', 'app.swap', 'nightshift-launch.ps1')) { Remove-Tree -Path (Join-Path $nsHome $leaf) }
+    # cmd: the ns and studio command files (card FN-3), which start this program
+    foreach ($leaf in @('app', 'app.new', 'app.prev', 'app.prev-config.zip', 'app.prev-config.zip.unrestored', 'app.prev-config.zip.lock', 'app.rollback-pending.json', 'app.failed', 'app.swap', 'nightshift-launch.ps1', 'cmd')) { Remove-Tree -Path (Join-Path $nsHome $leaf) }
     # app.swap-left-<stamp>: a third program folder a start set aside after an interrupted rollback
     # (ns_common/rollback_intent.py settle_swap); nightshift-launch.ps1 above is what the shortcuts start
     foreach ($left in @(Get-ChildItem -LiteralPath $nsHome -Directory -Filter 'app.swap-left-*' -ErrorAction SilentlyContinue)) { Remove-Tree -Path $left.FullName }
@@ -701,7 +716,13 @@ if (-not $SkipSystem) {
     # Another install that held none of the shared things: say that it is there and what it needs now.
     foreach ($known in $stillHere) {
         if ($known.TrimEnd('\') -ieq $userHome.TrimEnd('\')) { continue }
-        Write-Host "Another Nightshift is still installed at ${known}. NIGHTSHIFT_HOME does not name it, so 'ns' and 'studio' typed in a terminal do not find it; its shortcuts in $(Join-Path $known 'Shortcuts') work. To make the Desktop shortcuts, NIGHTSHIFT_HOME and the notification icon its own, run INSTALL.cmd in $(Join-Path $known 'app') (or from its zip), choose that folder and Repair."
+        Write-Host "Another Nightshift is still installed at ${known}. NIGHTSHIFT_HOME does not name it; its shortcuts in $(Join-Path $known 'Shortcuts') work, and so do its commands by their full path: $(Join-Path (Join-Path $known 'cmd') 'ns.cmd') and studio.cmd. To make the Desktop shortcuts, NIGHTSHIFT_HOME, the notification icon and the plain 'ns' and 'studio' commands its own, run INSTALL.cmd in $(Join-Path $known 'app') (or from its zip), choose that folder and Repair."
+    }
+    # The plain commands were this install's: say how another install here gets them (its Repair puts its own
+    # command folder on the PATH; nothing of another install is put there from here).
+    if ($commandsGone -and $others.Count -gt 0) {
+        $next = $others[0]
+        Write-Host "The plain 'ns' and 'studio' commands opened this install and are no longer on your PATH. The Nightshift at $next has its own: $(Join-Path (Join-Path $next 'cmd') 'ns.cmd') and studio.cmd. To make the plain commands open it, run INSTALL.cmd in $(Join-Path $next 'app') (or from its zip), choose that folder and Repair."
     }
     if ($stillHere.Count -eq 0 -and $others.Count -eq 0 -and ($varState -eq 'mine' -or $varState -eq 'gone')) {
         Write-Host 'If another Nightshift folder is on this PC (one installed by an older version is not listed), run its INSTALL.cmd and choose Repair once: that registers its notifications, its stock-footage keys and NIGHTSHIFT_HOME again.'

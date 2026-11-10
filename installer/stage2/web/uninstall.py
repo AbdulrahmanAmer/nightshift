@@ -31,6 +31,8 @@ ALWAYS = (
 )
 #: How the uninstall program starts a line about something it left for another Nightshift folder.
 LEFT = "Left "
+#: The line about the plain `ns` and `studio` commands when they were this install's and another stays (FN-3).
+COMMANDS_LEFT = "The plain 'ns' and 'studio' commands"
 #: The two places a stock-footage key is kept: every line the uninstall program prints about the keys
 #: (`installer.stage2.secrets.forget_stock_keys`, or the script's cmdkey lines) names one of them.
 KEY_PLACES = ("Credential Manager", "secrets.dpapi")
@@ -131,6 +133,8 @@ def deferred_script(home: Path, wait_pids: list[int], local_root: Path | None = 
     # (the folders a start set aside from an interrupted rollback, `rollback_intent.settle_swap`, and the
     # script the shortcuts start, `s09_shortcuts_scheduler.STUB_NAME`)
     targets += [*sorted(home.glob("app.swap-left-*")), home / "nightshift-launch.ps1"]
+    # (the `ns` and `studio` command files, card FN-3: they start this program, so they go with it)
+    targets += [home / "cmd"]
     # (the settings a stale rollback record held, `rollback_intent.saved_settings`; the launch script's count
     # of missed nights and the reach's marker are in `run`, above)
     targets += sorted(home.glob("app.rollback-settings-*.zip"))
@@ -310,7 +314,7 @@ class UninstallApp:
                     self._log(line.rstrip())
                 if is_key_line(line):
                     self._keys.append(line.strip())
-                elif line.startswith(LEFT) or line.startswith("Another Nightshift is still installed"):
+                elif line.startswith((LEFT, "Another Nightshift is still installed", COMMANDS_LEFT)):
                     self._left.append(line.strip())
             code = proc.wait()
             if code:

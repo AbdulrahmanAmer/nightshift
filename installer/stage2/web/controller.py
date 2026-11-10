@@ -23,6 +23,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+import installer.stage2.commands as commands
 import installer.stage2.devmode as devmode
 import ns_common.config_snapshot as config_snapshot
 import ns_common.diskneed as diskneed
@@ -60,6 +61,7 @@ from ns_common.atomic import (
     write_text_atomic,
     write_zip_atomic,
 )
+from ns_common.commandline import render
 from ns_common.errors import describe as describe_error
 from ns_common.paths import Paths
 from ns_common.secret_file import stored_names
@@ -360,6 +362,7 @@ class Effects:
     fetch_file: Callable[..., None] = bootstrap.download_file                    # pinned direct downloads
     run_elevated: Callable[..., bootstrap.CmdResult] = bootstrap.run_elevated_exe
     add_user_path: Callable[[str], bool] = bootstrap.add_user_path_entry
+    user_path: Callable[[], tuple[str, str] | None] = commands.registry_user_path   # read only
     copy_app: Callable[..., appcopy.CopyResult] = appcopy.install_app
     desktop: Callable[[], Path | None] = seen_desktop                            # whose shortcuts are on it
     set_execution_state: Callable[[int], int] = keepawake._set_execution_state    # keep the PC awake
@@ -485,7 +488,10 @@ class SetupController:
         """Automatic runs and the Desktop shortcuts as they are for the install folder `home` (the window
         shows both under their switches, for the folder picked: `answers_view.folder_now`)."""
         app = appcopy.app_dir(home) if self.installs_app else self.cfg.app_path
-        return answers_view.folder_now(home, app, self.fx.desktop(), self.fx.get_home_var(bootstrap.HOME_VAR))
+        path = self.fx.user_path()      # whose the `ns` and `studio` commands are (the same yes moves them)
+        return answers_view.folder_now(
+            home, app, self.fx.desktop(), self.fx.get_home_var(bootstrap.HOME_VAR), path[0] if path else None,
+        )
 
     # ---- construction ----
     def _read_settings_before(self) -> dict[str, bytes] | None:
@@ -743,8 +749,9 @@ class SetupController:
 
     # ---- logging ----
     def log(self, level: str, text: str) -> None:
-        """Add a line to the window's log, the console and the log file."""
-        line = {"t": datetime.now().strftime("%H:%M:%S"), "level": level, "text": text}
+        """Add a line to the window's log, the console and the log file. The window and the console show it
+        now, with the commands it names as this owner types them; the file keeps the plain words (FN-3)."""
+        line = {"t": datetime.now().strftime("%H:%M:%S"), "level": level, "text": render(text, self.home)}
 
         def fn(s: dict[str, Any]) -> None:
             s["log"].append(line)
@@ -752,7 +759,7 @@ class SetupController:
 
         self.store.update(fn)
         prefix = "" if level == "info" else f"{level}  "
-        self.fx.console(f"{line['t']}  {prefix}{text}", level)
+        self.fx.console(f"{line['t']}  {prefix}{line['text']}", level)
         if self._log_path is not None:
             try:
                 self._log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1336,9 +1343,12 @@ class SetupController:
                     "Press Retry to wait for it again, or close setup and run INSTALL.cmd later: "
                     "it continues where it stopped")
         self._attempts[step] = self._attempts.get(step, 0) + 1
+        # the Failed screen shows it now: the commands it names as this owner types them (FN-3); the log and
+        # install-report.json keep the plain words
         view = {
-            "step": step, "stepTitle": labels.STEP_TITLES.get(step, step), "code": code, "title": title,
-            "whatToDo": what, "detail": detail, "canSkip": optional, "attempts": self._attempts[step],
+            "step": step, "stepTitle": labels.STEP_TITLES.get(step, step), "code": code,
+            "title": render(title, self.home), "whatToDo": render(what, self.home),
+            "detail": render(detail, self.home), "canSkip": optional, "attempts": self._attempts[step],
             "at": hhmm(),
         }
 
@@ -1954,7 +1964,10 @@ class SetupController:
 
         def fn(s: dict[str, Any]) -> None:
             if not any(n["code"] == code for n in s["notices"]):
-                s["notices"].append({"code": code, "title": title, "whatToDo": what, "step": step})
+                s["notices"].append({   # shown now: its commands as this owner types them (FN-3)
+                    "code": code, "title": render(title, self.home), "whatToDo": render(what, self.home),
+                    "step": step,
+                })
 
         self.store.update(fn)
         self.log("warn", f"{code}  {title}" + (f" ({detail[:300]})" if detail else ""))
@@ -2060,6 +2073,7 @@ class SetupController:
         night = nightly_view.summary(self.home, flags)
         shortcuts = shortcuts_view.summary(self.home, self.run_app_path, self.fx.desktop(), flags)
         var_line = flags.get("home_var_line")
+        commands_line = flags.get("commands_line")
         sizes = {g["id"]: g for g in state["plan"]["groups"]}
         models = {i["label"]: i for i in sizes["models"]["items"]}
         llm = next((i for i in sizes["models"]["items"] if i["label"].startswith("Story model")), None)
@@ -2116,6 +2130,10 @@ class SetupController:
             # whose the Desktop shortcuts and NIGHTSHIFT_HOME are, in the scheduler step's own sentences
             "shortcutsLine": shortcuts["line"],
             "homeVarLine": var_line if isinstance(var_line, str) else None,
+            # whose the `ns` and `studio` commands are (card FN-3), in the scheduler step's own sentence
+            "commandsLine": (
+                render(commands_line, self.home) if isinstance(commands_line, str) and commands_line else None
+            ),
             "devMode": self.dev,
             "diagnosticsZip": self._bundle or flags.get("bundle"),
             "durationS": duration, "warnings": warnings, "stockKeyMissing": not self._stock_key_stored(),

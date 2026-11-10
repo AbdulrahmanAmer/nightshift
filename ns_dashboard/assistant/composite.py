@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from ns_common.errors import describe
+from ns_common.errors import describe_shown as describe  # an answer shown now (FN-3)
 from ns_dashboard.assistant import orientation
 from ns_dashboard.assistant.registry import ToolCall, ToolContext, ToolDef, ToolSpec, obj
 from ns_dashboard.channel_hold import HELD_KINDS

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ns_common.commandline import render
 from ns_common.errors import NsError
 
 
@@ -27,8 +28,14 @@ class ApiError(Exception):
         self.details = details
 
     def to_body(self) -> dict[str, Any]:
-        """JSON body for the response."""
-        err: dict[str, Any] = {"code": self.code, "message": self.message, "hint": self.hint}
+        """JSON body for the response: shown now, so the `ns ...` and `studio ...` the message and hint name
+        are given as this install's owner types them (`ns_common.commandline.render`, FN-3; they are built
+        from the plain words of `contracts/errors.json` and of stored errors)."""
+        err: dict[str, Any] = {
+            "code": self.code,
+            "message": render(self.message),
+            "hint": render(self.hint) if self.hint else self.hint,
+        }
         if self.details is not None:
             err["details"] = self.details
         return {"error": err}

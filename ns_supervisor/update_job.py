@@ -39,6 +39,7 @@ import psutil
 
 from ns_common import testguard
 from ns_common.atomic import REPLACE_WAIT_S, read_text_retry, write_text_atomic
+from ns_common.commandline import ps_formatter
 from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_common.singleton import AlreadyRunning, FileLock
@@ -171,6 +172,8 @@ def step(paths: Paths, message: str, if_stopped_here: str) -> None:
     if raw.get("state") != "running" or raw.get("pid") != os.getpid():
         return
     keep = {k: raw[k] for k in ("log", "pid", "old") if k in raw}
+    # stored with the plain `ns ...` words: the Update window, the CLI and the dashboard render them when
+    # they show them (FN-3, `ns_common.commandline.render`)
     _progress(paths, "running", message, if_stopped_here=if_stopped_here, **keep)
 
 
@@ -505,7 +508,8 @@ def write_wait_script(paths: Paths, pid: int, log: Path) -> Path | None:
         folder.mkdir(parents=True, exist_ok=True)
         for old in folder.glob(WAIT_PREFIX + "*.ps1"):
             old.unlink(missing_ok=True)
-        write_text_atomic(target, follower_script(status_file(paths), log, pid, wait=False) + "\n")
+        script = follower_script(status_file(paths), log, pid, wait=False, home=paths.home)
+        write_text_atomic(target, script + "\n")
     except OSError:
         return None
     return target
@@ -516,15 +520,18 @@ def _ps(text: object) -> str:
     return "'" + str(text).replace("'", "''") + "'"
 
 
-def follower_script(status: Path, log: Path, pid: int, *, wait: bool = True) -> str:
+def follower_script(status: Path, log: Path, pid: int, *, wait: bool = True, home: Path | None = None) -> str:
     """PowerShell 5.1 (pure ASCII) that shows the worker's log, then its result, and returns 0 or 1.
 
     It reads two files and asks whether a process is alive: nothing of it comes from the program folder or
     a venv, so it holds nothing an update replaces, and closing it stops nothing. It believes only a state
     that names this run's log (the state file still holds the last update's result until the worker's
     first write). A worker that died is described by the `if_stopped_here` it left. `wait`: keep the
-    window open until Enter."""
+    window open until Enter. What it shows names the `ns ...` and `studio ...` commands by the full path of
+    the install `home` (`commandline.ps_formatter`: the files hold the plain words, FN-3)."""
     return "\n".join([
+        *ps_formatter().splitlines(),
+        f"$nsHome = {_ps(home or '')}",
         "$ErrorActionPreference = 'Continue'",
         f"try {{ $Host.UI.RawUI.WindowTitle = {_ps(WINDOW_TITLE)} }} catch {{ }}",
         f"$statusFile = {_ps(status)}",
@@ -534,7 +541,9 @@ def follower_script(status: Path, log: Path, pid: int, *, wait: bool = True) -> 
         "function Show-NewLines {",
         "    if (-not (Test-Path -LiteralPath $logFile)) { return }",
         "    $lines = @(Get-Content -LiteralPath $logFile -Encoding UTF8 -ErrorAction SilentlyContinue)",
-        "    for ($i = $script:seen; $i -lt $lines.Count; $i++) { Write-Host $lines[$i] }",
+        "    for ($i = $script:seen; $i -lt $lines.Count; $i++) {",
+        "        Write-Host (Format-NsCommands $lines[$i] $nsHome)",
+        "    }",
         "    if ($lines.Count -gt $script:seen) { $script:seen = $lines.Count }",
         "}",
         "Write-Host 'This window only shows the progress: closing it does not stop the update.'",
@@ -555,7 +564,7 @@ def follower_script(status: Path, log: Path, pid: int, *, wait: bool = True) -> 
         "    if ($mine -and ($state.state -eq 'done' -or $state.state -eq 'failed')) {",
         "        Show-NewLines",
         "        Write-Host ''",
-        "        Write-Host ('Result: ' + [string]$state.message)",
+        "        Write-Host ('Result: ' + (Format-NsCommands ([string]$state.message) $nsHome))",
         "        if ($state.state -eq 'done') { $code = 0 } else { $code = 1 }",
         "    }",
         "    elseif (-not (Get-Process -Id $workerPid -ErrorAction SilentlyContinue)) {",
@@ -565,7 +574,10 @@ def follower_script(status: Path, log: Path, pid: int, *, wait: bool = True) -> 
         "            Write-Host ''",
         "            $left = 'The update process ended without reporting a result. See ' + $logFile",
         "            if ($mine -and $state.PSObject.Properties['if_stopped_here']) {",
-        "                if ($state.if_stopped_here) { $left = 'Result: ' + [string]$state.if_stopped_here }",
+        "                if ($state.if_stopped_here) {",
+        "                    $told = Format-NsCommands ([string]$state.if_stopped_here) $nsHome",
+        "                    $left = 'Result: ' + $told",
+        "                }",
         "            }",
         "            Write-Host $left",
         "            $code = 1",
@@ -632,7 +644,7 @@ def start_follower(paths: Paths, pid: int, log: Path) -> bool:
         return False
     cwd = paths.home if paths.home.is_dir() else Path(os.path.expanduser("~"))
     try:
-        open_window(follower_argv(follower_script(status_file(paths), log, pid)), cwd)
+        open_window(follower_argv(follower_script(status_file(paths), log, pid, home=paths.home)), cwd)
     except (OSError, subprocess.SubprocessError):
         return False
     return True

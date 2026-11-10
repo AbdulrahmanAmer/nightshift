@@ -32,6 +32,7 @@ from ns_common.atomic import (
     write_bytes_atomic,
     write_text_atomic,
 )
+from ns_common.commandline import render
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.singleton import AlreadyRunning, FileLock
@@ -66,6 +67,7 @@ def toast(title: str, message: str) -> bool:
     In a test run the real `pwsh.run_powershell` refuses the toast script before it starts anything; that is
     "unavailable" here, so the caller leaves its morning note in the test's home instead.
     """
+    message = render(message)               # shown now: as this process's owner types it (FN-3)
     try:
         r = pwsh.run_powershell(
             TOAST_SCRIPT, env_extra={"NS_TOAST_TITLE": title, "NS_TOAST_MESSAGE": message}, timeout_s=30
@@ -497,6 +499,16 @@ def read_notes(paths: Paths) -> list[Note]:
     return [_as_note(n) for n in entries]
 
 
+def shown_notes(paths: Paths) -> list[Note]:
+    """`read_notes` as the owner is shown them NOW: each message with the `ns ...` and `studio ...` it names
+    given as this install's owner types them (`ns_common.commandline.render`). The id stays the one of the
+    stored (raw) note, so `dismiss` finds it. For a page or a console; never written back."""
+    return [
+        Note(id=n["id"], at=n["at"], title=n["title"], message=render(n["message"], paths.home))
+        for n in read_notes(paths)
+    ]
+
+
 def _leave(
     paths: Paths, title: str, decide: Callable[[list[Note]], str | None], at: str, wait_s: float
 ) -> tuple[str | None, bool]:
@@ -505,6 +517,8 @@ def _leave(
     with _locked(paths, wait_s):
         entries = _waiting(paths)
         entries, taken = _drain(paths, entries)
+        # stored RAW (the plain `ns ...` words, FN-3): the readers render when they show it, and the
+        # callers' `once` checks and the note ids compare the words they gave
         message = decide([_as_note(n) for n in entries])
         if message is None:
             if taken:

@@ -49,6 +49,12 @@ the Desktop, in this order, so a run killed at any point is repeated safely:
 3. the answer ``shortcuts_here`` is removed from ``config/answers.json`` with the other setup input, and
    the flags of step 0 go. A later Repair never repeats a yes.
 
+The same rule for the user PATH (card FN-3, `installer.stage2.commands`): the command files
+``<home>/cmd/ns.cmd`` and ``studio.cmd`` are always written; ``<home>/cmd`` goes on the user PATH when no
+other existing install's commands come first there, or with the same yes. The yes is noted first (flag
+``commands_taking``), then the PATH is written once, then the flags ``commands_owner`` and ``commands_line``.
+A dev install never writes the PATH (its commands work by their full path).
+
 A dev install never takes another install's nightly task, with or without a yes (its task is always
 disabled: taking it would switch the other install's nightly run off): ``ns schedule install --disabled``
 reads the task first and leaves it (``schedule.DEV_LEFT``).
@@ -67,7 +73,7 @@ from pathlib import Path
 from typing import Any
 
 import ns_common.testguard as testguard
-from installer.stage2 import shortcut_owner
+from installer.stage2 import commands, shortcut_owner
 from installer.stage2.answers import forget_setup_input
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
@@ -79,10 +85,13 @@ from installer.stage2.winenv import (
     desktop_dir,
     eval_ps_text,
     ps_quote,
+    put_commands_on_path,
     register_aumid_keeping,
     set_shortcut_aumid,
     set_user_env,
+    user_path,
 )
+from ns_common.commandline import render
 from ns_supervisor import schedule
 from ns_supervisor.notify import AUMID
 from ns_supervisor.schedule_cfg import remember_run_time
@@ -207,7 +216,7 @@ class S09ShortcutsScheduler(Step):
     # the Desktop was written still has to say; the end of `run` removes them)
     clears_on_run = (
         "schedule", "schedule_mode", "aumid", "shortcuts_app", "shortcuts_owner", "shortcuts_line",
-        "shortcuts_names", "home_var", "home_var_line", "dev_task_line",
+        "shortcuts_names", "home_var", "home_var_line", "dev_task_line", "commands_owner", "commands_line",
     )
 
     def check(self, ctx: StepContext) -> bool:
@@ -238,6 +247,8 @@ class S09ShortcutsScheduler(Step):
         ours = (shortcut_owner.MINE, shortcut_owner.FOREIGN)
         if seen["state"] not in shortcuts_view.KEPT and any(o not in ours for o, _ in seen["files"].values()):
             return False                    # a shortcut is missing, or opens a deleted Nightshift
+        if not self._commands_as_left(ctx):
+            return False                    # the command files or the PATH entry changed since
         state, named = home_var_now(ctx)
         if state == "unread":
             return True                     # Windows did not say: nothing is changed on a guess
@@ -246,6 +257,26 @@ class S09ShortcutsScheduler(Step):
         # another install's: fine while that is what this step recorded; nobody's (unset, a deleted
         # folder): work to do
         return state in shortcuts_view.KEPT and ctx.flag("home_var") == f"other:{named}"
+
+    @staticmethod
+    def _commands_as_left(ctx: StepContext) -> bool:
+        """The `ns` and `studio` command files are this program's, and the user PATH is as this step left it:
+        this install's entry first, or another install's that it recorded and that still exists. A PATH
+        Windows does not answer for is not a reason to run again (nothing would be changed on a guess)."""
+        if not commands.shims_current(ctx.paths.home, ctx.app_path):
+            return False
+        owner = ctx.flag("commands_owner")
+        if ctx.dev_mode:
+            return owner == "dev"
+        now = user_path(ctx.runner)
+        if now is None:
+            return True
+        found = commands.plan(now.value, ctx.paths.home, False, shortcut_owner.read_list(installs_list(ctx)))
+        if found.state == shortcut_owner.MINE:
+            return owner == shortcut_owner.MINE
+        if found.state in shortcuts_view.KEPT and found.other:
+            return owner == f"other:{found.other}" and Path(found.other).is_dir()
+        return False                        # nobody's: this install's entry is to be added
 
     def run(self, ctx: StepContext) -> None:
         """Make the .lnk files, then call ``ns schedule install``."""
@@ -260,7 +291,7 @@ class S09ShortcutsScheduler(Step):
         icon = shortcut_icon(ctx)
         stub = launch_stub(ctx)
         if not yes:
-            ctx.clear_flags("shortcuts_taking", "home_var_taking")    # notes of a yes that is not here now
+            ctx.clear_flags("shortcuts_taking", "home_var_taking", "commands_taking")    # notes of an old yes
         own = own_folder(ctx)
         own.mkdir(parents=True, exist_ok=True)
         for name, launcher in shortcuts:    # step 0: this install's full set, whatever the Desktop holds
@@ -274,6 +305,7 @@ class S09ShortcutsScheduler(Step):
         stamp = (folder if on_desktop else own) / f"{AUMID_SHORTCUT}.lnk"
         self._register_toast_identity(ctx, stamp, icon, keep_other=not yes)
         var_line = self._home_var(ctx, yes)
+        commands_line = self._commands(ctx, yes)
 
         run_time = ans.run_time
         if ctx.dev_mode:
@@ -286,6 +318,7 @@ class S09ShortcutsScheduler(Step):
         ctx.set_flag("shortcuts_line", line)
         ctx.set_flag("shortcuts_names", names)
         ctx.set_flag("home_var_line", var_line)
+        ctx.set_flag("commands_line", commands_line)
         ctx.set_flag("shortcuts_app", str(ctx.app_path))     # the app folder the shortcuts and the task use
         shortcut_owner.record_home(ctx.paths.home, installs_list(ctx))   # the PC's list of installs
         ctx.set_flag("first_install", False)                 # setup has decided: later runs keep the choice
@@ -293,7 +326,40 @@ class S09ShortcutsScheduler(Step):
         if forget_setup_input(ctx.paths.config / "answers.json"):
             ctx.log.info("setup_input_consumed", keys=["nightly", "nightly_seen", "shortcuts_here"])
         ctx.answers = ans.model_copy(update={"nightly": None, "nightly_seen": None, "shortcuts_here": None})
-        ctx.clear_flags("nightly_done", "shortcuts_taking", "home_var_taking")
+        ctx.clear_flags("nightly_done", "shortcuts_taking", "home_var_taking", "commands_taking")
+
+    @staticmethod
+    def _commands(ctx: StepContext, yes: bool) -> str:
+        """The `ns` and `studio` commands (card FN-3; the rule in `installer.stage2.commands`), in this order,
+        so a run killed at any point is repeated safely: C1 the two command files (always: they work by their
+        full path whatever the PATH holds); C2 the user PATH is read; C3 at most ONE write of it (another
+        install's entry is replaced only with a yes; the folder it took from is noted first, in the flag
+        `commands_taking`, so a rerun after a kill still says it); then the flag `commands_owner`. Never
+        raises: the Desktop shortcuts start everything without the commands. The sentence to say (L1-L4)."""
+        home = ctx.paths.home
+        unfit = commands.shim_problem(home, ctx.app_path)
+        problem = unfit or commands.write_shims(home, ctx.app_path)
+        if unfit is not None:
+            owner, line = "unfit", commands.unfit_line(home, unfit)
+        elif ctx.dev_mode and problem is None:
+            owner, line = "dev", commands.dev_line(home)
+        elif problem is not None:
+            owner, line = "failed", commands.failed_line(home, problem)
+        else:
+            taking = ctx.flag("commands_taking")
+            owner, line = put_commands_on_path(
+                ctx.runner, home, yes, shortcut_owner.read_list(installs_list(ctx)),
+                taking=taking if isinstance(taking, str) and taking else None,
+                note=lambda folder: ctx.set_flag("commands_taking", folder),     # before the write (a kill)
+            )
+        ctx.set_flag("commands_owner", owner)
+        level = ctx.log.info if owner in (shortcut_owner.MINE, "dev") else ctx.log.warn
+        level("commands", line, owner=owner, yes=yes)
+        if owner not in (shortcut_owner.MINE, "dev"):
+            detail = {"shadowed": "another program's command comes first"}.get(owner, "not on your PATH")
+            ctx.warn(commands.CODE, owner[6:] if owner.startswith("other:") else detail)
+        ctx.ui.say(line)
+        return line
 
     @staticmethod
     def _write(
@@ -479,12 +545,14 @@ class S09ShortcutsScheduler(Step):
                 ctx.warn("NS-W206", str(out.get("reason") or "")[:200])
             elif only and case in ("first", "applied"):
                 ctx.warn("NS-W205", f"registered for {out.get('run_time')}")
+        # stored with the plain words (a later run reuses and compares it); said as this owner types the
+        # command it names now (FN-3: `ns_common.commandline.render`)
         ctx.set_flag("nightly_line", line)
         ctx.set_flag("nightly_state", nightly_view.state_word(ctx.paths.home))
         ctx.set_flag("nightly_time", (out or {}).get("run_time"))
         if answer["nightly"] is not None:   # which answer was acted on, and the state that made
             ctx.set_flag("nightly_done", {**answer, "state": nightly_view.state_word(ctx.paths.home)})
-        ctx.ui.say(line)
+        ctx.ui.say(render(line, ctx.paths.home))
 
     @staticmethod
     def _register_toast_identity(ctx: StepContext, lnk: Path, icon: Path | None, *, keep_other: bool) -> None:

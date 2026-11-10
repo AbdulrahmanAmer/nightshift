@@ -645,17 +645,54 @@ time and what Nightshift has learned (never models or videos). On the new PC, in
 and pick that zip. What it replaces is kept first in `data/backup/pre-restore-...`. The same can be done from a command
 prompt with `ns backup` and `ns restore <zip>`.
 
+## Commands
+
+Some messages name a command, such as `ns doctor --bundle` or `studio resume <slug>`. Setup puts two small command
+files in the folder `cmd` inside the install folder (`ns.cmd` and `studio.cmd`) and adds that folder to your PATH,
+and its last lines and the Done screen say: "Commands: 'ns' and 'studio' work in any PowerShell or Command Prompt
+window you open from now on, and open this install". A window that was already open before setup does not have
+them: open a new one. The commands always open the install whose `cmd` folder they are in, whatever
+`NIGHTSHIFT_HOME` says in the window. When the commands could not be put on your PATH, or another Nightshift
+install has them, setup says so (`NS-W120`) and gives this install's own files by their full path, for example
+`D:/Nightshift/cmd/ns.cmd doctor`; that works in any window. `ns doctor` says in its row "commands" which install
+they open now. Setup also says so when another program's `ns` or `studio` comes first on your PATH (the
+NativeScript `ns`, an Android Studio or JetBrains `studio`). While a plain `ns` does not reach this install, the
+messages, notes and pages of this install name its own command file by its full path instead of the plain
+word, so the command they give is always this install's; this guide keeps the plain words: put the full path
+in their place in that case. They decide that when they are shown, so a note written before a second install
+took the commands names the right file when you read it, and they also give the full path when Windows does
+not say what your PATH holds (the Update window always does). A path with a space is given with its drive
+outside the quotes, `D:"\My Videos\Nightshift\cmd\ns.cmd" doctor`, which a Command Prompt and PowerShell both
+run as it is.
+
+- **Quotes and special characters.** In Windows PowerShell 5.1, an argument that holds `&`, `|`, `<`, `>` or `^`
+  and no space reaches the command file without quotes, so cmd.exe splits it or drops the `^` before Nightshift
+  sees it: put it in quotes twice (`'"a&b"'`). An argument with an odd number of double quotes takes the rest
+  of the command file's line with it; avoid it.
+
+- **A PowerShell opened as administrator** has the commands when it runs as your own Windows account (the usual
+  "Run as administrator"). Another administrator account has its own PATH: type the full path there.
+- **A PATH that is already long.** Setup never cuts your PATH. When adding the folder would make it longer than
+  2047 characters (the most the Windows window for environment variables can edit), it changes nothing and says
+  so: remove PATH entries you no longer use, then run INSTALL.cmd and choose Repair.
+- **A dev install** never changes the PATH of the PC it is developed on: type its command files by their full path.
+- **Going back to 0.1.14** (`ns update --rollback` to that version) keeps the commands working: they start the
+  same programs, which 0.1.14 has too. 0.1.14's own uninstaller does not know them: after uninstalling 0.1.14,
+  delete the folder `cmd` in the install folder and its entry in your PATH by hand (Start, "Edit environment
+  variables for your account", Path).
+
 ## Two Nightshift installs on one PC
 
-A PC has one Desktop, one nightly task (`Nightshift Daily`), one notification registration and one `NIGHTSHIFT_HOME`
-variable. It can hold more than one Nightshift folder. A second install takes none of these from the first
-without your yes:
+A PC has one Desktop, one nightly task (`Nightshift Daily`), one notification registration, one `NIGHTSHIFT_HOME`
+variable and one PATH. It can hold more than one Nightshift folder. A second install takes none of these from the
+first without your yes:
 
 - **Desktop shortcuts.** When they open another Nightshift folder, setup leaves them as they are and says so on its
   last lines and on the Done screen (`NS-W119`, with the folder). Every install also has its own full set in the
   folder `Shortcuts` inside its install folder: open them from there, or pin them. To make the Desktop shortcuts
-  open this install, run INSTALL.cmd again, choose this folder and switch **Make the Desktop shortcuts open this
-  install** on (the console setup asks; an answers file says `"shortcuts_here": true`). The yes is used once: a
+  open this install, run INSTALL.cmd again, choose this folder and switch **Make the Desktop shortcuts and the ns
+  and studio commands open this install** on (the console setup asks; an answers file says `"shortcuts_here":
+  true`). The yes is used once: a
   later repair of either install does not move them again. Shortcuts of a Nightshift folder that was deleted are
   taken without a question, and setup says which folder they opened. A file under one of those names that
   Nightshift did not make is left alone.
@@ -663,20 +700,27 @@ without your yes:
   a terminal that belongs to no install. The shortcuts, the nightly task, and INSTALL.cmd and UNINSTALL.cmd
   started from an install's `app` folder always work on the install they are in. `ns` or `studio` started from
   an install's own `venvs` folder works on that install too when the variable is only that default, and says so
-  in one line ("Nightshift: using the install in ..."). To work on another install from the same terminal, set
-  the variable in that window first (`$env:NIGHTSHIFT_HOME = 'D:/Other'`): a value that differs from the PC's
-  default was set on purpose and is followed, again with one line ("Nightshift: using D:/Other: ..."). A value
-  equal to the PC's default cannot be told from the default: start the other install's own programs or
-  shortcuts instead. The variable follows the same yes as the shortcuts, and
-  the switch (or the console question) is offered while either the shortcuts or the variable are another
+  in one line ("Nightshift: using the install in ..."). A plain `ns` or `studio` (the command files, see
+  "Commands") always opens the install whose `cmd` folder holds it. To work on another install from the same
+  terminal, type that install's own command file (`D:/Other/cmd/ns.cmd doctor`); for its `ns.exe` started by its
+  full path, setting the variable in that window first (`$env:NIGHTSHIFT_HOME = 'D:/Other'`) also works: a value
+  that differs from the PC's default was set on purpose and is followed, again with one line ("Nightshift: using
+  D:/Other: ..."). The variable follows the same yes as the shortcuts, and
+  the switch (or the console question) is offered while the shortcuts, the variable or the commands are another
   install's; its line says what it moves. After it moved, open a new terminal: programs that are already open
   keep the old value.
+- **The `ns` and `studio` commands.** The first Nightshift `cmd` folder on your PATH decides which install a plain
+  `ns` opens. Setup adds this install's folder when no other existing install's comes first, and otherwise leaves
+  the PATH as it is and says which install the commands open (`NS-W120`) and where this install's own are; the
+  same yes moves them here. A folder of a deleted install is replaced without a question.
 - **The nightly task.** As described under "Every night": it runs one install, and switching Automatic runs on in
   another install's Settings moves it there. A dev install never takes another install's task.
 - **Notifications.** Both installs share the one registration; the second leaves it as it is unless you said yes.
 
 Uninstalling one of them removes only what is its own: the task when it runs that install, the Desktop shortcuts
-that open it, `NIGHTSHIFT_HOME` when it names it, and its own `Shortcuts` folder. What the other install uses is
+that open it, `NIGHTSHIFT_HOME` when it names it, its own `cmd` folder and its PATH entry (the rest of the PATH stays
+exactly as it was), and its own `Shortcuts` folder. When the plain commands were the removed install's, a line says
+how the other install gets them (its INSTALL.cmd, Repair) and gives its command files by their full path. What the other install uses is
 left, and each line that starts with "Left" says what and for which folder; the notification registration and the
 stored stock footage keys stay while another install is found. A shortcut or a task that does not say which
 Nightshift it belongs to is left too, and named. UNINSTALL.cmd started from an install's own program folder

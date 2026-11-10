@@ -17,6 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import installer.stage2.commands as commands
 import installer.stage2.shortcut_owner as so
 
 #: The canonical Desktop names (`s09_shortcuts_scheduler.SHORTCUTS`; a test keeps the two equal).
@@ -26,7 +27,8 @@ NAMES = (
 )
 #: This install's own full set, in its home: made by setup, removed by the uninstaller.
 FOLDER = "Shortcuts"
-SWITCH = "Make the Desktop shortcuts open this install"
+#: The one switch: it moves the Desktop shortcuts, NIGHTSHIFT_HOME and the `ns` and `studio` commands (FN-3).
+SWITCH = commands.SWITCH
 KEPT = (so.OTHER, so.UNREACHABLE)
 NONE = "none"
 
@@ -74,7 +76,7 @@ def kept_line(seen: dict[str, Any], home: Path) -> str:
         f"Desktop shortcuts: kept for the Nightshift at {_folders(seen['paths'])}{away} (NS-W119). This "
         f"install's shortcuts are in {Path(home) / FOLDER}. To make the Desktop shortcuts open this install, "
         f"run setup again and switch '{SWITCH}' on, or put \"shortcuts_here\": true in the answers file; "
-        "that yes also makes NIGHTSHIFT_HOME name this install."
+        "that yes also makes NIGHTSHIFT_HOME name this install and moves the 'ns' and 'studio' commands here."
     )
 
 
@@ -96,20 +98,26 @@ def foreign_line(name: str) -> str:
     return f"Desktop shortcut '{name}' is not one Nightshift made; it was left as it is."
 
 
-def question(paths: list[str], var: str | None = None) -> str:
+def question(paths: list[str], var: str | None = None, cmds: str | None = None) -> str:
     """The console's question (default No). It is asked when the Desktop shortcuts (`paths`), the user
-    variable NIGHTSHIFT_HOME (`var`: the other folder it names) or both are another install's, and says
-    exactly what a yes moves."""
+    variable NIGHTSHIFT_HOME (`var`: the other folder it names), the `ns` and `studio` commands (`cmds`: the
+    other folder whose commands come first on the user PATH) or several of them are another install's, and
+    says exactly what a yes moves."""
+    if cmds:
+        said = [f"the Desktop shortcuts open the Nightshift at {_folders(paths)}"] if paths else []
+        said += [f"NIGHTSHIFT_HOME names the Nightshift at {var}"] if var else []
+        said.append(f"'ns' and 'studio' open the Nightshift at {cmds}")
+        text = said[0] if len(said) == 1 else ", ".join(said[:-1]) + " and " + said[-1]
+        one = len(said) == 1
+        ask = "Make them open this install instead?" if one else "Make all of them this install's instead?"
+        return f"{text[0].upper()}{text[1:]}. {ask}"
     if paths and var:
         return (
             f"The Desktop shortcuts open the Nightshift at {_folders(paths)} and NIGHTSHIFT_HOME names the "
             f"Nightshift at {var}. Make both this install's instead?"
         )
     if var:
-        return (
-            f"NIGHTSHIFT_HOME names the Nightshift at {var} ('ns' typed in a terminal runs that one). Make "
-            "it name this install instead?"
-        )
+        return f"NIGHTSHIFT_HOME names the Nightshift at {var}. Make it name this install instead?"
     return (
         f"The Desktop shortcuts open the Nightshift at {_folders(paths)}. Make them open this install "
         "instead?"
@@ -118,12 +126,12 @@ def question(paths: list[str], var: str | None = None) -> str:
 
 def var_kept_line(path: str) -> str:
     return (
-        f"NIGHTSHIFT_HOME: left naming the Nightshift at {path}; 'ns' and 'studio' typed in a terminal run "
-        "that one. This install's shortcuts and its nightly task name their own folder and do not use it. "
+        f"NIGHTSHIFT_HOME: left naming the Nightshift at {path}. This install's shortcuts, its nightly task "
+        "and its 'ns' and 'studio' commands name their own folder and do not use it. "
         f"To make it name this install, run setup again and switch '{SWITCH}' on (the setup window "
-        "offers it while this variable or the Desktop shortcuts are another install's), or "
+        "offers it while this variable, the Desktop shortcuts or the commands are another install's), or "
         "put \"shortcuts_here\": true in the answers file: that yes moves NIGHTSHIFT_HOME and the Desktop "
-        "shortcuts here."
+        "shortcuts here, and the commands."
     )
 
 
@@ -151,29 +159,41 @@ def dev_task_line(path: str) -> str:
 
 
 def for_window(
-    home: Path, app: Path | None, desktop: Path | None, var: str | None = None
+    home: Path, app: Path | None, desktop: Path | None, var: str | None = None, user_path: str | None = None,
 ) -> dict[str, Any]:
     """What the Choices screen shows for the folder picked: ``{"state", "path", "line"}``. `other` and
     `unreachable` show the switch (off) with the line; `mine` is everything else: nothing is another
     install's, so there is nothing to ask.
 
-    The one yes moves the Desktop shortcuts AND the user variable NIGHTSHIFT_HOME (`var` is its value), so
-    the switch is offered while EITHER is another install's, and the line says which and what the switch
-    moves."""
+    The one yes moves the Desktop shortcuts, the user variable NIGHTSHIFT_HOME (`var` is its value) and the
+    `ns` and `studio` commands (`user_path`: the user PATH, card FN-3), so the switch is offered while ANY of
+    them is another install's, and the line says which and what the switch moves."""
     seen = look(desktop, home, app)
     named = var_of_another(var, home)
+    cmds = commands.others_commands(user_path, home)
+    commands_too = f"; 'ns' and 'studio' open the Nightshift at {cmds}" if cmds else ""
     if seen["state"] in KEPT:
         where = _folders(seen["paths"])
         line = f"Now they open the Nightshift at {where}"
         if named:
             line += f", and NIGHTSHIFT_HOME names the Nightshift at {named}; on moves both here"
+        if cmds:
+            line += f"{commands_too}; on moves them here too"
         return {"state": seen["state"], "path": where, "line": line}
     if named:
         line = (
             f"The Desktop shortcuts are not another install's, but NIGHTSHIFT_HOME names the Nightshift at "
-            f"{named} ('ns' typed in a terminal runs that one); on makes it name this install"
+            f"{named}; on makes it name this install"
         )
+        if cmds:
+            line += f"{commands_too}; on moves them here too"
         return {"state": so.OTHER, "path": named, "line": line}
+    if cmds:
+        line = (
+            f"The Desktop shortcuts are not another install's, but 'ns' and 'studio' open the Nightshift at "
+            f"{cmds}; on makes them open this install"
+        )
+        return {"state": so.OTHER, "path": cmds, "line": line}
     return {"state": so.MINE, "path": None, "line": None}
 
 

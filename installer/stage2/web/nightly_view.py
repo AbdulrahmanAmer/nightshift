@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from ns_common.atomic import read_text_retry
+from ns_common.commandline import render
 
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 #: ``InstallerAnswers.nightly_seen``: a home with no install (`new`), off, or on at a time.
@@ -259,5 +260,8 @@ def summary(home: Path, flags: dict[str, Any]) -> dict[str, Any]:
     state = "on" if on else "failed" if failed else "off"
     if flags.get("schedule_mode") == "unrecorded" and flags.get("nightly_state") == state_word(home):
         ran_at = flags.get("nightly_time")
-        return {"state": "unrecorded", "time": ran_at if isinstance(ran_at, str) else when, "line": line}
-    return {"state": state, "time": when, "line": line}
+        return {"state": "unrecorded", "time": ran_at if isinstance(ran_at, str) else when,
+                "line": render(line, home)}
+    # said now (s10, the Done screen): the flag holds the plain words, the command is given as this owner
+    # types it in a new window (FN-3: `ns_common.commandline.render`)
+    return {"state": state, "time": when, "line": render(line, home)}

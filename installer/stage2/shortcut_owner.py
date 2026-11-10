@@ -104,6 +104,10 @@ def _same(a: str | Path, b: str | Path) -> bool:
     return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
+#: The same folder (case, a trailing backslash, 8.3 names, subst and junctions of folders that exist).
+same_folder = _same
+
+
 def folder_state(folder: str | Path, home: str | Path) -> str:
     """`mine`: `folder` is the install `home`. `other`: another folder that exists. `unreachable`: its
     drive or share is not there now (unplugged, not mapped: it may come back). `gone`: the drive is there
@@ -192,6 +196,16 @@ LIST_NAME = "installs.txt"
 def default_list() -> Path | None:
     base = os.environ.get("LOCALAPPDATA")
     return Path(base) / "Nightshift" / LIST_NAME if base else None
+
+
+def read_list(listing: Path | None) -> list[str]:
+    """The folders of the list of installs ([] when there is none or it cannot be read)."""
+    if listing is None:
+        return []
+    try:
+        return [ln.strip() for ln in listing.read_text(encoding="utf-8-sig").splitlines() if ln.strip()]
+    except (OSError, ValueError):
+        return []
 
 
 def record_home(home: Path, listing: Path | None) -> bool:

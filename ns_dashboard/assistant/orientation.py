@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ns_common.errors import describe
+from ns_common.errors import describe_shown as describe  # an answer shown now (FN-3)
 from ns_dashboard.assistant import docs_index
 from ns_dashboard.assistant.registry import ToolContext
 from ns_dashboard.logs_tail import tail

@@ -1157,12 +1157,15 @@ def _setup_from(first: str, second: str) -> str:
 def rollback_way_out(paths: Paths, app: Path, here: str, other: str) -> str:
     """How to finish when `here`'s program is in `app` on environments that were not refreshed: go to
     `other` and come back, each run refreshing every environment. The first command is typed into `here`'s
-    program and the second into `other`'s (`<app>.prev`), so both must have `--detach`."""
+    program and the second into `other`'s (`<app>.prev`), so both must have `--detach`. The sentence is
+    stored (the update's result and state, an error, a note) with the plain words; whoever shows it renders
+    them for this install (`ns_common.commandline.render`, FN-3). `paths`: the install it is said for."""
     setup = _setup_from(other, here)
     if not (takes_detach(app) and takes_detach(_sibling(app, ".prev"))):
         return f"{setup}."
     return (
-        f"run 'ns update --rollback --detach'. {DETACH_RESULT} When it says 'Now on {other}', run the same "
+        f"run 'ns update --rollback --detach'. {DETACH_RESULT} When it says 'Now on "
+        f"{other}', run the same "
         f"command again: that run comes back to {here} and fills every environment. If 'ns' does not "
         f"start, {setup}."
     )
@@ -1170,12 +1173,14 @@ def rollback_way_out(paths: Paths, app: Path, here: str, other: str) -> str:
 
 def update_way_out(paths: Paths, app: Path, here: str, other: str, command: str = "ns update <zip>") -> str:
     """How to fill the environments when `here`'s program is in `app` after an update to or from `other`
-    broke off: run the update again, by a route the program in place has."""
+    broke off: run the update again, by a route the program in place has. Stored with the plain words, like
+    `rollback_way_out`'s."""
     setup = _setup_from(other, here)
     if not takes_detach(app):
         return f"{setup}."
     return (
-        f"run the update again with the 'Nightshift - Update' shortcut or '{command} --detach'. "
+        f"run the update again with the 'Nightshift - Update' shortcut or "
+        f"'{command} --detach'. "
         f"{DETACH_RESULT} If 'ns' does not start, {setup}."
     )
 
