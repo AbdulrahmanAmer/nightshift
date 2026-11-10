@@ -5,6 +5,11 @@ test is one row of the table in the report: file fine, missing, not JSON, JSON t
 with a `.bad` already there, a rename the system refuses, killed between the rename and the rewrite, and a
 second run. What the owner sees is read from the rows the window would get (``step_status``), the console
 lines, the state file and ``logs\\install-report.json``.
+
+The second half is the table of the one mechanism: the state of the existing file (fine, byte order mark,
+UTF-16, unknown settings, missing, damaged, unreadable, vanishing) x what the answers changed (nothing, the
+tier, dev to real, real to dev, the engine test), through the real steps s01, s03, s06 and s07. Every cell is
+held to one invariant (``expected``).
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from installer.stage2.testing import FakeUi, example_answers, make_test_context
 from installer.stage2.wizard import EXIT_FAILED, EXIT_OK, Wizard
 from ns_common.config import load_install_state, load_runtime, save_runtime
 from ns_common.errors import NsError
+from ns_common.paths import Paths
 
 SENTENCE = (
     "Your runtime.json could not be read; it was kept as {name} and a new one was written from your answers; "
@@ -36,8 +42,8 @@ NOT_THE_MODEL = '{"profile": "gpu", "supervisor_port": "not a port"}'     # JSON
 class RowUi(FakeUi):
     """The rows the setup window gets: (step id, status, detail)."""
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, *, interactive: bool = True) -> None:
+        super().__init__(interactive=interactive)
         self.rows: list[tuple[str, str, str | None]] = []
 
     def step_status(self, step_id: str, status: str, title: str, detail: str | None = None) -> None:
@@ -588,3 +594,467 @@ def test_row_the_file_vanishing_between_the_read_and_the_rename_is_a_missing_fil
     monkeypatch.setattr(runtime_cfg, "_rename", gone)
     assert setup_again(again) == EXIT_OK
     assert kept(again) == [] and load_runtime(again.paths).llama.model_path
+
+
+# ============================================================================================================
+# One mechanism: the state of the existing file x what the answers changed, through the wizard's real steps
+# ============================================================================================================
+# The questions step (s01) records what the answers changed, the models step (s03) fetches the model, the
+# tuning step (s06) settles the file, the settings step (s07) completes it. The invariant every cell is held
+# to: the final runtime.json is what a fresh install with these answers writes, plus exactly the settings of
+# the existing file that setup keeps by design (``expected``), and no state of the old file makes an answer
+# be ignored.
+FILE_ROWS = ("ok", "bom", "utf16", "newer", "missing", "damaged")
+ANSWER_ROWS = ("unchanged", "tier", "dev_to_real", "real_to_dev", "engine")
+WHOLE = (
+    "config\\runtime.json is built again from your answers (it was made for another kind of install). "
+    "Settings that were only in the old file are not carried over."
+)
+
+
+def real_steps() -> list[Step]:
+    from installer.stage2.steps.s01_questions import S01Questions
+    from installer.stage2.steps.s03_download_models import S03DownloadModels
+    from installer.stage2.steps.s07_configs import S07Configs
+
+    return [S01Questions(), S03DownloadModels(), S06Tune(), S07Configs()]
+
+
+def answers_of(change: str, *, second: bool) -> tuple[dict[str, Any], bool]:
+    """(the answers, dev install or not) of the first install and of the setup run over it."""
+    first = example_answers(llm_tier="balanced")
+    if not second:
+        return first, change == "dev_to_real"
+    if change == "tier":
+        return example_answers(llm_tier="best"), False
+    if change == "engine":
+        return example_answers(llm_tier="balanced", fake_voice=True, fake_footage=True), False
+    return first, change == "real_to_dev"
+
+
+def run_setup(
+    tmp_path: Path, answers: dict[str, Any], dev: bool = False, steps: list[Step] | None = None
+) -> tuple[Any, RowUi, int]:
+    """One run of setup with an answers file next to INSTALL.cmd, through the real wizard and real steps."""
+    src = tmp_path / "answers-in-use.json"
+    src.write_text(json.dumps(answers), encoding="utf-8")
+    ui = RowUi(interactive=False)
+    ctx = make_test_context(tmp_path, raw_answers=answers, ui=ui, dev_mode=dev)
+    ctx.answers_path = src
+    return ctx, ui, Wizard(ctx, steps or real_steps(), backoff=()).run()
+
+
+def owner_settings(ctx: Any) -> dict[str, Any]:
+    """What the owner changed since setup (two ports) and what tuning found (33 layers). Returns the file's
+    settings as this version reads them."""
+    rt = load_runtime(ctx.paths)
+    rt.supervisor_port, rt.llama.port, rt.llama.flags.n_gpu_layers = 8123, 8085, 33
+    save_runtime(ctx.paths, rt)
+    return rt.model_dump()
+
+
+def put_state(ctx: Any, state: str) -> bytes | None:
+    """Put the file in one of the states of the table. Returns the bytes left on disk (None: no file)."""
+    path = ctx.paths.runtime_file
+    text = path.read_text(encoding="utf-8")
+    if state == "missing":
+        path.unlink()
+        return None
+    if state == "newer":
+        data = json.loads(text)
+        data["future_setting"] = {"a": 1}
+        data["llama"]["flags"]["future_flag"] = 3
+        text = json.dumps(data, indent=2)
+    raw = {
+        "ok": text.encode("utf-8"), "newer": text.encode("utf-8"), "bom": text.encode("utf-8-sig"),
+        "utf16": text.encode("utf-16"), "damaged": TORN.encode("utf-8"),
+    }[state]
+    path.write_bytes(raw)
+    return raw
+
+
+def expected(ctx: Any, existing: dict[str, Any] | None, change: str) -> dict[str, Any]:
+    """The invariant, written out without the code under test: a fresh install's file plus the kept settings.
+
+    Kept by design (installer/stage2/reinstall.py): every setting when the answers did not change; all but
+    the language model and its flags when the tier changed; all but the three engine-test settings when those
+    answers changed; none when the file was made for another kind of install, is missing or is damaged."""
+    fresh = build_runtime(ctx).model_dump()
+    if existing is None or change in ("dev_to_real", "real_to_dev"):
+        return fresh
+    out = json.loads(json.dumps(existing))
+    if change == "tier":
+        for name in ("model_path", "flags"):
+            out["llama"][name] = fresh["llama"][name]
+    if change == "engine":
+        out["fake_footage"], out["tiny_story"] = fresh["fake_footage"], fresh["tiny_story"]
+        out["tts"]["engine"] = fresh["tts"]["engine"]
+    return out
+
+
+def first_install(tmp_path: Path, change: str) -> tuple[Any, dict[str, Any]]:
+    answers, dev = answers_of(change, second=False)
+    ctx, _ui, code = run_setup(tmp_path, answers, dev)
+    assert code == EXIT_OK and load_runtime(ctx.paths).dev_mode is dev
+    return ctx, owner_settings(ctx)
+
+
+def aside(ctx: Any) -> list[str]:
+    return sorted(p.name for p in ctx.paths.config.glob("runtime.json.*"))
+
+
+def row_of(ui: RowUi, step: str) -> tuple[str, str, str | None]:
+    return [r for r in ui.rows if r[0] == step][-1]
+
+
+def plain_and_final(ctx: Any, want: dict[str, Any]) -> None:
+    raw = ctx.paths.runtime_file.read_bytes()
+    assert not raw.startswith((b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff"))    # what the engine reads: plain
+    assert load_runtime(ctx.paths).model_dump() == want
+    assert ctx.flag("runtime_pending") is None                               # nothing is owed any more
+
+
+@pytest.mark.parametrize("change", ANSWER_ROWS)
+@pytest.mark.parametrize("state", FILE_ROWS)
+def test_cell_a_finished_install_run_again_ends_on_the_answers_and_the_kept_settings(
+    tmp_path: Path, state: str, change: str
+) -> None:
+    """A finished install (its flags say tuned), the file put in ``state``, setup run with ``change``."""
+    ctx, settings = first_install(tmp_path, change)
+    raw = put_state(ctx, state)
+    has_settings = state in ("ok", "bom", "utf16", "newer")
+    answers, dev = answers_of(change, second=True)
+    again, ui, code = run_setup(tmp_path, answers, dev)
+    assert code == EXIT_OK
+    # 1. the final file
+    plain_and_final(again, expected(again, settings if has_settings else None, change))
+    assert load_runtime(again.paths).dev_mode is dev
+    # 2. what is kept aside: the original of a file that lost something, never anything else
+    want_aside = {"newer": ["runtime.json.newer"], "damaged": ["runtime.json.bad"]}.get(state, [])
+    assert aside(again) == want_aside
+    for name in want_aside:
+        assert (again.paths.config / name).read_bytes() == raw
+    # 3. whether tuning runs again
+    untouched = state == "ok" and change == "unchanged"
+    if dev:
+        assert tuned_calls(again) == 0 and again.flag("tuned") == "defaults"
+        assert "nothing to tune" in ui.text
+    else:
+        assert tuned_calls(again) == (0 if untouched else 1) and again.flag("tuned") == "tuned"
+    # 4. what the owner reads, and where
+    step, status, detail = row_of(ui, "s06_tune")
+    detail = detail or ""
+    kind = change in ("dev_to_real", "real_to_dev")
+    if untouched:
+        assert (status, detail) == ("done", "already complete")
+    elif state == "damaged":
+        assert status == "warning" and detail == SENTENCE.format(name="runtime.json.bad")
+    elif state == "missing":
+        assert (status, detail) == ("done", "")
+    elif state == "newer":
+        assert status == "warning" and "future_setting" in detail and "llama.flags.future_flag" in detail
+        assert "kept as runtime.json.newer" in detail and "Tuning runs again" in detail
+        if kind:
+            assert "made for another kind of install" in detail
+            assert "no setting of the old file is carried over" in detail and "was kept" not in detail
+        elif change == "tier":
+            assert "was kept, except what your answers changed (the language model)" in detail
+        elif change == "engine":
+            assert "was kept, except what your answers changed (the engine test)" in detail
+        else:
+            assert "they were removed and every other setting was kept." in detail
+    elif kind:
+        assert (status, detail) == ("warning", WHOLE) and WHOLE in ui.text
+    else:
+        assert (status, detail) == ("done", "")
+    if has_settings and not kind and change == "tier":
+        assert "Language model: config\\runtime.json now uses" in ui.text
+    if has_settings and not kind and change == "engine":
+        assert "Engine test: config\\runtime.json now follows" in ui.text
+    if state in ("bom", "utf16"):
+        was = "UTF-16" if state == "utf16" else "UTF-8 with a byte order mark"
+        same = " (no setting changed)" if change == "unchanged" else ""
+        assert f"runtime.json was {was}; it is written again as plain UTF-8{same}." in ui.text
+        if change != "unchanged":
+            assert "no setting changed" not in ui.text
+    assert report(again)["steps"]["s06_tune"].get("note") == (detail if status == "warning" else None)
+    # 5. a third run finds nothing to do and says nothing
+    third, ui3, code3 = run_setup(tmp_path, answers, dev)
+    assert code3 == EXIT_OK and tuned_calls(third) == 0 and aside(third) == want_aside
+    assert row_of(ui3, "s06_tune")[1:] == ("done", "already complete")
+    assert third.paths.runtime_file.read_bytes() == again.paths.runtime_file.read_bytes()
+
+
+# --------------------------------------------------------------------------- unreadable right now x answers
+@pytest.mark.parametrize("change", ANSWER_ROWS)
+@pytest.mark.parametrize("how", ["held", "folder"])
+def test_cell_a_file_that_cannot_be_read_stops_setup_by_name_and_no_answer_is_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str, change: str
+) -> None:
+    ctx, settings = first_install(tmp_path, change)
+    path = ctx.paths.runtime_file
+    before = path.read_bytes()
+    saved = (ctx.paths.config / "answers.json").read_bytes()
+
+    def held(p: Any) -> bytes:
+        raise PermissionError(13, "The process cannot access the file because it is being used")
+
+    if how == "folder":
+        path.unlink()
+        path.mkdir()
+    answers, dev = answers_of(change, second=True)
+    with monkeypatch.context() as m:
+        if how == "held":
+            m.setattr(runtime_cfg, "read_bytes_retry", held)
+        again, ui, code = run_setup(tmp_path, answers, dev)
+        assert code == EXIT_FAILED
+        failed = {k: v for k, v in load_install_state(again.paths).steps.items() if v.status == "failed"}
+        assert list(failed) in (["s01_questions"], ["s06_tune"]), failed
+        error = next(iter(failed.values())).error or ""
+        assert error.startswith("NS-E125") and str(path) in error and "Retry" in error
+        assert ("is a folder, not a file" if how == "folder" else "Close any program") in error
+        assert report(again)["last_error"]["code"] == "NS-E125"
+        # nothing was changed, nothing was guessed, and the answers that would change it were not saved
+        assert path.is_dir() if how == "folder" else path.read_bytes() == before
+        assert aside(again) == []
+        if change in ("tier", "engine", "dev_to_real"):         # the questions step had something to apply
+            assert list(failed) == ["s01_questions"]
+            assert (again.paths.config / "answers.json").read_bytes() == saved
+            assert again.flag("runtime_pending") is None
+    # the owner closed the program (or removed the folder) and ran setup again
+    if how == "folder":
+        path.rmdir()
+    retry, _ui, code = run_setup(tmp_path, answers, dev)
+    assert code == EXIT_OK
+    plain_and_final(retry, expected(retry, settings if how == "held" else None, change))
+    assert load_runtime(retry.paths).dev_mode is dev and aside(retry) == []
+
+
+# ------------------------------------------------------------------------------ vanishing mid-way x answers
+class Vanish(Step):
+    """The file goes away after the questions step looked at it and before any other step does."""
+
+    id = "v_vanish"
+    title = "The file is deleted"
+
+    def check(self, ctx: Any) -> bool:
+        return False
+
+    def run(self, ctx: Any) -> None:
+        ctx.paths.runtime_file.unlink(missing_ok=True)
+
+    def verify(self, ctx: Any) -> None:
+        return None
+
+
+@pytest.mark.parametrize("change", ANSWER_ROWS)
+def test_cell_a_file_that_vanishes_after_the_questions_is_a_fresh_file_of_the_answers(
+    tmp_path: Path, change: str
+) -> None:
+    ctx, _settings = first_install(tmp_path, change)
+    put_state(ctx, "bom")
+    answers, dev = answers_of(change, second=True)
+    s01, s03, s06, s07 = real_steps()
+    again, ui, code = run_setup(tmp_path, answers, dev, [s01, Vanish(), s03, s06, s07])
+    assert code == EXIT_OK
+    plain_and_final(again, expected(again, None, change))   # what was owed to the old file is not owed now
+    assert aside(again) == [] and row_of(ui, "s06_tune")[1:] == ("done", None)
+    assert "kept as" not in ui.text and WHOLE not in ui.text
+
+
+# ----------------------------------------------------------------- killed in the middle of the one rewrite
+@pytest.mark.parametrize("state", ["ok", "bom", "newer"])
+def test_killed_while_the_file_is_written_the_rerun_still_ends_on_the_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    ctx, settings = first_install(tmp_path, "tier")
+    raw = put_state(ctx, state)
+    answers, dev = answers_of("tier", second=True)
+
+    def die(paths: Any, rt: Any) -> None:
+        raise Killed()
+
+    with monkeypatch.context() as m:
+        m.setattr(runtime_cfg, "save_runtime", die)
+        with pytest.raises(Killed):
+            run_setup(tmp_path, answers, dev)
+    assert ctx.paths.runtime_file.read_bytes() == raw           # the old file, whole
+    assert ctx.flag("tuned") is None and ctx.flag("runtime_pending") == {"llama": True}     # still owed
+    again, _ui, code = run_setup(tmp_path, answers, dev)
+    assert code == EXIT_OK and tuned_calls(again) == 1
+    plain_and_final(again, expected(again, settings, "tier"))
+    # the original of a newer file is kept once per attempt, never overwritten
+    assert aside(again) == (["runtime.json.newer", "runtime.json.newer.1"] if state == "newer" else [])
+    for name in aside(again):
+        assert (again.paths.config / name).read_bytes() == raw
+
+
+# ---------------------------------------------------- the route of the review: "uninstall, keep my data"
+def uninstalled_keeping_data(ctx: Any) -> None:
+    """What the uninstaller leaves of config: the answers, runtime.json, the channel. The install's state
+    and its flags are removed, so the next setup is a new install over kept data."""
+    for name in ("install_state.json", "wizard_flags.json"):
+        (ctx.paths.config / name).unlink()
+
+
+@pytest.mark.parametrize(
+    ("state", "change"),
+    [("bom", "dev_to_real"), ("utf16", "dev_to_real"), ("newer", "dev_to_real"), ("ok", "dev_to_real"),
+     ("bom", "real_to_dev"), ("newer", "tier"), ("bom", "tier"), ("utf16", "engine"), ("newer", "engine")],
+)
+def test_kept_data_then_install_again_no_state_of_the_kept_file_hides_an_answer(
+    tmp_path: Path, state: str, change: str
+) -> None:
+    """The reviewer's case first: a dev install whose runtime.json has a byte order mark (PowerShell 5.1's
+    ``Set-Content -Encoding UTF8`` writes one), uninstalled keeping data, installed for real."""
+    ctx, settings = first_install(tmp_path, change)
+    put_state(ctx, state)
+    uninstalled_keeping_data(ctx)
+    answers, dev = answers_of(change, second=True)
+    again, ui, code = run_setup(tmp_path, answers, dev)
+    assert code == EXIT_OK
+    final = load_runtime(again.paths)
+    assert final.dev_mode is dev                                # a real install never runs the fake engines
+    plain_and_final(again, expected(again, settings, change))
+    if change in ("dev_to_real", "real_to_dev"):
+        assert "was made for another kind of install" in ui.text               # said by the questions step
+        detail = row_of(ui, "s06_tune")[2] or ""
+        assert row_of(ui, "s06_tune")[1] == "warning" and "made for another kind of install" in detail
+    if change == "tier":
+        assert Path(final.llama.model_path).is_file() and final.llama.flags.n_gpu_layers != 33
+        assert "Language model: your answers name" in ui.text                   # said by the questions step
+    if change == "engine":
+        assert final.tts.engine == "fake" and final.fake_footage is True
+
+
+@pytest.mark.parametrize(
+    ("state", "said"),
+    [("ok", "Kept config\\runtime.json (ports, tuning, engines)."),
+     ("bom", "Kept config\\runtime.json (ports, engines). It was saved as UTF-8 with a byte order mark, so "
+             "setup writes it again as plain UTF-8 with the same settings, and tuning runs again."),
+     ("newer", "Kept config\\runtime.json (ports, engines), except settings this version does not know "
+               "(llama.flags.future_flag, future_setting): setup removes them, keeps the file as it was next "
+               "to it, and tuning runs again.")],
+)
+def test_kept_data_and_the_same_answers_the_questions_step_says_what_is_kept_truthfully(
+    tmp_path: Path, state: str, said: str
+) -> None:
+    ctx, settings = first_install(tmp_path, "unchanged")
+    put_state(ctx, state)
+    uninstalled_keeping_data(ctx)
+    answers, dev = answers_of("unchanged", second=True)
+    again, ui, code = run_setup(tmp_path, answers, dev)
+    assert code == EXIT_OK and said in ui.text
+    plain_and_final(again, expected(again, settings, "unchanged"))
+    assert tuned_calls(again) == 1      # a new install tunes; the sentence of a rewritten file says so
+
+
+def test_the_whole_setup_dev_install_with_a_byte_order_mark_made_real_by_install_cmd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same case end to end: ``main()`` with every step of the wizard, the real uninstall script between
+    the two installs, and the byte order mark written the way an owner's PowerShell 5.1 writes it."""
+    from installer.stage2.wizard import main
+    from tests.test_install_done_means_done import uninstall_with_the_script
+    from tests.test_wizard_e2e import args, write_answers
+
+    monkeypatch.delenv("NIGHTSHIFT_HOME", raising=False)
+    monkeypatch.delenv("NIGHTSHIFT_DEV_MODE", raising=False)
+    answers = write_answers(tmp_path)
+    home = tmp_path / "home"
+    runtime = home / "config" / "runtime.json"
+    assert main(args(tmp_path, answers, "--dev")) == 0
+    assert json.loads(runtime.read_text(encoding="utf-8"))["dev_mode"] is True
+    uninstall_with_the_script(home)                             # "keep my data": config and models stay
+    runtime.write_bytes(runtime.read_text(encoding="utf-8").encode("utf-8-sig"))
+    assert not (home / "config" / "install_state.json").exists()
+    assert runtime.read_bytes()[:3] == b"\xef\xbb\xbf"
+
+    assert main(args(tmp_path, answers)) == 0
+    final = json.loads(runtime.read_text(encoding="utf-8"))     # plain UTF-8: this read is the engine's
+    assert final["dev_mode"] is False and final["profile"] == "gpu"
+    model = Path(final["llama"]["model_path"])
+    assert model.is_file() and not (model.parent / (model.name + ".dev-stub")).exists()
+    state = load_install_state(Paths(home))
+    assert state.dev_mode is False and state.completed_at
+    assert state.steps["s06_tune"].status == "done" and WHOLE in (state.steps["s06_tune"].error or "")
+
+
+# ---------------------------------------------- the other readers of the file go through the same question
+def test_the_settings_step_alone_does_not_call_a_file_done_that_the_engine_cannot_read(
+    tmp_path: Path,
+) -> None:
+    """s07's check asked only whether the file exists, so a run of it called a file with a byte order mark
+    done and left it. It asks the one question now, and its work writes the same settings plain."""
+    from installer.stage2.steps.s07_configs import S07Configs
+
+    ctx, settings = first_install(tmp_path, "unchanged")
+    put_state(ctx, "bom")
+    answers, dev = answers_of("unchanged", second=True)
+    again, _ui, code = run_setup(tmp_path, answers, dev, [S07Configs()])
+    assert code == EXIT_OK
+    assert not again.paths.runtime_file.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert load_runtime(again.paths).model_dump() == expected(again, settings, "unchanged")
+
+
+def test_switching_the_mode_of_an_install_does_not_stop_on_a_file_it_cannot_delete(tmp_path: Path) -> None:
+    """``reset_for_mode_switch`` (before the wizard starts) deletes runtime.json when an install changes
+    between dev and real. A folder of that name (or a held file) made it raise before any step ran; now the
+    tuning step refuses by name, and once the name is free the install ends as the new kind."""
+    from installer.stage2.devmode import reset_for_mode_switch
+
+    ctx, _settings = first_install(tmp_path, "dev_to_real")
+    path = ctx.paths.runtime_file
+    path.unlink()
+    path.mkdir()
+    reset: Any = None
+    try:
+        reset = reset_for_mode_switch(ctx.paths.home, False)
+    except OSError as e:
+        reset = e
+    assert reset is True, repr(reset)
+    assert not (ctx.paths.config / "wizard_flags.json").exists() and path.is_dir()
+    answers, dev = answers_of("dev_to_real", second=True)
+    again, _ui, code = run_setup(tmp_path, answers, dev)
+    assert code == EXIT_FAILED
+    steps = load_install_state(again.paths).steps
+    failed = [v.error or "" for v in steps.values() if v.status == "failed"]
+    assert len(failed) == 1 and failed[0].startswith("NS-E125") and "is a folder, not a file" in failed[0]
+    path.rmdir()
+    retry, _ui, code = run_setup(tmp_path, answers, dev)
+    assert code == EXIT_OK
+    plain_and_final(retry, expected(retry, None, "dev_to_real"))
+
+
+def test_a_file_of_the_other_kind_that_survived_is_built_again_by_the_tuning_step_itself(
+    tmp_path: Path,
+) -> None:
+    """The questions step has nothing to apply (a dev install sees the same answers), so it never looks at
+    the file: the tuning step compares the kind of install on every run."""
+    ctx, _settings = first_install(tmp_path, "real_to_dev")
+    assert S06Tune().check(ctx) is True
+    answers, dev = answers_of("real_to_dev", second=True)
+    again, ui, code = run_setup(tmp_path, answers, dev)
+    assert code == EXIT_OK
+    assert "s01_questions" not in [r[0] for r in ui.rows if r[1] == "running"]      # s01 did not run
+    assert load_runtime(again.paths).dev_mode is True and row_of(ui, "s06_tune")[1:] == ("warning", WHOLE)
+
+
+def test_a_model_that_never_arrived_is_said_on_the_row_and_stays_owed(tmp_path: Path) -> None:
+    """The other end of "the answers win": when the model the answers name is not on disk, the settings keep
+    the model they have (the nightly run must find a file), and the owner reads that on the row."""
+    from installer.stage2.steps.s01_questions import S01Questions
+
+    ctx, settings = first_install(tmp_path, "tier")
+    put_state(ctx, "bom")
+    answers, dev = answers_of("tier", second=True)
+    again, ui, code = run_setup(tmp_path, answers, dev, [S01Questions(), S06Tune()])     # no models step
+    assert code == EXIT_OK
+    assert load_runtime(again.paths).model_dump() == settings           # as it was, plain UTF-8
+    status, detail = row_of(ui, "s06_tune")[1:]
+    assert status == "warning" and "is not in models\\llm yet" in (detail or "")
+    assert "keeps using" in (detail or "")
+    assert again.flag("runtime_pending") == {"llama": True} and S06Tune().check(again) is False
+    done, _ui, code = run_setup(tmp_path, answers, dev)                   # the models step runs this time
+    assert code == EXIT_OK
+    plain_and_final(done, expected(done, settings, "tier"))

@@ -2,6 +2,32 @@
 
 ``ns tune`` needs model paths to exist before it runs, so the baseline is written before tuning (s02 on a
 TTS fallback, otherwise s06) and s07 only completes and validates it, never overwrites tuned flags.
+
+One mechanism for an existing file (setup-torn-runtime). ``inspect_runtime`` is the ONE place that decides
+what the file is, and ``Found.runtime`` is the ONE meaning of "the settings setup keeps from it"; every step
+gets the file through ``existing_runtime`` (s01's comparison, s03) or ``ensure_baseline`` (every step that
+needs a file that loads), and a step's ``check`` through ``runtime_is_usable`` / ``runtime_settled``.
+
+==========  =========================================  ==================================================
+file        what setup believes the settings are       what ``ensure_baseline`` leaves
+==========  =========================================  ==================================================
+ok          the file                                   the file, untouched
+recode      the file (byte order mark, UTF-16)         the same settings as plain UTF-8
+newer       the file without the unknown names         those settings; the original as ``.newer``
+missing     none                                       the baseline of the answers
+damaged     none                                       the baseline; the original as ``.bad``
+unreadable  not known: NS-E125, nothing is guessed     nothing is changed
+==========  =========================================  ==================================================
+
+The invariant: the final runtime.json is what a fresh install with these answers writes (``build_runtime``)
+plus exactly the settings of the existing file that setup keeps by design: every one when the answers did not
+change and the file is of this kind of install; all but ``llama.model_path`` and ``llama.flags`` when the tier
+or the custom model changed; all but ``fake_footage``, ``tiny_story`` and ``tts.engine`` when an engine-test
+answer changed; none when the file was made for another kind of install (real or dev, GPU or not), is
+missing or is damaged. What the answers changed is recorded by s01 (``PENDING_FLAG``) against the settings
+``Found.runtime`` names and applied by s06 (``ensure_baseline(follow_answers=True)``) to the settings the same
+field names then; the kind of install is compared by s06 itself on every run, so no state of the old file and
+no route past s01 can make an answer be ignored.
 """
 
 from __future__ import annotations
@@ -27,6 +53,10 @@ BAD_NAME = ".bad"
 #: The most set-aside copies one folder is asked to hold before setup stops instead of counting on.
 MAX_ASIDE = 1000
 _rename = os.rename     # a seam for the tests: on Windows it refuses to replace a file that is already there
+#: Wizard flag: what runtime.json still owes the answers, ``{"whole": bool, "llama": bool, "engine": bool}``.
+#: Set by s01 (``reinstall._runtime``) when the answers ask for it, applied and cleared by s06
+#: (``ensure_baseline(follow_answers=True)``) once the model file is in place; a baseline owes nothing.
+PENDING_FLAG = "runtime_pending"
 
 
 def llm_file(ctx: StepContext) -> HfFile:
@@ -91,12 +121,18 @@ class Found:
     ``removed`` names them (dotted: ``llama.flags.x``). Both kinds of complaint together are ``damaged``.
     ``recode``: it reads fine but is not plain UTF-8 (a byte order mark, or UTF-16): every setting is kept and
     the file is written again as plain UTF-8, which is all the rest of Nightshift reads; ``why`` says which.
+    ``unreadable``: it is there and cannot be read right now (another program holds it, no permission, a
+    folder of that name): ``error`` is what the system said. Nothing is known about its settings.
+
+    ``runtime`` is the one meaning of "the settings setup keeps from the existing file": set for ``ok``,
+    ``recode`` and ``newer``, None for every other state. No step tests the state to decide that.
     """
 
     state: str
     runtime: Runtime | None = None
     why: str = ""
     removed: tuple[str, ...] = ()
+    error: OSError | None = None
 
 
 def _where(loc: tuple[int | str, ...]) -> str:
@@ -161,7 +197,9 @@ def inspect_runtime(paths: Paths) -> Found:
       field with a bad value: ``damaged``
     - only unknown fields: ``newer``
     - a folder of that name, or a file that cannot be opened (another program holds it, no permission):
-      ``OSError``, which ``ensure_baseline`` turns into NS-E125; nothing is moved or rewritten then.
+      ``unreadable``, which ``existing_runtime`` turns into NS-E125; nothing is moved or rewritten then.
+
+    It never raises for anything the file or the file system does.
     """
     path = paths.runtime_file
     try:
@@ -173,6 +211,8 @@ def inspect_runtime(paths: Paths) -> Found:
         data = read_bytes_retry(path)
     except FileNotFoundError:
         return Found("missing")
+    except OSError as e:
+        return Found("unreadable", why=f"{type(e).__name__}: {e}", error=e)
     if len(data) > MAX_BYTES:
         return Found("damaged", why=f"it is {len(data)} bytes, far too large for a settings file")
     try:
@@ -186,14 +226,42 @@ def inspect_runtime(paths: Paths) -> Found:
     return found
 
 
+def existing_runtime(ctx: StepContext) -> Found:
+    """What runtime.json is, for a step that acts on it: ``inspect_runtime``, and NS-E125 naming the file
+    when it cannot be read right now. A step never goes on as if such a file were missing: its settings and
+    what the answers would change in them are not known, so nothing is guessed and nothing is changed."""
+    found = inspect_runtime(ctx.paths)
+    if found.state == "unreadable" and found.error is not None:
+        raise _refuse(ctx.paths.runtime_file, "exists but could not be read", found.error) from found.error
+    return found
+
+
 def runtime_is_usable(ctx: StepContext) -> bool:
-    """True when runtime.json is there and loads as it is (``ok``). False for missing, damaged and newer
-    (this version cannot load a newer one as it stands), and when it cannot be read right now: the step's work
-    (``ensure_baseline``) then decides, and refuses by name when it must."""
-    try:
-        return inspect_runtime(ctx.paths).state == "ok"
-    except OSError:
-        return False
+    """For a step's ``check`` (which never changes a file and never raises): True when runtime.json is there
+    and loads as it is (``ok``). False for every other state: the step's work (``ensure_baseline``) then
+    deals with it, and refuses by name when it must."""
+    return inspect_runtime(ctx.paths).state == "ok"
+
+
+def _kind(rt: Runtime) -> tuple[str, bool]:
+    return rt.profile, rt.dev_mode
+
+
+def install_kind(ctx: StepContext) -> tuple[str, bool]:
+    """The kind of install this run makes, as ``build_runtime`` writes it: (profile, dev_mode)."""
+    return ("cpu-dev" if ctx.profile == "cpu-dev" else "gpu"), ctx.dev_mode
+
+
+def runtime_settled(ctx: StepContext) -> bool:
+    """For the tuning step's ``check``: True when runtime.json needs nothing more from setup. It loads as it
+    is, it was made for this kind of install (real or dev, GPU or not), and nothing that the answers changed
+    is still owed to it. Compared on every run, whether or not the questions step ran."""
+    found = inspect_runtime(ctx.paths)
+    return (
+        found.state == "ok" and found.runtime is not None
+        and _kind(found.runtime) == install_kind(ctx)
+        and not ctx.flag(PENDING_FLAG)
+    )
 
 
 def aside_sentence(kept_as: str, found: Found | None = None) -> str:
@@ -212,14 +280,32 @@ def _few(names: tuple[str, ...], most: int = 8) -> str:
     return shown + (f" and {len(names) - most} more" if len(names) > most else "")
 
 
-def newer_sentence(kept_as: str, removed: tuple[str, ...]) -> str:
+def newer_sentence(kept_as: str, removed: tuple[str, ...], *, whole: bool = False, changed: str = "") -> str:
     """What the owner is told when runtime.json has settings this version does not know (a newer Nightshift
-    wrote it, or a hand edit misspelt a name): row, report and console."""
-    return (
+    wrote it, or a hand edit misspelt a name): row, report and console. ``whole``: the same step built the
+    file again from the answers (another kind of install); ``changed``: what the answers changed in it."""
+    start = (
         f"Your runtime.json has settings this version does not know (a newer Nightshift, or a hand edit): "
-        f"{_few(removed)}; they were removed and every other setting was kept. The file as it was is kept as "
+        f"{_few(removed)}"
+    )
+    if whole:
+        return (
+            f"{start}, and it was made for another kind of install (real or dev, GPU or not): a new one was "
+            f"built from your answers and no setting of the old file is carried over. The file as it was is "
+            f"kept as {kept_as}. Tuning runs again for it (1 to 3 minutes)."
+        )
+    other = f", except what your answers changed ({changed})" if changed else ""
+    return (
+        f"{start}; they were removed and every other setting was kept{other}. The file as it was is kept as "
         f"{kept_as}. Tuning runs again for it (1 to 3 minutes)."
     )
+
+
+#: Said (console, row, report) when s06 builds the file again because it was made for another kind of install.
+WHOLE_SENTENCE = (
+    "config\\runtime.json is built again from your answers (it was made for another kind of install). "
+    "Settings that were only in the old file are not carried over."
+)
 
 
 def _refuse(path: Path, what: str, e: OSError) -> NsError:
@@ -314,8 +400,79 @@ def write_runtime(ctx: StepContext, rt: Runtime, *, clears: tuple[str, ...] = FR
     save_runtime(ctx.paths, rt)
 
 
-def ensure_baseline(ctx: StepContext) -> Runtime:
-    """Load runtime.json.
+@dataclass(frozen=True)
+class _Follow:
+    """What the answers change in the kept settings (``_follow``)."""
+
+    runtime: Runtime                    # the settings after the change (the kept ones when nothing changed)
+    lines: tuple[str, ...] = ()         # said on the console, one per thing done
+    whole: bool = False                 # built again from the answers
+    changed: str = ""                   # in words, for the sentence of a file with unknown settings
+    waiting: str = ""                   # the model the answers name is not on disk: nothing changed yet
+    settled: bool = True                # nothing is owed any more
+
+    @property
+    def applied(self) -> bool:
+        """True when the settings were changed."""
+        return bool(self.lines)
+
+
+def _follow(ctx: StepContext, rt: Runtime) -> _Follow:
+    """Make the kept settings follow the answers (s06, once s03 has verified the models): what s01 recorded
+    in ``PENDING_FLAG``, and the kind of install, which is compared here whatever s01 saw or did not see.
+
+    The language model is repointed only when its file is in models\\llm; otherwise the settings keep the
+    model they have and the work stays owed (the nightly run never starts llama-server on a missing file).
+    """
+    flag = ctx.flag(PENDING_FLAG)
+    owed: dict[str, bool] = dict(flag) if isinstance(flag, dict) else {}
+    whole = bool(owed.get("whole")) or _kind(rt) != install_kind(ctx)
+    llama, engine = bool(owed.get("llama")), bool(owed.get("engine"))
+    if not (whole or llama or engine):
+        return _Follow(rt)
+    fresh = build_runtime(ctx)
+    was, wanted = Path(rt.llama.model_path).name, Path(fresh.llama.model_path)
+    if (whole or llama) and not wanted.is_file():
+        if whole:
+            waiting = (
+                "config\\runtime.json was made for another kind of install (real or dev, GPU or not) and is "
+                f"still in use as it is, because {wanted.name} is not in models\\llm yet; it is built again "
+                "from your answers once the file is there. Run setup again (INSTALL.cmd)."
+            )
+        else:
+            waiting = (
+                f"config\\runtime.json keeps using {was} because {wanted.name} is not in models\\llm yet; "
+                "it is switched once the file is there."
+            )
+        return _Follow(rt, waiting=waiting, settled=False)
+    if whole:
+        return _Follow(fresh, lines=(WHOLE_SENTENCE,), whole=True)
+    out = rt.model_copy(deep=True)
+    lines: list[str] = []
+    changed: list[str] = []
+    if llama:
+        # always the flags too: s03 already pointed model_path at a custom file, with the old tier's flags
+        out.llama.model_path, out.llama.flags = fresh.llama.model_path, fresh.llama.flags
+        had = f" (it had {was})" if was != wanted.name else ""
+        lines.append(
+            f"Language model: config\\runtime.json now uses {wanted.name}{had} with that model's "
+            "settings, and tuning runs again."
+            + (f" {was} stays in models\\llm; delete it by hand to free space." if had else "")
+        )
+        changed.append("the language model")
+    if engine:
+        out.fake_footage, out.tiny_story = fresh.fake_footage, fresh.tiny_story
+        out.tts.engine = fresh.tts.engine
+        lines.append(
+            "Engine test: config\\runtime.json now follows your fake_voice, fake_footage and tiny_story "
+            "answers."
+        )
+        changed.append("the engine test")
+    return _Follow(out, lines=tuple(lines), changed=" and ".join(changed))
+
+
+def ensure_baseline(ctx: StepContext, *, follow_answers: bool = False) -> Runtime:
+    """Leave a runtime.json that loads, and return it. The one way every step gets the file.
 
     - missing: written from the answers;
     - damaged (not readable text, not JSON, not an object, too large, or a field this version knows has a
@@ -326,37 +483,57 @@ def ensure_baseline(ctx: StepContext) -> Runtime:
     - a byte order mark or UTF-16: the same settings, written again as plain UTF-8;
     - a folder of that name, or a file that cannot be opened: NS-E125 naming it, nothing changed.
 
-    The owner is told on the step's row, in the report and in the log (not for the plain re-encoding)."""
+    ``follow_answers`` (the tuning step, after the models are verified): in the same pass the kept settings
+    are made to follow the answers (``_follow``), so the file is written once and what the owner is told is
+    true of the file that is left. A baseline is made from the answers and owes them nothing.
+
+    The owner is told on the step's row, in the report and in the log (not for the plain re-encoding and not
+    for a model or engine-test change the answers asked for, which the console names)."""
     path = ctx.paths.runtime_file
-    try:
-        found = inspect_runtime(ctx.paths)
-    except OSError as e:
-        raise _refuse(path, "exists but could not be read", e) from e
-    if found.state == "ok" and found.runtime is not None:
-        return found.runtime
-    if found.state == "recode" and found.runtime is not None:
-        ctx.log.info("runtime_recoded", f"{path} was {found.why}; written again as plain UTF-8")
-        ctx.ui.say(f"runtime.json was {found.why}; it is written again as plain UTF-8 (no setting changed).")
-        write_runtime(ctx, found.runtime, clears=())
+    found = existing_runtime(ctx)
+    kept_rt = found.runtime
+    if kept_rt is None:     # missing or damaged: nothing is kept
+        if found.state == "damaged":
+            kept = _set_aside(path, found.why)
+            if kept is not None:
+                sentence = aside_sentence(kept.name, found)
+                ctx.log.warn("runtime_set_aside", f"{path}: {found.why}; kept as {kept}")
+                ctx.ui.say(sentence, "yellow")
+                ctx.note_step(sentence)
+        write_runtime(ctx, build_runtime(ctx))
+        ctx.clear_flags(PENDING_FLAG)       # after the file is there: a kill in between applies it again
         return load_runtime(ctx.paths)
-    if found.state == "newer" and found.runtime is not None:
+    follow = _follow(ctx, kept_rt) if follow_answers else _Follow(kept_rt, settled=False)
+    if follow.waiting:
+        ctx.log.warn("runtime_answers_waiting", follow.waiting)
+        ctx.ui.say(follow.waiting, "yellow")
+        ctx.note_step(follow.waiting)
+    if found.state == "ok" and not follow.applied:
+        if follow.settled:
+            ctx.clear_flags(PENDING_FLAG)   # a flag that names nothing to do
+        return kept_rt
+    if found.state == "newer":
         kept = _keep_copy(path, ".newer")
         if kept is not None:
-            sentence = newer_sentence(kept.name, found.removed)
+            sentence = newer_sentence(kept.name, found.removed, whole=follow.whole, changed=follow.changed)
             took = ", ".join(found.removed)
             ctx.log.warn("runtime_newer_stripped", f"{path}: took out {took}; original at {kept}")
             ctx.ui.say(sentence, "yellow")
             ctx.note_step(sentence)
-        write_runtime(ctx, found.runtime)
-        return load_runtime(ctx.paths)
-    if found.state == "damaged":
-        kept = _set_aside(path, found.why)
-        if kept is not None:
-            sentence = aside_sentence(kept.name, found)
-            ctx.log.warn("runtime_set_aside", f"{path}: {found.why}; kept as {kept}")
-            ctx.ui.say(sentence, "yellow")
-            ctx.note_step(sentence)
-    write_runtime(ctx, build_runtime(ctx))
+    if found.state == "recode":
+        ctx.log.info("runtime_recoded", f"{path} was {found.why}; written again as plain UTF-8")
+        same = "" if follow.applied else " (no setting changed)"
+        ctx.ui.say(f"runtime.json was {found.why}; it is written again as plain UTF-8{same}.")
+    if follow.whole and found.state != "newer":     # the sentence of a newer file says it already
+        ctx.log.warn("runtime_rebuilt", f"{path}: made for another kind of install; built from the answers")
+        ctx.note_step(WHOLE_SENTENCE)
+    for line in follow.lines:
+        if not (follow.whole and found.state == "newer"):
+            ctx.ui.say(line)
+    new_settings = found.state == "newer" or follow.applied     # a plain re-encoding changes none
+    write_runtime(ctx, follow.runtime, clears=FRESH_CLEARS if new_settings else ())
+    if follow.settled:
+        ctx.clear_flags(PENDING_FLAG)       # after the file is there: a kill in between applies it again
     return load_runtime(ctx.paths)
 
 

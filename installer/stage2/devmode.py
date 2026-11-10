@@ -161,6 +161,12 @@ def reset_for_mode_switch(home: Path, dev_mode: bool) -> bool:
     data["completed_at"] = None
     first_start.guard(state_file)
     write_text_atomic(state_file, json.dumps(data, indent=2) + "\n", keep_backup=True)
-    for name in ("wizard_flags.json", "runtime.json"):
-        (home / "config" / name).unlink(missing_ok=True)
+    (home / "config" / "wizard_flags.json").unlink(missing_ok=True)
+    try:
+        (home / "config" / "runtime.json").unlink(missing_ok=True)
+    except OSError:
+        # Held by another program, or a folder of that name: setup does not stop here with a traceback. The
+        # tuning step compares the kind of install itself (``runtime_cfg.runtime_settled``): it builds the
+        # file again from the answers once it can be read, and refuses by name (NS-E125) while it cannot.
+        pass
     return True
