@@ -468,9 +468,6 @@ def test_a_refusal_reaches_the_owner_without_a_toast_and_is_retried_when_it_cann
 ) -> None:
     net = Net()
     net.everywhere(monkeypatch)
-    words = getattr(update_check, "refusal_message", lambda _e: "(no such message before this change)")
-    refused = words(NsError("NS-E704"))
-
     def notes(paths: Paths) -> list[str]:
         return [n["message"] for n in update_check.notify.read_notes(paths)]
 
@@ -480,17 +477,17 @@ def test_a_refusal_reaches_the_owner_without_a_toast_and_is_retried_when_it_cann
     toaster = Toaster()
     for minutes in (0, 60, 120):
         assert update_check.run_check(paths, now=NOW + timedelta(minutes=minutes), toaster=toaster) is None
-    assert toaster.shown == [] and notes(paths) == [refused]
+    assert toaster.shown == [] and notes(paths) == [told_text(paths)]
     # no desktop or a toast that fails (the toaster says False): the note, once, and not twice with the
     # product's own toaster, which leaves the note itself
     paths = install(tmp_path, monkeypatch, NORMAL, name="session0")
     assert update_check.run_check(paths, now=NOW, toaster=lambda _t, _m: False) is None
-    assert notes(paths) == [refused]
+    assert notes(paths) == [told_text(paths)]
     paths = install(tmp_path, monkeypatch, NORMAL, name="own")
     monkeypatch.setattr(update_check.notify, "toast", lambda _t, _m: False)  # the real toaster, no toast
     job = update_check.make_job(paths)
     assert job() is None and job() is None
-    assert notes(paths) == [refused]
+    assert notes(paths) == [told_text(paths)]
     # the telling itself fails (no toast, the note cannot be written): nothing is remembered, the check
     # still answers, and the next poll tells
     paths = install(tmp_path, monkeypatch, NORMAL, name="broken")
@@ -519,6 +516,129 @@ def test_a_refusal_reaches_the_owner_without_a_toast_and_is_retried_when_it_cann
     toaster = Toaster()
     assert update_check.run_check(paths, now=NOW, toaster=toaster) is None
     assert toaster.shown == [] and notes(paths) == []
+
+
+# ---------------------------------------------------------------- every refusal says its own reason
+
+
+def raised(call: Callable[[], Any]) -> NsError:
+    try:
+        call()
+    except NsError as e:
+        return e
+    raise AssertionError("the call was not refused")
+
+
+def told_text(paths: Paths) -> str:
+    """What the weekly check tells the owner of this install: the refusal `release_source` raises, in the
+    words of `update_check.refusal_message`."""
+    return update_check.refusal_message(raised(lambda: releases.release_source(paths=paths)))
+
+
+RESTART = "then restart Nightshift (Stop All, then open the Dashboard) and check for updates again"
+REFUSAL_CASES: list[tuple[str, Any, str, str, tuple[str, ...]]] = [
+    # (name, runtime.json, the variable, the reason, words the detail must hold)
+    ("normal", NORMAL, SOURCE, "not_a_test_install",
+     ("is not a dev or engine-test install", "Remove the variable")),
+    # a normal install with an address that is also not on this PC: the install is the reason, because
+    # there the way out is to remove the variable, not to correct it
+    ("normal-far", NORMAL, "https://example.com/releases/latest", "not_a_test_install",
+     ("is not a dev or engine-test install", "Remove the variable")),
+    ("empty", {}, SOURCE, "not_a_test_install", ("is not a dev or engine-test install",)),
+    ("torn", '{"dev_mode": tr', SOURCE, "install_unreadable",
+     ("config/runtime.json is missing or cannot be read", "Repair that file or remove the variable")),
+    ("list", "[true]", SOURCE, "install_unreadable", ("config/runtime.json is missing or cannot be read",)),
+    ("missing", None, SOURCE, "install_unreadable", ("config/runtime.json is missing or cannot be read",)),
+    # the proof's case: a dev install, an address that is not on this PC
+    ("far", DEV, "https://example.com/releases/latest", "not_this_pc",
+     ("this is a dev or engine-test install", "names example.com, which is not this PC",
+      "must be on 127.0.0.1, localhost or ::1", "or remove it")),
+    ("lan", DEV, "http://192.168.1.20:8765/latest", "not_this_pc",
+     ("names 192.168.1.20, which is not this PC",)),
+    ("lookalike", DEV, "http://127.0.0.1.example.com/latest", "not_this_pc", ("127.0.0.1.example.com",)),
+    ("ftp", DEV, "ftp://127.0.0.1/latest", "not_an_address",
+     ("this is a dev or engine-test install", "is not an http or https address", "or remove it")),
+    ("user", DEV, "http://user:pw@127.0.0.1:8765/latest", "not_an_address",
+     ("without a user name or password",)),
+    ("bare", DEV, "127.0.0.1:8765/latest", "not_an_address", ("is not an http or https address",)),
+    ("port", DEV, "http://127.0.0.1:99999/latest", "not_an_address", ("a port from 1 to 65535",)),
+    ("nohost", DEV, "http:///latest", "not_an_address", ("with a host",)),
+]
+# sentences that belong to ONE reason: no other refusal may say them
+OWN_WORDS = {
+    "not_a_test_install": "is not a dev or engine-test install",
+    "install_unreadable": "is missing or cannot be read",
+    "not_an_address": "is not an address Nightshift can use",
+    "not_this_pc": "which is not this PC",
+}
+
+
+@pytest.mark.parametrize(("name", "runtime", "source", "reason", "words"), REFUSAL_CASES,
+                         ids=[c[0] for c in REFUSAL_CASES])
+def test_each_refusal_says_its_own_reason_and_way_out(
+    tmp_path: Path, monkeypatch: MP, name: str, runtime: Any, source: str, reason: str, words: tuple[str, ...]
+) -> None:
+    """Block B proof, defect 4: a dev install with an address that is not on this PC was told it is "not a
+    test install". The message and hint of NS-E704 are true of every refusal; the detail is the reason's."""
+    paths = install(tmp_path, monkeypatch, runtime, source=source, name=name)
+    net = Net()
+    e = raised(lambda: releases.fetch_latest(net.client()))
+    assert net.seen == []                                   # refused before any server was asked
+    assert e.code == "NS-E704" and e.data.get("reason") == reason
+    for text in (*words, RESTART):
+        assert text in e.detail, (text, e.detail)
+    if reason in ("not_a_test_install", "install_unreadable"):
+        assert str(paths.home) in e.detail                  # which install
+    else:
+        assert repr(source) in e.detail                     # the value as it was set
+    for other, own in OWN_WORDS.items():
+        assert (own in e.detail) == (other == reason), (other, e.detail)
+    # the code's own message and hint take no side: they are shown with every one of these reasons
+    d = e.definition
+    for own in (*OWN_WORDS.values(), "not a test install"):
+        assert own not in d.message and own not in d.hint, own
+    assert "was refused" in d.message and "no update server was asked" in d.message
+    assert "The text in brackets says why" in d.hint
+    assert str(e) == f"NS-E704: {d.message} ({e.detail})"   # the brackets the hint speaks of
+
+
+def test_every_refusal_reason_is_tested() -> None:
+    assert {c[3] for c in REFUSAL_CASES} == set(releases.REFUSALS) == set(OWN_WORDS)
+
+
+def test_the_command_and_the_weekly_check_show_the_reason_of_a_wrong_address(
+    tmp_path: Path, monkeypatch: MP
+) -> None:
+    """The owner's side: `ns update --check` (what the Update button runs) and the weekly toast carry the
+    reason; a refusal for another reason is told at once, the same one not again within the week."""
+    paths = install(tmp_path, monkeypatch, DEV, source="https://example.com/releases/latest")
+    net = Net()
+    net.everywhere(monkeypatch)
+    r = runner.invoke(cli.app, ["update", "--check"])
+    assert r.exit_code == 1 and "NS-E704" in r.output
+    flat = " ".join(r.output.split())
+    assert "names example.com, which is not this PC" in flat and "or remove it" in flat
+    assert "not a test install" not in flat and "is not a dev or engine-test install" not in flat
+    toaster = Toaster()
+
+    def poll(hours: int) -> None:
+        assert update_check.run_check(paths, now=NOW + timedelta(hours=hours), current="0.1.0",
+                                      toaster=toaster) is None
+
+    poll(0)
+    assert len(toaster.shown) == 1 and "which is not this PC" in toaster.shown[0][1]
+    assert toaster.shown[0][1] == told_text(paths)
+    kept = update_check.load_state(paths)["refused"]["detail"]
+    assert kept.startswith("this is a dev or engine-test install")
+    poll(1)
+    assert len(toaster.shown) == 1                          # the same reason: once a week
+    monkeypatch.setenv(VAR, "ftp://127.0.0.1/latest")      # corrected wrongly: another reason, told at once
+    poll(2)
+    assert len(toaster.shown) == 2 and "is not an address Nightshift can use" in toaster.shown[1][1]
+    assert "which is not this PC" not in toaster.shown[1][1]
+    poll(3)
+    assert len(toaster.shown) == 2
+    assert net.seen == []
 
 
 def test_the_ns_e704_hint_says_where_the_variable_can_be_and_to_restart() -> None:

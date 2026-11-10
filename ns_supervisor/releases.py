@@ -12,6 +12,8 @@ engine-test install the variable `NS_RELEASE_SOURCE` names a releases address on
 then that address stands in for GitHub: the release, its package and its checksum are taken from that host
 and port only. `release_source` is the only reader of the variable and the only place that decides; every
 other install refuses the variable with `NS-E704` before any request is made, and never falls back to GitHub.
+A refusal says which of its reasons it is (`REFUSALS`): the message and hint of `NS-E704` are true of all of
+them, and the detail carries the reason's own sentence and way out.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -45,6 +47,39 @@ SOURCE_ENV = "NS_RELEASE_SOURCE"
 #: The hosts a test release source may be on: this PC, nothing else.
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+#: Every way out ends the same way, because a running engine and dashboard keep the environment they started
+#: with: the variable is read again only by a process started after the change.
+_THEN = "then restart Nightshift (Stop All, then open the Dashboard) and check for updates again"
+_EXAMPLE = f"http://127.0.0.1:8765/repos/{REPO}/releases/latest"
+#: Why a set `NS_RELEASE_SOURCE` is refused, each with the sentence the owner reads (the detail of `NS-E704`):
+#: what is true, then the way out. `{home}` is the install, `{value}` the variable as it was set, `{host}`
+#: the host it names. `release_source` raises with `reason=<key>`.
+REFUSALS: dict[str, str] = {
+    # the variable is set on an install that may not use it at all
+    "not_a_test_install": (
+        f"{SOURCE_ENV} is set, but the install at {{home}} is not a dev or engine-test install, and only "
+        f"those may use it. Remove the variable, {_THEN}"
+    ),
+    # the same refusal, but the true reason is that the install could not be read
+    "install_unreadable": (
+        f"{SOURCE_ENV} is set, and Nightshift cannot tell whether the install at {{home}} is a dev or "
+        "engine-test install, because its config/runtime.json is missing or cannot be read; an install it "
+        f"cannot read is not taken for one. Repair that file or remove the variable, {_THEN}"
+    ),
+    # a test install, and the value is no address the updater can use
+    "not_an_address": (
+        f"this is a dev or engine-test install, but {SOURCE_ENV} is not an address Nightshift can use: "
+        "{value} is not an http or https address with a host, without a user name or password, and with a "
+        "port from 1 to 65535. Set it to an address on this PC "
+        f"(for example {_EXAMPLE}) or remove it, {_THEN}"
+    ),
+    # a test install, a good address, but on another machine
+    "not_this_pc": (
+        f"this is a dev or engine-test install, but {SOURCE_ENV} names {{host}}, which is not this PC: "
+        "{value}. A test release source must be on 127.0.0.1, localhost or ::1. Set it to such an address "
+        f"(for example {_EXAMPLE}) or remove it, {_THEN}"
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -80,19 +115,33 @@ def _origin(url: str | httpx.URL) -> tuple[str, str, int] | None:
     return (u.scheme, u.host.lower(), port) if 0 < port < 65536 else None
 
 
-def _test_install(paths: Paths) -> bool:
-    """True for a dev install and for an engine-test install: `dev_mode`, `fake_footage` or `tiny_story` is
-    `true` in its `runtime.json`, or its voice engine is the fake one. An unreadable file is neither."""
+def _install_kind(paths: Paths) -> Literal["test", "normal", "unreadable"]:
+    """`test` for a dev install and for an engine-test install: `dev_mode`, `fake_footage` or `tiny_story` is
+    `true` in its `runtime.json`, or its voice engine is the fake one. `unreadable` when that file is missing,
+    cannot be read or is not a JSON object (it is not taken for a test install, and the refusal says that this
+    is why). `normal` for every other install."""
     if devmode.fake_footage(paths):  # dev_mode or fake_footage
-        return True
+        return "test"
     try:
         data = json.loads(read_text_retry(paths.runtime_file, "utf-8-sig"))
     except (OSError, ValueError):
-        return False
+        return "unreadable"
     if not isinstance(data, dict):
-        return False
+        return "unreadable"
     tts = data.get("tts")
-    return data.get("tiny_story") is True or (isinstance(tts, dict) and tts.get("engine") == "fake")
+    if data.get("tiny_story") is True or (isinstance(tts, dict) and tts.get("engine") == "fake"):
+        return "test"
+    return "normal"
+
+
+def _test_install(paths: Paths) -> bool:
+    """True for a dev or an engine-test install (`_install_kind`); an unreadable file is neither."""
+    return _install_kind(paths) == "test"
+
+
+def _refused(reason: str, **words: Any) -> NsError:
+    """`NS-E704` for one of `REFUSALS`: its sentence as the detail, its key as `reason`."""
+    return NsError("NS-E704", REFUSALS[reason].format(**words), reason=reason)
 
 
 def release_source(env: Mapping[str, str] | None = None, paths: Paths | None = None) -> Source:
@@ -103,25 +152,26 @@ def release_source(env: Mapping[str, str] | None = None, paths: Paths | None = N
     address is the source and GitHub is not asked. Anything else is `NS-E704`: a real install is never aimed
     at a fake by a variable somebody left behind, and never quietly goes to GitHub instead either. Nothing is
     written and no request is made here.
+
+    The refusal names its reason (`REFUSALS`), decided in this order: the install is not a test install
+    (whatever the value is: removing the variable is the way out there), the install cannot be read, the
+    value is no usable address, the address is not on this PC.
     """
     e = os.environ if env is None else env
     raw = (e.get(SOURCE_ENV) or "").strip()
     if not raw:
         return Source(LATEST_URL)
     home = paths or Paths.from_env(e)
-    if not _test_install(home):
-        raise NsError(
-            "NS-E704",
-            f"{SOURCE_ENV} is set, and the install at {home.home} is not a dev or engine-test install; "
-            "no update server was asked",
-        )
+    kind = _install_kind(home)
+    if kind == "normal":
+        raise _refused("not_a_test_install", home=home.home)
+    if kind == "unreadable":
+        raise _refused("install_unreadable", home=home.home)
     origin = _origin(raw)
-    if origin is None or origin[1] not in LOOPBACK_HOSTS:
-        raise NsError(
-            "NS-E704",
-            f"{SOURCE_ENV} must be an http or https address on 127.0.0.1, localhost or ::1, not {raw!r}; "
-            "no update server was asked",
-        )
+    if origin is None:
+        raise _refused("not_an_address", value=repr(raw))
+    if origin[1] not in LOOPBACK_HOSTS:
+        raise _refused("not_this_pc", value=repr(raw), host=origin[1])
     return Source(raw, origin)
 
 

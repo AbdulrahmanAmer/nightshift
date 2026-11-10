@@ -5,10 +5,11 @@ The state lives in `config/update_check.json` (`last_checked`, `latest`); a fail
 recorded, so it is retried at the next poll. The Settings notifications toggle is honoured. Everything the
 job touches is injectable so tests never reach the network or PowerShell.
 
-A check that is REFUSED (`NS-E704`: a test release source left set on a normal install) does not clear by
-itself the way an offline PC does, so the owner is told: once, and again at most once a week while it lasts
-(`refused` in the state file), by toast or, with no desktop, a failed toast or notifications off, by a note
-the dashboard shows. The next successful check forgets it.
+A check that is REFUSED (`NS-E704`: a test release source that is set where it may not be, or that names no
+address on this PC) does not clear by itself the way an offline PC does, so the owner is told, with the
+reason: once, and again at most once a week while that reason lasts (`refused` in the state file), by toast
+or, with no desktop, a failed toast or notifications off, by a note the dashboard shows. Another reason is
+told at once. The next successful check forgets it.
 """
 
 from __future__ import annotations
@@ -67,9 +68,11 @@ def message(result: dict[str, Any]) -> str:
 
 
 def refusal_message(e: NsError) -> str:
-    """What the owner reads when update checks are refused: the code, its message and what to do."""
+    """What the owner reads when update checks are refused: the code, its message, the reason of this
+    refusal with its way out (the detail, in brackets as the hint says), and the general hint."""
     d = e.definition
-    return f"Update checks are switched off ({e.code}). {d.message} {d.hint}"
+    why = f" ({e.detail})" if e.detail else ""
+    return f"Update checks are switched off ({e.code}). {d.message}{why} {d.hint}"
 
 
 def tell_refusal(
@@ -80,7 +83,8 @@ def tell_refusal(
     log: NsLogger,
     interval_s: float = WEEK_S,
 ) -> bool:
-    """Tell the owner about a lasting refusal unless they were told about the same code within `interval_s`.
+    """Tell the owner about a lasting refusal unless they were told about the same one (code and detail)
+    within `interval_s`. A state written before the detail was kept counts as the same one.
 
     Told means a toast was shown or a note waits for the dashboard; only then is it remembered, so a telling
     that failed is tried again at the next poll. With notifications off no toast is shown, only the note.
@@ -88,7 +92,7 @@ def tell_refusal(
     """
     state = load_state(paths)
     prev = state.get("refused")
-    if isinstance(prev, dict) and prev.get("code") == e.code:
+    if isinstance(prev, dict) and prev.get("code") == e.code and prev.get("detail", e.detail) == e.detail:
         try:
             told = datetime.fromisoformat(str(prev.get("told")))
             if told.tzinfo is None:
@@ -113,7 +117,7 @@ def tell_refusal(
     if not (shown or noted()):
         log.error("update_refusal_not_told", "no toast was shown and no note could be left", code=e.code)
         return False
-    state["refused"] = {"code": e.code, "told": now.isoformat(timespec="seconds")}
+    state["refused"] = {"code": e.code, "told": now.isoformat(timespec="seconds"), "detail": e.detail}
     try:
         write_text_atomic(state_file(paths), json.dumps(state, indent=2) + "\n")
     except OSError as err:  # told, but not remembered: the owner may be told again at the next poll

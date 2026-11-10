@@ -366,13 +366,16 @@ test install before a release exists, a test install can be aimed at a fake GitH
   switches; no setting and no dashboard call turns one on. A `runtime.json` that cannot be read is not a test
   install.
 - **Every other install refuses it.** With the variable set, `ns update --check`, `--github` and the Update
-  button answer `NS-E704` ("A test release source is set on an install that is not a test install.") and ask
+  button answer `NS-E704` ("NS_RELEASE_SOURCE (a test release source for the updater) is set and was refused,
+  so no update server was asked.", with the reason in brackets: here that the install is not a dev or
+  engine-test install, or that its `runtime.json` cannot be read) and ask
   no release server, the fake or GitHub; the weekly check writes the same code to `logs/supervisor-*.jsonl`
   (`update_check_failed`) and tries again at its next poll. `ns update --git` runs its `git fetch` from the
   clone's own remote first, as always, and then stops with the same code before it changes anything. The
   install does not go to GitHub instead. Empty or blank counts as not set.
 - **The owner is told.** A refusal does not clear by itself, so the weekly check tells the owner the first
-  time it meets one and then at most once a week while it lasts: a toast with the code, its message and its
+  time it meets one and then at most once a week while it lasts (a refusal for another reason is told at
+  once): a toast with the code, its message, the reason and its
   hint, or a note the dashboard shows when there is no desktop, the toast fails or notifications are off
   (`refused` in `config/update_check.json`; `update_refusal_told` in the log). A telling that could not be
   delivered is tried again at the next poll, an hour later. The next check that works forgets the refusal.
@@ -383,7 +386,9 @@ test install before a release exists, a test install can be aimed at a fake GitH
   restart answers `NS-E704` again. A new shell is enough for `ns update --check` typed there.
 - **The loopback rule.** The value is the whole address of the releases answer, `http` or `https`, on
   `127.0.0.1`, `localhost` or `::1`, without a user name, for example
-  `http://127.0.0.1:8765/repos/AbdulrahmanAmer/nightshift/releases/latest`. Anything else is `NS-E704` too.
+  `http://127.0.0.1:8765/repos/AbdulrahmanAmer/nightshift/releases/latest`. Anything else is `NS-E704` too,
+  and its text says which: the value is no address Nightshift can use, or it names a host that is not this
+  PC. On a test install the way out is to correct the value or remove it, then restart as above.
   The package and its checksum must be on the same scheme, host and port as that address: an asset anywhere
   else (GitHub included) is not picked, and a redirect to another host is `NS-E701`. The client for a test
   source ignores the proxy settings of the PC.
