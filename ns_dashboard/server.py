@@ -30,7 +30,7 @@ from starlette.staticfiles import NotModifiedResponse, StaticFiles
 from starlette.types import Scope
 
 from ns_common.errors import NsError
-from ns_common.loopback import LOOPBACK_PAGES, LoopbackGuard
+from ns_common.loopback import LOOPBACK_PAGES, LoopbackGuard, media_type
 from ns_common.paths import Paths
 from ns_dashboard import DEFAULT_PORT, media
 from ns_dashboard.adapters import Adapters
@@ -189,6 +189,11 @@ async def body_json(request: Request) -> dict[str, Any]:
     raw = await request.body()
     if not raw.strip():
         return {}
+    kind = media_type(request.headers.get("content-type", ""))
+    if kind != "application/json" and not kind.endswith("+json"):
+        # a form's body (text/plain can carry JSON) is never read as JSON: the loopback check refuses a form
+        # from anywhere but the dashboard's own page, and this keeps the parser from being a way round it
+        raise ApiError(415, "not_json", "Send the request body as JSON (Content-Type: application/json).")
     try:
         data = json.loads(raw)
     except ValueError as e:

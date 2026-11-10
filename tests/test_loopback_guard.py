@@ -813,3 +813,310 @@ def test_a_note_that_cannot_be_written_does_not_slow_the_answer(
     settle()
     said = notes_of(sup)
     assert len(said) == 2 and other in said[1] and "tried 8 times" in said[1]
+
+
+# ====================================================== round 2 (review of e62f26b): a form with no sender at all
+# Internet Explorer, Edge's IE mode and old Firefox send a cross-site form POST with no Origin, no Sec-Fetch-*
+# and (from an HTTPS page) no Referer. All such a page can send without a preflight is a plain HTML form.
+FORM_BODIES = (
+    ("application/x-www-form-urlencoded", b"a=1"),
+    ("application/x-www-form-urlencoded", b""),                       # an empty form still says its type
+    ("Application/X-WWW-Form-Urlencoded; charset=UTF-8", b"a=1"),
+    ("multipart/form-data; boundary=xx", b'--xx\r\nContent-Disposition: form-data; name="a"\r\n\r\n1\r\n--xx--\r\n'),
+    ("MULTIPART/FORM-DATA; boundary=xx", b'--xx\r\nContent-Disposition: form-data; name="a"\r\n\r\n1\r\n--xx--\r\n'),
+    ("text/plain", b'{"service": "embed", "owner": "a page", "grace_s": 1, "a": "='),
+    ("text/plain", b""),
+    ("Text/Plain;charset=utf-8", b'{"a": 1}'),
+    (" text/plain ", b'{"a": 1}'),
+    (None, b'{"a": 1}'),                                              # a body with no content type at all
+)
+UNSAFE = ("POST", "PUT", "PATCH", "DELETE")
+#: Origin absent, foreign, a file page or sandboxed frame, a foreign name that starts like ours, and loopback.
+FORM_ORIGINS = (None, EVIL, "null", "http://127.0.0.1.evil.example", "", BASE, "http://localhost:5173")
+
+
+def post_form(tc: TestClient, method: str, path: str, kind: str | None, body: bytes, origin: str | None) -> Any:
+    headers: dict[str, str] = {}
+    if kind is not None:
+        headers["content-type"] = kind
+    if origin is not None:
+        headers["origin"] = origin
+    return tc.request(method, path, content=body, headers=headers, params={"limit": 1})
+
+
+def every_form(app: Any) -> Iterator[tuple[str, str, str | None, bytes, str | None]]:
+    for method, path in routes(app):
+        if method in UNSAFE:
+            for kind, body in FORM_BODIES:
+                for origin in FORM_ORIGINS:
+                    yield method, path, kind, body, origin
+
+
+def test_a_form_with_no_sender_reaches_no_route_of_the_engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _sup, app, spy = engine(tmp_path, monkeypatch)
+    assert spy is not None
+    tc = client(app)
+    unsafe = {(m, p) for m, p in routes(app) if m in UNSAFE}
+    assert {("POST", "/stop_all"), ("POST", "/shutdown"), ("POST", "/run_finished")} <= unsafe and len(unsafe) >= 9
+    wrong = [
+        f"{method} {path} as {kind!r} ({len(body)} bytes) from {origin!r}: {bad}"
+        for method, path, kind, body, origin in every_form(app)
+        if (bad := refused(post_form(tc, method, path, kind, body, origin), "form" if origin is None else "origin"))
+    ]
+    assert wrong == [], f"{len(wrong)} forms were answered: " + "; ".join(wrong[:5])
+    assert spy.calls == []
+
+
+def test_a_form_with_no_sender_reaches_no_route_of_the_voice_service(tmp_path: Path):
+    app = voice(tmp_path)
+    tc = client(app)
+    assert ("POST", "/v1/audio/speech/cancel") in routes(app)
+    wrong = [
+        f"{method} {path} as {kind!r} ({len(body)} bytes) from {origin!r}: {bad}"
+        for method, path, kind, body, origin in every_form(app)
+        if (bad := refused(post_form(tc, method, path, kind, body, origin), "form" if origin is None else "origin"))
+    ]
+    assert wrong == [], f"{len(wrong)} forms were answered: " + "; ".join(wrong[:5])
+
+
+def test_a_form_reaches_the_dashboard_only_from_its_own_page(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """Every route that is not a GET x every content type a form can have x Origin absent, foreign, null, empty
+    and loopback: only the dashboard's own page (a loopback Origin, which the browser states) gets past the
+    check. The update route is the reason: it installs the zip it is given."""
+    from ns_dashboard.svc_library import LibraryService
+
+    installed: list[str] = []
+    monkeypatch.setattr(
+        LibraryService, "update_apply_file", lambda self, name, zip_fh, sha_fh: installed.append(name) or {"ok": True}
+    )
+    app = dashboard(tmp_home)
+    tc = TestClient(app, base_url=BASE, raise_server_exceptions=False)
+    unsafe = {(m, p) for m, p in routes(app) if m in UNSAFE}
+    assert ("POST", "/api/update/file") in unsafe and ("PUT", "/api/uploads/x") in unsafe and len(unsafe) >= 30
+    wrong: list[str] = []
+    own_pages = (BASE, "http://localhost:5173")
+    for method, path, kind, body, origin in every_form(app):
+        if origin in own_pages and path not in ("/api/notes/clear", "/api/update/file"):
+            continue   # past the check the route itself runs: two routes show that the page's form passes
+        r = post_form(tc, method, path, kind, body, origin)
+        if origin in own_pages:
+            if r.status_code == 403:
+                wrong.append(f"{method} {path} as {kind!r} from the page {origin!r}: refused")
+        elif r.status_code != 403 or r.json()["error"]["code"] != CODE:
+            wrong.append(f"{method} {path} as {kind!r} ({len(body)} bytes) from {origin!r}: {r.status_code}")
+    assert wrong == [], f"{len(wrong)} wrong answers: " + "; ".join(wrong[:5])
+    assert installed == []
+    # the attack itself: a page's own zip with its own .sha256, as a multipart form with no sender
+    zip_bytes, digest = b"PK\x05\x06" + b"\x00" * 18, b"0" * 64
+    upload = {"file": ("Nightshift-Update-9.9.9.zip", zip_bytes, "application/zip"),
+              "checksum": ("Nightshift-Update-9.9.9.zip.sha256", digest, "text/plain")}
+    for origin in (None, EVIL, "null"):
+        r = tc.post("/api/update/file", files=upload, headers={"origin": origin} if origin else {})
+        assert r.status_code == 403 and r.json()["error"]["code"] == CODE, origin
+    assert installed == []
+    # Settings, "From a file": the dashboard's page sends the same form with its Origin, and it is installed
+    r = tc.post("/api/update/file", files=upload, headers={"origin": BASE, "sec-fetch-site": "same-origin"})
+    assert r.status_code == 200 and installed == ["Nightshift-Update-9.9.9.zip"], r.text
+
+
+def test_a_body_that_is_not_json_is_never_read_as_json(tmp_home: Path):
+    """The parser cannot be the way round the check: JSON in a text/plain body is refused even from the
+    dashboard's own origin; JSON as JSON and an empty body are read as before."""
+    tc = client(dashboard(tmp_home))
+    body = json.dumps({"channel": "after-dark", "format": "shorts_only"}).encode()
+    for kind in ("text/plain", "text/plain; charset=utf-8", "application/x-www-form-urlencoded", None):
+        r = post_form(tc, "POST", "/api/jobs/run", kind, body, BASE)
+        assert r.status_code == 415 and r.json()["error"]["code"] == "not_json", (kind, r.status_code, r.text)
+    for kind in ("application/json", "application/json; charset=utf-8", "Application/JSON"):
+        r = post_form(tc, "POST", "/api/jobs/verify", kind, b"{}", None)        # a program: JSON, no Origin
+        assert r.status_code == 201, (kind, r.text)
+    assert tc.post("/api/jobs/verify").status_code == 201                       # no body at all
+    assert tc.post("/api/notes/clear").status_code == 200
+
+
+def test_the_programs_that_post_without_a_body_or_with_json_still_pass(
+    tmp_path: Path, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Each product caller of a route that is not a GET, with the body and content type it really sends."""
+    _sup, app, spy = engine(tmp_path, monkeypatch)
+    assert spy is not None
+    live_headers: list[dict[str, str]] = []
+
+    async def recorded(scope: dict[str, Any], receive: Any, send_: Any) -> None:
+        if scope["type"] == "http" and scope["method"] != "GET":
+            live_headers.append({k.decode().lower(): v.decode() for k, v in scope["headers"]})
+        await app(scope, receive, send_)
+
+    tc = TestClient(recorded, base_url=BASE)
+    ns = SupervisorClient(BASE, client=tc)
+    ns.stop_all()                                                     # no body, no content type
+    assert ns.run_finished() is False                                 # no body, no content type
+    ns.shutdown(1)
+    assert ns.warmup("embed") == "ready"
+    assert SupervisorLink(BASE, client=tc).warmup("dashboard") is not None
+    kinds = [(h.get("content-type"), h.get("content-length")) for h in live_headers]
+    assert kinds[:2] == [(None, "0"), (None, "0")], kinds
+    assert all(kind == "application/json" for kind, _ in kinds[2:]) and len(kinds) == 5, kinds
+    assert spy.calls == ["stop_all", "note_run_finished", "shutdown", "warmup", "warmup"]
+    # curl -X POST and PowerShell's Invoke-RestMethod -Method Post with no body send no content type either
+    assert tc.post("/stop_all", headers={"content-length": "0"}).status_code == 200
+    # the studio's cancel of a batch: a POST with no body
+    voices = voice(tmp_path)
+    assert client(voices).post("/v1/audio/speech/cancel").status_code == 200
+    TtsClient(BASE, client=client(voices)).cancel_batch()
+    # the dashboard for a program (dev/prove_ctx.py sends JSON through urllib; `ns` posts no body)
+    dash = client(dashboard(tmp_home))
+    assert dash.post("/api/notes/clear").status_code == 200
+    assert dash.post("/api/jobs/verify", json={}).status_code == 201
+    # the page's file uploads: multipart and a chunk with no content type, both with the page's Origin
+    page = {"origin": BASE, "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors"}
+    r = dash.put("/api/uploads/nope-20260101-abcd", content=b"chunk", headers=page)
+    assert r.status_code != 403, r.text
+    r = dash.put("/api/uploads/nope-20260101-abcd", content=b"chunk")
+    assert r.status_code == 403 and r.json()["error"]["code"] == CODE
+
+
+def test_three_forms_with_no_sender_are_told_in_words_that_are_true(tmp_path: Path, clock: Clock):
+    sup, app, _ = engine(tmp_path)
+    tc = client(app)
+    for _ in range(3):
+        r = tc.post("/stop_all", content=b"", headers={"content-type": "text/plain"})
+        assert refused(r, "form") is None
+    settle()
+    said = notes_of(sup)
+    assert len(said) == 1 and said[0] == (
+        "NS-E207: Something on this PC sent Nightshift a web form 3 times (last at 09:00). Every request was refused "
+        "and nothing was changed. No program of Nightshift does that; it is most likely a web page in an old browser "
+        "or in Internet Explorer mode. Close the web pages you do not know. A script of yours must send JSON."
+    )
+    rows = log_rows(sup.paths.logs, "request_refused")
+    assert len(rows) == 1 and rows[0]["data"]["why"] == "form" and rows[0]["data"]["origin"] is None
+
+
+def test_a_file_page_or_a_sandboxed_frame_is_named_usefully(tmp_path: Path, clock: Clock):
+    sup, app, _ = engine(tmp_path)
+    knock(client(app), "null", 3)
+    settle()
+    said = notes_of(sup)
+    assert len(said) == 1 and "null" not in said[0]
+    assert "tried 3 times to control Nightshift (from a page opened from a file or an embedded frame, last at" in said[0]
+
+
+# ============================================== round 2: the bound on notes holds for the install, not a process
+def other_note(sup: Supervisor, i: int) -> None:
+    notify.leave_note(sup.paths, "Nightshift", f"NS-W209: the nightly run could not start ({i})")
+
+
+def kinds_of(sup: Supervisor) -> tuple[int, int]:
+    said = notes_of(sup)
+    return len([m for m in said if m.startswith("NS-E207:")]), len([m for m in said if m.startswith("NS-W209:")])
+
+
+def test_the_notes_of_a_day_are_bounded_across_servers_and_restarts(tmp_path: Path, clock: Clock):
+    """A tab left open cycles sub-domains while the engine restarts and a second server refuses too: the
+    notes file holds three notes that name a page and one that says there were more, whoever wrote them."""
+    sup, first, _ = engine(tmp_path)
+    second = engine_app(sup, run_monitor=False)                  # another server of the same install
+    for i in range(2):
+        knock(client(first), f"https://a{i}.evil.example", 3)
+    for i in range(2):
+        knock(client(second), f"https://b{i}.evil.example", 3)
+    settle()
+    assert kinds_of(sup) == (4, 0)
+    for restart in range(4):                                     # each start counts from zero in memory
+        again = engine_app(sup, run_monitor=False)
+        for i in range(5):
+            knock(client(again), f"https://r{restart}-{i}.evil.example", 3)
+        knock(client(again), "https://a0.evil.example", 3)       # and a page already named today
+        settle()
+    said = notes_of(sup)
+    assert len(said) == 4, said
+    assert [("https://a0." in said[0]), ("https://a1." in said[1]), ("https://b0." in said[2])] == [True] * 3
+    assert said[3].startswith("NS-E207: Still more web pages or names tried to control Nightshift today")
+    # the owner read them (the bell clears the file): the same day gets at most the same four again
+    notify.clear_notes(sup.paths)
+    for i in range(6):
+        knock(client(first), f"https://c{i}.evil.example", 3)
+    settle()
+    assert len(notes_of(sup)) <= 4
+
+
+def test_a_refusal_note_never_pushes_another_note_out(tmp_path: Path, clock: Clock):
+    """The file keeps its newest 20. Unread for days, refusal notes take at most 8 places, and none is written
+    into a full file: the night's own notes stay."""
+    assert loopback is not None and loopback.NOTES_KEPT == notify.NOTE_KEEP
+    sup, app, _ = engine(tmp_path)
+    for i in range(6):
+        other_note(sup, i)
+    for day in range(5):                                         # a long weekend, nobody reads the notes
+        for i in range(6):
+            knock(client(app), f"https://d{day}-{i}.evil.example", 3)
+        settle()
+        clock.step(days=1)
+    assert kinds_of(sup) == (8, 6)
+    held = log_rows(sup.paths.logs, "morning_note_held")
+    assert held and held[0]["level"] == "WARN" and "already wait unread" in held[0]["msg"]
+    # a file that is full of the night's notes: no refusal note goes in, and none of them goes out
+    notify.clear_notes(sup.paths)
+    for i in range(19):
+        other_note(sup, i)
+    for i in range(6):
+        knock(client(app), f"https://e{i}.evil.example", 3)
+    settle()
+    assert kinds_of(sup) == (1, 19)
+    clock.step(minutes=11)
+    for i in range(6):
+        knock(client(app), f"https://e{i}.evil.example", 3)
+    settle()
+    assert kinds_of(sup) == (1, 19)
+    assert [n["message"] for n in notify.read_notes(sup.paths)][:19] == [
+        f"NS-W209: the nightly run could not start ({i})" for i in range(19)
+    ]
+    # the owner reads them: the page that still tries is told then (the note stayed owed)
+    notify.clear_notes(sup.paths)
+    clock.step(minutes=11)
+    knock(client(app), "https://e1.evil.example")
+    settle()
+    assert kinds_of(sup) == (1, 0) and "https://e1.evil.example" in notes_of(sup)[0]
+
+
+# ======================================================== round 2: a new server cannot forget the check
+def test_every_http_app_of_ours_is_wrapped_by_the_check():
+    """Every module under ns_* that builds a FastAPI or Starlette app adds the guard to it, and every module
+    that serves HTTP another way is on the list below with its reason."""
+    import ast
+
+    guards = {"LoopbackGuard", "LoopbackMiddleware"}
+    #: HTTP servers that are not ASGI apps. Both are stand-ins for third-party model servers (llama-server and
+    #: friends, which have no such check either) and exist only on fake-services installs and in tests.
+    not_asgi = {"ns_supervisor/devfake.py", "ns_dashboard/fakes.py"}
+    apps: dict[str, int] = {}
+    raw_servers: set[str] = set()
+    for file in sorted(ROOT.glob("ns_*/**/*.py")):
+        rel = file.relative_to(ROOT).as_posix()
+        if "/ui/" in rel or "node_modules" in rel:
+            continue
+        text = file.read_text(encoding="utf-8")
+        if not any(word in text for word in ("FastAPI", "Starlette", "HTTPServer", "uvicorn", "socketserver")):
+            continue
+        tree = ast.parse(text)
+        made = guarded = 0
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name in ("FastAPI", "Starlette"):
+                made += 1
+            elif name in ("HTTPServer", "ThreadingHTTPServer", "TCPServer", "ThreadingTCPServer"):
+                raw_servers.add(rel)
+            elif name == "add_middleware" and node.args and getattr(node.args[0], "id", None) in guards:
+                guarded += 1
+        if made:
+            apps[rel] = made
+            assert guarded == made, f"{rel} builds {made} HTTP app(s) and adds the loopback check to {guarded}"
+    assert set(apps) == {"ns_supervisor/app.py", "ns_tts/server.py", "ns_dashboard/server.py"}, apps
+    assert raw_servers <= not_asgi, f"an HTTP server without the loopback check: {sorted(raw_servers - not_asgi)}"
+    # and the check is what answers: each real app refuses a foreign Host before any route (the outermost layer)
+    from ns_dashboard.server import LoopbackMiddleware
+
+    assert loopback is not None and issubclass(LoopbackMiddleware, loopback.LoopbackGuard)

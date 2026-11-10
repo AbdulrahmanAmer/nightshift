@@ -136,6 +136,7 @@ def test_csv_import_matches_rows_and_reports_in_plain_words(tmp_home: Path):
     from tests.helpers import add_output, make_channel
 
     client, state = make_env(tmp_home)
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     paths = Paths.from_env()
     db = Db(paths.db_path)
     add_channel(paths, db, make_channel())
@@ -156,6 +157,7 @@ def test_csv_with_no_known_columns_is_a_coded_error(tmp_home: Path):
     from ns_dashboard.adapters import RealLearnAdapter
 
     client, state = make_env(tmp_home)
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     state.adapters.learn = RealLearnAdapter(Paths.from_env())
     r = client.post("/api/learn/import", files={"file": ("export.csv", b"a,b\n1,2\n", "text/csv")})
     assert r.status_code == 500 and "NS-E323" in err(r)["message"]
@@ -230,6 +232,7 @@ def test_settings_export_import_uninstall_routes(tmp_home: Path):
     from ns_dashboard.fakes import FakeBackupAdapter
 
     client, state = make_env(tmp_home)
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     assert isinstance(state.adapters.backup, FakeBackupAdapter)
     assert client.get("/api/settings/export/latest").status_code == 404
     made = client.post("/api/settings/export").json()

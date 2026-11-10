@@ -318,6 +318,7 @@ def test_run_and_clip_jobs_over_http(env, tmp_home: Path):
 @needs_multipart
 def test_clip_job_multipart_upload(env):
     client, state = env
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     seed_channel(state.db, state.paths)
     data = {"channel": "after-dark", "template": "auto", "max_clips": "3", "min_s": "20", "max_s": "60",
             "caption_style": "punch_yellow", "rights_confirmed": "true"}
@@ -334,6 +335,7 @@ def test_clip_job_multipart_upload(env):
 @needs_multipart
 def test_learn_import_multipart(env):
     client, _ = env
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     csv = b"title,views\nA,10\nB,20\n"
     r = client.post("/api/learn/import", files={"file": ("export.csv", csv, "text/csv")})
     assert r.status_code == 200
@@ -348,6 +350,7 @@ def test_learn_import_multipart(env):
 
 def test_chunked_upload_over_http(env):
     client, state = env
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     payload = bytes(range(256)) * 8
     start = client.post("/api/uploads", json={"filename": "talk.mp4", "size": len(payload)})
     assert start.status_code == 201 and start.json()["chunk_size"] == 8 * 1024 * 1024

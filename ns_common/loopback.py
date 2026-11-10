@@ -25,6 +25,13 @@ The rules:
   that is not a GET or HEAD is answered for another site, so no GET that does work (the update check, the
   status that syncs the schedule record) can be set off from a foreign page.
 
+One more rule covers the browsers that say nothing at all (Internet Explorer and Edge's IE mode, old Firefox:
+no `Origin` on a form POST, no `Sec-Fetch-*`, and no `Referer` from an HTTPS page). All a page can make such a
+browser send to another origin without a preflight is a plain HTML form, and a form has one of three content
+types. So a request that is not a GET or HEAD and whose body is a form's (`FORM_TYPES`, or a body with no
+content type at all) is refused by the engine and the voice service always, and by the dashboard unless it
+carries a loopback `Origin` (the dashboard's own page uploading a file). Our programs send JSON, or no body.
+
 A refused request gets 403 with `NS-E207` and no route runs. The first refusal of a page is one WARN; a page
 that keeps trying (3 refusals within 10 minutes) is told to the owner once per local day through `tell`
 (the morning notes), off the request path. Standard library only.
@@ -61,6 +68,14 @@ NAME_MAX = 80
 #: Used when the error table cannot be read (the refusal must still be answered).
 FALLBACK_MESSAGE = "Nightshift refused a request that did not come from a program of this PC."
 SAFE_METHODS = frozenset({"GET", "HEAD"})
+#: The content types a plain HTML form can send to another origin without a preflight.
+FORM_TYPES = frozenset({"application/x-www-form-urlencoded", "multipart/form-data", "text/plain"})
+#: The notes file keeps its newest 20 (`ns_supervisor.notify.NOTE_KEEP`): a refusal note is written only while
+#: there is room, so it never pushes another note out, and at most this many of ours wait unread.
+NOTES_KEPT = 20
+NOTES_WAITING_MAX = 8
+NULL_PAGE = "a page opened from a file or an embedded frame"
+FORM_SENDER = "a web form without a sender"
 
 
 @dataclass(frozen=True)
@@ -79,7 +94,7 @@ LOOPBACK_PAGES = Rule("loopback-pages", pages=True, envelope=True, data_prefix="
 
 @dataclass(frozen=True)
 class Refusal:
-    """Why a request is refused (`why`: host, origin, fetch-mark or referer) and who sent it."""
+    """Why a request is refused (`why`: host, origin, fetch-mark, referer or form) and who sent it."""
 
     why: str
     host: str
@@ -155,6 +170,29 @@ def _site_of(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}" if parts.scheme and parts.netloc else url
 
 
+def media_type(content_type: str) -> str:
+    """`text/plain` of `Text/Plain; charset=utf-8`: the media type alone, lower-cased, without parameters."""
+    return content_type.split(";", 1)[0].strip().lower()
+
+
+def _has_body(seen: dict[str, list[str]]) -> bool:
+    """The request announces a body: a `Content-Length` other than 0, or any `Transfer-Encoding`."""
+    if "transfer-encoding" in seen:
+        return True
+    return any(length.strip() != "0" for length in seen.get("content-length", []))
+
+
+def is_form_like(seen: dict[str, list[str]], method: str) -> bool:
+    """A request that is not a GET or HEAD and whose body a plain HTML form can send: one of `FORM_TYPES`
+    (media type only), or a body with no content type at all."""
+    if method.upper() in SAFE_METHODS:
+        return False
+    types = [media_type(v) for v in seen.get("content-type", [])]
+    if any(kind in FORM_TYPES for kind in types):
+        return True
+    return not any(types) and _has_body(seen)
+
+
 def decide(
     headers: Iterable[tuple[bytes, bytes]], rule: Rule, method: str = "GET", path: str = "/"
 ) -> Refusal | None:
@@ -179,9 +217,11 @@ def decide(
         page = _clean(_site_of(referers[-1]))
     else:
         page = host or "(no name)"
+    form = is_form_like(seen, method)
 
     def no(why: str) -> Refusal:
-        return Refusal(why, host, origin, page, browser)
+        sender = FORM_SENDER if why == "form" and not browser else page
+        return Refusal(why, host, origin, sender, browser)
 
     if not hosts or not all(is_loopback_host(h) for h in hosts):
         return no("host")
@@ -192,9 +232,14 @@ def decide(
             return no("fetch-mark")
         if referers is not None:
             return no("referer")
-        return None
+        return no("form") if form else None
     if origins:
-        return None if all(is_loopback_origin(o) for o in origins) else no("origin")
+        if not all(is_loopback_origin(o) for o in origins):
+            return no("origin")
+        # the dashboard's own page (a loopback Origin, said by the browser) may send a form: a file upload
+        return no("form") if form and not all(o.strip() for o in origins) else None
+    if form:
+        return no("form")
     # no Origin: a plain GET, a form an old browser posted, a navigation. From another site only a page opens.
     page_path = not (rule.data_prefix and path.startswith(rule.data_prefix))
     may_open = method.upper() in SAFE_METHODS and page_path
@@ -233,8 +278,16 @@ def note_text(refusal: Refusal, count: int, at: datetime, *, more: bool = False)
             "what sent them, close the web pages you have open."
         )
         return text, MORE_PAGES
+    if refusal.why == "form" and not refusal.browser:
+        mark = "sent Nightshift a web form "
+        text = (
+            f"{CODE}: Something on this PC {mark}{count} times ({last}). {end} No program of Nightshift "
+            "does that; it is most likely a web page in an old browser or in Internet Explorer mode. Close "
+            "the web pages you do not know. A script of yours must send JSON."
+        )
+        return text, mark
     if refusal.browser:
-        mark = f"(from {page}, "
+        mark = f"(from {NULL_PAGE if page == 'null' else page}, "
         text = (
             f"{CODE}: A web page open in your browser tried {count} times to control Nightshift "
             f"{mark}{last}). {end} If you do not know that page, close it."
@@ -368,7 +421,7 @@ class LoopbackGuard:
         and a page that keeps trying starts one note writer (at most one try per `WINDOW`)."""
         now = self._now()
         lines: list[tuple[str, str, dict[str, Any]]] = []
-        start: tuple[str, str, str, bool, datetime] | None = None
+        start: tuple[str, Refusal, int, datetime] | None = None
         with self._lock:
             if self._day != now.date():   # a new day: yesterday's counts are logged and the books start again
                 for name, old in self._pages.items():
@@ -398,16 +451,8 @@ class LoopbackGuard:
                 page.owed = True
             waited = page.tried_at is None or not timedelta(0) <= now - page.tried_at < WINDOW
             if self.tell is not None and page.owed and not page.told and not page.writing and waited:
-                more = key == OTHER_PAGES or self._named >= PAGES_NAMED
-                if more and self._more:
-                    page.told = True   # today's notes are used up; the log keeps counting
-                else:
-                    page.writing, page.tried_at = True, now
-                    if more:
-                        self._more = True
-                    else:
-                        self._named += 1
-                    start = (key, *note_text(refusal, page.count, now, more=more), more, now)
+                page.writing, page.tried_at = True, now
+                start = (key, refusal, page.count, now)
         for event, msg, data in lines:
             self._warn(event, msg, **data)
         if start is not None:
@@ -416,21 +461,45 @@ class LoopbackGuard:
                 self._writers.append(thread)
             thread.start()
 
-    def _write_note(self, key: str, message: str, mark: str, more: bool, at: datetime) -> None:
-        """On its own thread: leave the note unless one about this page already waits from today."""
-        told, problem = False, ""
+    def _write_note(self, key: str, refusal: Refusal, count: int, at: datetime) -> None:
+        """On its own thread: leave today's note about this page, within the bounds the notes file sets.
+
+        The bounds are counted in the notes that wait in the file (`waiting`), which every server of the
+        install and every restart shares: nothing when a note about this page already waits from today; at
+        most `PAGES_NAMED` notes that name a page per day and then one that says there were more; and nothing
+        while the file is full or `NOTES_WAITING_MAX` of ours wait unread (the note stays owed and is tried
+        again at a later refusal), so a refusal note never pushes another note out of the file.
+        """
+        told, problem, held = False, "", ""
         try:
             day = at.date().isoformat()
+            with self._lock:
+                same_day = self._day == at.date()
+                named, more = (self._named, self._more) if same_day else (0, False)
             with _NOTES:
-                waits = self.waiting() if self.waiting is not None else []
-                already = any(
-                    str(n.get("message", "")).startswith(f"{CODE}:") and mark in str(n.get("message", ""))
-                    and str(n.get("at", ""))[:10] == day
-                    for n in waits
-                )
-                if not already and self.tell is not None:
-                    self.tell(message, at)
-            told = True
+                waits = list(self.waiting()) if self.waiting is not None else []
+                ours = [n for n in waits if str(n.get("message", "")).startswith(f"{CODE}:")]
+                today = [str(n.get("message", "")) for n in ours if str(n.get("at", ""))[:10] == day]
+                named = max(named, sum(1 for m in today if MORE_PAGES not in m))
+                more = more or any(MORE_PAGES in m for m in today)
+                text, mark = note_text(refusal, count, at)
+                as_more = key == OTHER_PAGES or named >= PAGES_NAMED
+                if any(mark in m for m in today) or (as_more and more):
+                    pass   # the owner has today's note about this page, or today's notes are used up
+                elif len(waits) >= NOTES_KEPT:
+                    held = f"the notes file is full ({len(waits)} notes wait unread)"
+                elif len(ours) >= NOTES_WAITING_MAX:
+                    held = f"{len(ours)} notes about refused requests already wait unread"
+                elif self.tell is not None:
+                    if as_more:
+                        text, mark = note_text(refusal, count, at, more=True)
+                    self.tell(text, at)
+                    with self._lock:
+                        if self._day == at.date() and as_more:
+                            self._more = True
+                        elif self._day == at.date():
+                            self._named += 1
+            told = not held
         except Exception as e:  # noqa: BLE001 - whatever the notes writer raises, the server goes on
             problem = f"{type(e).__name__}: {e}"
         with self._lock:
@@ -438,9 +507,7 @@ class LoopbackGuard:
             if page is not None:
                 page.writing = False
                 page.told = told
-                if not told and more:      # the note was not left: its place is free for the next try
-                    self._more = False
-                elif not told:
-                    self._named -= 1
-        if not told:
+        if held:
+            self._warn("morning_note_held", f"not written now: {held}", code=CODE, page=key)
+        elif not told:
             self._warn("morning_note_failed", problem, code=CODE, page=key)
