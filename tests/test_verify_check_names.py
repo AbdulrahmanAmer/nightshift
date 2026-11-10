@@ -49,7 +49,10 @@ def test_every_constant_is_a_check_the_full_verify_can_record(tmp_path: Path) ->
         v for k, v in vars(names).items() if k.isupper() and isinstance(v, str) and not k.endswith("PREFIX")
     }
     # tts.engine is recorded only when the voice service reports the reference engine (NS-W301)
-    assert constants - {names.TTS_MODE_PREFIX, names.TTS_ENGINE} <= full, constants - full
+    # (`warning` is the value of a voice's warning row, not a check name)
+    assert constants - {names.TTS_MODE_PREFIX, names.TTS_ENGINE, names.TALKER_WARNING_VALUE} <= full, (
+        constants - full
+    )
 
 
 def test_there_is_no_mtp_check_in_verify(tmp_path: Path) -> None:
@@ -85,7 +88,7 @@ def test_the_setup_labels_use_the_same_names_as_check_names() -> None:
     # labels.py runs on the bare Python of the setup server and cannot import check_names, so it repeats them
     for const in (
         "LLAMA_PREFIX", "EMBED_PREFIX", "TTS_PREFIX", "WHISPER_PREFIX", "NVENC_PREFIX",
-        "LLAMA_TOK_S", "EMBED_VECTOR", "TTS_START", "TTS_VOICES", "TTS_PRESET", "TTS_ENGINE_CHECKS",
+        "LLAMA_TOK_S", "EMBED_VECTOR", "TTS_START", "TTS_VOICES", "TTS_PRESET", "TALKER_WARNING_VALUE",
         "WHISPER_LOAD", "NVENC_PROBE",
     ):  # fmt: skip
         assert getattr(labels, const) == getattr(names, const), const

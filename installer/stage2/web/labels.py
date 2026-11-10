@@ -97,7 +97,7 @@ EMBED_VECTOR = "embed.vector"
 TTS_START = "tts.start"
 TTS_VOICES = "tts.voices"
 TTS_PRESET = "tts.preset"
-TTS_ENGINE_CHECKS = (TTS_START, TTS_VOICES, TTS_PRESET)
+TALKER_WARNING_VALUE = "warning"
 WHISPER_LOAD = "whisper.load"
 NVENC_PROBE = "nvenc.probe"
 
@@ -140,15 +140,6 @@ def verify_key(name: str) -> str:
     return area[0] if area else name
 
 
-def _is_talker(low: str) -> bool:
-    """True for the check of one non-preset talker (`tts.design`, `tts.clone`): a voice, not the engine."""
-    return low.startswith(TTS_PREFIX) and low not in TTS_ENGINE_CHECKS
-
-
-def _talker_mode(low: str) -> str:
-    return low[len(TTS_PREFIX):]
-
-
 def verify_value(name: str, passed: bool, value: str | None, speaker: str | None = None) -> str | None:
     """The value column contribution of one verify check (spec 2.6); None when it has nothing to say."""
     low = name.lower()
@@ -159,7 +150,9 @@ def verify_value(name: str, passed: bool, value: str | None, speaker: str | None
     if low.startswith(TTS_PREFIX) and low not in (TTS_START, TTS_VOICES):
         # tts.preset / tts.design / tts.clone carry the real-time factor; it stays in verify-report.json
         if not passed:
-            return f"{_talker_mode(low)} voice" if _is_talker(low) else (speaker or "voice")
+            return speaker or "voice"
+        if value == TALKER_WARNING_VALUE:       # a designed or cloned voice that did not speak: a warning
+            return f"{low[len(TTS_PREFIX):]} voice did not speak"
         return f"{speaker}, voice works" if speaker and low == TTS_PRESET else "voice works"
     if low == WHISPER_LOAD:
         return "graphics card" if passed else "processor"
@@ -171,10 +164,10 @@ def verify_value(name: str, passed: bool, value: str | None, speaker: str | None
 def verify_rows(checks: list[dict[str, Any]], speaker: str | None = None) -> list[dict[str, Any]]:
     """Setup rows from the check rows of verify-report.json: one row per area, in first-seen order.
 
-    A row passes when all its checks pass; a failed nvenc row or a failed voice ENGINE check is a
-    ``fallback`` (the handled switch to libx264 or the PyTorch engine), anything else ``failed``, among them a
-    non-preset talker (``tts.clone``) that did not speak: setup does not switch the engine for a voice, so
-    that row says ``failed`` and its value names the mode. ``bench.*`` checks are not shown.
+    A row passes when all its checks pass; a failed nvenc or tts row is a ``fallback``, anything else
+    ``failed``. ``bench.*`` checks are not shown. A designed or cloned voice that did not speak is a passed
+    check with the value ``warning`` (``ns_supervisor.verify.talker_warning``): the row stays ``passed``, its
+    value names the mode and its ``note`` is the sentence with the way out.
     """
     rows: dict[str, dict[str, Any]] = {}
     for c in checks:
@@ -187,12 +180,14 @@ def verify_rows(checks: list[dict[str, Any]], speaker: str | None = None) -> lis
         row = rows.setdefault(
             key, {"name": key, "label": label, "status": "passed", "value": None, "note": None}
         )
-        if not passed and row["status"] != "failed":
-            handled = key in VERIFY_FALLBACK_ROWS and not _is_talker(name.lower())
-            row["status"] = "fallback" if handled else "failed"
+        if not passed:
+            row["status"] = "fallback" if key in VERIFY_FALLBACK_ROWS else "failed"
         value = verify_value(name, passed, c.get("value"), speaker)
-        if value is not None and (row["value"] is None or not passed):
+        warned = passed and c.get("value") == TALKER_WARNING_VALUE
+        if value is not None and (row["value"] is None or not passed or warned):
             row["value"] = value
+        if warned and c.get("note"):
+            row["note"] = str(c["note"]) if row["note"] is None else f"{row['note']} {c['note']}"
     return list(rows.values())
 
 

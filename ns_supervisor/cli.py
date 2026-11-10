@@ -4,7 +4,7 @@ import dataclasses
 import json
 import os
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -113,6 +113,23 @@ def _stop_started_engine(client: SupervisorClient) -> None:
         typer.echo(f"Could not stop the verify engine: {e}", err=True)
 
 
+def _leave_voice_notes(paths: Paths, report: Any) -> None:
+    """A designed or cloned voice that did not speak: its sentence waits as a morning note, once.
+
+    The exit code does not change (`verify.talker_warning`): an update that ran this command (0.1.14's
+    updater too) goes on, and this note is where the owner reads which voice it was and what to do. A note
+    with the same sentence that nobody has read yet is not added again. Best effort: it never fails verify.
+    """
+    try:
+        waiting = {n.get("message") for n in notify.read_notes(paths)}
+        for sentence in verify.talker_warnings(report.checks):
+            if sentence not in waiting:
+                notify.leave_note(paths, "Nightshift", sentence)
+                waiting.add(sentence)
+    except Exception:  # a note is a courtesy; the report file has the sentence too
+        return
+
+
 @app.command("verify")
 def cmd_verify(
     quick: Annotated[
@@ -142,13 +159,14 @@ def cmd_verify(
     except NsError as e:
         typer.echo(f"Could not start the engine: {e}", err=True)
     try:
-        report = verify.run_verify(paths, rt, client, quick=quick)
+        report = verify.run_verify(paths, rt, client, quick=quick, progress=typer.echo)
     finally:
         if started_here:
             _stop_started_engine(client)
     f = verify.write_report(paths, report)
     for line in verify.format_lines(report):
         typer.echo(line)
+    _leave_voice_notes(paths, report)
     typer.echo(f"Report: {f}")
     if not report.passed:
         raise typer.Exit(1)

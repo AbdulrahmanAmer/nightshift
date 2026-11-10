@@ -27,10 +27,10 @@ VRAM_IDLE = "vram.idle"
 #: Prefix of the per-mode TTS checks (`tts.preset`, `tts.design`, `tts.clone`).
 TTS_MODE_PREFIX = "tts."
 TTS_PRESET = "tts.preset"
-#: The voice checks that say the voice ENGINE does not work. Setup switches to the PyTorch engine (NS-W301)
-#: only when one of these fails. Any other `tts.<mode>` check (`tts.design`, `tts.clone`) is one talker, a
-#: voice that did not speak while the preset did: switching the engine would not mend a voice.
-TTS_ENGINE_CHECKS: tuple[str, ...] = (TTS_START, TTS_VOICES, TTS_PRESET)
+#: The `value` of the row of a designed or cloned voice that did not speak: the row is `passed` (a voice that
+#: cannot speak is a warning, never a failure of `ns verify`, an update or setup; only the preset and the
+#: engine are checks that fail) and its `log` is the sentence the owner reads.
+TALKER_WARNING_VALUE = "warning"
 
 #: Area prefixes: every check of an area starts with its prefix.
 LLAMA_PREFIX = "llama."

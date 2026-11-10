@@ -879,6 +879,20 @@ def _refuse_if_pending(rec: rollback_intent.Recovery, log: NsLogger, settled: st
         )
 
 
+def _voice_notes(paths: Paths) -> list[str]:
+    """The sentences about a designed or cloned voice that did not speak in the verify step just run.
+
+    That voice is a warning, never a reason to roll back (`verify.talker_warning`); the same sentence is
+    already waiting as a morning note (`cli._leave_voice_notes`), and here it is part of the update's result.
+    """
+    try:
+        from ns_supervisor import verify
+
+        return verify.read_talker_warnings(paths)
+    except Exception:  # a note must never turn a good update into a rollback
+        return []
+
+
 def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     """Apply a release zip to `app`. `NS-E701` before any change, `NS-E702` (rolled back) after."""
     zip_path, app = zip_path.resolve(), app.absolute()
@@ -935,6 +949,7 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
         if not env.verify(app):
             raise NsError("NS-E702", "ns verify --quick failed on the new version")
         notes += env.reregister(app)
+        notes += _voice_notes(paths)
     except Exception as e:  # any step failing after the swap rolls back
         log.error("update_failed", str(e))
         detail = e.detail if isinstance(e, NsError) else f"{type(e).__name__}: {e}"
@@ -1341,7 +1356,7 @@ def git_update(
         env.sync(app)
         if not env.verify(app):
             raise NsError("NS-E702", "ns verify --quick failed on the new version")
-        notes = env.reregister(app)
+        notes = env.reregister(app) + _voice_notes(paths)
     except Exception as e:  # any step failing after the move goes back to the previous commit
         log.error("git_update_failed", str(e))
         run(["checkout", "--detach", head])

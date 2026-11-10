@@ -16,6 +16,7 @@ import zipfile
 from functools import partial
 from pathlib import Path
 
+from installer.stage2.state import load_flags
 from ns_common.atomic import (
     copy_atomic,
     read_text_retry,
@@ -67,6 +68,8 @@ def write_console_install_report(
         "steps": {sid: {"status": (st or {}).get("status"), "finished_at": (st or {}).get("finished_at"),
                         "error": (st or {}).get("error")} for sid, st in steps.items()},
         "last_error": last_error,
+        # designed or cloned voices that did not speak in the setup test (s08): the voice, why, the way out
+        "voice_warnings": [str(w) for w in (load_flags(paths).get("voice_warnings") or [])],
         "answers": answers,
     }
     try:

@@ -12,6 +12,7 @@ the rows asserted below are the ones that table names.
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import threading
@@ -47,6 +48,7 @@ from ns_tts.voices import VoiceLibrary, VoiceSpec  # noqa: E402
 from tests.test_ns_verify import good_deps  # noqa: E402
 
 NO_SCHEDULE_CALLS: list[Any] = []
+MACHINE = good_deps()      # the probes of a healthy PC, made before any test replaces `verify.Deps`
 
 
 # ---------------------------------------------------------------------------------------------- the service
@@ -161,6 +163,19 @@ def break_voice(svc: Service_, name: str) -> None:
     (svc.voices_dir / name / "speaker.bin").unlink()
 
 
+def refuse_voice(svc: Service_, name: str) -> None:
+    """The engine dies on this voice (a preset has no file to lose, so the engine is made to refuse it)."""
+    real = svc.engine.synth
+
+    def refuse(text: str, voice: VoiceSpec, **kw: Any) -> Any:
+        if voice.name == name:
+            svc.engine.spoken.append(name)
+            raise NsError("NS-E310", "the engine died on this sentence")
+        return real(text, voice, **kw)
+
+    svc.engine.synth = refuse  # type: ignore[method-assign]
+
+
 # ---------------------------------------------------------------------------------------- the card's tests
 def test_quick_mode_speaks_one_sentence_per_installed_mode(tmp_path: Path, three_talkers: Service_) -> None:
     report = run(tmp_path, three_talkers, quick=True)
@@ -182,33 +197,32 @@ def test_quick_mode_speaks_one_sentence_per_installed_mode(tmp_path: Path, three
 def test_a_failing_second_talker_fails_the_install_check_with_its_mode_named(
     tmp_path: Path, three_talkers: Service_, broken: str
 ) -> None:
+    """The preset failing is a failed row (the engine check, as before); a designed or cloned voice failing
+    is a WARNING row naming the mode and the voice, and every other talker is still spoken."""
     mode = {"Ryan": "preset", "Dee": "design", "Cleo": "clone"}[broken]
     if broken == "Ryan":
-        # a preset has no file to lose: make the service refuse this voice name instead
-        real = three_talkers.engine.synth
-
-        def refuse(text: str, voice: VoiceSpec, **kw: Any) -> Any:
-            if voice.name == "Ryan":
-                raise NsError("NS-E310", "the engine died on this sentence")
-            return real(text, voice, **kw)
-
-        three_talkers.engine.synth = refuse  # type: ignore[method-assign]
+        refuse_voice(three_talkers, "Ryan")
     else:
         break_voice(three_talkers, broken)
     report = run(tmp_path, three_talkers, quick=True)
     rows = tts_rows(report)
-    failed = {n for n, c in rows.items() if not c.passed}
-    assert failed == {f"tts.{mode}"}, {n: rows[n].log for n in rows}
-    log = rows[f"tts.{mode}"].log or ""
-    assert f"{mode} voice" in log and repr(broken) in log      # the mode and the voice are named
-    assert "NS-E31" in log                                   # and the service's own code and reason
+    row = rows[f"tts.{mode}"]
+    log = row.log or ""
+    assert f"{mode} voice" in log.lower() and repr(broken) in log      # the mode and the voice are named
+    assert "NS-E31" in log                                           # and the service's own code and reason
     for other in {"preset", "design", "clone"} - {mode}:
-        assert rows[f"tts.{other}"].passed                    # the others were still spoken
+        assert rows[f"tts.{other}"].passed and rows[f"tts.{other}"].value != names.TALKER_WARNING_VALUE
+    assert voices_spoken(three_talkers.engine) == ["Ryan", "Dee", "Cleo"]     # none was skipped
     assert rows["tts.voices"].passed is True and mode in (rows["tts.voices"].log or "")
-    assert report.passed is False
     lines = verify.format_lines(report)
-    assert any(f"[FAIL] tts.{mode}" in ln for ln in lines)
-    assert any(f"{mode} voice" in ln for ln in lines)         # the console shows why, under the row
+    if broken == "Ryan":
+        assert row.passed is False and any(f"[FAIL] tts.{mode}" in ln for ln in lines)
+        assert verify.talker_warnings(report.checks) == []
+    else:
+        assert row.passed is True and row.value == names.TALKER_WARNING_VALUE      # a warning, not a failure
+        assert verify.talker_warnings(report.checks) == [log]
+        assert any(f"[WARN] tts.{mode}" in ln for ln in lines)
+        assert any("Channels > Edit channel" in ln and "Library > Voices" in ln for ln in lines)
 
 
 def test_quick_mode_with_only_the_preset_installed_is_unchanged(tmp_path: Path, service: Service_) -> None:
@@ -248,17 +262,121 @@ def test_s08_smoke_reports_the_per_mode_rows(tmp_path: Path, three_talkers: Serv
     table = dict(map(tuple, ctx.ui.tables[0][1]))
     assert {"tts.preset", "tts.design", "tts.clone"} <= set(table), sorted(table)
     assert table["tts.preset"] == table["tts.design"] == table["tts.clone"] == "ok"
-    assert ctx.flag("smoke") == "passed" and ctx.warnings == []
+    assert ctx.flag("smoke") == "passed" and ctx.warnings == [] and ctx.flag("voice_warnings") == []
+
+
+# --------------------------------------------------------------------------------- the whole run, all green
+class HybridCtl:
+    """The supervisor: the stub services for the story model and the memory index, the real voice service.
+
+    Everything but the voices is green, so `report.passed` and the exit code say what the voices did.
+    """
+
+    def __init__(self, sync: SyncSupervisor, tts_url: str) -> None:
+        self.sync, self.url = sync, tts_url
+
+    def is_up(self) -> bool:
+        return True
+
+    def shutdown(self, grace_s: float = 30) -> None:
+        return None
+
+    def acquire(
+        self, service: Service, owner: str, *, model_alias: str | None = None, timeout_s: int = 7200
+    ) -> Endpoint:
+        if service == "tts":
+            return Endpoint(self.url)
+        return self.sync.acquire(service, owner, model_alias=model_alias, timeout_s=timeout_s)
+
+    def release(self, service: Service, owner: str) -> None:
+        if service != "tts":
+            self.sync.release(service, owner)
+
+    def status(self) -> dict[str, Any]:
+        return self.sync.status()
+
+    def stop_all(self) -> None:
+        self.sync.stop_all()
+
+
+def run_green(tmp_path: Path, svc: Service_, *, quick: bool = True, **kw: Any) -> GateReport:
+    paths = Paths(tmp_path / "ns")
+    sync = SyncSupervisor(paths, Runtime.default("gpu"), resolver=StubTable())
+    try:
+        return verify.run_verify(
+            paths, Runtime.default("gpu"), HybridCtl(sync, svc.url), quick=quick, deps=good_deps(), **kw
+        )
+    finally:
+        sync.close()
+
+
+def set_up(svc: Service_, preset: str, clone: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The case of the matrix: the preset ok or failing, the clone voice ok, failing or timing out."""
+    if preset == "failing":
+        refuse_voice(svc, "Ryan")
+    if clone == "failing":
+        break_voice(svc, "Cleo")
+    elif clone == "timeout":
+        monkeypatch.setattr(verify, "LATER_TALKER_TIMEOUT_S", 0.4)
+        svc.engine.slow = {"Cleo": 1.5}
+
+
+CASES = [(p, c) for p in ("ok", "failing") for c in ("ok", "failing", "timeout")]
+
+
+@pytest.mark.parametrize(("preset", "clone"), CASES)
+@pytest.mark.parametrize("quick", [True, False])
+def test_the_run_fails_only_when_the_preset_does_a_voice_that_does_not_speak_is_a_warning(
+    tmp_path: Path, three_talkers: Service_, monkeypatch: pytest.MonkeyPatch, quick: bool,
+    preset: str, clone: str,
+) -> None:
+    if not quick and preset != "ok":
+        pytest.skip("a failing preset fails the full run as it always did; the quick run covers the rows")
+    set_up(three_talkers, preset, clone, monkeypatch)
+    report = run_green(tmp_path, three_talkers, quick=quick)
+    rows = tts_rows(report)
+    assert report.passed is (preset == "ok"), {c.name: c.log for c in report.checks if not c.passed}
+    assert rows["tts.preset"].passed is (preset == "ok")
+    if clone == "ok":
+        assert rows["tts.clone"].passed and rows["tts.clone"].value != names.TALKER_WARNING_VALUE
+        assert verify.talker_warnings(report.checks) == []
+    else:
+        c = rows["tts.clone"]
+        assert c.passed is True and c.value == names.TALKER_WARNING_VALUE
+        assert "clone voice 'Cleo'" in (c.log or "") and "Library > Voices" in (c.log or "")
+        assert ("NS-E311" if clone == "failing" else "NS-E310") in (c.log or "")
+        assert verify.talker_warnings(report.checks) == [c.log]
+    assert rows["tts.design"].passed and rows["tts.design"].value != names.TALKER_WARNING_VALUE
+    assert voices_spoken(three_talkers.engine) == ["Ryan", "Dee", "Cleo"]       # no talker is skipped
+
+
+def test_a_failing_design_voice_does_not_skip_the_clone_voice_after_it(
+    tmp_path: Path, three_talkers: Service_
+) -> None:
+    break_voice(three_talkers, "Dee")
+    report = run_green(tmp_path, three_talkers)
+    rows = tts_rows(report)
+    assert report.passed and rows["tts.design"].value == names.TALKER_WARNING_VALUE
+    assert rows["tts.clone"].passed and rows["tts.clone"].value != names.TALKER_WARNING_VALUE
+
+
+def test_progress_has_one_line_per_talker_as_it_starts(tmp_path: Path, three_talkers: Service_) -> None:
+    seen: list[str] = []
+    break_voice(three_talkers, "Cleo")
+    run_green(tmp_path, three_talkers, progress=seen.append)
+    assert seen == [
+        "speaking a test sentence with the preset voice Ryan ...",
+        "speaking a test sentence with the design voice Dee ...",
+        "speaking a test sentence with the clone voice Cleo ...",
+    ]
 
 
 # ---------------------------------------------------------------------------------------------- setup's s08
-def real_report_runner(
-    tmp_path: Path, svc: Service_, *, more: list[Any] | None = None
-) -> FakeRunner:
+def real_report_runner(tmp_path: Path, svc: Service_) -> FakeRunner:
     """A setup runner whose `ns verify --quick` answers with what the real verify finds on this service.
 
     Each call runs the real `run_verify` against the service as it is at that moment (so a test can repair a
-    voice between two calls); `more` are actions run after each call (they change the service).
+    voice between two calls).
     """
     state = {"n": 0}
     base = FakeRunner(tmp_path / "base")
@@ -277,86 +395,103 @@ def real_report_runner(
             logs = Path(home) / "logs"
             logs.mkdir(parents=True, exist_ok=True)
             (logs / "verify-report.json").write_text(data, encoding="utf-8")
-        for action in (more or []):
-            action()
         return RunResult(0 if all(c["passed"] for c in checks) else 1, data)
 
     return FakeRunner(tmp_path / "desktop", results={"ns verify --quick": ns_verify})
 
 
-def smoke_ctx(tmp_path: Path, svc: Service_, runner: FakeRunner | None = None) -> Any:
+def smoke_ctx(tmp_path: Path, svc: Service_, runner: FakeRunner | None = None, ui: Any = None) -> Any:
     runner = runner or real_report_runner(tmp_path, svc)
-    ctx = make_test_context(tmp_path / "setup", raw_answers=example_answers(), resolve=True, runner=runner)
-    return ctx
+    return make_test_context(
+        tmp_path / "setup", raw_answers=example_answers(), resolve=True, runner=runner, ui=ui
+    )
 
 
-def test_s08_a_failing_second_talker_stops_the_install_check_with_its_mode_named_and_does_not_switch(
-    tmp_path: Path, three_talkers: Service_
+@pytest.mark.parametrize("clone", ["ok", "failing", "timeout"])
+def test_s08_a_repair_over_an_existing_voice_library_goes_on_when_a_later_talker_does_not_speak(
+    tmp_path: Path, three_talkers: Service_, monkeypatch: pytest.MonkeyPatch, clone: str
 ) -> None:
-    break_voice(three_talkers, "Cleo")
+    set_up(three_talkers, "ok", clone, monkeypatch)
     ctx = smoke_ctx(tmp_path, three_talkers)
+    S08Smoke().run(ctx)                                             # nothing is raised
     runner = ctx.runner
-    with pytest.raises(NsError) as ei:
-        S08Smoke().run(ctx)
-    err = ei.value
-    assert err.code == "NS-E310"
-    assert "clone" in err.detail and "'Cleo'" in err.detail and "NS-E311" in err.detail
-    assert "preset" not in err.detail.replace("preset voice", "")          # only the failing mode is named
-    # the NS-W301 fallback is for the preset only: nothing was switched, nothing was downloaded
-    assert load_runtime(ctx.paths).tts.engine != "reference"
-    assert not ctx.flag("tts_fallback", False) and ctx.warnings == []
-    assert not runner.called("uv venv tts") and len(runner.called("ns verify --quick")) == 1
     table = dict(map(tuple, ctx.ui.tables[0][1]))
-    assert table["tts.clone"] == "fail" and table["tts.preset"] == "ok" and table["tts.design"] == "ok"
-    assert ctx.flag("smoke") != "passed"
+    assert ctx.flag("smoke") == "passed"
+    assert load_runtime(ctx.paths).tts.engine != "reference" and not ctx.flag("tts_fallback", False)
+    assert not runner.called("uv venv tts") and len(runner.called("ns verify --quick")) == 1
+    assert ctx.warnings == []                                       # no NS code is claimed (none fits)
+    warnings = ctx.flag("voice_warnings")
+    if clone == "ok":
+        assert warnings == [] and table["tts.clone"] == "ok"
+    else:
+        assert len(warnings) == 1 and "clone voice 'Cleo'" in warnings[0]
+        assert "Library > Voices" in warnings[0] and "Channels > Edit channel" in warnings[0]
+        assert table["tts.clone"] == "warning" and table["tts.preset"] == "ok"
+        assert any(warnings[0] in line for line in ctx.ui.said)       # said in the terminal / setup log
 
 
-def test_s08_a_failing_preset_still_switches_to_the_reference_engine_even_when_another_talker_fails(
-    tmp_path: Path, three_talkers: Service_
+@pytest.mark.parametrize("clone", ["ok", "failing", "timeout"])
+def test_s08_a_failing_preset_still_switches_to_the_reference_engine_whatever_the_later_talkers_do(
+    tmp_path: Path, three_talkers: Service_, monkeypatch: pytest.MonkeyPatch, clone: str
 ) -> None:
+    set_up(three_talkers, "ok", clone, monkeypatch)
     real = three_talkers.engine.synth
+    switched = {"done": False}
 
     def refuse_preset_until_switched(text: str, voice: VoiceSpec, **kw: Any) -> Any:
         if voice.name == "Ryan" and not switched["done"]:
             raise NsError("NS-E310", "qwentts.cpp died on this sentence")
         return real(text, voice, **kw)
 
-    switched = {"done": False}
     three_talkers.engine.synth = refuse_preset_until_switched  # type: ignore[method-assign]
-    break_voice(three_talkers, "Cleo")
     runner = real_report_runner(tmp_path, three_talkers)
     ctx = smoke_ctx(tmp_path, three_talkers, runner)
-
-    def switch(call: Any = None) -> None:
-        switched["done"] = True
-
     # the PyTorch venv install is a uv call: the preset speaks once it has run
-    runner.results["uv venv tts"] = lambda call: (switch(), runner._default(call))[1]
-    with pytest.raises(NsError) as ei:
-        S08Smoke().run(ctx)
+    runner.results["uv venv tts"] = lambda call: (switched.update(done=True), runner._default(call))[1]
+    S08Smoke().run(ctx)
     assert [c for c, _ in ctx.warnings] == ["NS-W301"] and ctx.flag("tts_fallback") is True
     assert runner.called("uv venv tts") and len(runner.called("ns verify --quick")) == 2
-    assert ei.value.code == "NS-E310" and "clone" in ei.value.detail  # the second pass names the other talker
+    assert ctx.flag("smoke") == "passed"
+    assert len(ctx.flag("voice_warnings")) == (0 if clone == "ok" else 1)   # from the second pass only
 
 
-def test_s08_retry_after_a_talker_failed_speaks_again_and_passes(
+def test_s08_a_failing_preset_after_the_switch_is_still_e108(tmp_path: Path, three_talkers: Service_) -> None:
+    refuse_voice(three_talkers, "Ryan")
+    ctx = smoke_ctx(tmp_path, three_talkers)
+    ctx.set_flag("tts_fallback", True)
+    with pytest.raises(NsError) as ei:
+        S08Smoke().run(ctx)
+    assert ei.value.code == "NS-E108"
+
+
+def test_s08_a_first_install_has_the_preset_only_and_no_warning(tmp_path: Path, service: Service_) -> None:
+    ctx = smoke_ctx(tmp_path, service)
+    S08Smoke().run(ctx)
+    table = dict(map(tuple, ctx.ui.tables[0][1]))
+    assert [n for n in table if n.startswith("tts.")] == ["tts.start", "tts.preset", "tts.voices"]
+    assert ctx.flag("voice_warnings") == [] and ctx.flag("smoke") == "passed" and ctx.warnings == []
+
+
+def test_s08_retry_speaks_every_talker_again_and_a_repaired_voice_clears_the_warning(
     tmp_path: Path, three_talkers: Service_
 ) -> None:
     break_voice(three_talkers, "Dee")
     ctx = smoke_ctx(tmp_path, three_talkers)
     runner = ctx.runner
     step = S08Smoke()
-    with pytest.raises(NsError):
-        step.run(ctx)
-    assert step.check(ctx) is False                       # no stale marker: setup's resume runs s08 again
+    step.run(ctx)
+    assert len(ctx.flag("voice_warnings")) == 1
     three_talkers.engine.spoken.clear()
-    # the owner repaired the voice
+    # the owner made the voice again (a voice file is back); setup is run again (a Repair)
     (three_talkers.voices_dir / "Dee" / "speaker.bin").write_bytes(bytes(range(1, 65)))
+    for flag in S08Smoke.clears_on_run:                       # what the wizard does before it runs the step
+        ctx.set_flag(flag, None)
+    assert step.check(ctx) is False                           # no stale marker skips the test
     step.run(ctx)
     step.verify(ctx)
     assert step.check(ctx) is True and len(runner.called("ns verify --quick")) == 2
-    # every talker spoke again, not only the one that was repaired
-    assert voices_spoken(three_talkers.engine) == ["Ryan", "Dee", "Cleo"]
+    assert voices_spoken(three_talkers.engine) == ["Ryan", "Dee", "Cleo"]     # every talker spoke again
+    assert ctx.flag("voice_warnings") == []
 
 
 def test_s08_killed_halfway_leaves_nothing_that_skips_the_next_run(
@@ -365,6 +500,7 @@ def test_s08_killed_halfway_leaves_nothing_that_skips_the_next_run(
     ctx = smoke_ctx(tmp_path, three_talkers)
     ctx.set_flag("smoke", "passed")                       # an earlier pass of the same version ...
     ctx.set_flag("smoke_version", ctx.manifest.version)
+    ctx.set_flag("voice_warnings", ["an old sentence"])
     assert S08Smoke().check(ctx) is True
     for flag in S08Smoke.clears_on_run:                   # ... which the wizard clears before the step starts
         ctx.set_flag(flag, None)
@@ -377,11 +513,52 @@ def test_s08_killed_halfway_leaves_nothing_that_skips_the_next_run(
     runner.results["ns verify --quick"] = killed
     with pytest.raises(KeyboardInterrupt):
         S08Smoke().run(ctx)
-    assert S08Smoke().check(ctx) is False
+    assert S08Smoke().check(ctx) is False and not ctx.flag("voice_warnings")
     runner.results["ns verify --quick"] = real
     three_talkers.engine.spoken.clear()
     S08Smoke().run(ctx)
     assert voices_spoken(three_talkers.engine) == ["Ryan", "Dee", "Cleo"] and S08Smoke().check(ctx) is True
+
+
+# ------------------------------------------------------------------------------------ the owner's side
+def test_the_setup_row_and_install_report_name_the_voice_and_the_way_out(
+    tmp_path: Path, three_talkers: Service_, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """s08 on the setup window's route: the bridge carries the sentence to the Voice engine row, and
+    install-report.json (written by the window's controller) has it, whether the install is done or not."""
+    from installer.stage2.bridge import BridgeUi
+    from tests.test_installer_web_controller import Setup
+
+    break_voice(three_talkers, "Cleo")
+    out = io.StringIO()
+    ctx = smoke_ctx(tmp_path, three_talkers, ui=BridgeUi(out=out, inp=io.StringIO("")))
+    S08Smoke().run(ctx)
+    events = [json.loads(line) for line in out.getvalue().splitlines() if line.startswith("{")]
+    verify_event = next(e for e in events if e["type"] == "verify")
+    s = Setup(tmp_path / "ctl", monkeypatch)
+    s.ctl._on_event(verify_event)
+    row = next(r for r in s.snap()["verify"]["checks"] if r["name"] == "tts")
+    assert row["status"] == "passed" and row["value"] == "clone voice did not speak"
+    assert "clone voice 'Cleo'" in row["note"] and "Channels > Edit channel" in row["note"]
+    flags = s.home / "config" / "wizard_flags.json"
+    flags.parent.mkdir(parents=True, exist_ok=True)
+    flags.write_text(json.dumps({"voice_warnings": ctx.flag("voice_warnings")}), encoding="utf-8")
+    written = s.ctl._write_install_report("done")
+    assert written is not None
+    report = json.loads(written.read_text(encoding="utf-8"))
+    assert len(report["voiceWarnings"]) == 1 and "clone voice 'Cleo'" in report["voiceWarnings"][0]
+
+
+def test_the_console_install_report_has_the_sentence_too(tmp_path: Path, three_talkers: Service_) -> None:
+    from installer.stage2.diagzip import write_console_install_report
+
+    break_voice(three_talkers, "Cleo")
+    ctx = smoke_ctx(tmp_path, three_talkers)
+    S08Smoke().run(ctx)
+    out = write_console_install_report(ctx.paths, outcome="done", version="0.1.15")
+    assert out is not None
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert len(data["voice_warnings"]) == 1 and "clone voice 'Cleo'" in data["voice_warnings"][0]
 
 
 def test_a_report_written_by_the_previous_release_still_loads(tmp_path: Path) -> None:
@@ -405,6 +582,11 @@ def test_a_report_written_by_the_previous_release_still_loads(tmp_path: Path) ->
     assert [(r["name"], r["status"], r["value"]) for r in setup_rows] == [
         ("tts", "passed", "Ryan, voice works")
     ]
+    assert verify.read_talker_warnings(Paths(tmp_path / "no-report")) == []
+    report_file = Paths(tmp_path / "home2").logs / "verify-report.json"
+    report_file.parent.mkdir(parents=True)
+    report_file.write_text(json.dumps(old), encoding="utf-8")
+    assert verify.read_talker_warnings(Paths(tmp_path / "home2")) == []
 
 
 def test_no_voice_listed_is_the_same_failed_row_as_before(tmp_path: Path) -> None:
@@ -435,6 +617,7 @@ def test_no_voice_listed_is_the_same_failed_row_as_before(tmp_path: Path) -> Non
 
 
 def test_verify_twice_gives_the_same_rows(tmp_path: Path, three_talkers: Service_) -> None:
+    break_voice(three_talkers, "Cleo")
     first = run(tmp_path / "a", three_talkers)
     second = run(tmp_path / "b", three_talkers)
 
@@ -449,101 +632,47 @@ def test_verify_twice_gives_the_same_rows(tmp_path: Path, three_talkers: Service
 
 
 # ---------------------------------------------------------------------------------- time, and never a hang
-def test_a_talker_that_stalls_fails_its_own_row_within_the_bound_and_the_run_goes_on(
+def test_a_talker_that_stalls_is_a_warning_within_the_bound_and_the_run_goes_on(
     tmp_path: Path, three_talkers: Service_, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(verify, "LATER_TALKER_TIMEOUT_S", 0.4, raising=False)
-    three_talkers.engine.slow = {"Cleo": 2.0}          # the last talker: the service is busy with it
+    set_up(three_talkers, "ok", "timeout", monkeypatch)
     t0 = time.monotonic()
     report = run(tmp_path, three_talkers)
     took = time.monotonic() - t0
     rows = tts_rows(report)
-    assert {"tts.preset", "tts.design", "tts.clone"} <= set(rows), sorted(rows)
     assert rows["tts.preset"].passed and rows["tts.design"].passed
-    assert rows["tts.clone"].passed is False and "clone voice 'Cleo'" in (rows["tts.clone"].log or "")
-    assert "NS-E310" in (rows["tts.clone"].log or "")
-    assert took < 1.9, took                             # gave up after the bound, not after the 2 s sentence
+    assert rows["tts.clone"].passed is True and rows["tts.clone"].value == names.TALKER_WARNING_VALUE
+    assert took < 1.4, took                       # gave up after the bound, not after the 1.5 s sentence
     assert report.checks[-1].name == "vram.idle"          # and the rest of verify still ran
 
 
-def test_the_bound_keeps_the_first_talkers_old_time_and_the_whole_step_under_the_setup_limit() -> None:
-    first = getattr(verify, "FIRST_TALKER_TIMEOUT_S", None)
-    later = getattr(verify, "LATER_TALKER_TIMEOUT_S", None)
-    assert first is not None and later is not None, "the talker time limits are named constants of verify"
-    assert first == 1800                                 # what the preset always had: a cold model load
-    assert first + 2 * later < 3600                        # s08's timeout for the whole `ns verify --quick`
-    assert later > 0
-
-
-# ---------------------------------------------------------------------------------- the owner's side
-def test_the_setup_row_names_the_failed_mode_and_a_preset_failure_stays_a_fallback() -> None:
-    def checks(failing: str) -> list[dict[str, Any]]:
-        return [
-            {"name": n, "passed": n != failing, "value": "0.3" if n.startswith("tts.") else None}
-            for n in ("tts.start", "tts.preset", "tts.design", "tts.clone", "tts.voices")
-        ]
-
-    clone = labels.verify_rows(checks("tts.clone"), "Ryan")[0]
-    assert (clone["name"], clone["status"], clone["value"]) == ("tts", "failed", "clone voice")
-    design = labels.verify_rows(checks("tts.design"), "Ryan")[0]
-    assert (design["status"], design["value"]) == ("failed", "design voice")
-    preset = labels.verify_rows(checks("tts.preset"), "Ryan")[0]
-    assert (preset["status"], preset["value"]) == ("fallback", "Ryan")      # the handled switch: as before
-    ok = labels.verify_rows(checks("none"), "Ryan")[0]
-    assert (ok["status"], ok["value"]) == ("passed", "Ryan, voice works")
-
-
-def test_the_install_report_and_the_failure_screen_name_the_talker(
-    tmp_path: Path, three_talkers: Service_, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from tests.test_installer_web_controller import Setup
-
-    break_voice(three_talkers, "Cleo")
-    ctx = smoke_ctx(tmp_path, three_talkers)
-    with pytest.raises(NsError) as ei:
-        S08Smoke().run(ctx)
-    err = ei.value
-    s = Setup(tmp_path / "ctl", monkeypatch)
-    s.ctl._on_event({  # what the setup program sends when a step raises (installer/stage2/bridge.py)
-        "type": "failure", "step": "s08_smoke", "code": err.code, "message": err.definition.message,
-        "hint": err.definition.hint, "detail": err.detail, "optional": False,
-    })
-    failure = s.snap()["failure"]
-    assert failure["code"] == "NS-E310" and "clone" in failure["detail"] and "'Cleo'" in failure["detail"]
-    assert failure["title"] == "A voice did not speak"
-    assert "Retry" in failure["whatToDo"] and "Save a help file" in failure["whatToDo"]
-    assert failure["canSkip"] is False
-    written = s.ctl._write_install_report("failed")
-    assert written is not None
-    report = json.loads(written.read_text(encoding="utf-8"))
-    assert report["code"] == "NS-E310" and report["failedStep"] == "s08_smoke"
-    assert "clone" in report["lastError"]["detail"] and "'Cleo'" in report["lastError"]["detail"]
+def test_the_bound_keeps_the_first_talkers_old_time_and_a_dead_engine_costs_minutes() -> None:
+    first, later = verify.FIRST_TALKER_TIMEOUT_S, verify.LATER_TALKER_TIMEOUT_S
+    assert first == 1800                                  # what the preset always had: a cold model load
+    assert 0 < later <= 180                               # a 2 GB model loads in under a minute from a disk
+    assert 2 * later <= 360                               # two later talkers: six minutes at the worst
+    assert first + 2 * later < 3600                       # s08's timeout for the whole `ns verify --quick`
 
 
 # ---------------------------------------------------------------------------------- every route into verify
-class StubCtl:
-    """`SupervisorClient` for `cmd_verify`: the stub supervisor, plus the two calls the command makes."""
-
-    def __init__(self, sync: SyncSupervisor) -> None:
-        self.sync = sync
-
-    def is_up(self) -> bool:
-        return True
-
-    def shutdown(self, grace_s: float = 30) -> None:
-        return None
-
-    def acquire(self, *a: Any, **kw: Any) -> Endpoint:
-        return self.sync.acquire(*a, **kw)
-
-    def release(self, *a: Any, **kw: Any) -> None:
-        self.sync.release(*a, **kw)
-
-    def status(self) -> dict[str, Any]:
-        return self.sync.status()
-
-    def stop_all(self) -> None:
-        self.sync.stop_all()
+def cli_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, svc: Service_, argv: list[str], *,
+    home: Path | None = None,
+) -> Any:
+    """`ns verify` entered as the product enters it, on the stub services plus the real voice service."""
+    home = home or tmp_path / "ns"
+    Paths(home).ensure()
+    monkeypatch.setenv("NIGHTSHIFT_HOME", str(home))
+    NO_SCHEDULE_CALLS.clear()
+    sync = SyncSupervisor(Paths(home), Runtime.default("gpu"), resolver=StubTable())
+    try:
+        monkeypatch.setattr(cli, "_client", lambda paths: HybridCtl(sync, svc.url))
+        monkeypatch.setattr(cli, "ensure_running", lambda *a, **k: None)
+        monkeypatch.setattr(cli, "_settle_schedule", lambda paths: NO_SCHEDULE_CALLS.append(paths))
+        monkeypatch.setattr(verify, "Deps", lambda: MACHINE)    # no real whisper, NVENC or nvidia-smi here
+        return CliRunner().invoke(cli.app, argv)
+    finally:
+        sync.close()
 
 
 def updater_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -563,15 +692,12 @@ def updater_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return cmd[1:]
 
 
-def s08_argv(tmp_path: Path, three: Service_) -> list[str]:
-    ctx = smoke_ctx(tmp_path, three)
-    S08Smoke().run(ctx)
-    return list(ctx.runner.called("ns verify --quick")[0].argv)[-2:]
-
-
 @pytest.mark.parametrize("route", ["cli", "updater", "setup"])
-def test_ns_verify_quick_prints_one_tts_row_per_installed_mode_on_every_route(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, three_talkers: Service_, route: str
+@pytest.mark.parametrize(("preset", "clone"), [("ok", "ok"), ("ok", "failing"), ("ok", "timeout"),
+                                               ("failing", "ok")])
+def test_ns_verify_quick_exits_1_only_when_the_preset_fails_on_every_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, three_talkers: Service_, route: str,
+    preset: str, clone: str,
 ) -> None:
     if route == "cli":
         argv = ["verify", "--quick"]
@@ -580,43 +706,94 @@ def test_ns_verify_quick_prints_one_tts_row_per_installed_mode_on_every_route(
         assert argv[:2] == ["-m", "ns_supervisor.cli"]
         argv = argv[2:]
     else:
-        argv = s08_argv(tmp_path / "s08", three_talkers)
+        ctx = smoke_ctx(tmp_path / "s08", three_talkers)
+        S08Smoke().run(ctx)
+        argv = list(ctx.runner.called("ns verify --quick")[0].argv)[-2:]
     assert argv == ["verify", "--quick"]
-    home = tmp_path / "home"
-    Paths(home).ensure()
-    monkeypatch.setenv("NIGHTSHIFT_HOME", str(home))
-    NO_SCHEDULE_CALLS.clear()
-    # the stub voice service lists a preset and a clone voice; `ns verify` is entered as the product enters it
-    sync = SyncSupervisor(Paths(home), Runtime.default("gpu"), resolver=StubTable())
-    try:
-        monkeypatch.setattr(cli, "_client", lambda paths: StubCtl(sync))
-        monkeypatch.setattr(cli, "ensure_running", lambda *a, **k: None)
-        monkeypatch.setattr(cli, "_settle_schedule", lambda paths: NO_SCHEDULE_CALLS.append(paths))
-        machine = good_deps()
-        monkeypatch.setattr(verify, "Deps", lambda: machine)    # no real whisper, NVENC or nvidia-smi here
-        r = CliRunner().invoke(cli.app, argv)
-    finally:
-        sync.close()
+    set_up(three_talkers, preset, clone, monkeypatch)
+    r = cli_run(tmp_path, monkeypatch, three_talkers, argv)
     lines = [ln for ln in r.output.splitlines() if ln.startswith("[") and " tts." in ln]
-    assert [ln.split()[1] for ln in lines if "tts.start" not in ln and "tts.voices" not in ln] == [
-        "tts.preset", "tts.clone",
-    ], r.output
-    assert all(ln.startswith("[PASS]") for ln in lines)
-    assert len(NO_SCHEDULE_CALLS) == 1          # the schedule look ran on the fake, never on Task Scheduler
-    report = json.loads((Paths(home).logs / "verify-report.json").read_text(encoding="utf-8"))
+    modes = [ln.split()[1] for ln in lines if "tts.start" not in ln and "tts.voices" not in ln]
+    assert modes == ["tts.preset", "tts.design", "tts.clone"], r.output
+    assert r.exit_code == (0 if preset == "ok" else 1), r.output       # what both updaters read
+    assert "speaking a test sentence with the clone voice Cleo ..." in r.output
+    if clone == "ok":
+        assert "[WARN]" not in r.output
+    else:
+        assert "[WARN] tts.clone = warning" in r.output and "Channels > Edit channel" in r.output
+    report = json.loads((Paths(tmp_path / "ns").logs / "verify-report.json").read_text(encoding="utf-8"))
     assert report["slice"] == "verify-quick"
     assert not any(c["name"] == "bench.tts_rtf" for c in report["checks"])
+    assert len(NO_SCHEDULE_CALLS) == 1          # the schedule look ran on the fake, never on Task Scheduler
 
 
-def test_the_dashboard_verify_job_gets_the_per_mode_rows(tmp_path: Path, three_talkers: Service_) -> None:
+def test_ns_verify_full_has_the_same_exit_code_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, three_talkers: Service_
+) -> None:
+    break_voice(three_talkers, "Cleo")
+    r = cli_run(tmp_path, monkeypatch, three_talkers, ["verify"])
+    assert r.exit_code == 0 and "[WARN] tts.clone = warning" in r.output, r.output
+    assert "ALL CHECKS PASSED (a voice did not speak" in r.output
+
+
+def test_the_morning_note_is_left_once_and_names_the_voice_and_the_way_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, three_talkers: Service_
+) -> None:
+    from ns_supervisor import notify
+
+    break_voice(three_talkers, "Cleo")
+    for _ in range(2):                                   # an update, then the owner runs it again
+        assert cli_run(tmp_path, monkeypatch, three_talkers, ["verify", "--quick"]).exit_code == 0
+    notes = notify.read_notes(Paths(tmp_path / "ns"))
+    assert len(notes) == 1
+    assert "clone voice 'Cleo'" in notes[0]["message"] and "Library > Voices" in notes[0]["message"]
+    assert "Channels > Edit channel" in notes[0]["message"] and "Save channel" in notes[0]["message"]
+
+
+def test_an_update_from_a_home_whose_clone_voice_is_broken_completes_and_leaves_the_note_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, three_talkers: Service_
+) -> None:
+    """A clone voice already broken on 0.1.14. The update's verify step is the real `ns verify --quick`;
+    when it exited 1 for that voice, every update to this version rolled back."""
+    from ns_supervisor import notify
+    from tests.test_ns_update import make_app, make_zip
+
+    break_voice(three_talkers, "Cleo")
+    app, z = make_app(tmp_path), make_zip(tmp_path)
+    home = tmp_path / "ns"
+    calls: list[str] = []
+
+    def verify_step(a: Path) -> bool:
+        calls.append("verify")
+        return cli_run(tmp_path, monkeypatch, three_talkers, ["verify", "--quick"], home=home).exit_code == 0
+
+    env = update.UpdateEnv(
+        stop=lambda: None, sync=lambda a: None, verify=verify_step, reregister=lambda a: [],
+        untracked=lambda a: [],
+    )
+    res = update.update_app(z, app, env, paths=Paths(home))
+    assert calls == ["verify"]                                           # ran once and passed
+    assert (res.old_version, res.new_version) == ("0.1.0", "0.2.0")
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.2.0"      # not rolled back
+    mine = [n for n in res.notes if "clone voice 'Cleo'" in n]
+    assert len(mine) == 1 and "Channels > Edit channel" in mine[0]       # in the update's result notes ...
+    assert [n["message"] for n in notify.read_notes(Paths(home))] == mine   # ... and once as a morning note
+
+
+def test_the_dashboard_verify_job_gets_the_per_mode_rows_and_a_progress_line_each(
+    tmp_path: Path, three_talkers: Service_
+) -> None:
     from ns_dashboard.adapters import RealVerifyAdapter
+
+    break_voice(three_talkers, "Cleo")
+    said: list[str] = []
 
     class Job:
         def check_cancel(self) -> None:
             return None
 
-        def progress(self, *a: Any, **k: Any) -> None:
-            return None
+        def progress(self, fraction: float, message: str | None = None) -> None:
+            said.append(str(message))
 
     paths = Paths(tmp_path / "ns")
     out = RealVerifyAdapter(paths, controller=OneServiceCtl(three_talkers.url), deps=good_deps()).verify(
@@ -624,6 +801,11 @@ def test_the_dashboard_verify_job_gets_the_per_mode_rows(tmp_path: Path, three_t
     )
     modes = [c["name"] for c in out["checks"] if c["name"] in ("tts.preset", "tts.design", "tts.clone")]
     assert modes == ["tts.preset", "tts.design", "tts.clone"] and out["quick"] is True
+    assert [m for m in said if m.startswith("speaking")] == [
+        "speaking a test sentence with the preset voice Ryan ...",
+        "speaking a test sentence with the design voice Dee ...",
+        "speaking a test sentence with the clone voice Cleo ...",
+    ]
 
 
 def test_the_doctor_does_not_call_verify() -> None:
