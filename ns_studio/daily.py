@@ -188,13 +188,9 @@ def _claim_run_id(env: jobs.Env, run_id: str) -> None:
     the same moment and draw the same id are not kept apart here. The `runs` row then refuses the second one
     with an IntegrityError: loud, and no job has been made yet, where the old id clash was the same error on
     every unlucky second night of a day."""
-    if env.db.one("select 1 from runs where run_id=?", (run_id,)):
-        raise sqlite3.IntegrityError(f"run id {run_id} is taken")
-    try:
-        taken = ownership.read_record(env.paths, run_id) is not None
-    except OSError:  # the owners folder cannot be read: `hold_run` refuses the night for that, with its code
-        taken = False
-    if taken:
+    # `read_record` answers None for an owners folder it cannot read; `hold_run` then refuses the night
+    # (NS-E327), so nothing is caught here
+    if env.db.one("select 1 from runs where run_id=?", (run_id,)) or ownership.read_record(env.paths, run_id):
         raise sqlite3.IntegrityError(f"run id {run_id} is taken")
 
 
