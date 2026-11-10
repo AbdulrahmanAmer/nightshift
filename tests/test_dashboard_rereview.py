@@ -779,9 +779,43 @@ def test_a_time_the_task_accepts_is_saved(tmp_home: Path):
     assert body["schedule_result"]["applied"] is True and body["schedule_time"] == "02:00"
 
 
-def test_the_refusal_note_says_not_saved():
+@pytest.mark.parametrize(
+    ("change", "verb", "code"),
+    [("time", "change", "NS-E204"), ("off", "switch off", "NS-E206"), ("on", "change", "NS-E204")],
+)
+def test_the_refusal_note_says_not_saved(tmp_home: Path, monkeypatch: pytest.MonkeyPatch, change: str, verb: str, code: str):
+    """An older review: "Saved, but Windows did not update the nightly task" was untrue, nothing had been saved.
+    FN-4 then gave a refused switch-off its own code (NS-E206) and verb. Each refusal Windows gives is said as
+    "Not saved", with the verb of the change asked for, the state Automatic runs are still in, and its code."""
+    from ns_dashboard.adapters import RealScheduleAdapter
+    from tests.test_schedule_keeps_state import FakeTaskScheduler, done, install_fake
+
+    # (a refused switch-off: `_forget` keeps the time and drops the record first, `_follow` puts the record
+    # back to what Windows still has, so "still on" is read from the record after the refusal)
     src = (Path(__file__).resolve().parents[1] / "ns_dashboard" / "adapters.py").read_text(encoding="utf-8")
-    assert "Saved, but Windows did not update the nightly task" not in src and "Not saved: Windows did not change the nightly task" in src
+    assert "Saved, but" not in src
+
+    class Refusing(FakeTaskScheduler):
+        def __call__(self, script: str, **kw: Any) -> Any:
+            if "egister-ScheduledTask" in script:  # Register- and Unregister-ScheduledTask alike
+                self.scripts.append(script)
+                return done(code=1, err="Access is denied.\n")
+            return super().__call__(script, **kw)
+
+    before = ("Disabled", "03:00") if change == "on" else ("Ready", "03:00")
+    adapter = RealScheduleAdapter(Paths.from_env())
+    install_fake(monkeypatch, before)
+    assert adapter.apply("03:00")["applied"] is True  # the page has seen the task once: its record is Windows' state
+    refusing = Refusing(before)
+    monkeypatch.setattr("ns_supervisor.pwsh.run_powershell", refusing)
+    out = adapter.apply("05:00") if change == "time" else adapter.switch(change == "on")
+    still = "off" if change == "on" else "on"
+    assert out["applied"] is False and out["code"] == code
+    assert out["note"].startswith(f"Not saved: Windows did not {verb} the nightly task (")
+    assert "Access is denied" in out["note"] and f"Automatic runs are still {still}." in out["note"]
+    assert f"{code}: " in out["note"]
+    assert any("egister-ScheduledTask" in s for s in refusing.scripts)  # Windows was asked, and refused
+    assert refusing.after == before  # the task is as it was
 
 
 # ---------------------------------------------------------------- row 11: never two workers
