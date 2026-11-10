@@ -273,7 +273,7 @@ def _run_jobs(
             ran = run_job_guarded(ctx, resume=True)
         rows = env.db.query("select output_id from outputs where job_id=?", (ctx.job_id,))
         # the Queue card of an interrupted job is done now
-        ownership.settle_resumed(env.db, ctx.job_id, [r["output_id"] for r in rows])
+        ownership.settle_resumed(env.db, ctx.job_id, [r["output_id"] for r in rows], by="hand")
         typer.echo(f"job {ctx.job_id} resumed: {len(ran)} stages visited")
         return
     rng = random.Random()

@@ -67,6 +67,15 @@ INTERRUPTED_HINT = (
     "it stopped: the finished stages are kept. If it happens every night, check the PC's sleep and restart "
     "settings."
 )
+#: The hint for a job that was not the nightly's (Run now, a scheduled request, `studio run`): no night's run
+#: was interrupted. The words are the dashboard's own for its interrupted jobs (`ns_dashboard.jobs`).
+INTERRUPTED_HINT_BY_HAND = (
+    "Nightshift or the PC restarted while this job ran. Press Retry from where it stopped: the finished "
+    "stages are kept. If it happens every night, check the PC's sleep and restart settings."
+)
+#: The `origin` of a record whose job the nightly run made. Every other origin (`manual`: Run now, a scheduled
+#: request, `studio run`, a series part) is a job the owner started: no text may call it the night's run.
+NIGHTLY_ORIGIN = "daily"
 #: A job announced by `make_job` is given this long to take its lock before it is called dead.
 CREATE_GRACE_S = 180.0
 #: Rows no owner file exists for (written by 0.1.0 to 0.1.14): younger than this they may still be running.
@@ -868,9 +877,20 @@ def _our_row(rows: Sequence[Any]) -> Any | None:
     return None
 
 
-def _card_text(stage: str | None, resume: str, reason: str | None = None, owner: str | None = None) -> str:
-    """The words of an interrupted job's Queue card. Two things are said, each from its own fact:
+def _card_text(
+    stage: str | None,
+    resume: str,
+    reason: str | None = None,
+    owner: str | None = None,
+    origin: str = NIGHTLY_ORIGIN,
+    by: str = "nightly",
+) -> str:
+    """The words of an interrupted job's Queue card. Three things are said, each from its own fact:
 
+    - what was interrupted, from who made the job (`origin`): the night's run only for a job of the nightly
+      run; a job the owner started (Run now, a scheduled request, `studio run`) stopped "while this job ran",
+      and nothing promises it a nightly run, because the nightly continues only its own jobs;
+    - who continued a job that has finished since (`by`): the nightly run, or `studio run --resume` by hand;
     - the cause, from who stopped it last (`owner`): a pause, or a dead process;
     - the way back, from why it waits NOW (`resume`, `reason`), whatever stopped it first. A job whose channel
       is paused cannot be retried (Retry answers 409 `channel_paused`), so its card never says "press Retry"
@@ -879,9 +899,16 @@ def _card_text(stage: str | None, resume: str, reason: str | None = None, owner:
     """
     at = f"Interrupted at {stage}" if stage else "Interrupted"
     cause = "its channel was paused" if owner == PAUSED_OWNER else "the PC or Nightshift stopped"
-    stopped = f"{at}: {cause} during the night's run."
+    nightly = origin == NIGHTLY_ORIGIN
+    during = "during the night's run" if nightly else "while this job ran"
+    stopped = f"{at}: {cause} {during}."
     if resume == "resumed":
+        if by == "hand":
+            return f"{stopped} It was continued with studio run --resume and it finished."
         return f"{stopped} The nightly run continued it and it finished."
+    if not nightly:
+        why = f" ({reason})" if reason else ""
+        return f"{stopped} Press Retry to continue it{why}."
     if reason == PAUSED_REASON:
         since = "" if owner == PAUSED_OWNER else " Its channel was paused after that."
         return (
@@ -898,12 +925,27 @@ def _card_text(stage: str | None, resume: str, reason: str | None = None, owner:
     return f"{stopped} Press Retry to continue it{why}."
 
 
-def _card_error(stage: str | None, owner: str | None, reason: str | None) -> dict[str, Any]:
+def _card_error(
+    stage: str | None, owner: str | None, reason: str | None, origin: str = NIGHTLY_ORIGIN
+) -> dict[str, Any]:
     """The code and hint of the card: NS-E330 when a pause stopped the job or holds it now (its hint says to
-    resume the channel first), else NS-E328 (its hint says to press Retry, which then works)."""
+    resume the channel first), else NS-E328 (its hint says to press Retry, which then works). The NS-E328 hint
+    names the night's run only for a job of the nightly run (`origin`)."""
     if owner == PAUSED_OWNER or reason == PAUSED_REASON:
         return {"code": PAUSED, "hint": describe(PAUSED).hint, "stage": stage}
-    return {"code": INTERRUPTED_CODE, "hint": INTERRUPTED_HINT, "stage": stage}
+    hint = INTERRUPTED_HINT if origin == NIGHTLY_ORIGIN else INTERRUPTED_HINT_BY_HAND
+    return {"code": INTERRUPTED_CODE, "hint": hint, "stage": stage}
+
+
+def _origin_of(rec: Mapping[str, Any]) -> str:
+    """Who made the job of an owner record or of a card's `interrupted` block: `daily` or `manual`.
+
+    A record always says (`hold` and `announce_job` write it). A card written before the key existed does
+    not: there a `run_id` tells, because only the nightly run gives its jobs one."""
+    origin = rec.get("origin")
+    if isinstance(origin, str) and origin:
+        return origin
+    return NIGHTLY_ORIGIN if rec.get("run_id") else "manual"
 
 
 def _write_card(
@@ -927,9 +969,10 @@ def _card_result(
 ) -> dict[str, Any]:
     return {
         "studio_job_ids": [job_id],
-        "error": _card_error(stage, rec.get("owner"), reason),
+        "error": _card_error(stage, rec.get("owner"), reason, _origin_of(rec)),
         "interrupted": {
             "stage": stage,
+            "origin": _origin_of(rec),
             "run_id": rec.get("run_id"),
             "owner": rec.get("owner") or "gone",
             "resume": resume,
@@ -957,7 +1000,7 @@ def offer_job(
     if mine is None and rows:
         return None
     result = _card_result(job_id, stage, rec, resume, reason)
-    message = _card_text(stage, resume, reason, rec.get("owner"))
+    message = _card_text(stage, resume, reason, rec.get("owner"), _origin_of(rec))
     stamp = _iso(when)
     if mine is not None:
         _write_card(db, str(mine["job_id"]), "failed", message, result, finished=stamp)
@@ -1001,8 +1044,11 @@ def _settle(
     reason: str | None = None,
     failure: tuple[str, str] | None = None,
     output_ids: Sequence[str] | None = None,
+    by: str = "nightly",
 ) -> None:
-    """Rewrite the card of an interrupted job after the nightly tried to continue it (no card, no change)."""
+    """Rewrite the card of an interrupted job after somebody tried to continue it (no card, no change).
+
+    `by` is who: the nightly run (it continues only its own jobs), or `hand` for `studio run --resume`."""
     mine = _our_row(_rows_for(db, job_id))
     if mine is None:
         return
@@ -1017,9 +1063,10 @@ def _settle(
         interrupted["reason"] = reason
     result["interrupted"] = interrupted
     stage = interrupted.get("stage")
-    message = _card_text(stage, resume, reason, interrupted.get("owner"))
+    origin = _origin_of(interrupted)
+    message = _card_text(stage, resume, reason, interrupted.get("owner"), origin, by)
     if resume == "needs_retry":  # the code and hint follow the reason it waits now, like the words
-        result["error"] = _card_error(stage, interrupted.get("owner"), reason)
+        result["error"] = _card_error(stage, interrupted.get("owner"), reason, origin)
     if status == "done":
         result.pop("error", None)
         result["output_ids"] = list(output_ids or [])
@@ -1035,9 +1082,10 @@ def _settle(
     _write_card(db, str(mine["job_id"]), status, message, result, finished=_iso())
 
 
-def settle_resumed(db: SqlDb, job_id: str, output_ids: Sequence[str]) -> None:
-    """The nightly continued the job and it finished: its card is done, with the outputs."""
-    _settle(db, job_id, "done", "resumed", output_ids=output_ids)
+def settle_resumed(db: SqlDb, job_id: str, output_ids: Sequence[str], *, by: str = "nightly") -> None:
+    """The job was continued and it finished: its card is done, with the outputs, and says who continued it
+    (`by`: the nightly run, or `hand` for `studio run --resume`)."""
+    _settle(db, job_id, "done", "resumed", output_ids=output_ids, by=by)
 
 
 def settle_failed(db: SqlDb, job_id: str, code: str, detail: str) -> None:
@@ -1419,7 +1467,8 @@ def recovery_message(
     the note never claims the job is being continued: it says when it will be, and how to continue it by hand.
     """
     outcomes = outcomes or {}
-    lines: list[str] = []
+    night: list[str] = []  # jobs of the nightly run
+    hand: list[str] = []  # jobs the owner started: no night's run was interrupted for them
     unknown = False
     for j in out.jobs:
         if j.dashboard_owned:
@@ -1453,13 +1502,19 @@ def recovery_message(
             tail = (
                 "Press Retry in the Queue to continue it" if j.has_card else f"To continue it, {_way_back(j)}"
             ) + (f" ({j.problem})." if j.problem else ".")
-        lines.append(f"{j.channel or j.job_id} {where}. {tail}")
-    if not lines and out.runs:
-        unknown = any(r.get("owner") == "unknown" for r in out.runs)
-        lines.append("It had not made a video yet, so nothing is lost.")
-    if not lines:
+        (night if j.origin == NIGHTLY_ORIGIN else hand).append(f"{j.channel or j.job_id} {where}. {tail}")
+    if not night and out.runs:
+        unknown = unknown or any(r.get("owner") == "unknown" for r in out.runs)
+        night.append("It had not made a video yet, so nothing is lost.")
+    parts: list[str] = []
+    if night:  # a run of the night was closed, or a job it had made
+        parts.append("The night's run was interrupted (power cut, crash or restart). " + " ".join(night))
+    if hand:
+        head = "A job you started yourself was" if len(hand) == 1 else "Jobs you started yourself were"
+        parts.append(f"{head} interrupted (power cut, crash or restart). " + " ".join(hand))
+    if not parts:
         return None
-    text = "The night's run was interrupted (power cut, crash or restart). " + " ".join(lines)
+    text = " ".join(parts)
     return text + " (owner unknown: it was started by an older version.)" if unknown else text
 
 
@@ -1595,12 +1650,22 @@ def status_lines(paths: Paths, db: SqlDb, channel: str) -> list[str]:
         ):
             stage = rec.get("interrupted_at_stage") or reached_stage(paths, job_id, rec.get("fmt"))
             at = f" at stage {stage}" if stage else ""
-            # a card exists for a job `make_job` announced (see `_close_job`); only the nightly's own jobs are
-            # continued by the nightly
-            if has_card(rec):
+            # A card stands for a job `make_job` announced, but only once `recover` has closed it (the next
+            # start of Nightshift, `studio run` or nightly run; this command closes nothing). Until then the
+            # Queue has no Retry for it and the one way that works now is the command. Only the nightly's
+            # own jobs are continued by the nightly.
+            nightly = " (while Automatic runs are on in Settings)"
+            if has_card(rec) and state == "interrupted":
                 way = "press Retry in the Queue"
-                if rec.get("origin") == "daily":
-                    way += " or the next nightly run continues it (while Automatic runs are on in Settings)"
+                if rec.get("origin") == NIGHTLY_ORIGIN:
+                    way += f" or the next nightly run continues it{nightly}"
+            elif has_card(rec):
+                way = (
+                    f"its process is gone; continue it now with studio run --resume {job_id}, or press Retry"
+                    " in the Queue after the next start of Nightshift"
+                )
+                if rec.get("origin") == NIGHTLY_ORIGIN:
+                    way += f"; the next nightly run continues it too{nightly}"
             else:
                 way = f"continue it with studio run --resume {job_id}"
             lines.append(f"  interrupted: job {job_id} stopped{at}; {way}")
