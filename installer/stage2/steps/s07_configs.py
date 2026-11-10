@@ -9,7 +9,7 @@ from __future__ import annotations
 import copy
 import json
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from installer.stage2.answers import InstallerAnswers, blank_secrets_in_file, default_voice_name, slugify
@@ -22,6 +22,41 @@ from ns_common.atomic import write_text_atomic
 from ns_common.config import load_channel, load_runtime, save_channel
 from ns_common.models import Channel, Runtime, Voice
 
+# D-34: OpenCode's own prompt and tool definitions come to about 15,300 tokens, which leaves a 16K
+# install about 1,000 tokens for the first question. The budget: the first request of a one-line
+# question is at most half of the context (8,192 tokens at 16,384). The tools below are switched off
+# and the build agent's prompt is replaced by the short one that follows. launchers/_common.ps1
+# (Sync-NsOpenCodePort) carries the same values for a file written by an older release;
+# tests/test_opencode_budget.py keeps the two copies equal.
+# Nightshift Code refuses to start below MIN_CODE_CONTEXT (launchers/nightshift-code.ps1)
+MIN_CODE_CONTEXT = 16384
+CODE_OUTPUT_TOKENS = 4096
+TOOLS_OFF = ("todowrite", "todoread", "webfetch", "task", "patch")
+LOCAL_MODEL_NAME = "Local model"    # when runtime.json names no model file
+
+OPENCODE_PROMPT = """You are Nightshift Code, a coding assistant that runs entirely on this computer with a small local model. Nothing you read or write leaves this machine.
+
+Your context is small, so work in small steps and keep every answer short.
+
+Where you work
+- Start in the Projects folder of the person using you. Each folder in it is a project. Do not leave it unless you are asked to.
+- Never touch the Nightshift program folders or its settings unless you are asked to.
+
+How you work
+- Read before you edit. Open a file, look at the part that matters, and only then change it. Do not guess what a file contains.
+- Look at a few lines at a time. Search with grep or glob instead of opening whole files or whole folders.
+- Change the least you can. Make one edit, then say what you changed and why in a sentence or two.
+- Do not rewrite a file that only needs a small change. Do not add features nobody asked for.
+- Run a command only when it helps answer the question. Say what you ran and what it showed.
+- If a request is unclear, ask one short question before you start.
+- If you do not know something, say so. Do not invent file names, functions or results.
+
+How you answer
+- Plain, short sentences. No long introductions and no summaries of what you were just told.
+- Show code in small blocks, only the lines that matter.
+- When a task is done, say so and name the files you changed.
+- If a task is too big for the context you have, say so and offer the first small step instead of starting something you cannot finish."""  # noqa: E501 (the prompt is plain text; its lines are not wrapped)
+
 OPENCODE_CONFIG: dict[str, Any] = {
     "$schema": "https://opencode.ai/config.json",
     "enabled_providers": ["local"],
@@ -30,24 +65,44 @@ OPENCODE_CONFIG: dict[str, Any] = {
             "npm": "@ai-sdk/openai-compatible",
             "name": "Nightshift Local Qwen",
             "options": {"baseURL": "http://127.0.0.1:8080/v1", "apiKey": "local"},
-            "models": {"code": {"name": "Qwen3.6 35B-A3B (local)"}},
+            "models": {
+                "code": {
+                    "name": LOCAL_MODEL_NAME,
+                    "limit": {"context": MIN_CODE_CONTEXT, "output": CODE_OUTPUT_TOKENS},
+                }
+            },
         }
     },
     "model": "local/code",
     "small_model": "local/code",
+    "tools": {name: False for name in TOOLS_OFF},
+    "agent": {"build": {"prompt": OPENCODE_PROMPT}},
     "autoupdate": False,
     "share": "disabled",
 }
 
 
-def opencode_config(host: str = "127.0.0.1", port: int = 8080) -> dict[str, Any]:
-    """OPENCODE_CONFIG pointed at the llama-server in runtime.json instead of the baked default.
+def opencode_model_name(model_path: str) -> str:
+    """The model's name in OpenCode: the installed file without folder and extension, or a plain fallback."""
+    stem = PureWindowsPath(model_path).stem if model_path else ""
+    return f"{stem} (local)" if stem else LOCAL_MODEL_NAME
 
-    OpenCode talks straight to llama-server, so a port changed by ns tune or by hand must reach its baseURL.
-    The launcher repeats this on every start (Sync-NsOpenCodePort); this keeps a fresh write correct too.
+
+def opencode_config(
+    host: str = "127.0.0.1", port: int = 8080, ctx: int = MIN_CODE_CONTEXT, model_path: str = ""
+) -> dict[str, Any]:
+    """OPENCODE_CONFIG for the llama-server and model in runtime.json instead of the baked defaults.
+
+    OpenCode talks straight to llama-server, so a port changed by ns tune or by hand must reach its
+    baseURL, and ``limit.context`` must be the context llama-server was started with so OpenCode compacts
+    before the server refuses. The launcher repeats this on every start (Sync-NsOpenCodePort); this keeps
+    a fresh write correct too.
     """
     cfg = copy.deepcopy(OPENCODE_CONFIG)
-    cfg["provider"]["local"]["options"]["baseURL"] = f"http://{host}:{port}/v1"
+    local = cfg["provider"]["local"]
+    local["options"]["baseURL"] = f"http://{host}:{port}/v1"
+    local["models"]["code"]["name"] = opencode_model_name(model_path)
+    local["models"]["code"]["limit"]["context"] = ctx
     return cfg
 
 
@@ -185,7 +240,10 @@ class S07Configs(Step):
             llama = load_runtime(ctx.paths).llama
             ctx.paths.opencode_file.parent.mkdir(parents=True, exist_ok=True)
             write_text_atomic(
-                ctx.paths.opencode_file, json.dumps(opencode_config(llama.host, llama.port), indent=2) + "\n")
+                ctx.paths.opencode_file,
+                json.dumps(
+                    opencode_config(llama.host, llama.port, llama.flags.ctx, llama.model_path),
+                    indent=2) + "\n")
 
         for key in KEY_NAMES:
             value = getattr(ans, key)

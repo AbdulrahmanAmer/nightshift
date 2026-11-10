@@ -749,6 +749,9 @@ class Supervisor:
                 "owners": sorted(self._owners_of(r)),
                 "crashes": len(r.crashes),
                 "error": r.error,
+                # the context llama-server is (or will be) started with: this engine's copy of runtime.json,
+                # read when the engine started. Nightshift Code compares it with what OpenCode needs (D-34).
+                "ctx": self.runtime.llama.flags.ctx if n == "llama" else None,
             }
             if r.state == "starting" and r.starting_since is not None:
                 info["elapsed_s"] = round(now - r.starting_since, 1)
@@ -763,6 +766,7 @@ class Supervisor:
             "owners": [st.owner] if whisper_held and st.owner else [],
             "crashes": 0,
             "error": None,
+            "ctx": None,
         }
         holder = self._current_holder()
         return {
