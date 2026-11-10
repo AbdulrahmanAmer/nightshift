@@ -742,7 +742,8 @@ def test_an_update_way_out_names_this_installs_own_command_when_another_install_
     """B's failed update must not tell its owner to type a plain `ns update --rollback --detach`: with A's
     commands first that rolls A back. Every route of a sentence names B's own file: the update's way out, an
     error's hint and detail, a studio error and a morning note."""
-    from ns_common import commandline
+    commandline = _module("ns_common.commandline")
+    assert commandline is not None, "the base has no ns_common.commandline"
     from ns_common.errors import NsError
     from ns_studio.errors import StudioError
     from ns_supervisor import notify
@@ -774,7 +775,8 @@ def test_an_update_way_out_names_this_installs_own_command_when_another_install_
 
 
 def test_a_folder_with_a_space_is_given_in_powershells_form_and_the_venv_program_without_command_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from ns_common import commandline
+    commandline = _module("ns_common.commandline")
+    assert commandline is not None, "the base has no ns_common.commandline"
 
     monkeypatch.setenv("NS_TEST_USER_PATH", "")
     home = tmp_path / "Jo's Nightshift"
@@ -791,7 +793,8 @@ def test_the_command_table_is_the_clis_own():
     import click
     import typer.main
 
-    from ns_common import commandline
+    commandline = _module("ns_common.commandline")
+    assert commandline is not None, "the base has no ns_common.commandline"
     from ns_studio.cli import app as studio_app
     from ns_supervisor.cli import app as ns_app
 
@@ -825,7 +828,8 @@ def test_setup_says_when_another_programs_ns_comes_first(tmp_path: Path, windows
     assert ("NS-W120", "another program's command comes first") in ctx.warnings
     assert ctx.flag("commands_owner") == "shadowed"
     # a Command Prompt also looks in the folder it starts in (the user folder) before the PATH
-    from ns_common import commandline
+    commandline = _module("ns_common.commandline")
+    assert commandline is not None, "the base has no ns_common.commandline"
 
     monkeypatch.setenv("NS_TEST_MACHINE_PATH", "")
     profile = tmp_path / "profile"
