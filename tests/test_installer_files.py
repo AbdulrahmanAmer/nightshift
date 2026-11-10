@@ -125,6 +125,9 @@ STDLIB_ONLY_NS_COMMON = {
     "ns_common.config_snapshot",
     "ns_common.first_start",
     "ns_common.logging",
+    # FN-1: the Host and Origin check of the engine, the voice service and the dashboard (it reads the error
+    # table for the refusal's words)
+    "ns_common.loopback",
     # F-10c: the record of a rollback in progress, finished or undone by the first-start check; and the table
     # of settings fields added since 0.1.14, whose plain-dict rule the setup window's answers writer uses.
     "ns_common.rollback_intent",

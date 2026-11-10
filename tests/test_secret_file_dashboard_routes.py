@@ -45,6 +45,7 @@ def test_settings_import_names_the_keys_file_a_restore_left_as_it_was(
 
     volume(monkeypatch, EXFAT_FLAGS)
     client, state = make_env(tmp_home)
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     other = _other_home(tmp_path)
     zipped = backup_zip(tmp_path, MEMBERS)
 
@@ -66,6 +67,7 @@ def test_settings_import_with_nothing_left_out_says_only_restart(tmp_home: Path)
     from tests.test_dashboard_api import make_env
 
     client, state = make_env(tmp_home)
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     state.adapters.backup.restore_lines = [  # type: ignore[attr-defined]
         "restored config/secrets.dpapi",
         "skipped config/runtime.json (machine specific)",

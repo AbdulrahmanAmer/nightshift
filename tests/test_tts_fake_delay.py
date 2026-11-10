@@ -58,7 +58,10 @@ def make_service(tmp_path: Path, delay: str | None) -> tuple[TestClient, FakeEng
     engine.load()
     voices = tmp_path / "voices"
     return (
-        TestClient(create_app(engine, VoiceLibrary(voices), log=NsLogger("tts", tmp_path / "logs"))),
+        TestClient(
+            create_app(engine, VoiceLibrary(voices), log=NsLogger("tts", tmp_path / "logs")),
+            base_url="http://127.0.0.1:18099",
+        ),
         engine,
         voices,
     )
