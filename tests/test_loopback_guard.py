@@ -504,10 +504,15 @@ def test_the_dashboard_rule_is_unchanged(tmp_home: Path):
     for origin in ("null", "https://evil.example", "http://127.0.0.1.evil.example", "file://", "http://a@127.0.0.1"):
         assert not loopback.is_loopback_origin(origin), origin
     tc = client(dashboard(tmp_home))
-    for origin in (BASE, "http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:8100"):
-        page = {"origin": origin, "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors"}
-        assert tc.get("/api/status", headers=page).status_code == 200, origin
-        assert tc.post("/api/notes/clear", headers=page, json={"ids": []}).status_code == 200, origin
+    # D-45: the page's origin must be the one the request addressed (scheme, name AND port), not any loopback
+    # one: the Vite dev server's proxy keeps the Host its page addressed, so it is the same origin
+    for host in (f"127.0.0.1:{PORT}", "localhost:5173", "127.0.0.1:5173", "[::1]:8100"):
+        page = {"host": host, "origin": f"http://{host}", "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors"}
+        assert tc.get("/api/status", headers=page).status_code == 200, host
+        assert tc.post("/api/notes/clear", headers=page, json={"ids": []}).status_code == 200, host
+    for origin in ("http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:8100", f"http://localhost:{PORT}"):
+        page = {"origin": origin, "sec-fetch-site": "same-site", "sec-fetch-mode": "cors"}
+        assert tc.post("/api/notes/clear", headers=page, json={"ids": []}).status_code == 403, origin
     for host in (f"localhost:{PORT}", f"[::1]:{PORT}", "127.0.0.1"):
         assert tc.get("/api/status", headers={"host": host}).status_code == 200, host
         assert tc.get("/", headers={"host": host}).status_code == 200, host
@@ -542,9 +547,11 @@ def test_the_dashboard_opens_from_a_link_but_answers_no_foreign_page(tmp_home: P
         assert r.status_code == 403, (method, path, marks, r.status_code)
         assert method == "HEAD" or r.json()["error"]["code"] == CODE
     # the page's own requests for the same routes (same origin, its own Referer or none) are answered
-    for marks in ({"sec-fetch-site": "same-origin", "sec-fetch-mode": "cors"}, {"referer": BASE + "/"},
-                  {"sec-fetch-site": "same-site", "sec-fetch-mode": "cors", "referer": "http://127.0.0.1:5173/"}, {}):
+    for marks in ({"sec-fetch-site": "same-origin", "sec-fetch-mode": "cors"}, {"referer": BASE + "/"}, {}):
         assert tc.get("/api/status", headers=marks).status_code == 200, marks
+    # D-45: a page on another local port is another site's page (same-site is not same-origin)
+    other = {"sec-fetch-site": "same-site", "sec-fetch-mode": "cors", "referer": "http://127.0.0.1:5173/"}
+    assert tc.get("/api/status", headers=other).status_code == 403
 
 
 # ------------------------------------------------------------------------- 6. PowerShell 5.1, the launchers
@@ -678,7 +685,8 @@ def test_repeated_refusals_leave_one_note_per_page_per_day(tmp_path: Path, clock
     assert len(said) == 1, said
     assert said[0] == (
         "NS-E207: A web page open in your browser tried 3 times to control Nightshift (from https://evil.example, "
-        "last at 09:02). Every request was refused and nothing was changed. If you do not know that page, close it."
+        "last at 09:02). Nightshift refused those 3 requests, so none of them ran. If you do not know that page, "
+        "close it."
     )
     assert notify.read_notes(sup.paths)[0]["at"] == "2026-11-10T09:02:00"
     # it keeps trying all morning: no second note, one first line, and a count at most every ten minutes
@@ -724,7 +732,7 @@ def test_a_page_with_many_names_cannot_flood_the_notes(tmp_path: Path, clock: Cl
     tc = client(app)
     for i in range(12):
         knock(tc, f"https://n{i}.evil.example", 3)
-    settle()
+        settle()   # one page's note writer at a time: which three are named is the order they came in
     said = notes_of(sup)
     assert len(said) == 4, said
     assert [f"https://n{i}.evil.example" in said[i] for i in range(3)] == [True] * 3
@@ -743,7 +751,8 @@ def test_a_name_that_is_not_this_pc_is_told_in_words_that_are_true(tmp_path: Pat
     settle()
     said = notes_of(sup)
     assert len(said) == 1 and said[0].startswith("NS-E207: Nightshift was called 3 times by the name rebind.example")
-    assert "http://127.0.0.1" in said[0] and "nothing was changed" in said[0]
+    assert "http://127.0.0.1" in said[0] and "refused those 3 requests, so none of them ran" in said[0]
+    assert "nothing was changed" not in said[0]
     hostile = "evil.example\x1b[31m<script>" + "a" * 300   # what a page writes into its own name
     for _ in range(3):
         assert client(app).get("/status", headers={"host": hostile}).status_code == 403
@@ -895,7 +904,7 @@ def test_a_form_reaches_the_dashboard_only_from_its_own_page(tmp_home: Path, mon
     unsafe = {(m, p) for m, p in routes(app) if m in UNSAFE}
     assert ("POST", "/api/update/file") in unsafe and ("PUT", "/api/uploads/x") in unsafe and len(unsafe) >= 30
     wrong: list[str] = []
-    own_pages = (BASE, "http://localhost:5173")
+    own_pages = (BASE,)   # D-45: "http://localhost:5173" to this Host is another origin, refused like the rest
     for method, path, kind, body, origin in every_form(app):
         if origin in own_pages and path not in ("/api/notes/clear", "/api/update/file"):
             continue   # past the check the route itself runs: two routes show that the page's form passes
@@ -990,8 +999,8 @@ def test_three_forms_with_no_sender_are_told_in_words_that_are_true(tmp_path: Pa
     settle()
     said = notes_of(sup)
     assert len(said) == 1 and said[0] == (
-        "NS-E207: Something on this PC sent Nightshift a web form 3 times (last at 09:00). Every request was refused "
-        "and nothing was changed. No program of Nightshift does that; it is most likely a web page in an old browser "
+        "NS-E207: Something on this PC sent Nightshift a web form 3 times (last at 09:00). Nightshift refused those 3 "
+        "requests, so none of them ran. No program of Nightshift does that; it is most likely a web page in an old browser "
         "or in Internet Explorer mode. Close the web pages you do not know. A script of yours must send JSON."
     )
     rows = log_rows(sup.paths.logs, "request_refused")
@@ -1017,6 +1026,17 @@ def read_all(sup: Supervisor) -> None:
     notify.dismiss(sup.paths, [n["id"] for n in notify.read_notes(sup.paths)])
 
 
+def waiting_but_the_count(sup: Supervisor) -> list[dict[str, Any]]:
+    """The notes file as stored, without the owner's one note that counts removed or kept-out notes."""
+    stored = json.loads(notify.note_path(sup.paths).read_text(encoding="utf-8"))["notes"]
+    return [n for n in stored if "removed" not in n]
+
+
+def removed_count(sup: Supervisor) -> int:
+    stored = json.loads(notify.note_path(sup.paths).read_text(encoding="utf-8"))["notes"]
+    return sum(int(n["removed"]) for n in stored if "removed" in n)
+
+
 def kinds_of(sup: Supervisor) -> tuple[int, int]:
     said = notes_of(sup)
     return len([m for m in said if m.startswith("NS-E207:")]), len([m for m in said if m.startswith("NS-W209:")])
@@ -1029,9 +1049,10 @@ def test_the_notes_of_a_day_are_bounded_across_servers_and_restarts(tmp_path: Pa
     second = engine_app(sup, run_monitor=False)                  # another server of the same install
     for i in range(2):
         knock(client(first), f"https://a{i}.evil.example", 3)
+        settle()   # the writers run on threads of their own: one page at a time keeps the order asserted below
     for i in range(2):
         knock(client(second), f"https://b{i}.evil.example", 3)
-    settle()
+        settle()
     assert kinds_of(sup) == (4, 0)
     for restart in range(4):                                     # each start counts from zero in memory
         again = engine_app(sup, run_monitor=False)
@@ -1071,18 +1092,21 @@ def test_a_refusal_note_never_pushes_another_note_out(tmp_path: Path, clock: Clo
     read_all(sup)
     for i in range(notify.NOTES_FULL):
         other_note(sup, i)
-    before = notify.note_path(sup.paths).read_bytes()
+    before = waiting_but_the_count(sup)
     for i in range(6):
         knock(client(app), f"https://e{i}.evil.example", 3)
     settle()
-    assert notify.note_path(sup.paths).read_bytes() == before and kinds_of(sup) == (0, notify.NOTES_FULL)
+    # every note of the night stays as it was; the refusal notes kept out are only counted by the owner's one
+    # count note (`notify._add`, block D's FN-2 review: "removed or kept out"), never added
+    assert waiting_but_the_count(sup) == before and kinds_of(sup) == (0, notify.NOTES_FULL)
+    assert removed_count(sup) >= 1
     full = [r for r in log_rows(sup.paths.logs, "morning_note_held") if "not routine" in r["msg"]]
     assert full and full[0]["data"]["code"] == CODE
     clock.step(minutes=11)
     for i in range(6):
         knock(client(app), f"https://e{i}.evil.example", 3)
     settle()
-    assert notify.note_path(sup.paths).read_bytes() == before
+    assert waiting_but_the_count(sup) == before
     # the owner reads them: the page that still tries is told then (the note stayed owed)
     read_all(sup)
     clock.step(minutes=11)

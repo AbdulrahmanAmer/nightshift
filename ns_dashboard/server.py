@@ -30,7 +30,7 @@ from starlette.staticfiles import NotModifiedResponse, StaticFiles
 from starlette.types import Scope
 
 from ns_common.errors import NsError
-from ns_common.loopback import LOOPBACK_PAGES, Choose, LoopbackGuard, media_type
+from ns_common.loopback import OWN_PAGE, Choose, LoopbackGuard, media_type
 from ns_common.paths import Paths
 from ns_dashboard import DEFAULT_PORT, media
 from ns_dashboard.adapters import Adapters
@@ -158,7 +158,7 @@ class LoopbackMiddleware(LoopbackGuard):
 
     def __init__(self, app: Any, log: Any = None, paths: Paths | None = None) -> None:
         tell = refusal_notes(paths) if paths is not None else None
-        super().__init__(app, rule=LOOPBACK_PAGES, log=log, tell=tell)
+        super().__init__(app, rule=OWN_PAGE, log=log, tell=tell)
 
     async def answer(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         """A request that passed the check: the app, with the headers added to its answer."""

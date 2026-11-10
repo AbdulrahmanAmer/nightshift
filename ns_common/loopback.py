@@ -12,25 +12,38 @@ change neither:
   and `Referer` (which a page can drop, so it only ever adds a refusal). A page's script cannot set or remove
   `Host`, `Origin` or `Sec-Fetch-*`.
 
-The rules:
+The rule, one code path for all three servers (`decide`); a `Rule` only says whether the server has a page of
+its own:
 
-- `NO_BROWSER` (engine, voice service): `Host` must name 127.0.0.1, localhost or ::1, and the request must
-  carry none of `Origin`, `Referer`, `Sec-Fetch-*`. No page is a caller of either server (the dashboard's page
-  goes through the dashboard's own `/api/engine/...`), and none of our programs sends those headers
-  (httpx, urllib, PowerShell 5.1 `Invoke-RestMethod`).
-- `LOOPBACK_PAGES` (dashboard, whose own page is a browser): the same `Host` rule; an `Origin` must be a
-  loopback one (any port: the Vite dev server); without an `Origin`, a request that comes from another site
-  (the browser's `Sec-Fetch-Site: cross-site`, or another site's `Referer`) is answered only when it opens a
-  page: a GET or HEAD outside `/api/` (a link to the dashboard must open). Nothing under `/api/` and nothing
-  that is not a GET or HEAD is answered for another site, so no GET that does work (the update check, the
-  status that syncs the schedule record) can be set off from a foreign page.
+- `Host` must name 127.0.0.1, localhost or ::1 (any port, or none).
+- A request that carries none of `Origin`, `Referer`, `Sec-Fetch-*` is a program's (httpx, urllib,
+  PowerShell 5.1 `Invoke-RestMethod`): answered, unless its body is a form's (below).
+- A request that carries any of them is a browser's, and it is answered only when it comes from the server's
+  OWN origin: scheme, host and port exactly as this request addressed the server (`own_origin`: the scheme of
+  the connection and the `Host` header, which the browser sets from the address it connects to and a page
+  cannot change). `http://localhost:8100` and `http://127.0.0.1:8100` are two origins to a browser, and so are
+  `http://127.0.0.1:8100` and `http://127.0.0.1:5173`: a page served by any other local server is a foreign
+  page. Every `Origin` must equal it; `Sec-Fetch-Site` must be `same-origin`; every `Referer` must be on it.
+  One exception: a top-level navigation (GET or HEAD, `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest:
+  document`). The owner's own (`Sec-Fetch-Site: none`: typed, a bookmark, a link another program opened; no
+  page can make a browser say `none`) opens any path; a link on another page (`same-site`, `cross-site`) opens
+  only a page outside `rule.data_prefix`, never an `/api/` route. It opens in the server's own origin: the
+  linking page reads nothing of it (no `Access-Control-*` header is ever sent) and cannot frame it
+  (`frame-ancestors 'none'`, and a frame is not `document`). A form a page posts is a navigation too: only a
+  GET or HEAD ever opens this way.
+- `NO_BROWSER` (engine, voice service) has no page: no origin is its own, so every browser request is
+  refused. No page is a caller of either (the dashboard's page goes through its own `/api/engine/...`).
+- `OWN_PAGE` (dashboard): its own page, the window host (WebView2) and the Vite dev server are browsers. The
+  Vite dev server needs no switch: its proxy keeps the `Host` the page addressed (`changeOrigin` is off), so
+  the page's `Origin` equals it; were the `Host` rewritten, the page would be refused (fails closed).
 
 One more rule covers the browsers that say nothing at all (Internet Explorer and Edge's IE mode, old Firefox:
 no `Origin` on a form POST, no `Sec-Fetch-*`, and no `Referer` from an HTTPS page). All a page can make such a
 browser send to another origin without a preflight is a plain HTML form, and a form has one of three content
 types. So a request that is not a GET or HEAD and whose body is a form's (`FORM_TYPES`, or a body with no
-content type at all) is refused by the engine and the voice service always, and by the dashboard unless it
-carries a loopback `Origin` (the dashboard's own page uploading a file). Our programs send JSON, or no body.
+content type at all) is refused unless it carries the server's own `Origin` (the dashboard's own page
+uploading a file; the engine and the voice service have no own origin, so never). Our programs send JSON, or
+no body.
 
 A refused request gets 403 with `NS-E207` and no route runs. The first refusal of a page is one WARN; a page
 that keeps trying (3 refusals within 10 minutes) is told to the owner once per local day through `tell`
@@ -79,16 +92,19 @@ FORM_SENDER = "a web form without a sender"
 
 @dataclass(frozen=True)
 class Rule:
-    """Who may call a server. `pages`: a browser page on this PC is a caller (the dashboard)."""
+    """Who may call a server. `own_page`: the server serves a page of its own, and that page (its exact
+    origin, `own_origin`) is a caller (the dashboard); without it no browser request is answered."""
 
     name: str
-    pages: bool
+    own_page: bool
     envelope: bool  # the dashboard's `{"error": {...}}` body instead of the engine's flat one
-    data_prefix: str = ""  # paths that are never a page a link may open (the dashboard's `/api/`)
+    data_prefix: str = ""  # paths that are never a page a navigation may open (the dashboard's `/api/`)
 
 
-NO_BROWSER = Rule("no-browser", pages=False, envelope=False)
-LOOPBACK_PAGES = Rule("loopback-pages", pages=True, envelope=True, data_prefix="/api/")
+NO_BROWSER = Rule("no-browser", own_page=False, envelope=False)
+OWN_PAGE = Rule("own-page", own_page=True, envelope=True, data_prefix="/api/")
+#: The web scheme of a connection's scope (a websocket's says ws or wss; its page's Origin, http or https).
+WEB_SCHEMES = {"http": "http", "https": "https", "ws": "http", "wss": "https"}
 
 
 @dataclass(frozen=True)
@@ -133,7 +149,10 @@ def is_loopback_host(host_header: str | None) -> bool:
 
 
 def is_loopback_origin(origin: str | None) -> bool:
-    """True when `Origin` is absent (non-browser caller) or a loopback origin; `null` is refused."""
+    """True when `Origin` is absent or names this machine on ANY port; `null` is False.
+
+    Not a rule of any server (D-45: a page served by another local server has a loopback origin too); `decide`
+    compares a browser's origin with `own_origin`. Kept for `ns_dashboard.security`'s importers."""
     if origin is None or origin.strip() == "":
         return True
     if origin.strip() == "null":
@@ -169,6 +188,49 @@ def _site_of(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}" if parts.scheme and parts.netloc else url
 
 
+def own_origin(hosts: Sequence[str], scheme: str) -> str | None:
+    """The origin this request addressed the server as: `<scheme>://<Host>`, lower-cased, exactly as a browser
+    serialises a page's origin (`http://127.0.0.1:8100`, `http://localhost:8100`, `http://[::1]:8100`, no
+    port when none was addressed). None when `Host` values disagree or the scheme is not a web one: then no
+    browser request is the server's own."""
+    names = {h.strip().lower() for h in hosts}
+    web = WEB_SCHEMES.get(scheme.lower())
+    if len(names) != 1 or web is None:
+        return None
+    return f"{web}://{names.pop()}"
+
+
+def _opens_page(rule: Rule, method: str, path: str, marks: Mapping[str, str]) -> bool:
+    """A top-level navigation the server answers whoever started it: a GET or HEAD the browser marks as the
+    navigation of a document. The owner's own (`Sec-Fetch-Site: none`: typed, a bookmark, a link another
+    program opened, such as the window host's "open in the browser") may open any path; a link on another
+    page only a page outside `rule.data_prefix`. A browser that sends no marks: its GET of a page."""
+    if not rule.own_page or method.upper() not in SAFE_METHODS:
+        return False
+    if marks:
+        if marks.get("sec-fetch-mode") != "navigate" or marks.get("sec-fetch-dest", "document") != "document":
+            return False
+        if marks.get("sec-fetch-site") == "none":
+            return True
+    return not (rule.data_prefix and path.startswith(rule.data_prefix))
+
+
+def _foreign_mark(
+    origins: Sequence[str] | None, referers: Sequence[str] | None, marks: Mapping[str, str], own: str | None,
+    opens_page: bool,
+) -> str | None:
+    """Which browser mark shows that a page other than the server's own sent this request (`origin`,
+    `fetch-mark`, `referer`), or None. `own` None: the server has no page, every mark is foreign."""
+    if origins is not None and (own is None or any(o.strip().lower() != own for o in origins)):
+        return "origin"
+    if marks and not opens_page and not (own is not None and marks.get("sec-fetch-site") == "same-origin"):
+        return "fetch-mark"
+    if referers is not None and not opens_page:
+        if own is None or any(_site_of(r).strip().lower() != own for r in referers):
+            return "referer"
+    return None
+
+
 def media_type(content_type: str) -> str:
     """`text/plain` of `Text/Plain; charset=utf-8`: the media type alone, lower-cased, without parameters."""
     return content_type.split(";", 1)[0].strip().lower()
@@ -193,12 +255,16 @@ def is_form_like(seen: dict[str, list[str]], method: str) -> bool:
 
 
 def decide(
-    headers: Iterable[tuple[bytes, bytes]], rule: Rule, method: str = "GET", path: str = "/"
+    headers: Iterable[tuple[bytes, bytes]],
+    rule: Rule,
+    method: str = "GET",
+    path: str = "/",
+    scheme: str = "http",
 ) -> Refusal | None:
     """None when the request may reach the routes of a server under `rule`, otherwise the refusal.
 
-    `headers` are the ASGI scope's (bytes). A header sent twice is judged on every value: whichever one a
-    parser in front of us kept, a foreign one refuses.
+    `headers` are the ASGI scope's (bytes), `scheme` the scope's (`http`, or `ws` for a websocket). A header
+    sent twice is judged on every value: whichever one a parser in front of us kept, a foreign one refuses.
     """
     seen: dict[str, list[str]] = {}
     for raw_name, raw_value in headers:
@@ -224,29 +290,14 @@ def decide(
 
     if not hosts or not all(is_loopback_host(h) for h in hosts):
         return no("host")
-    if not rule.pages:
-        if origins is not None:
-            return no("origin")
-        if marks:
-            return no("fetch-mark")
-        if referers is not None:
-            return no("referer")
-        return no("form") if form else None
-    if origins:
-        if not all(is_loopback_origin(o) for o in origins):
-            return no("origin")
-        # the dashboard's own page (a loopback Origin, said by the browser) may send a form: a file upload
-        return no("form") if form and not all(o.strip() for o in origins) else None
-    if form:
+    own = own_origin(hosts, scheme) if rule.own_page else None
+    if browser:
+        why = _foreign_mark(origins, referers, marks, own, _opens_page(rule, method, path, marks))
+        if why is not None:
+            return no(why)
+    # a form's body: only the server's own page may send one (it states its Origin: a file upload)
+    if form and not origins:
         return no("form")
-    # no Origin: a plain GET, a form an old browser posted, a navigation. From another site only a page opens.
-    page_path = not (rule.data_prefix and path.startswith(rule.data_prefix))
-    may_open = method.upper() in SAFE_METHODS and page_path
-    navigation = marks.get("sec-fetch-mode") == "navigate"
-    if marks.get("sec-fetch-site") == "cross-site" and not (may_open and navigation):
-        return no("fetch-mark")
-    if referers and not all(is_loopback_origin(_site_of(r)) for r in referers) and not may_open:
-        return no("referer")
     return None
 
 
@@ -263,13 +314,20 @@ def refusal_body(refusal: Refusal, rule: Rule) -> bytes:
 
 
 MORE_PAGES = "Still more web pages or names tried to control Nightshift today"
+#: What a refusal note says of the requests it counts: they were refused, so none of them ran. True of
+#: every counted request (a refused request gets 403 before any route), and of nothing else.
+REFUSED_WORDS = "Nightshift refused those {count} requests, so none of them ran."
 
 
 def note_text(refusal: Refusal, count: int, at: datetime, *, more: bool = False) -> tuple[str, str]:
     """What the owner reads in the morning note, and the part of it that names the page (how a note that
     already waits is recognised). True for a page and for a program that used another name; `more`: the
-    notes that name a page are used up for today, this is the one that says there were others."""
-    end = "Every request was refused and nothing was changed."
+    notes that name a page are used up for today, this is the one that says there were others.
+
+    It says only what the guard knows: `count` is the requests it REFUSED (each got 403 before any route
+    ran). It never says what other requests did: a page's request that was answered is not counted here, so
+    no note may claim "every request" or "nothing was changed"."""
+    end = REFUSED_WORDS.format(count=count)
     page, last = refusal.page, f"last at {at:%H:%M}"
     if more:
         text = (
@@ -374,7 +432,8 @@ class LoopbackGuard:
             await self.app(scope, receive, send)
             return
         method, path = str(scope.get("method", "GET")), str(scope.get("path", "/"))
-        refusal = decide(scope.get("headers") or [], self.rule, method, path)
+        scheme = str(scope.get("scheme") or ("ws" if scope["type"] == "websocket" else "http"))
+        refusal = decide(scope.get("headers") or [], self.rule, method, path, scheme)
         if refusal is None:
             await self.answer(scope, receive, send)
             return
