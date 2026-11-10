@@ -7,6 +7,8 @@ voice engine release asset; when a manifest leaves it null, the latest GitHub re
 asset name and then the old one; without a binary the PyTorch fallback is scheduled (NS-W301).
 yt-dlp.exe (pinned in ``bins.yt_dlp``) goes to ``bin/yt-dlp/yt-dlp.exe`` for the Clipper link sources.
 The WebView2 window files (``bins.webview2``) come from the bundle's ``bin/webview2`` when the SHA256 match.
+Every pinned program is looked for in the ``files`` folder beside INSTALL.cmd and in the models folder first
+(``ctx.download``): a file whose SHA256 is the pin is copied instead of downloaded (D-17).
 
 A dev install (``ctx.dev_mode``, docs/DEV_MODE.md) downloads the CPU llama.cpp build, yt-dlp and the window
 files for real and skips cudart, OpenCode and qwentts.cpp; there is no PyTorch fallback either.
@@ -123,7 +125,7 @@ class S02DownloadBins(Step):
             ctx.ui.say("Dev mode: not downloaded: the CUDA runtime, the voice engine and Nightshift Code.")
         else:
             ctx.ui.say(f"llama.cpp build: {pair or 'CPU'} (driver CUDA {pf.get('cuda') or 'n/a'})")
-        ctx.download(items)
+        ctx.download(items, models_source=ctx.ensure_answers().models_source, programs=True)
         self._qwentts(ctx)
 
     def _qwentts(self, ctx: StepContext) -> None:
@@ -147,7 +149,8 @@ class S02DownloadBins(Step):
                     item = probe
                     break
         if item is not None:
-            ctx.download([item])
+            # a pinned zip may come from the files folder; the unpinned probe has no SHA256 and never does
+            ctx.download([item], models_source=ctx.ensure_answers().models_source, programs=True)
             ctx.set_flag("qwentts", "binary")
             ctx.set_flag("tts_fallback", False)
             return

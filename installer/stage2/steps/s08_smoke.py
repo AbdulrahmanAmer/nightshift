@@ -272,7 +272,7 @@ class S08Smoke(Step):
     def _switch_to_reference(ctx: StepContext) -> None:
         ctx.set_flag("tts_fallback", True)
         ctx.ui.say("The voice engine failed its test; switching to the PyTorch engine (about 7 GB more).")
-        ctx.download(fallback_items(ctx))
+        ctx.download(fallback_items(ctx), models_source=ctx.ensure_answers().models_source)
         ensure_tts_venv(ctx)
         update_runtime(ctx, lambda rt: setattr(rt.tts, "engine", "reference"))
         ctx.warn("NS-W301", "runtime.json now uses the reference TTS engine")

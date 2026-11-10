@@ -21,9 +21,13 @@ ExitFn = Callable[[int], None]
 
 def wizard_argv(
     python: str, *, app_path: Path, home: Path, answers: Path, preflight: Path, bridge: bool,
-    simulate: bool = False, halt_after: str | None = None, dev: bool = False,
+    simulate: bool = False, halt_after: str | None = None, dev: bool = False, files_dir: Path | None = None,
 ) -> list[str]:
-    """The wizard command line (with ``--ui-bridge stdio`` for the window, without it for headless runs)."""
+    """The wizard command line (with ``--ui-bridge stdio`` for the window, without it for headless runs).
+
+    ``files_dir`` is the ``files`` folder beside INSTALL.cmd: the wizard runs from ``<home>/app``, which never
+    holds it, so the folder is named here. Without one the command line is the one it always was.
+    """
     argv = [
         python, "-X", "utf8", "-m", "installer.stage2.wizard", "--app-path", str(app_path),
         "--home", str(home),
@@ -37,6 +41,8 @@ def wizard_argv(
         argv += ["--halt-after", halt_after]
     if dev:
         argv.append("--dev")        # a dev install (docs/DEV_MODE.md): stub models, fake engines
+    if files_dir is not None:
+        argv += ["--files-dir", str(files_dir)]
     return argv
 
 

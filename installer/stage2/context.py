@@ -69,6 +69,9 @@ class StepContext:
     # setup window (bridge mode): the pause gate (set = running) and the stop request
     gate: threading.Event | None = None
     stop_requested: threading.Event = field(default_factory=threading.Event)
+    # the ``files`` folder beside INSTALL.cmd (the bundle setup was started from), None when there is none:
+    # ``download`` looks there for every pinned file before the internet (D-17)
+    files_dir: Path | None = None
 
     # ---- messages ----
     def warn(self, code: str, detail: str = "") -> None:
@@ -232,8 +235,15 @@ class StepContext:
         return res
 
     # ---- downloads ----
-    def download(self, items: list[DownloadItem], *, models_source: Path | str | None = None) -> PlanResult:
-        """Run a download plan with progress bars (simulated in --simulate-downloads mode)."""
+    def download(
+        self, items: list[DownloadItem], *, models_source: Path | str | None = None, programs: bool = False,
+    ) -> PlanResult:
+        """Run a download plan with progress bars (simulated in --simulate-downloads mode).
+
+        A pinned file is taken from the ``files`` folder beside INSTALL.cmd first, then from
+        ``models_source``, then from its URL (``run_plan``); a simulated run reads no folder. ``programs``:
+        the plan is pinned programs, so a site that cannot be reached also names the files folder.
+        """
         from installer.stage2.simulate import simulated_fetch
 
         fetch = None
@@ -249,7 +259,8 @@ class StepContext:
             with self.ui.reporter(total_bytes(pending(items))) as rep:
                 return run_plan(
                     items, client=client, models_source=models_source, reporter=rep, sleep=self.sleep,
-                    fetch=fetch, gate=self.gate, log=self.log,
+                    fetch=fetch, gate=self.gate, log=self.log, say=self.ui.say, kit_hint=programs,
+                    sources=[self.files_dir] if self.files_dir is not None and not self.simulate else [],
                 )
         finally:
             client.close()

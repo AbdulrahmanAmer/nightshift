@@ -360,7 +360,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile('{STAGE1}', [ref]$null, [ref]$null)
 $fnType = [System.Management.Automation.Language.FunctionDefinitionAst]
-foreach ($name in 'Get-Prop', 'Install-Uv') {{
+foreach ($name in 'Get-Prop', 'Get-KitHint', 'Get-UrlLeaf', 'Copy-PinnedFile', 'Install-Uv') {{
     $fn = $ast.FindAll({{ param($n) $n -is $fnType -and $n.Name -eq $name }}, $true)[0]
     . ([scriptblock]::Create($fn.Extent.Text))
 }}

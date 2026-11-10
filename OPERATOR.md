@@ -105,6 +105,77 @@ or **Pause**, or you close the Nightshift setup window.
   `bad hash`, with what to do for each (almost always: run INSTALL.cmd again). It changes nothing and needs no
   internet. It takes a few minutes because it reads about 20 GB.
 
+## If GitHub is down on install day
+
+The models can come from a folder (**Model files come from**, above). The programs can too: setup takes them from a
+folder called `files` next to `INSTALL.cmd`, so an outage at GitHub does not stop the install.
+
+1. **Make the folder, on any PC with internet** (before install day, or on another PC while GitHub is down for
+   you). Extract the Nightshift zip there, open PowerShell in the extracted folder and run
+   `powershell -ExecutionPolicy Bypass -File tools/make-files-kit.ps1`. It reads `manifest.json`, downloads every
+   pinned program (uv, the Python build uv installs, the Visual C++ runtime, FFmpeg, every llama.cpp build with its
+   CUDA runtime, the voice engine, OpenCode, yt-dlp, the window files, the face finder and the spaCy language
+   model), checks each SHA256 and writes them to a folder called `files`, with a list in `files/files.json`. Add
+   `-Only uv,python,ffmpeg,yt-dlp,spacy,webview2` (any keys) to fetch only some of them. A file that is already
+   there and matches is kept, so you can run it again after a failure; it ends with exit code 1 and names what is
+   still missing.
+2. **Copy the folder `files` next to `INSTALL.cmd`** on the PC you are setting up.
+3. **Run INSTALL.cmd** (again, if setup had stopped: it carries on at the failed step).
+
+What setup does with it:
+
+- For each program it looks in `files` first (by the file's name), then in your models folder, then uses winget
+  where it always did, then the internet. A program it already installed is not looked for again.
+- A file is used only when its SHA256 is the one `manifest.json` pins, and setup says so once per program:
+  `llama_cpu: taken from files\llama-...zip (SHA256 checked)` in the console, the setup window's log and
+  `logs`; the window's row says *copied from your folder* or *installed from the files folder*. Python is
+  checked by uv itself, against the SHA256 uv carries for that build.
+- A file with other bytes is never used. Setup says `files\llama-...zip does not match its pin; downloading it`
+  once and goes on to the next source. Run `tools/make-files-kit.ps1` again to replace it.
+- When a program is not in the folder and its site is down, the step stops with `NS-E105` as before, and the
+  message now ends with these steps. What was copied or downloaded so far is kept.
+- The folder is read where it is. It is not copied into the install folder; delete it after setup if you like.
+- Not in the folder: the Python packages (PyPI), the models (Hugging Face: use **Model files come from**),
+  Windows Terminal, and a voice engine that `manifest.json` does not pin.
+- **Where the folder goes when you repair an install.** `files` is looked for next to the `INSTALL.cmd` you
+  run. For a new install or an update that is the folder you extracted. If you run the `INSTALL.cmd` inside the
+  install itself (`<install folder>/app/INSTALL.cmd`), put it there: `<install folder>/app/files`. An update
+  replaces `app`, so keep your own copy of the folder somewhere else.
+
+**What the PC check says about the internet** (the *Internet* row; the same in the setup window, in a run without
+a window, when you press **Check again** and when you run INSTALL.cmd again). A site that answers with an error
+(a 504, a rate limit) counts as reachable: the downloads wait for it as described above. The table is about a
+site that gives no answer at all (its name does not resolve, a firewall drops it, the connection times out
+after 10 seconds).
+
+| Site with no answer | No `files` folder | `files` holds everything this PC takes from GitHub | `files` holds only some of it |
+|---|---|---|---|
+| github.com only | red, and the row names the kit steps | **warning, setup goes on**: *github.com does not answer; setup takes the pinned programs from files\ (SHA256 checked)* | red: *the files folder lacks:* and the names of the missing files; run the kit again and press **Check again** |
+| pypi.org or files.pythonhosted.org (with or without GitHub) | red | red: *the files folder covers GitHub, but the Python packages need pypi.org and files.pythonhosted.org, so setup cannot start* | red |
+| huggingface.co, download.pytorch.org, api.github.com, api.nuget.org, the Microsoft download site, Pexels, Pixabay | warning, as before | warning, as before | warning, as before |
+
+- "Everything this PC takes from GitHub" is: uv, the llama.cpp build for this PC's driver and its CUDA runtime,
+  yt-dlp, the face finder, the spaCy language model, FFmpeg unless it is already installed, the voice engine,
+  OpenCode unless your answers switch Nightshift Code off, and the Python build under `files/python`. Each file is
+  hashed for this check, so with a large folder on a slow stick the check takes a little longer.
+- **Python** has no SHA256 in `manifest.json` (uv chooses the build and checks it when it installs it), so the
+  check asks the pinned uv which archive it wants and looks for exactly that file; an older 3.12 archive does not
+  pass. If the kit's `files.json` lists the archive, its bytes must match what the kit saved.
+- **A kit made without OpenCode** keeps the row red, because the window asks about Nightshift Code only after
+  the check. The row says so and gives both ways out: add the file with the kit, or install without Nightshift
+  Code (put `"install_code": false` in an `answers.json` next to `INSTALL.cmd` and start `INSTALL.cmd -Ui`).
+- The warning itself says that a program missing from the folder after all stops its step after a few minutes
+  of trying; the bullets below give the exact waits.
+- **With no internet at all setup does not start**, whatever the folder holds: the Python packages come from
+  PyPI and nothing replaces them. The row says so before anything is installed. With GitHub alone gone, setup
+  runs to the end as long as PyPI and the model source (Hugging Face, or your models folder) answer.
+- If a site that was only a warning is needed after all (a file is missing from the folder although the check
+  passed, or you took the folder away), that step tries for a bounded time and then stops with `NS-E105`, naming
+  the file and the kit steps: stage 1 (uv, the Visual C++ runtime) waits at most 100 seconds for the site to
+  start answering; the tools step tries three times with 120 seconds each; a program download makes three
+  tries and waits up to two minutes for the network before each counts, about eight minutes for one file. It
+  never waits forever. Add the file and run INSTALL.cmd again.
+
 ## If a row is red or a message shows an error code
 
 Every message has a code like `NS-E104`, a sentence and a "What to do". In the setup window press **Retry** where this table says "run INSTALL.cmd again". The usual ones:

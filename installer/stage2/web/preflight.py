@@ -125,6 +125,42 @@ NETWORK_FAIL_TEXT = (
 )
 
 
+# The network row when github.com gives no answer (D-17). Stage 1 decides the status and puts ``files`` on
+# the row: ``covers`` (a warning: the files folder beside INSTALL.cmd holds everything this install takes
+# from GitHub), ``lacks`` (red: the value names the missing files), ``none`` (red: no folder) or ``pypi``
+# (red: PyPI is down too, which no folder covers).
+FILES_COVER_TITLE = "GitHub cannot be reached"
+FILES_COVER_TEXT = (
+    "Nothing to do: setup takes the pinned programs from the files folder next to INSTALL.cmd and checks "
+    "each one. If a program is missing from the folder after all, that step stops after a few minutes of "
+    "trying and names the file"
+)
+FILES_KIT_TEXT = (
+    "Or give setup the programs GitHub serves: on a PC that reaches GitHub run tools\\make-files-kit.ps1 "
+    "(from this bundle), copy its folder files next to INSTALL.cmd here, then press Check again"
+)
+FILES_PYPI_TEXT = (
+    "The files folder covers GitHub, but the Python packages come from pypi.org and files.pythonhosted.org "
+    "and no folder replaces them. Check the internet, switch off any VPN or proxy, then press Check again"
+)
+HF_FOLDER_TEXT = (
+    "Hugging Face cannot be reached either: in the next step, choose \"A folder on this PC\" or "
+    "\"A zip from Google Drive\" for the model files"
+)
+
+
+def network_copy(status: str, files: str, value: str, title: str | None) -> tuple[str | None, str]:
+    """Title and what-to-do of the network row (the code's own title unless the files folder carries it)."""
+    if status == "warn" and files == "covers":
+        also_hf = "huggingface.co" in value
+        return FILES_COVER_TITLE, FILES_COVER_TEXT + (". " + HF_FOLDER_TEXT if also_hf else "")
+    if status == "fail" and files == "pypi":
+        return title, FILES_PYPI_TEXT
+    if status == "fail":
+        return title, NETWORK_FAIL_TEXT + (". " + FILES_KIT_TEXT if files in ("lacks", "none") else "")
+    return title, ROW_COPY[("network", "warn")][1]
+
+
 def _row_fix(row_id: str, status: str, code: str) -> dict[str, Any] | None:
     if row_id in ("gpu", "driver") and code in ("NS-E102", "NS-E103", "NS-W115"):
         return _fix("open-url", "Open the driver page", DRIVER_URL)
@@ -250,7 +286,8 @@ def check_rows(
                     # s02 choose_pair hands an RTX 50-series card the CUDA 13 build, never the 12.4 one
                     what = BLACKWELL_W115_TEXT
                 if row_id == "network":
-                    what = NETWORK_FAIL_TEXT if status == "fail" else ROW_COPY[("network", "warn")][1]
+                    title, what = network_copy(
+                        status, str(c.get("files") or ""), str(c.get("value", "")), title)
                 if row_id == "disk" and status == "fail":
                     shown = need if need is not None else default_need(pf, home or str(diskneed.NO_HOME))
                     what = f"Free {shown.gb} GB on this drive, or pick another drive below"

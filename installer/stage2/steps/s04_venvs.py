@@ -19,6 +19,7 @@ from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error, uv_error
 from installer.stage2.fallback import ensure_tts_venv
+from installer.stage2.web import filesdir
 from ns_common.uv import uv_env, venv_args
 from ns_common.venv_extras import extras_suffix
 
@@ -183,14 +184,24 @@ class S04Venvs(Step):
         self._pip(ctx, name, ["--no-deps", "--require-hashes", "-r", str(pin_file)], tag)
 
     def _spacy_model(self, ctx: StepContext) -> None:
-        """The spaCy model wheel, checked against the manifest's sha256 (unchecked URL for old manifests)."""
+        """The spaCy model wheel, checked against the manifest's sha256 (unchecked URL for old manifests).
+
+        A wheel of that name and SHA256 in the ``files`` folder beside INSTALL.cmd is installed from there
+        (a GitHub outage does not stop this step). uv gets the same ``--hash`` line and checks the bytes it
+        installs, so a wheel that changed after the look is refused by uv, never installed.
+        """
         model = ctx.manifest.spacy_model
         pin = ctx.manifest.python.spacy_wheel
         if pin is None or not pin.sha256:
             self._pip(ctx, "studio", [spacy_wheel_url(model)], "studio spacy model")
             return
+        url = pin.url
+        local = filesdir.verified(ctx.files_dir, filesdir.url_leaf(pin.url), pin.sha256, ctx.ui.say)
+        if local is not None and ctx.files_dir is not None:
+            url = local.resolve().as_uri()
+            ctx.ui.say(f"{model}: taken from {filesdir.label(ctx.files_dir, local)} (SHA256 checked)")
         self._pip_locked(
-            ctx, "studio", [f"{model} @ {pin.url} --hash=sha256:{pin.sha256}"], "studio spacy model", "spacy"
+            ctx, "studio", [f"{model} @ {url} --hash=sha256:{pin.sha256}"], "studio spacy model", "spacy"
         )
 
     def run(self, ctx: StepContext) -> None:

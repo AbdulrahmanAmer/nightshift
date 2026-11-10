@@ -45,6 +45,7 @@ from installer.stage2.web import (
     samples,
 )
 from installer.stage2.web.engine import EngineProcess, wizard_argv, wizard_env
+from installer.stage2.web.filesdir import beside as files_beside
 from installer.stage2.web.keys import check_key
 from installer.stage2.web.model import BOOTSTRAP_STEPS, FILE_NAMES, STEP_ORDER, STEP_PHASE
 from installer.stage2.web.store import SetupStore
@@ -1373,6 +1374,7 @@ class SetupController:
             bin_pins=self.manifest.get("bins") or {}, vc_missing=fx.vc_missing, fetch_file=fx.fetch_file,
             run_elevated=fx.run_elevated, add_user_path=fx.add_user_path, install_app=self.installs_app,
             copy_app=fx.copy_app, settings_before=self._settings_before,
+            files_dir=files_beside(self.cfg.app_path),
         )
 
     def _run_bootstrap_step(self, step: Any) -> None:
@@ -1487,7 +1489,7 @@ class SetupController:
         argv = wizard_argv(
             python, app_path=self.run_app_path, home=self.home, answers=self.home / "config" / "answers.json",
             preflight=out, bridge=True, simulate=self.cfg.simulate, halt_after=self.cfg.halt_after,
-            dev=self.dev,
+            dev=self.dev, files_dir=files_beside(self.cfg.app_path),
         )
         self._finished.clear()
         self._sub.clear()
@@ -2063,6 +2065,9 @@ class SetupController:
             argv += ["--halt-after", self.cfg.halt_after]
         if self.dev:
             argv.append("--dev")
+        files = files_beside(self.cfg.app_path)     # the wizard runs from <home>/app, which never holds it
+        if files is not None:
+            argv += ["--files-dir", str(files)]
         env = wizard_env(app)
         env[bootstrap.HOME_VAR] = str(self.home)
         return subprocess.run(argv, cwd=str(app), env=env, check=False).returncode
