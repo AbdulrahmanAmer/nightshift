@@ -496,13 +496,18 @@ def _echo_new(log: Path, offset: int, echo: Callable[[str], None]) -> int:
 
 
 WAIT_PREFIX = "update-wait-"
+BOM = "\ufeff"  # the utf-8 encoder writes it as EF BB BF: how PowerShell 5.1 knows a .ps1 is UTF-8
 
 
 def write_wait_script(paths: Paths, pid: int, log: Path) -> Path | None:
     """`run\\update-wait-<stamp>.ps1`: the follower as a file, for a script that needs the result of an
     update it started with `--detach` from the install's own `ns` (which cannot wait itself):
     `powershell -NoProfile -ExecutionPolicy Bypass -File <it>` prints the log and the result and exits 0
-    (done) or 1. Scripts of earlier runs are removed. None when it could not be written."""
+    (done) or 1. Scripts of earlier runs are removed. None when it could not be written.
+
+    Written as UTF-8 WITH a byte order mark: Windows PowerShell 5.1 reads a `-File` script without one in the
+    ANSI code page, where a byte of a non-ASCII home (the 0x91 of a Cyrillic letter, in cp1252) becomes a
+    quote character that ends a literal early (FN-5 review). With the mark it reads every path as written."""
     folder = paths.home / "run"
     target = folder / (WAIT_PREFIX + log.stem.replace("update-", "") + ".ps1")
     try:
@@ -510,7 +515,7 @@ def write_wait_script(paths: Paths, pid: int, log: Path) -> Path | None:
         for old in folder.glob(WAIT_PREFIX + "*.ps1"):
             old.unlink(missing_ok=True)
         script = follower_script(status_file(paths), log, pid, wait=False, home=paths.home)
-        write_text_atomic(target, script + "\n")
+        write_text_atomic(target, BOM + script + "\n")
     except OSError:
         return None
     return target

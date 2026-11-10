@@ -447,6 +447,28 @@ def test_the_progress_window_script_recognises_its_own_log_whatever_its_name(tmp
     assert r.returncode == 0 and "Result: all good" in r.stdout, r.stdout + r.stderr
 
 
+@needs_powershell
+def test_the_wait_script_file_reads_a_non_ascii_home_as_written(tmp_path: Path) -> None:
+    """`write_wait_script` writes a FILE that `powershell -File` runs: PowerShell 5.1 reads one without a byte
+    order mark in the ANSI code page, where the second byte of a Cyrillic letter (0x91 of U+0451) is a quote
+    character in cp1252 and ends the home's literal early. With the mark the script names the home exactly."""
+    home = tmp_path / "Nightshift \u0451\u0436 \u2019x"
+    paths = Paths(home)
+    (home / "logs").mkdir(parents=True)
+    log = home / "logs" / "update-7.log"
+    log.write_text("one line\n", encoding="utf-8")
+    update_job.write_status(paths, "done", "all good", log=str(log), pid=1)
+    script = update_job.write_wait_script(paths, 1, log)
+    assert script is not None
+    raw = script.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf") and "\u0451".encode() in raw
+    exe = pwsh.find_powershell() or "powershell.exe"
+    r = subprocess.run([exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+                       capture_output=True, text=True, timeout=120, check=False)
+    assert r.returncode == 0 and "Result: all good" in r.stdout, r.stdout + r.stderr
+    assert "one line" in r.stdout          # it read the log at the home's real path
+
+
 # ------------------------------------------------------------------------------ voices stay out of scripts
 def test_a_voice_name_never_enters_a_powershell_script(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from ns_tts import sapi
@@ -476,28 +498,30 @@ def test_a_voice_name_never_enters_a_powershell_script(monkeypatch: pytest.Monke
 SKIP_DIRS = {"tests", "node_modules", ".git", "venv", ".venv", "static", "__pycache__", "installs", "runs"}
 HAND_MADE_NAMES = {"ps_quote", "_q", "_quote", "_ps", "_powershell_quote", "_ps_quote", "quote_ps", "ps_escape"}
 ONE_PLACE = "ns_common/psquote.py"
-#: (file, text of the f-string) pairs that put a name between two quote characters in a SENTENCE for a person,
-#: not in PowerShell text. Anything else the scan finds is a new hand-made literal and fails the test.
+#: (file, text of the expression) pairs that put a value right after a quote character in a SENTENCE for a person
+#: or in text for another program, not in PowerShell text. Anything else the scan finds fails the test.
 SENTENCES: tuple[tuple[str, str], ...] = (
     ("dev/ci_install_ffmpeg.py", "::warning::ffmpeg reports"),         # a GitHub Actions annotation
     ("dev/prove.py", "is held by"),                                     # a line the proof runner prints
     ("ns_studio/voice_setup.py", "the voice setup asked for"),          # a note for the owner
     ("ns_studio/voice_setup.py", "setup asked for a voice"),            # a note for the owner
     ("ns_supervisor/update_job.py", "runs in its own window"),          # what `ns update` prints
+    ("installer/stage2/web/venvrepair.py", "f\"'{n}'\""),               # names in a doctor sentence
+    ("ns_supervisor/update.py", "f\"'{n}'\""),                          # names in an update sentence
+    ("ns_studio/media/render.py", "f\"'{p}'\""),                        # an FFmpeg filter path (FFmpeg's quoting)
 )
-#: `'%s'`, `'{}'`, `'{0}'` and `'{name}'` in a plain string that is later formatted: the other hand-made shape.
-FORMATTED = re.compile(r"'(?:%s|%\(\w+\)s|\{\w*\})'")
-#: What PowerShell text looks like in the literal parts of an f-string: a variable, a cmdlet, a static call, or
-#: a quote beside a comma or a parenthesis (the fragments of a call that a long line was split into). A SENTENCE
+QC = "".join(Q)
+#: A quote character directly before a `.format` field or a `%` conversion in a template: `'{x}`, `'{}`, `'%s`,
+#: `'%(x)s` (an escaped `'{{` is text, not a field).
+FORMATTED = re.compile(rf"[{QC}](?:%s|%\(\w+\)s|\{{(?!\{{))")
+#: What PowerShell text looks like in the literal parts of an f-string or a concatenation: a variable, a static
+#: call, any Verb-Noun command, the `&` call operator before a quote, a `-Parameter` followed by a quote, or a
+#: quote beside a comma or a parenthesis (the fragments of a call that a long line was split into). A SENTENCE
 #: that puts a name between apostrophes for a person ("Channel 'x' exists") has none of these.
 PS_SHAPE = re.compile(
-    r"\$\w|\[\w[\w.]*\]::|\b(?:Get|Set|New|Remove|Register|Unregister|Test|Add|Start|Wait|Write)-[A-Z]\w+"
-    r"|['‘’‚‛][,)]|\(['‘’‚‛]"
+    rf"\$\w|\[\w[\w.]*\]::|\b[A-Z][a-z]+-[A-Z][A-Za-z]+\b|&\s*[{QC}]|(?:^|\s)-[A-Za-z]+\s+[{QC}]"
+    rf"|[{QC}][,)]|\([{QC}]"
 )
-
-
-def _literal_text(node: ast.JoinedStr) -> str:
-    return "".join(p.value for p in node.values if isinstance(p, ast.Constant) and isinstance(p.value, str))
 
 
 def _product_files() -> list[Path]:
@@ -511,17 +535,62 @@ def _rel(p: Path) -> str:
     return p.relative_to(ROOT).as_posix()
 
 
-def _is_quote_const(node: ast.AST) -> bool:
-    return isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in Q
+def _constants(node: ast.AST) -> list[str]:
+    """The literal text of a string, an f-string or a chain of `+`, in order."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, ast.JoinedStr):
+        return [p.value for p in node.values if isinstance(p, ast.Constant) and isinstance(p.value, str)]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _constants(node.left) + _constants(node.right)
+    return []
+
+
+def _last_text(node: ast.AST) -> str | None:
+    """The literal text that ends `node` (a string, an f-string ending in text, or the right end of a `+`)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr) and node.values and isinstance(node.values[-1], ast.Constant):
+        return str(node.values[-1].value)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _last_text(node.right)
+    return None
+
+
+def _module_strings(tree: ast.Module) -> dict[str, str]:
+    """Module-level names bound to a string constant (a named template such as `SCRIPT = "..."`)."""
+    out: dict[str, str] = {}
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str):
+            out.update({t.id: n.value.value for t in n.targets if isinstance(t, ast.Name)})
+        elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and isinstance(n.value, ast.Constant) \
+                and isinstance(n.value.value, str):
+            out[n.target.id] = n.value.value
+    return out
 
 
 def _hand_made_quoting(text: str) -> list[tuple[int, str, str]]:
-    """(line, what, source) of every hand-made way to quote a value for PowerShell in `text`."""
+    """(line, what, source) of every hand-made way to quote a value for PowerShell in `text`.
+
+    Found: a helper named like one (`HAND_MADE_NAMES`); a quote character doubled with `.replace()` or `.sub()`;
+    a `.format()` or `%` whose template (a string, or a module-level name bound to one) has a quote character
+    directly before a field; and, in an f-string or a `+` chain whose literal text looks like PowerShell
+    (`PS_SHAPE`) or is a bare quote, a quote character directly before a value, whatever follows it.
+    Not found: such a value in text with none of those shapes (a sentence; a string with no command,
+    variable, parameter, call operator or call in it), and text assembled in a loop, a list join or a function
+    call the scan does not follow.
+    """
     tree = ast.parse(text)
+    named = _module_strings(tree)
     found: list[tuple[int, str, str]] = []
 
     def add(node: ast.AST, what: str) -> None:
         found.append((getattr(node, "lineno", 0), what, ast.get_source_segment(text, node) or ""))
+
+    def template(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return named.get(node.id) if isinstance(node, ast.Name) else None
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in HAND_MADE_NAMES:
@@ -532,25 +601,28 @@ def _hand_made_quoting(text: str) -> list[tuple[int, str, str]]:
                 len(c) == 2 and c[0] == c[1] and c[0] in Q for c in consts
             ):
                 add(node, f"doubles a quote with .{node.func.attr}()")
-            if node.func.attr == "format" and isinstance(node.func.value, ast.Constant) \
-                    and isinstance(node.func.value.value, str) and FORMATTED.search(node.func.value.value):
-                add(node, "puts a value between quote characters with .format()")
+            tpl = template(node.func.value) if node.func.attr == "format" else None
+            if tpl is not None and FORMATTED.search(tpl):
+                add(node, "puts a value after a quote character with .format()")
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+            tpl = template(node.left)
+            if tpl is not None and FORMATTED.search(tpl):
+                add(node, "puts a value after a quote character with %")
         elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            left = node.left
-            if isinstance(left, ast.BinOp) and isinstance(left.op, ast.Add) and _is_quote_const(left.left) \
-                    and _is_quote_const(node.right):
-                add(node, "builds '...' by adding quote characters")
-        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod) and isinstance(node.left, ast.Constant) \
-                and isinstance(node.left.value, str) and FORMATTED.search(node.left.value):
-            add(node, "puts a value between quote characters with %")
-        elif isinstance(node, ast.JoinedStr) and PS_SHAPE.search(_literal_text(node)):
-            parts = node.values
-            for i in range(1, len(parts) - 1):
-                before, mid, after = parts[i - 1], parts[i], parts[i + 1]
-                if (isinstance(mid, ast.FormattedValue) and isinstance(before, ast.Constant)
-                        and isinstance(after, ast.Constant) and isinstance(before.value, str)
-                        and isinstance(after.value, str) and before.value[-1:] in Q and after.value[:1] in Q):
-                    add(node, "puts a value between two quote characters in an f-string")
+            last = _last_text(node.left)
+            if last and last[-1] in Q and not isinstance(node.right, ast.Constant) and (
+                last in Q or PS_SHAPE.search("".join(_constants(node)))
+            ):
+                add(node, "adds a value after a quote character")
+        elif isinstance(node, ast.JoinedStr):
+            literal = "".join(_constants(node))
+            bare = len(node.values) == 3 and len(literal) == 2 and literal[0] in Q
+            if not (bare or PS_SHAPE.search(literal)):
+                continue
+            for before, value in zip(node.values, node.values[1:], strict=False):
+                if isinstance(value, ast.FormattedValue) and isinstance(before, ast.Constant) \
+                        and str(before.value)[-1:] in Q:
+                    add(node, "puts a value after a quote character in an f-string")
                     break
     return found
 
@@ -581,6 +653,20 @@ def test_the_guard_finds_each_hand_made_shape() -> None:
         "x = f\"[X]::Y('{p(a)}', '{p(b)}')\"\n": 1,
         "x = literal(v)\n": 0,
         "x = f\"it is {v}\"\n": 0,
+        # the five forms of the FN-5 review, each a hand-made literal the first scan missed
+        "x = f\"& '{exe}' --version\"\n": 1,                                     # no variable, no listed verb
+        "x = f\"Copy-Item -LiteralPath '{p}' -Destination x\"\n": 1,            # a verb outside the old list
+        "x = f\"Stop-Process -Id {i}; Move-Item '{p}' x\"\n": 1,
+        "x = f\"Expand-Archive '{p}' x\"\n": 1,
+        "x = f\"Remove-Item -LiteralPath '{root}\\\\{name}'\"\n": 1,             # two values in one literal
+        "x = \"-FilePath '\" + str(exe) + \"' -Verb RunAs\"\n": 1,             # concatenation with text
+        "SCRIPT = \"Remove-Item '{path}'\"\nx = SCRIPT.format(path=p)\n": 1,    # .format on a named template
+        "T = \"Remove-Item '%s'\"\nx = T % p\n": 1,                             # % on a named template
+        "x = f\"Get-Item '{a}' | Copy-Item -Destination '\" + b\n": 2,          # an f-string ending in a quote, then +
+        # sentences for a person, and escaped braces, are not PowerShell text
+        "x = f\"Channel '{slug}' already exists.\"\n": 0,
+        "x = \"The task '\" + name + \"' was removed.\"\n": 0,
+        "x = \"& {{ Write-Output '{{x}}' }}\".format()\n": 0,
     }
     for source, count in shapes.items():
         assert len(_hand_made_quoting(source)) == count, source
@@ -644,14 +730,20 @@ def _ps_text(value: str) -> str:
 
 # --------------------------------------------- the commands shown to the owner (FN-3's texts), in both languages
 HOME_D = "D:\\NS\\a$b\u2019c\u2018d\u201ae\u201bf'g"      # a `$` makes the form `& '<path>'`
+#: Homes set by hand with a typographic DOUBLE quote and no `$`: PowerShell ends a double-quoted string at each
+#: of the three as at `"`, so `D:"\\..."` would not parse there (FN-5 review); they get `& '<path>'` too.
+HOMES_DQ = [f"D:\\NS\\x{ch}y z" for ch in "\u201c\u201d\u201e"]
 
 
 @needs_powershell
-def test_a_command_shown_to_the_owner_names_the_path_exactly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("home", [HOME_D, *HOMES_DQ], ids=["dollar-and-single-quotes", "u201c", "u201d", "u201e"])
+def test_a_command_shown_to_the_owner_names_the_path_exactly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, home: str
+) -> None:
     from ns_common import commandline
 
     monkeypatch.setenv("NS_TEST_USER_PATH", commandline.TEST_UNKNOWN)
-    wanted = {name: f"{HOME_D}\\venvs\\{venv}\\Scripts\\{exe}" for name, venv, exe in commandline.PROGRAMS}
+    wanted = {name: f"{home}\\venvs\\{venv}\\Scripts\\{exe}" for name, venv, exe in commandline.PROGRAMS}
     shown = {name: commandline.command_form(path) for name, path in wanted.items()}
     assert all(form.startswith("& '") for form in shown.values()), shown
     script = commandline.ps_formatter() + "\n" + "\n".join(
@@ -666,7 +758,7 @@ def test_a_command_shown_to_the_owner_names_the_path_exactly(tmp_path: Path, mon
             "foreach ($v in $c) { Write-Output ('V:' + " + ECHO.format(var="$v") + ") }",
         ]
     )
-    r = pwsh.run_powershell(script, env_extra={"NS_T": "ns doctor; studio status", "NS_H": HOME_D}, timeout_s=120)
+    r = pwsh.run_powershell(script, env_extra={"NS_T": "ns doctor; studio status", "NS_H": home}, timeout_s=120)
     assert r.returncode == 0, r.stdout + r.stderr
     got = [base64.b64decode(ln[2:]).decode("utf-8") for ln in r.stdout.splitlines() if ln.startswith("V:")]
     assert got == [wanted["ns"], wanted["studio"]]
@@ -675,6 +767,9 @@ def test_a_command_shown_to_the_owner_names_the_path_exactly(tmp_path: Path, mon
         for name, form in shown.items():
             errors, constants = parse(form + " doctor")
             assert errors == [] and constants == [wanted[name]], (name, errors, constants)
+        if home in HOMES_DQ:  # why: the drive-outside-double-quotes form does not parse with such a home
+            errors, _ = parse(f'{wanted["ns"][:2]}"{wanted["ns"][2:]}" doctor')
+            assert errors != []
 
 
 class PowerShellParse:

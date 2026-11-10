@@ -262,6 +262,9 @@ def own_file(home: Path | str, tool: str) -> Path:
 
 _BARE = re.compile(r"[A-Za-z0-9:\\._-]+")
 _DRIVE = re.compile(r"[A-Za-z]:\\")
+#: What PowerShell reads inside a double-quoted string: `$` and the backtick, and the three typographic double
+#: quotes that end it as `"` does (its tokenizer's `IsDoubleQuote`). A path with one gets the `& '...'` form.
+IN_DOUBLE = "$`\u201c\u201d\u201e"
 
 
 def command_form(path: str) -> str:
@@ -273,13 +276,15 @@ def command_form(path: str) -> str:
       that starts with a quote as a string (``"C:\\a b\\ns.cmd" doctor`` is its parse error "Unexpected
       token"), and PowerShell's ``& "..."`` is cmd.exe's "& was unexpected"; inside the quotes both take a
       space and ``& ( ) ^ ' ! ;`` as they are;
-    * a ``$`` or a backtick, which PowerShell reads inside double quotes and cmd.exe has no other quotes for:
-      PowerShell's single-quoted ``& '...'`` (the texts that name commands say PowerShell). Setup's folder
-      rules allow both characters; a home that has one is rare.
+    * a ``$`` or a backtick, which PowerShell reads inside double quotes, or a typographic double quote
+      (U+201C, U+201D, U+201E), which ends a PowerShell double-quoted string as ``"`` does (`IN_DOUBLE`), and
+      cmd.exe has no other quotes for: PowerShell's single-quoted ``& '...'`` (the texts that name commands
+      say PowerShell). Setup's folder rules allow ``$`` and the backtick, and refuse non-ASCII; a home that
+      has one of them is rare (the typographic quotes only in a home set by hand).
     """
     if _BARE.fullmatch(path):
         return path
-    if "$" not in path and "`" not in path and _DRIVE.match(path):
+    if not any(ch in path for ch in IN_DOUBLE) and _DRIVE.match(path):
         return f'{path[:2]}"{path[2:]}"'
     return "& " + ps_literal(path)
 
@@ -380,7 +385,7 @@ def ps_formatter() -> str:
                 $file = Join-Path $NsHome ('venvs\' + $tool[1] + '\Scripts\' + $tool[2])
             }
             if ($file -cmatch '^[A-Za-z0-9:\\._-]+$') { $form = $file }
-            elseif (($file -notmatch '[$`]') -and ($file -match '^[A-Za-z]:\\')) {
+            elseif (($file -notmatch '[$`\u201C\u201D\u201E]') -and ($file -match '^[A-Za-z]:\\')) {
                 $form = $file.Substring(0, 2) + '"' + $file.Substring(2) + '"'
             }
             else { $form = "& '" + [regex]::Replace($file, '[\u0027\u2018\u2019\u201A\u201B]', '$0$0') + "'" }
