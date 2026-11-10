@@ -57,7 +57,7 @@ export default function Settings() {
       if ((quietSince !== null && Date.now() - quietSince > UPDATE_WAIT_MS) || Date.now() - began > UPDATE_HARD_STOP_MS) {
         clearInterval(t); setUpdating(null);
         setUpdateNote(sawRunning
-          ? "The update is still being installed. Wait for its window to finish, then open Nightshift from the shortcut on your desktop if this page does not reconnect."
+          ? "The update has not reported back. If a window named Nightshift update is open, it shows the result and what to do. Otherwise open Nightshift from the shortcut on your desktop: the Queue page and this page then show how the update ended."
           : "Nightshift did not come back by itself. Close this window and open Nightshift again from the shortcut on your desktop. If it still does not start, make a diagnostics report from there.");
         return;
       }
@@ -69,7 +69,8 @@ export default function Settings() {
           if ((u.state === "done" || u.state === "failed") && (seen || Date.now() - began > 90_000)) {
             if (u.state === "failed") {
               clearInterval(t); setUpdating(null); setUpd(null);
-              toast(`The update did not work and nothing was changed. ${u.message || ""}`, "bad");
+              // the message says what is in place ("Nothing was changed" only where that is so) and what to do
+              toast(`The update did not complete. ${u.message || ""}`, "bad"); setUpdateNote(failedNote(u));
               return;
             }
             // done: the service that answers must be the new version before the page says so
@@ -90,7 +91,10 @@ export default function Settings() {
       }
     }, 3000);
   };
-  useEffect(() => { api.get<UpdateState>("/update/state").then((u) => { if (u.state === "running") follow(false); else if (u.state === "done" && u.release_notes) setWhatsNew({ version: u.new, text: u.release_notes }); }).catch(() => undefined); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // A failed update or rollback stays on this card until the next one: it may have ended while nobody was looking
+  // (Nightshift not started again, a power cut), and its message carries the way out.
+  const failedNote = (u: UpdateState) => `The last update or rollback did not complete${u.updated_at ? ` (${u.updated_at.replace("T", " ")})` : ""}. ${u.message || "See the newest update log in the logs folder."}`;
+  useEffect(() => { api.get<UpdateState>("/update/state").then((u) => { if (u.state === "running") follow(false); else if (u.state === "failed") setUpdateNote(failedNote(u)); else if (u.state === "done" && u.release_notes) setWhatsNew({ version: u.new, text: u.release_notes }); }).catch(() => undefined); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const apply = async () => {
     const ok = await confirm({ title: "Install the update?", body: "Nightshift stops the engine, installs the new version and starts again. If anything fails it goes back to this version", ok: "Install" });
     if (!ok) return;

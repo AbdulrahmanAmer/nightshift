@@ -66,7 +66,8 @@ def test_a_state_file_that_stays_locked_does_not_kill_the_worker(
     log = paths.logs / "u.log"
     assert update_job.run_worker(paths, body, log=log) == 0     # the first write used to be outside the try
     assert ran == [1]
-    assert calls.count("running") == 2 and calls.count("done") == update_job.FINAL_TRIES
+    # (three progress lines of the worker itself: waiting for its caller, updating, starting again)
+    assert calls.count("running") == 3 and calls.count("done") == update_job.FINAL_TRIES
     assert "could not write update_state.json" in log.read_text(encoding="utf-8")
 
 

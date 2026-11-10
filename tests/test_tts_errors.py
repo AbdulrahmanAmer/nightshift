@@ -25,7 +25,7 @@ from ns_tts.server import create_app  # noqa: E402
 def make_client(tmp_path: Path, engine: FakeEngine) -> TestClient:
     engine.load()
     app = create_app(engine, VoiceLibrary(tmp_path / "voices"), log=NsLogger("tts", tmp_path / "l"))
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1:18099")
 
 
 def test_the_tts_codes_exist_and_say_what_they_mean():
@@ -43,7 +43,7 @@ def test_synthesis_failure_reaches_the_client_as_ns_e310(tmp_path: Path):
     c = make_client(tmp_path, Failing())
     r = c.post("/v1/audio/speech", json={"input": "hello there", "voice": "Ryan"})
     assert r.status_code == 500 and r.json()["error"] == "NS-E310" and "out of memory" in r.json()["detail"]
-    cli = TtsClient("http://testserver", client=c)  # type: ignore[arg-type]
+    cli = TtsClient("http://127.0.0.1:18099", client=c)  # type: ignore[arg-type]
     with pytest.raises(NsError) as ei:
         cli.speak("hello there", "Ryan", 1.0, tmp_path / "o.wav")
     assert ei.value.code == "NS-E310"
@@ -103,7 +103,10 @@ def test_missing_voice_design_model_is_ns_e314_with_the_settings_hint(tmp_path: 
 def test_health_exposes_engine_kind_for_ns_verify(tmp_path: Path):
     from ns_tts.engine import ReferenceEngine
 
-    ref = TestClient(create_app(ReferenceEngine(tmp_path, device="cuda"), VoiceLibrary(tmp_path / "v")))
+    ref = TestClient(
+        create_app(ReferenceEngine(tmp_path, device="cuda"), VoiceLibrary(tmp_path / "v")),
+        base_url="http://127.0.0.1:18099",
+    )
     body = ref.get("/health").json()
     assert body["engine_kind"] == "reference"  # ns verify turns this into NS-W301
     assert body["model_loaded"] is False

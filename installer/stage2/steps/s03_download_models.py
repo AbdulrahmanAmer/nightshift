@@ -25,7 +25,7 @@ from installer.stage2.downloader import (
 )
 from installer.stage2.errors import make_error
 from installer.stage2.fallback import fallback_items
-from installer.stage2.runtime_cfg import update_runtime
+from installer.stage2.runtime_cfg import existing_runtime, update_runtime
 
 
 class S03DownloadModels(Step):
@@ -94,7 +94,7 @@ class S03DownloadModels(Step):
     @staticmethod
     def _point_runtime_at(ctx: StepContext, file: str) -> None:
         """An existing runtime.json gets the custom model path; a new one is built with it."""
-        if ctx.paths.runtime_file.exists():
+        if existing_runtime(ctx).state != "missing":
             path = str(ctx.paths.models_llm / Path(file).name)
             update_runtime(ctx, lambda rt: setattr(rt.llama, "model_path", path))
 

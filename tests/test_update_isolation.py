@@ -152,6 +152,58 @@ def test_control_the_old_worker_that_used_the_venv_interpreter_is_caught(tmp_pat
     assert held and held[0].endswith("python.exe")
 
 
+def test_no_program_of_ours_runs_from_a_venv_while_uv_rewrites_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D-39: the same world with the CALLER of a terminal `ns update` in it. The terminal's command runs from
+    `venvs/supervisor` (and holds `Scripts/ns.exe` open for as long as it lives), so it has to end before
+    the worker syncs: the worker waits for it, and nothing in the terminal waits for the worker."""
+    from typer.testing import CliRunner
+
+    from ns_supervisor import cli
+
+    paths = Paths(tmp_path / "home")
+    make_venv(paths)
+    app = tmp_path / "app"
+    app.mkdir()
+    world = World()
+    world.start(100, str(paths.venvs / "supervisor" / "Scripts" / "ns.exe"))     # the terminal's command
+    spawned: list[list[str]] = []
+    stayed: list[int] = []
+
+    def spawn(argv: list[str], cwd: Path) -> int:
+        spawned.append(argv)
+        world.start(200, argv[0])
+        return 200
+
+    def window(argv: list[str], cwd: Path) -> int:
+        world.start(300, argv[0])                       # the progress window is a process too
+        return 300
+
+    monkeypatch.setattr(update_job, "spawn_detached", spawn)
+    monkeypatch.setattr(update_job, "open_window", window, raising=False)
+    monkeypatch.setattr(update_job, "follow", lambda *a, **k: stayed.append(100) or 0, raising=False)
+    r = CliRunner().invoke(cli.app, ["update", "--github"], env={"NIGHTSHIFT_HOME": str(paths.home)})
+    assert r.exit_code == 0 and len(spawned) == 1, r.output
+    if not stayed:
+        world.end(100)                                  # the command returned to the prompt
+    held_at_sync: list[str] = []
+
+    def uv(cmd: list[str]) -> tuple[int, str]:
+        held_at_sync.extend(world.holders(paths.venvs))
+        return 0, ""
+
+    def body() -> update_job.Outcome:
+        update.resync_venvs(app, paths, uv="uv", run=uv)
+        return update_job.Outcome("Now on 0.2.0 (was 0.1.0).", "0.1.0", "0.2.0")
+
+    told = "--wait-pid" in spawned[0]
+    update_job.run_worker(paths, body, wait_pid=100 if told else None, wait=lambda pid: None)
+    assert held_at_sync == [], "the terminal's own command was still running from the venv during the sync"
+    assert told and "venvs" not in Path(spawned[0][0]).parts
+    assert all("venvs" not in Path(exe).parts for exe in world.live.values())
+
+
 # --------------------------------------------------------------- the shortcut no longer holds ns.exe
 def test_the_update_shortcut_detaches_and_follows_the_state_file_without_ns_exe() -> None:
     text = (LAUNCHERS / "update.ps1").read_text(encoding="ascii")

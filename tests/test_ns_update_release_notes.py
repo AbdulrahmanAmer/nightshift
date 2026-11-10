@@ -100,12 +100,12 @@ def test_the_dashboard_keeps_release_notes_and_the_old_fields(tmp_path: Path) ->
 
 
 def test_the_cli_result_line_and_state_file_carry_the_release_notes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, closed_port: int
 ) -> None:
     from tests.test_ns_update_github import pin_latest
-    from tests.test_update_job import invoke
+    from tests.test_update_job import engine_down, invoke
 
-    home = tmp_path / "home"
+    home = engine_down(tmp_path / "home", closed_port)
     pin_latest(monkeypatch, "99.0.0")
     monkeypatch.setattr(cli.releases, "download", lambda rel, dest, client=None: dest / rel.zip_name)
     done = update.UpdateResult("0.1.0", "99.0.0", [], "## [99.0.0]\n- big")

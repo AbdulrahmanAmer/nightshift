@@ -29,7 +29,7 @@ def make_client(tmp_path: Path, engine: FakeEngine | None = None, *, load: bool 
     if load:
         e.load()
     app = create_app(e, VoiceLibrary(tmp_path / "voices"), log=NsLogger("tts", tmp_path / "logs"))
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1:18099")
 
 
 @pytest.fixture
@@ -167,7 +167,7 @@ def test_batch_empty_items(client: TestClient, tmp_path: Path):
 
 
 def test_ns_common_tts_client_talks_to_the_server(client: TestClient, tmp_path: Path):
-    tts = TtsClient("http://testserver", client=client)  # TestClient is an httpx.Client
+    tts = TtsClient("http://127.0.0.1:18099", client=client)  # TestClient is an httpx.Client
     assert tts.health() is True
     assert any(v["name"] == "Ryan" for v in tts.voices())
     secs = tts.speak("hello there friend", "Ryan", 1.0, tmp_path / "s.wav", seed=1)

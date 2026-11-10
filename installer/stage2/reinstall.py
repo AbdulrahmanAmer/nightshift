@@ -15,6 +15,11 @@ and its voice) and ``models``. A later setup may bring new answers, from a file 
   owed, not done, in s01: s06 does it once s03 has verified the new file (``apply_pending_runtime``), so the
   nightly run keeps finding the model it was tuned for until then. Ports, the video encoder, the whisper
   device and the voice engine the smoke test chose are the machine's, and stay.
+  What the existing ``runtime.json`` is, and which of its settings count, is decided in one place
+  (``runtime_cfg.inspect_runtime``, ``Found.runtime``; the table is in that module): this module asks it and
+  never tests the file itself, so a file with a byte order mark, in UTF-16 or with settings this version does
+  not know owes the answers exactly what a plain one does, and a file that cannot be read stops the
+  questions step (NS-E125) instead of being taken for a missing one.
 * The channel yaml and the voice hold what the owner changed in the dashboard since. They are replaced only
   where the new answers name something different from what the kept answers recorded, field by field. A new
   channel name makes a new channel; the old one stays and is named.
@@ -37,16 +42,20 @@ from typing import Any
 
 from installer.stage2.answers import AnswersError, InstallerAnswers, load_raw, slugify
 from installer.stage2.context import StepContext
-from installer.stage2.runtime_cfg import build_runtime
+from installer.stage2.runtime_cfg import (
+    PENDING_FLAG,
+    build_runtime,
+    ensure_baseline,
+    existing_runtime,
+    install_kind,
+)
 from installer.stage2.secrets import KEY_NAMES
 from installer.stage2.web.answers_view import KEPT_NAME
 from ns_common.atomic import write_text_atomic
-from ns_common.config import load_channel, load_runtime, save_channel, save_runtime
+from ns_common.config import load_channel, save_channel
 from ns_common.models import Voice
 
-#: Wizard flag: what s06 still has to do to runtime.json, ``{"whole": bool, "llama": bool, "engine": bool}``.
-#: Set by s01 when the answers ask for it, cleared by ``apply_pending_runtime`` once the files are in place.
-PENDING_FLAG = "runtime_pending"
+__all__ = ["PENDING_FLAG"]      # the flag lives with the file's one mechanism (``runtime_cfg``)
 KEY_LABELS = {"pexels_api_key": "Pexels", "pixabay_api_key": "Pixabay"}
 
 #: Choices compared as they are (their defaults come from ``InstallerAnswers``).
@@ -251,12 +260,13 @@ def apply(ctx: StepContext, kept: dict[str, Any], ans: InstallerAnswers, diff: l
     """Bring runtime.json, the channel yaml, the voice and the UI preferences in line with the answers that
     changed. Returns one plain line per thing that was done or deliberately kept."""
     keys = {c.key for c in diff}
+    runtime_lines = _runtime(ctx, keys, bool(kept))     # first: it refuses (NS-E125) before anything changed
     if "fake_voice" in keys:
         # s02 decided about the voice engine program and the PyTorch fallback for the old answer (fake voice:
         # none; real voice: the binary). With the flags left, s02 stays "done" and s08 ends on the 7 GB
         # fallback.
         ctx.clear_flags("qwentts", "tts_fallback")
-    return [*_runtime(ctx, keys, bool(kept)), *_channel(ctx, kept, ans, keys), *_prefs(ctx, ans, keys)]
+    return [*runtime_lines, *_channel(ctx, kept, ans, keys), *_prefs(ctx, ans, keys)]
 
 
 def _manifest_models(ctx: StepContext) -> set[str]:
@@ -265,25 +275,38 @@ def _manifest_models(ctx: StepContext) -> set[str]:
     return {Path(f.file).name for f in files if f is not None}
 
 
+def _few(names: tuple[str, ...], most: int = 8) -> str:
+    shown = ", ".join(names[:most])
+    return shown + (f" and {len(names) - most} more" if len(names) > most else "")
+
+
 def _runtime(ctx: StepContext, keys: set[str], compared: bool) -> list[str]:
     """Decide what runtime.json owes the answers, and record it for s06 (``apply_pending_runtime``).
 
     Nothing is written here. The model s03 is about to download does not exist yet, and a scheduled run that
     starts llama-server on a missing file is a broken install: runtime.json keeps naming the model it has
     until s03 has verified the new one. The old file stays in models\\llm either way.
+
+    The settings compared are the ones setup keeps from the file (``Found.runtime``), whatever state the file
+    is in: s06 applies what is recorded here to those same settings. A file with none (missing, damaged) is
+    written from these answers by the first step that needs it, so it owes nothing. A file that cannot be
+    read right now is NS-E125: the answers are not saved, and Retry compares again.
     """
-    if not ctx.paths.runtime_file.exists():
-        return []
-    rt, fresh = load_runtime(ctx.paths), build_runtime(ctx)
+    found = existing_runtime(ctx)
+    rt = found.runtime
+    if rt is None:
+        return []   # missing or damaged: made from these answers (ensure_baseline), which tells the owner
+    fresh = build_runtime(ctx)
     owed: dict[str, bool] = dict(ctx.flag(PENDING_FLAG) or {})
     lines: list[str] = []
     was, now = Path(rt.llama.model_path).name, Path(fresh.llama.model_path).name
-    if (rt.profile, rt.dev_mode) != (fresh.profile, fresh.dev_mode):
+    if (rt.profile, rt.dev_mode) != install_kind(ctx):
         owed["whole"] = True  # made for another kind of install: all of it, once its models are there
         ctx.clear_flags("tuned")
         lines.append(
             "config\\runtime.json was made for another kind of install (real or dev, GPU or not); "
-            "it is built again from your answers once the models for this kind are downloaded."
+            "it is built again from your answers once the models for this kind are downloaded, and the "
+            "file as it is now is kept next to it as runtime.json.other."
         )
     else:
         # With no kept answers to compare (the saved file was deleted to start over) the model is the
@@ -307,57 +330,31 @@ def _runtime(ctx: StepContext, keys: set[str], compared: bool) -> list[str]:
     if owed:
         ctx.set_flag(PENDING_FLAG, owed)
         return lines
+    if found.state == "recode":
+        return [
+            f"Kept config\\runtime.json (ports, engines). It was saved as {found.why}, so setup writes it "
+            "again as plain UTF-8 with the same settings."
+        ]
+    if found.state == "newer":
+        return [
+            "Kept config\\runtime.json (ports, engines), except settings this version does not know "
+            f"({_few(found.removed)}): setup removes them, keeps the file as it was next to it, and tuning "
+            "runs again."
+        ]
     return [
         "Kept config\\runtime.json (ports, tuning, engines). To make setup build it again from your "
         "answers, delete it and run setup again."
     ]
 
 
-def apply_pending_runtime(ctx: StepContext) -> list[str]:
+def apply_pending_runtime(ctx: StepContext) -> None:
     """s06, before tuning: make runtime.json follow the answers s01 recorded, now that the files are there.
 
-    The language model is repointed only when its file is in models\\llm (s03 verified it); otherwise
-    runtime.json keeps the model it has and the work stays owed. Returns one line per thing done.
+    One pass with whatever else the file needs (``runtime_cfg.ensure_baseline(follow_answers=True)``): the
+    language model is repointed only when its file is in models\\llm (s03 verified it); otherwise
+    runtime.json keeps the model it has, the work stays owed and the step's row says so.
     """
-    owed = ctx.flag(PENDING_FLAG)
-    if not owed:
-        return []
-    if not isinstance(owed, dict) or not ctx.paths.runtime_file.exists():
-        ctx.clear_flags(PENDING_FLAG)  # nothing to change: the baseline is made from the answers
-        return []
-    rt, fresh = load_runtime(ctx.paths), build_runtime(ctx)
-    was, wanted = Path(rt.llama.model_path).name, Path(fresh.llama.model_path)
-    if (owed.get("whole") or owed.get("llama")) and not wanted.is_file():
-        return [
-            f"config\\runtime.json keeps using {was} because {wanted.name} is not in models\\llm yet; "
-            "it is switched once the file is there."
-        ]
-    lines: list[str] = []
-    if owed.get("whole"):
-        save_runtime(ctx.paths, fresh)
-        lines.append(
-            "config\\runtime.json is built again from your answers (it was made for another kind of install)."
-        )
-    else:
-        if owed.get("llama"):
-            # always the flags too: s03 already pointed model_path at a custom file, with the old tier's flags
-            rt.llama.model_path, rt.llama.flags = fresh.llama.model_path, fresh.llama.flags
-            had = f" (it had {was})" if was != wanted.name else ""
-            lines.append(
-                f"Language model: config\\runtime.json now uses {wanted.name}{had} with that model's "
-                "settings, and tuning runs again."
-                + (f" {was} stays in models\\llm; delete it by hand to free space." if had else "")
-            )
-        if owed.get("engine"):
-            rt.fake_footage, rt.tiny_story = fresh.fake_footage, fresh.tiny_story
-            rt.tts.engine = fresh.tts.engine
-            lines.append(
-                "Engine test: config\\runtime.json now follows your fake_voice, fake_footage and tiny_story "
-                "answers."
-            )
-        save_runtime(ctx.paths, rt)
-    ctx.clear_flags(PENDING_FLAG)
-    return lines
+    ensure_baseline(ctx, follow_answers=True)
 
 
 def _s07() -> Any:
@@ -456,7 +453,7 @@ def kept_lines(ctx: StepContext, ans: InstallerAnswers) -> list[str]:
     and a runtime.json and this run is not the resume of an install that already finished a step (its own
     files are not "kept").
     """
-    if ctx.resumed or not ctx.paths.runtime_file.exists():
+    if ctx.resumed or existing_runtime(ctx).state == "missing":
         return []
     if not (ctx.paths.config / "answers.json").is_file():
         return []

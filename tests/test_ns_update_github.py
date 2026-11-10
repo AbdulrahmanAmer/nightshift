@@ -17,6 +17,7 @@ from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_supervisor import cli, releases, update, update_check
 from tests.test_supervisor_core import make, running, until
+from tests.test_update_job import engine_down
 
 runner = CliRunner()
 ZIP_BYTES = b"PK-not-really-a-zip-but-fine-for-hashing"
@@ -166,8 +167,10 @@ def test_ns_update_check_offline_exits_one_with_the_code(tmp_path: Path, monkeyp
     assert r.exit_code == 1 and "NS-E105" in r.output
 
 
-def test_ns_update_github_downloads_then_applies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    home = tmp_path / "home"
+def test_ns_update_github_downloads_then_applies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, closed_port: int
+):
+    home = engine_down(tmp_path / "home", closed_port)
     got: dict[str, Any] = {}
     pin_latest(monkeypatch, "99.0.0")
 
@@ -189,11 +192,11 @@ def test_ns_update_github_downloads_then_applies(tmp_path: Path, monkeypatch: py
 
 
 def test_ns_update_github_when_already_current_changes_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, closed_port: int
 ):
     pin_latest(monkeypatch, "0.0.1")
     monkeypatch.setattr(update, "update_app", lambda *a, **k: pytest.fail("must not update"))
-    r = invoke(tmp_path / "home", "update", "--github", "--worker")
+    r = invoke(engine_down(tmp_path / "home", closed_port), "update", "--github", "--worker")
     assert r.exit_code == 0 and "Already on the newest" in r.output
 
 
