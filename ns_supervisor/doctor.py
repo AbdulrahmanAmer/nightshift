@@ -19,12 +19,12 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 
-from ns_common import __version__, ffmpeg
+from ns_common import __version__, ffmpeg, first_start, rollback_intent
 from ns_common.atomic import read_text_retry, retry_busy, write_zip_atomic
 from ns_common.config import load_install_state, load_runtime
 from ns_common.devmode import is_dev
 from ns_common.errors import NsError
-from ns_common.paths import Paths
+from ns_common.paths import Paths, repo_root
 from ns_common.uv import find_uv
 from ns_supervisor import procs
 from ns_supervisor.childenv import child_env
@@ -240,4 +240,52 @@ def diagnose(paths: Paths, client: SupervisorClient) -> list[tuple[str, bool, st
         rows.append(("nvidia-smi", smi is not None, "ok" if smi is not None else "no NVIDIA driver found"))
     have_ffmpeg = ffmpeg.available()
     rows.append(("ffmpeg", have_ffmpeg, "on PATH" if have_ffmpeg else "ffmpeg/ffprobe not found"))
+    rows.append(program_folders(paths, Path(st.app_path) if st.app_path else repo_root()))
     return rows
+
+
+def _last_swap_sentence(paths: Paths) -> str:
+    """The newest rename a start, an update or a rollback made of a leftover `app.swap` (the log event
+    `first_start.SWAP_EVENT` with `settled` true, in the three newest log files of each), with its time;
+    empty when there is none."""
+    newest: tuple[str, str] = ("", "")
+    for component in (first_start.LOG_COMPONENT, "update"):
+        try:
+            files = sorted(paths.logs.glob(f"{component}-*.jsonl"))[-3:]
+        except OSError:
+            continue
+        for f in files:
+            try:
+                lines = read_text_retry(f).splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                if first_start.SWAP_EVENT not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(rec, dict) or rec.get("event") != first_start.SWAP_EVENT:
+                    continue
+                data = rec.get("data")
+                if isinstance(data, dict) and data.get("settled") is True:  # (a rename that was done)
+                    newest = max(newest, (str(rec.get("ts", "")), str(rec.get("msg", ""))))
+    return f"{newest[1]} ({newest[0][:16].replace('T', ' ')} UTC)" if newest[1] else ""
+
+
+def program_folders(paths: Paths, app: Path) -> tuple[str, bool, str]:
+    """The row "program folders": what an interrupted `ns update --rollback` left beside the program.
+
+    `ns doctor` is a start of the program like any other, so the start's own check runs first
+    (`first_start.ensure`: a leftover `app.swap` is given its place, an interrupted rollback finished or
+    undone). Then: FAIL while `app.swap` is still there (held open, or not a program folder), with the way
+    out; ok, naming each folder, while a folder that was set aside (`app.swap-left-<stamp>`) waits for the
+    owner to delete it; else ok, with the last thing that was done about such a folder, if any."""
+    first_start.ensure(paths.config)
+    waiting = rollback_intent.swap_note(app)
+    left = [rollback_intent.left_sentence(f) for f in rollback_intent.left_folders(app)]
+    if waiting or left:
+        return ("program folders", not waiting, " ".join([waiting, *left]).strip())
+    last = _last_swap_sentence(paths)
+    return ("program folders", True, f"ok. Last: {last}" if last else "ok")

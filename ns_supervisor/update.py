@@ -70,6 +70,9 @@ NO_GIT_HINT = (
     "shortcut with a Nightshift-Update zip."
 )
 NOTHING_CHANGED = "Nothing was changed: the program and your settings are as they were."
+#: How a result names a program whose VERSION file is missing or empty (`config_snapshot.program_version`
+#: answers `-`): never the version of the code that happens to run the rollback.
+UNKNOWN_VERSION = "unknown version"
 SETTINGS_REFUSED = (
     f"{NOTHING_CHANGED} Close programs that use the "
     "Nightshift folder, make room on the disk if it is full, and run the update again."
@@ -548,9 +551,27 @@ def _readable_by(config: Path, version: str, log: NsLogger) -> tuple[list[str], 
     return dropped, failed
 
 
-def _for_older_sentence(version: str, dropped: list[str], failed: list[str], *, restored: bool) -> str:
-    """What the rollback did to make the files readable by `version` (empty when it had nothing to do)."""
+def _for_older_sentence(
+    version: str,
+    dropped: list[str],
+    failed: list[str],
+    *,
+    restored: bool,
+    readable_as: str | None = None,
+    prev_name: str = "app.prev",
+) -> str:
+    """What the rollback did to make the files readable by `version` (empty when it had nothing to do).
+    `readable_as` is what the older program's VERSION file holds, when that is not the name `version`: one
+    that is no version number (missing, empty, any other text) is always said, with what follows from it."""
     parts: list[str] = []
+    known = bool(config_compat.version_key(version if readable_as is None else readable_as))
+    if not known:
+        found = "" if dropped or failed else " None of your settings files holds one."
+        parts.append(
+            f"Because the version of the program in {prev_name} could not be read, it was treated as older "
+            f"than every release: every setting added since {config_compat.BASE_VERSION} is taken out for "
+            f"it.{found}"
+        )
     if dropped:
         where = "The copy held settings" if restored else "They held settings"
         parts.append(
@@ -562,8 +583,10 @@ def _for_older_sentence(version: str, dropped: list[str], failed: list[str], *, 
             f"These hold settings {version} does not know and could not be changed, so {version} may refuse "
             f"them: {_names(failed)}."
         )
-    if (dropped or not restored) and config_compat.version_key(version) < config_compat.version_key(
-        config_compat.BASE_VERSION
+    if (
+        known
+        and (dropped or not restored)
+        and config_compat.version_key(version) < config_compat.version_key(config_compat.BASE_VERSION)
     ):
         parts.append(f"(Only the settings added since {config_compat.BASE_VERSION} are checked.)")
     return " ".join(parts)
@@ -611,6 +634,8 @@ def _prepare_settings(
     left_fingerprint: str,
     can_go_forward: bool,
     log: NsLogger,
+    readable_as: str | None = None,
+    prev_name: str = "app.prev",
 ) -> _Prepared:
     """BEFORE a rollback puts the older program in place: make the settings files ones it loads. The older
     program may have no rollback code (0.1.14 has none), so what it finds when it starts must already be
@@ -622,9 +647,20 @@ def _prepare_settings(
     Without a `copy` to put back, the zip (`slot`) is replaced after the swap only when nothing in it can be
     used (there is none, or it is damaged). A complete copy of another program stays: when it belongs to the
     program that goes to `<app>.prev` (its last restore failed), the live files are not that program's, and
-    saving them under its name would make the next rollback "restore" a newer version's files."""
+    saving them under its name would make the next rollback "restore" a newer version's files.
+
+    `restored_version` is the name the sentences use; `readable_as` is what the older program's VERSION file
+    holds (`config_snapshot.program_version`: `-` when it is missing or empty) and decides what is taken
+    out: a version that cannot be read is older than every release (`config_compat.for_version`)."""
     notes: list[str] = []
     after = rollback_intent.AfterSwap()
+    readable_as = restored_version if readable_as is None else readable_as
+
+    def for_older(dropped: list[str], failed: list[str], *, restored: bool) -> str:
+        return _for_older_sentence(
+            restored_version, dropped, failed, restored=restored, readable_as=readable_as, prev_name=prev_name
+        )
+
     if copy is None or live is None:
         own = slot.copy is not None and slot.copy.fingerprint == left_fingerprint
         if copy is None and (slot.free or (own and not config_snapshot.is_unrestored(zip_path))):
@@ -637,10 +673,10 @@ def _prepare_settings(
             after.mark_unrestored = True
         why = why_not if copy is None else live_error
         log.warn("settings_not_restored", why)
-        dropped, failed = _readable_by(paths.config, restored_version, log)
+        dropped, failed = _readable_by(paths.config, readable_as, log)
         no_copy = copy is None and slot.problem is not None and slot.problem.missing
         no = _not_restored_sentence(why, restored_version, dropped, failed, no_copy=no_copy)
-        older = _for_older_sentence(restored_version, dropped, failed, restored=False)
+        older = for_older(dropped, failed, restored=False)
         hint = "" if no_copy and not dropped and not failed else SETTINGS_BACKUP_HINT
         sentence = " ".join(p for p in (no, older, hint) if p)
         return _Prepared(sentence, notes, after, damaged_slot=copy is None and slot.damaged)
@@ -649,13 +685,13 @@ def _prepare_settings(
     except config_snapshot.SnapshotError as e:
         log.error("settings_restore_failed", str(e))
         after.mark_unrestored = True
-        dropped, failed = _readable_by(paths.config, restored_version, log)
+        dropped, failed = _readable_by(paths.config, readable_as, log)
         no = _not_restored_sentence(str(e), restored_version, dropped, failed, no_copy=False)
         left = (
             f"The copy made for {restored_version} is still in {zip_path} "
             f"(a zip: the files in its config folder are what {restored_version} wrote)."
         )
-        older = _for_older_sentence(restored_version, dropped, failed, restored=False)
+        older = for_older(dropped, failed, restored=False)
         return _Prepared(" ".join(p for p in (no, older, left, SETTINGS_BACKUP_HINT) if p), notes, after)
     # files the older version never had leave only after the swap, once they are saved for going forward
     after.publish_forward = can_go_forward
@@ -684,8 +720,8 @@ def _prepare_settings(
         sentence += " None of them was different from the copy."
     # A copy taken late (a first start whose earlier try failed) can hold a setting the older version lacks;
     # a file the copy does not hold (one the newer version made) may too: it stays until it is set aside.
-    dropped, failed = _readable_by(paths.config, restored_version, log)
-    older = _for_older_sentence(restored_version, dropped, failed, restored=True)
+    dropped, failed = _readable_by(paths.config, readable_as, log)
+    older = for_older(dropped, failed, restored=True)
     if older:
         sentence += " " + older
     bad = _unreadable(paths.config, done.written)
@@ -731,8 +767,13 @@ def _swap_programs(app: Path, prev: Path, tmp: Path) -> None:
 
     `OSError`: the folders were put back as they were when that could be done (the caller looks at `<app>`
     to know). Any other interruption (Ctrl+C, the process told to end): the folders are left in a state the
-    next start understands (`_settle_folders`) and the interruption goes on."""
-    shutil.rmtree(tmp, ignore_errors=True)
+    next start understands (`_settle_folders`) and the interruption goes on.
+
+    Nothing is ever deleted to make room: `rollback_app` has settled a leftover `<app>.swap`
+    (`rollback_intent.settle_swap`) or refused to start, so the name is free; if something takes it after
+    that, this fails before the first rename and the folders are as they were."""
+    if os.path.lexists(tmp):
+        raise FileExistsError(f"{tmp} is in the way")
     try:
         rename_with_retry(app, tmp)
         try:
@@ -766,34 +807,63 @@ def _settle_folders(app: Path, prev: Path, tmp: Path) -> None:
         pass
 
 
-def _recover_rollback(app: Path, paths: Paths, log: NsLogger) -> str:
-    """Finish or undo a rollback that was interrupted (`rollback_intent.recover`, under the copy's lock)
-    before an update looks at the settings. Returns what was done (empty: nothing)."""
-    if not rollback_intent.path_for(app).exists():
-        return ""
-    with config_snapshot.locked(config_snapshot.path_for(app)) as held:
-        if not held:
-            raise NsError(
-                "NS-E702",
-                f"another Nightshift program is using the settings copy. Close Nightshift windows and try "
-                f"again. {NOTHING_CHANGED}",
-            )
-        rec = rollback_intent.recover(app, paths.config)
-    _refuse_if_pending(rec, log)
-    if rec.sentence:
-        log.warn("rollback_recovered", rec.sentence)
-    return rec.sentence
+def _settle_swap(app: Path, log: NsLogger) -> str:
+    """Give a leftover `<app>.swap` its place (`rollback_intent.settle_swap`; the caller holds the copy's
+    lock) and log what was said. Returns the sentence (empty: there was none)."""
+    said = rollback_intent.settle_swap(app)
+    if said:
+        log.warn(
+            first_start.SWAP_EVENT,
+            said,
+            folder=str(rollback_intent.swap_for(app)),
+            settled=not rollback_intent.swap_waits(app),
+        )
+    return said
 
 
-def _refuse_if_pending(rec: rollback_intent.Recovery, log: NsLogger) -> None:
+def _left_notes(app: Path, said: Iterable[str]) -> list[str]:
+    """One line for every program folder an earlier interrupted rollback left beside `app` that `said` does
+    not name yet: the owner is told at every update and rollback until the folder is gone."""
+    told = " ".join(said)
+    return [
+        rollback_intent.left_sentence(f) for f in rollback_intent.left_folders(app) if str(f) not in told
+    ]
+
+
+def _recover_rollback(app: Path, paths: Paths, log: NsLogger) -> list[str]:
+    """Before an update looks at the settings, under the copy's lock: a folder a rollback left in the middle
+    of its renames gets its place (`rollback_intent.settle_swap`), then an interrupted rollback is finished
+    or undone (`rollback_intent.recover`). Returns what was done and what is left beside the program, one
+    sentence each (empty: nothing)."""
+    notes: list[str] = []
+    if rollback_intent.path_for(app).exists() or rollback_intent.swap_waits(app):
+        with config_snapshot.locked(config_snapshot.path_for(app)) as held:
+            if not held:
+                raise NsError(
+                    "NS-E702",
+                    f"another Nightshift program is using the settings copy. Close Nightshift windows and "
+                    f"try again. {NOTHING_CHANGED}",
+                )
+            settled = _settle_swap(app, log)
+            rec = rollback_intent.recover(app, paths.config)
+        _refuse_if_pending(rec, log, settled)
+        if rec.sentence:
+            log.warn("rollback_recovered", rec.sentence)
+        notes += [s for s in (settled, rec.sentence) if s]
+    return notes + _left_notes(app, notes)
+
+
+def _refuse_if_pending(rec: rollback_intent.Recovery, log: NsLogger, settled: str = "") -> None:
     """`NS-E702` when an interrupted rollback could not be finished or undone: the settings may be half put
     back, and an update or a new rollback from there would save or overwrite them (its record stays for the
-    next try)."""
+    next try). `settled` is what `_settle_swap` said just before: a folder may have been renamed, and the
+    error then says so instead of "nothing was changed"."""
     if rec.pending:
         log.error("rollback_recovery_failed", rec.sentence)
+        nothing = f"{settled} Nothing else was changed." if settled else NOTHING_CHANGED
         raise NsError(
             "NS-E702",
-            f"{rec.sentence} {NOTHING_CHANGED} Close every Nightshift window (and anything that has a file "
+            f"{rec.sentence} {nothing} Close every Nightshift window (and anything that has a file "
             "in the config folder open), then try again.",
         )
 
@@ -805,6 +875,12 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
     first_start.settled(paths.config)  # this process makes the settings copy itself
     leave_app(app, paths)
     earlier = _recover_rollback(app, paths, log)  # an interrupted rollback goes first (rollback_intent)
+    if not app.is_dir():
+        # (a leftover app.swap that could not be put back is named in `earlier`. Going on would delete the
+        # program backup to make room and then fail: the last program folder would be gone.)
+        raise NsError(
+            "NS-E702", " ".join([*earlier, f"there is no program folder at {app}: the update did not start."])
+        )
     new_version, prefix = verify_package(zip_path)
     old_version = current_version(app)
     new, prev = _sibling(app, ".new"), _sibling(app, ".prev")
@@ -821,7 +897,7 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
         shutil.rmtree(new, ignore_errors=True)
         new.mkdir(parents=True)
         safe_extract(zip_path, new, prefix)
-        notes = [earlier] if earlier else []
+        notes = list(earlier)
         notes += [f"kept {n}" for n in carry_over(app, new, env.untracked(app))]
         write_app_marker(new, log)
         saved = _save_settings_copy(app, prev, paths, log)  # last step before <app>.prev is replaced
@@ -899,8 +975,8 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     first_start.settled(paths.config)  # the rollback manages the copy itself (see first_start.settled)
     leave_app(app, paths)
     log = NsLogger("update", paths.logs)
-    prev = _sibling(app, ".prev")
-    if not prev.is_dir() and not rollback_intent.path_for(app).exists():
+    prev, tmp = _sibling(app, ".prev"), rollback_intent.swap_for(app)
+    if not (prev.is_dir() or rollback_intent.path_for(app).exists() or rollback_intent.swap_waits(app)):
         raise NsError("NS-E702", f"no previous version at {prev}")
     env.stop()
     zip_path = config_snapshot.path_for(app)
@@ -912,14 +988,29 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
                 f"windows and try again. {NOTHING_CHANGED}",
             )
         notes: list[str] = []
+        settled = _settle_swap(app, log)  # a folder an interrupted rollback left gets its place first
+        if settled:
+            notes.append(settled)
         earlier = rollback_intent.recover(app, paths.config)  # a rollback that was interrupted, if any
-        _refuse_if_pending(earlier, log)
+        _refuse_if_pending(earlier, log, settled)
         if earlier.sentence:
             log.warn("rollback_recovered", earlier.sentence)
             notes.append(earlier.sentence)
+        if rollback_intent.swap_waits(app):  # (said by `settled`: held open, or not a program folder)
+            # the swap needs that name, and nothing is ever deleted to make room for it
+            raise NsError("NS-E702", " ".join([*notes, "ns update --rollback did not start."]))
         if not prev.is_dir():
-            raise NsError("NS-E702", f"no previous version at {prev}")
+            raise NsError("NS-E702", " ".join([*notes, f"no previous version at {prev}"]))
+        if not app.is_dir():  # (the first rename would fail after the settings were already prepared)
+            raise NsError("NS-E702", " ".join([*notes, f"no program folder at {app}"]))
+        notes += _left_notes(app, notes)
         old_version, restored_version = current_version(app), current_version(prev)
+        # One rule for a version that cannot be read (VERSION missing, empty or not a number): it is older
+        # than every release, so everything added since BASE_VERSION is taken out. (`current_version` would
+        # answer the RUNNING version for a missing or empty file, and nothing would be taken out.)
+        readable_as = config_snapshot.program_version(prev)
+        if readable_as == "-":
+            restored_version = UNKNOWN_VERSION
         left_fingerprint = app_fingerprint(app)  # the program that is about to become <app>.prev
         copy, why_not, slot = _read_settings_copy(app, prev)
         live, live_error = _live_settings(paths, log)
@@ -954,6 +1045,7 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             paths, copy, why_not, live, live_error,
             slot=slot, zip_path=zip_path, restored_version=restored_version, left_version=old_version,
             left_fingerprint=left_fingerprint, can_go_forward=forward is not None, log=log,
+            readable_as=readable_as, prev_name=prev.name,
         )
         intent.stage, intent.after = rollback_intent.PREPARED, prepared.after
         try:
@@ -970,7 +1062,6 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
                 "NS-E702",
                 f"could not record the rollback ({e}). {_undo_settings(app, paths, intent, log)}",
             ) from e
-        tmp = _sibling(app, ".swap")
         try:
             _swap_programs(app, prev, tmp)
         except OSError as e:
@@ -1000,8 +1091,9 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             log=log,
         )
     env.sync(app)
-    log.info("rollback_done", old=old_version, restored=current_version(app))
-    now = current_version(app)
+    # (the result line: a program whose VERSION is missing or empty is not named after the running code)
+    now = UNKNOWN_VERSION if config_snapshot.program_version(app) == "-" else current_version(app)
+    log.info("rollback_done", old=old_version, restored=now)
     return UpdateResult(old_version, now, ["rolled back", *notes], settings=prepared.sentence)
 
 

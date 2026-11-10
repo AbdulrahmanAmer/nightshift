@@ -12,7 +12,12 @@ task, the launchers and ``ns update`` all point at it. Setup therefore copies th
   are carried into the new one. Before that, the settings files of ``<home>\\config`` are copied to
   ``<home>\\app.prev-config.zip`` (``ns_common.config_snapshot``, standard library only) so the
   rollback can put them back with the program; when that copy cannot be made nothing is swapped
-  (``NS-E115``).
+  (``NS-E115``). A rollback that was interrupted (``ns_common.rollback_intent``) is finished first when its
+  older program is in place, and the program is not replaced while the newer one waits for its undo.
+* Run from the installed program folder itself (INSTALL.cmd started in ``<home>\\app``, a repair): nothing
+  is copied, swapped or saved, and the record of an interrupted rollback is not looked at here. That run is
+  a start of the program in place: the window's first settings write (``answers_view.write_answers`` and
+  every other writer call ``first_start.guard``) finishes or undoes the rollback like any other start.
 * Never copied: ``venvs`` and ``models`` (somebody extracted into the home), every ``bin`` folder except the
   bundle's ``bin\\webview2``, caches and ``node_modules``, and ``answers.json`` (the owner's input next to
   ``INSTALL.cmd``; it may hold API keys that setup moves to the keyring, so it is not duplicated).
@@ -305,6 +310,11 @@ def install_app(
     settings_before: Mapping[str, bytes] | None = None,
 ) -> CopyResult:
     """Put a complete copy of ``source`` at ``<home>\\app`` (a fresh copy, or the update swap over it).
+
+    When ``source`` IS ``<home>\\app`` (setup run in place) nothing is copied or swapped and the result is
+    ``in-place``: only a missing completion marker is written. No settings copy is made and an interrupted
+    rollback is neither finished nor refused here (``_finish_interrupted_rollback`` runs on the update path
+    only); the first settings write of that setup run does it (``first_start.guard``).
 
     ``stop_engine`` is called before an existing program folder is renamed. ``settings_before`` is what the
     caller read of ``config_snapshot.SETUP_TOUCHES`` before it changed them (see ``_save_settings_copy``).

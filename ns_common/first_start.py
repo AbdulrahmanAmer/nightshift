@@ -37,8 +37,9 @@ Two processes may start at once (the engine and a CLI): the whole decision, from
 to publishing it, runs while holding `<app>.prev-config.zip.lock` (`config_snapshot.locked`), so the second
 process looks again after the first one has published, and leaves that copy alone.
 
-The same check finishes or undoes a rollback that was interrupted (`ns_common.rollback_intent`): the record
-`<app>.rollback-pending.json` is read before anything else, under the same lock.
+The same check finishes or undoes a rollback that was interrupted (`ns_common.rollback_intent`): under the
+same lock, a folder `<app>.swap` left in the middle of the renames is given its place first (`settle_swap`),
+then the record `<app>.rollback-pending.json` is read, before anything else.
 
 Standard library plus `ns_common` modules that are themselves standard library only: the setup window's bare
 Python calls it too.
@@ -66,6 +67,9 @@ STATE_NAME = ".ns-first-start.json"
 #: Written into a finished program folder by every updater, INSTALL.cmd and the rollback (update.APP_MARKER).
 APP_MARKER = config_snapshot.APP_MARKER
 LOG_COMPONENT = "first_start"
+#: The log event for what `rollback_intent.settle_swap` said (here and in the update log; `ns doctor` shows
+#: the newest one).
+SWAP_EVENT = "rollback_swap_folder"
 
 _decided: set[str] = set()
 _lock = threading.RLock()
@@ -161,7 +165,8 @@ def _first_start(config: Path) -> None:
     if not _same(program.parent / "config", config):
         return  # the settings of another install, or a checkout that is not installed
     pending = rollback_intent.path_for(program).exists()
-    if not pending and not backup_of(program).is_dir():
+    swap = rollback_intent.swap_waits(program)  # a rollback was interrupted in the middle of its renames
+    if not pending and not swap and not backup_of(program).is_dir():
         return  # never updated, a git or dev install, or the update was undone
     zip_path = config_snapshot.path_for(program)
     with config_snapshot.locked(zip_path) as held:
@@ -178,6 +183,18 @@ def _first_start(config: Path) -> None:
                 copy=str(zip_path),
             )
             return
+        if swap:  # before the record is read: `recover` then meets folders something looks at
+            said = rollback_intent.settle_swap(program)
+            if said:  # once per process (`ensure`); a folder that stays is asked about again at the next
+                # start, and `ns doctor` (row "program folders") names it with the way out
+                _say(
+                    config,
+                    "WARN",
+                    SWAP_EVENT,
+                    said,
+                    folder=str(rollback_intent.swap_for(program)),
+                    settled=not rollback_intent.swap_waits(program),
+                )
         if pending:
             rec = rollback_intent.recover(program, config)
             said = rec.sentence

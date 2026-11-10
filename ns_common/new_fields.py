@@ -8,6 +8,9 @@ runs on the bare Python and writes `answers.json` from a plain dict (`installer/
 not its default) to the top-level fields of such a dict. tests/test_config_compat.py keeps each `default`
 equal to the model's own default and fails when a new field is added to a model a plain-dict writer saves
 at a depth this helper does not reach.
+
+`CHANGED_FIELDS` (card 206-carried) is the same kind of list for a field 0.1.14 already had whose accepted
+values changed since: the name is not new, so `NEW_FIELDS` cannot see it.
 """
 
 from __future__ import annotations
@@ -54,6 +57,30 @@ NEW_FIELDS: tuple[NewField, ...] = (
 FILE_MODEL_NAMES: dict[str, tuple[str, ...]] = {
     "answers.json": ("Answers", "InstallerAnswers"),
 }
+
+
+@dataclass(frozen=True)
+class ChangedField:
+    """A field `BASE_VERSION` already had that accepts other values now (a wider Literal, a looser bound,
+    another type): a version before `since` may refuse a value this one writes, and one refused value makes
+    its strict model refuse the whole file. Each change says how an older version reads the field:
+    `old_reads_all` (it reads every value this version writes: nothing to do on a rollback), or `old_values`
+    (every value it accepts) with the `fallback` a rollback writes in place of any other value
+    (`config_compat.for_version`, which names it in the rollback's sentence; what was set is lost)."""
+
+    model: str  # the class that declares it, as in `NewField`
+    field: str
+    since: str  # the first release that accepts the other values
+    why: str
+    old_values: tuple[Any, ...] = ()  # every value a version before `since` accepts (a list: for each item)
+    old_reads_all: bool = False
+    fallback: Any = None  # as JSON; one of `old_values` (or a list of them)
+
+
+#: Every field of the strict settings models whose accepted values changed since `BASE_VERSION`.
+#: tests/test_config_compat.py compares the JSON schema of every field both versions have, nested too, and
+#: fails when one differs and is not here (or is here and reads the same). None so far.
+CHANGED_FIELDS: tuple[ChangedField, ...] = ()
 
 
 def version_key(text: str) -> tuple[int, ...]:

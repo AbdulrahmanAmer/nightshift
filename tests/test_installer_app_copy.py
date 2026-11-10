@@ -590,3 +590,51 @@ def test_the_keys_in_the_answers_file_next_to_install_cmd_are_removed_once_they_
     assert left["channel"] == raw["channel"]                               # everything else is as it was
     assert not (s.home / "app" / "answers.json").exists()                  # and the program copy never had it
     assert s.ctl._keys["pexels_api_key"] == KEY_P                          # the keyring still gets them
+
+
+# ---- card 206-carried, box 5: setup run from the installed program folder -------------------------
+@pytest.mark.parametrize("stopped", ["before the swap", "after the swap"])
+def test_an_in_place_setup_run_leaves_the_record_to_first_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stopped: str
+) -> None:
+    """INSTALL.cmd run from `<home>/app` itself (a repair) is a start of the program in place: `install_app`
+    replaces nothing and does not look at the record of an interrupted rollback; the window's first settings
+    write (`answers_view.write_answers`, which calls `first_start.guard`) then undoes or finishes it."""
+    from installer.stage2.web import answers_view
+    from ns_common import first_start, rollback_intent
+    from ns_supervisor import update
+    from tests import test_first_start_snapshot as fs
+
+    monkeypatch.setattr(update, "RENAME_PAUSE_S", 0.01)
+    first_start.reset()
+    inst = fs.Install(tmp_path, monkeypatch)
+    arm = fs._stop_at_rename(1) if stopped == "before the swap" else fs._stop_at_rename(3, after=True)
+    _, as_015_had_them = fs._interrupted(inst, monkeypatch, arm)
+    record = rollback_intent.path_for(inst.app)
+    half = fs.read_config(inst.paths)
+    names = sorted(p.name for p in inst.home.iterdir())
+    try:
+        said: list[str] = []
+        res = appcopy.install_app(inst.app, inst.home, say=said.append)
+
+        assert res.action == "in-place" and said == []
+        assert record.is_file() and fs.read_config(inst.paths) == half  # nothing about the record
+        assert sorted(p.name for p in inst.home.iterdir()) == names
+
+        inst.start()  # the window is a process of the program in place
+        answers = inst.paths.config / "answers.json"
+        answers_view.write_answers(answers, fs.load_raw(answers))
+        assert not record.exists()
+        if stopped == "before the swap":  # 0.1.15 is in place: undone, the settings as it had them
+            assert inst.version_now() == "0.1.15"
+            assert {n: b for n, b in fs.read_config(inst.paths).items() if n != "answers.json"} == {
+                n: b for n, b in as_015_had_them.items() if n != "answers.json"
+            }
+        else:  # 0.1.14 is in place: finished, the copy for going forward is 0.1.15's
+            assert inst.version_now() == "0.1.14"
+            assert fs.config_snapshot.read(inst.copy).version == "0.1.15"
+            fs.older_version_loads_everything(inst.paths)
+        events = [r["event"] for r in fs.log_lines(inst.paths)]
+        assert events.count("rollback_recovered") == 1
+    finally:
+        first_start.reset()
