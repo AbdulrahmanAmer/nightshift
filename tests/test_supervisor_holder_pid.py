@@ -34,6 +34,7 @@ semantics, and the ``studio:`` and Assistant leases still expire by heartbeat on
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import subprocess
@@ -86,6 +87,16 @@ def sleeper() -> Iterator[Callable[[], subprocess.Popen[bytes]]]:
         p.wait(timeout=10)
 
 
+def pid_kw(pid: int) -> dict[str, Any]:
+    """`pid=` for `Supervisor.acquire`, left out where it does not take one (the base: an assertion fails)."""
+    return {"pid": pid} if "pid" in inspect.signature(Supervisor.acquire).parameters else {}
+
+
+def client_pid_kw(pid: int) -> dict[str, Any]:
+    """`pid=` for `SupervisorClient.acquire`, left out where it does not take one."""
+    return {"pid": pid} if "pid" in inspect.signature(SupervisorClient.acquire).parameters else {}
+
+
 def kill(p: subprocess.Popen[bytes]) -> None:
     """The console is closed with X: the process ends at once. The handle stays open on purpose."""
     p.kill()
@@ -102,7 +113,8 @@ def make(
 ) -> tuple[Supervisor, dict[str, float]]:
     """A supervisor on stub services with an injected clock; `probe` fakes the process table."""
     clock = {"t": 1000.0}
-    kw: dict[str, Any] = {} if probe is None else {"process_probe": probe}
+    takes_probe = "process_probe" in inspect.signature(Supervisor.__init__).parameters
+    kw: dict[str, Any] = {"process_probe": probe} if probe is not None and takes_probe else {}
     sup = Supervisor(
         Paths(tmp_path / "ns"),
         Runtime.default("gpu"),
@@ -173,7 +185,7 @@ def test_a_holder_whose_process_is_gone_loses_the_gpu_within_one_monitor_pass(
     async def main() -> None:
         q = sup.subscribe()
         try:
-            await sup.acquire("llama", "opencode", "code", pid=child.pid)
+            await sup.acquire("llama", "opencode", "code", **pid_kw(child.pid))
             await sup.tick()
             assert sup.lock.state.owner == "opencode"  # alive: kept
             kill(child)
@@ -200,10 +212,10 @@ def test_a_live_but_silent_holder_keeps_the_gpu_for_hours(
     async def main() -> None:
         q = sup.subscribe()
         try:
-            await sup.acquire("llama", "opencode", "code", pid=child.pid)
+            await sup.acquire("llama", "opencode", "code", **pid_kw(child.pid))
             await advance(sup, clock, HOURS_3)
             assert sup.lock.state.owner == "opencode"
-            assert sup.status()["holder_pid"] == child.pid
+            assert sup.status().get("holder_pid") == child.pid
             assert not [e for e in drain(q) if e["data"].get("event") in ("owner_released", "lease_expired")]
             with pytest.raises(NsError) as err:
                 await sup.acquire("llama", "studio:nightly-1", wait=False)
@@ -222,13 +234,13 @@ def test_a_reused_pid_is_not_the_old_holder(tmp_path: Path) -> None:
     async def main() -> None:
         q = sup.subscribe()
         try:
-            await sup.acquire("llama", "opencode", "code", pid=4242)
+            await sup.acquire("llama", "opencode", "code", **pid_kw(4242))
             await advance(sup, clock, 600)
             assert sup.lock.state.owner == "opencode"
             table[4242] = 900.0  # the console died and another program now runs under the same pid
             await sup.tick()
             assert sup.lock.state.owner is None
-            assert sup.status()["holder_pid"] is None
+            assert sup.status().get("holder_pid") is None
             assert holder_gone_events(drain(q), "opencode")
         finally:
             sup.unsubscribe(q)
@@ -294,7 +306,7 @@ def test_the_dashboard_release_button_still_refuses_a_live_holder(
 
     async def main() -> None:
         try:
-            await sup.acquire("llama", "studio:night-1", pid=child.pid)
+            await sup.acquire("llama", "studio:night-1", **pid_kw(child.pid))
             assert sup.heartbeat("studio:night-1") is True
             clock["t"] += 30
             await sup.tick()
@@ -302,13 +314,13 @@ def test_the_dashboard_release_button_still_refuses_a_live_holder(
             assert refused["ok"] is False and refused["refused"] == "alive"
             assert sup.status()["gpu_owner"] == "studio:night-1"
             await sup.release("llama", "studio:night-1")
-            await sup.acquire("llama", "opencode", "code", pid=child.pid)
+            await sup.acquire("llama", "opencode", "code", **pid_kw(child.pid))
             await sup.tick()
             assert sup.lock.state.owner == "opencode"  # alive: the monitor keeps it
             assert await sup.release_unless_alive("opencode") == {
                 "ok": True
             }  # the owner's button still frees it
-            assert sup.status()["gpu_owner"] is None and sup.status()["holder_pid"] is None
+            assert sup.status()["gpu_owner"] is None and sup.status().get("holder_pid") is None
         finally:
             await close(sup)
 
@@ -324,13 +336,13 @@ def test_the_status_answer_names_the_holder_pid(
     async def main() -> None:
         try:
             assert "holder_pid" in sup.status() and sup.status()["holder_pid"] is None  # nobody holds the GPU
-            await sup.acquire("llama", "opencode", "code", pid=child.pid)
+            await sup.acquire("llama", "opencode", "code", **pid_kw(child.pid))
             st = sup.status()
-            assert st["gpu_owner"] == "opencode" and st["holder_pid"] == child.pid
+            assert st["gpu_owner"] == "opencode" and st.get("holder_pid") == child.pid
             assert await sup.release("llama", "opencode") is True
-            assert sup.status()["holder_pid"] is None
+            assert sup.status().get("holder_pid") is None
             await sup.acquire("tts", "dashboard:preview-1")  # a holder without a pid
-            assert sup.status()["holder_pid"] is None
+            assert sup.status().get("holder_pid") is None
         finally:
             await close(sup)
 
@@ -349,12 +361,12 @@ def test_second_run_after_the_holder_vanished_records_the_new_pid(
 
     async def main() -> None:
         try:
-            await sup.acquire("llama", "opencode", "code", pid=first.pid)
+            await sup.acquire("llama", "opencode", "code", **pid_kw(first.pid))
             kill(first)
             await sup.tick()
             assert sup.lock.state.owner is None
-            await sup.acquire("llama", "opencode", "code", wait=False, pid=second.pid)
-            assert sup.status()["holder_pid"] == second.pid
+            await sup.acquire("llama", "opencode", "code", wait=False, **pid_kw(second.pid))
+            assert sup.status().get("holder_pid") == second.pid
             await advance(sup, clock, 600)
             assert sup.lock.state.owner == "opencode"  # the new console is alive: kept
             kill(second)
@@ -375,7 +387,7 @@ def test_a_console_closed_while_the_model_loads_frees_the_gpu_and_abandons_the_l
     child = sleeper()
 
     async def main() -> None:
-        loading = asyncio.create_task(sup.acquire("llama", "opencode", "code", pid=child.pid))
+        loading = asyncio.create_task(sup.acquire("llama", "opencode", "code", **pid_kw(child.pid)))
         try:
             assert await asyncio.to_thread(
                 wait_until,
@@ -443,14 +455,14 @@ def test_the_acquire_route_takes_an_optional_integer_pid(tmp_path: Path) -> None
             assert r.status_code == 422, (bad, r.status_code, r.text)
         assert tc.get("/status").json()["gpu_owner"] is None  # a refused body takes nothing
         r = tc.post("/acquire", json={"service": "llama", "owner": "verify"})  # no pid: as before
-        assert r.status_code == 200 and tc.get("/status").json()["holder_pid"] is None
+        assert r.status_code == 200 and tc.get("/status").json().get("holder_pid") is None
         assert tc.post("/release", json={"service": "llama", "owner": "verify"}).json() == {"ok": True}
         r = tc.post(
             "/acquire", json={"service": "llama", "owner": "opencode", "model_alias": "code", "pid": me}
         )
         assert r.status_code == 200
         st = tc.get("/status").json()
-        assert st["gpu_owner"] == "opencode" and st["holder_pid"] == me
+        assert st["gpu_owner"] == "opencode" and st.get("holder_pid") == me
 
 
 def test_end_to_end_a_closed_console_lets_the_nightly_acquire_at_once(
@@ -474,10 +486,10 @@ def test_end_to_end_a_closed_console_lets_the_nightly_acquire_at_once(
         body = {"service": "llama", "owner": "opencode", "model_alias": "code", "pid": child.pid}
         assert tc.post("/acquire", json=body).status_code == 200
         st = tc.get("/status").json()
-        assert st["gpu_owner"] == "opencode" and st["holder_pid"] == child.pid
+        assert st["gpu_owner"] == "opencode" and st.get("holder_pid") == child.pid
         kill(child)
         assert wait_until(lambda: tc.get("/status").json()["gpu_owner"] is None, 10)
-        assert tc.get("/status").json()["holder_pid"] is None
+        assert tc.get("/status").json().get("holder_pid") is None
         nightly = {"service": "llama", "owner": "studio:nightly-1", "wait": False}
         r = tc.post("/acquire", json=nightly)  # wait=false: granted now instead of NS-E201 after 2 h
         assert r.status_code == 200, r.text
@@ -517,7 +529,65 @@ def test_the_client_passes_the_pid_when_given() -> None:
         return httpx.Response(200, json={"endpoint": "http://127.0.0.1:8080", "model_alias": "code"})
 
     client = SupervisorClient("http://sup.test", client=httpx.Client(transport=httpx.MockTransport(handler)))
-    client.acquire("llama", "opencode", model_alias="code", pid=4242)
+    client.acquire("llama", "opencode", model_alias="code", **client_pid_kw(4242))
     client.acquire("tts", "dashboard:preview-1")
-    assert sent[0]["owner"] == "opencode" and sent[0]["pid"] == 4242
+    assert sent[0]["owner"] == "opencode" and sent[0].get("pid") == 4242
     assert sent[1].get("pid") is None  # no pid given: none sent
+
+
+# ---------------------------------------------------------------- both ends of the pid, a failing probe
+
+
+def test_the_acquire_route_refuses_a_pid_past_the_windows_range_and_a_boolean(tmp_path: Path) -> None:
+    """Windows pids are 32-bit: 2**32 and `true` are refused (422); 2**32 - 1 is the largest accepted."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from ns_supervisor.app import create_app
+
+    table = {2**32 - 1: 5.0}
+    sup, _clock = make(tmp_path, probe=lambda pid: table.get(pid))
+    with TestClient(create_app(sup, run_monitor=False)) as tc:
+        for bad in (2**32, True, "7", 2.0):
+            r = tc.post("/acquire", json={"service": "llama", "owner": "opencode", "pid": bad})
+            assert r.status_code == 422, (bad, r.status_code, r.text)
+        assert tc.get("/status").json()["gpu_owner"] is None
+        r = tc.post("/acquire", json={"service": "llama", "owner": "opencode", "pid": 2**32 - 1})
+        assert r.status_code == 200, r.text
+        assert tc.get("/status").json().get("holder_pid") == 2**32 - 1
+
+
+def test_a_probe_that_cannot_read_the_holder_keeps_it_and_says_so_once(tmp_path: Path) -> None:
+    """Access denied is not "gone": the holder keeps the GPU, one holder_probe_failed WARN; once readable the
+    process is checked as usual."""
+    answers: dict[str, Any] = {"mode": "denied"}
+
+    def probe(pid: int) -> float | None:
+        if answers["mode"] == "denied":
+            raise PermissionError("access denied")
+        return None if answers["mode"] == "gone" else 50.0
+
+    sup, clock = make(tmp_path, probe=probe)
+
+    async def main() -> None:
+        try:
+            await sup.acquire("llama", "opencode", "code", **pid_kw(4343))
+            await advance(sup, clock, 600)
+            assert sup.lock.state.owner == "opencode" and sup.status().get("holder_pid") == 4343
+            answers["mode"] = "alive"  # readable now: this creation time is the holder's
+            await advance(sup, clock, 120)
+            assert sup.lock.state.owner == "opencode"
+            answers["mode"] = "gone"
+            await sup.tick()
+            assert sup.lock.state.owner is None
+        finally:
+            await close(sup)
+
+    asyncio.run(main())
+    warns = [
+        json.loads(line)
+        for f in sup.paths.logs.glob("supervisor-*.jsonl")
+        for line in f.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len([w for w in warns if w.get("event") == "holder_probe_failed"]) == 1
+    assert holder_gone_log(sup.paths, "opencode")

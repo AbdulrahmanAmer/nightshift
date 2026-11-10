@@ -250,6 +250,7 @@ The nightly run itself is unchanged: **Settings -> Run time**.
 Nightshift wakes the PC at the time you chose (default 03:00), makes a video, saves it in the Outbox and the PC
 may go back to sleep. In the morning open the Dashboard and review. If the PC was off, it runs when you switch
 it on. Do not use Nightshift Code while a night run is due: the graphics card can serve only one at a time.
+Closing the Nightshift Code window any way (its X, Task Manager, signing out) gives the graphics card back within a few seconds.
 If the graphics card is busy at that time, the run waits up to 2 hours and then skips the night (code `NS-E201`);
 it tries again the next night.
 

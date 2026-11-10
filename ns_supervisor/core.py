@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import psutil
 
 from ns_common.atomic import write_text_atomic
 from ns_common.errors import NsError
@@ -68,6 +69,32 @@ BUSY_RECENT_S = 120.0
 STATE_WAIT_S = 2.0
 
 
+def process_started(pid: int) -> float | None:
+    """Creation time of the running process `pid`, None when no running process has that pid.
+
+    A process that has exited is None even while another program still holds a handle to it (Windows keeps
+    such a pid allocated; `psutil.pid_exists` asks for the exit code). Access denied and other psutil errors
+    raise: the caller cannot tell, so it must keep the holder.
+    """
+    try:
+        if not psutil.pid_exists(pid):
+            return None
+        return psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:  # also ZombieProcess, its subclass
+        return None
+
+
+@dataclass
+class _Holder:
+    """The GPU lock holder that passed its own pid with the acquire (F-H47: a console closed with X)."""
+
+    owner: str
+    pid: int
+    created: float | None  # creation time at grant; None: not running then, or not readable (see `known`)
+    known: bool = True  # False when the probe failed at grant time: the first readable answer is adopted
+    warned: bool = False  # a probe failure is logged once per holder
+
+
 @dataclass
 class ServiceRuntime:
     """Mutable state of one service."""
@@ -103,6 +130,7 @@ class Supervisor:
         gpu_probe: GpuProbe | None = None,
         update_check: Callable[[], dict[str, Any] | None] | None = None,
         in_use: Callable[[], bool] | None = None,
+        process_probe: Callable[[int], float | None] | None = None,
     ) -> None:
         self.paths = paths
         self.runtime = runtime
@@ -135,6 +163,9 @@ class Supervisor:
             lambda: presence.dashboard_in_use(self.paths, self.services["dashboard"].definition.port)
         )
         self._next_update_poll = 0.0
+        # The holder's own process (F-H47): pid -> creation time of the running process, None when none runs.
+        self.process_probe: Callable[[int], float | None] = process_probe or process_started
+        self._holder: _Holder | None = None
         # GPU lease: who held the lock at the last look, when it last showed a sign of life, and when the
         # monitor last ran (a long gap means the PC slept, which must not expire a live lease).
         self._lease_owner: str | None = None
@@ -370,6 +401,28 @@ class Supervisor:
             self.lock.release(owner)
             raise NsError("NS-E202", "supervisor is shutting down")
 
+    def _record_holder(self, owner: str, pid: int | None, fresh: bool) -> None:
+        """Called right after the GPU lock was granted to `owner`, before a model loads (F-H47).
+
+        With a pid: the holder is that process, as it runs now (pid and creation time). Without one: a fresh
+        grant has no holder process (never probed); a re-acquire by the holder keeps the record it has.
+        """
+        if pid is None:
+            if fresh:
+                self._holder = None
+            return
+        try:
+            created, known = self.process_probe(pid), True
+        except Exception as e:  # cannot read the process now (access denied): adopt the first readable answer
+            created, known = None, False
+            self.log.warn("holder_probe_failed", str(e), owner=owner, pid=pid)
+        self._holder = _Holder(owner, pid, created, known=known, warned=not known)
+
+    def _current_holder(self) -> _Holder | None:
+        """The holder record, if it still belongs to the lock's owner (a release leaves it stale)."""
+        h = self._holder
+        return h if h is not None and h.owner == self.lock.state.owner else None
+
     async def acquire(
         self,
         service: str,
@@ -377,18 +430,25 @@ class Supervisor:
         model_alias: str | None = None,
         wait: bool = True,
         timeout_s: float = 7200,
+        pid: int | None = None,
     ) -> dict[str, Any]:
         """Hand `owner` the service. GPU services queue FIFO behind the GPU lock (`NS-E201` on timeout),
-        stop any other GPU tenant, and start/health-poll the process (`NS-E203`, `NS-E202`)."""
+        stop any other GPU tenant, and start/health-poll the process (`NS-E203`, `NS-E202`).
+
+        `pid`: the owner's own process. When the GPU lock is granted, its pid and creation time are recorded,
+        and the monitor frees the lock once that process is gone (`_release_gone_holder`). No pid: no probe.
+        """
         if self.shutting_down:
             raise NsError("NS-E202", "supervisor is shutting down")
         self._touch()
         self.run_finished_at = None  # somebody is working again: back to the plain idle rule
+        fresh = self.lock.state.owner != owner  # False: the holder re-acquires (a swap), it keeps its record
         if service == "whisper":
             if not self._whisper_gpu():
                 return self._endpoint("whisper", None, None)
             await self.lock.acquire(owner, "whisper", timeout_s if wait else 0)
             self._leave_if_shutting_down(owner)
+            self._record_holder(owner, pid, fresh)
             try:
                 await self._swap_to("whisper", self.services["llama"].definition)
             except BaseException:
@@ -412,6 +472,7 @@ class Supervisor:
             return self._endpoint(service, d, alias)
         await self.lock.acquire(owner, service, timeout_s if wait else 0)
         self._leave_if_shutting_down(owner)
+        self._record_holder(owner, pid, fresh)
         rt.idle_since = None
         try:
             await self._swap_to(service, d)
@@ -441,11 +502,12 @@ class Supervisor:
             return True
         return False
 
-    async def release_owner(self, owner: str) -> bool:
+    async def release_owner(self, owner: str, reason: str | None = None) -> bool:
         """Free everything `owner` holds or waits for, whatever the service (its process is gone or stuck).
 
         The lock if it holds it, a place in the queue, and the non-GPU services it leased (`embed`). The idle
-        timer of a service nobody holds starts now. False when `owner` held and awaited nothing.
+        timer of a service nobody holds starts now. False when `owner` held and awaited nothing. `reason`
+        (such as `holder_gone`) goes into the `owner_released` WARN and event; none: neither has the key.
         """
         self._touch()
         freed = False
@@ -466,8 +528,10 @@ class Supervisor:
                     rt.idle_since = self.clock()
                 freed = True
         if freed:
-            self.log.warn("owner_released", f"released everything held by {owner}", owner=owner)
-            self.publish("service", {"event": "owner_released", "owner": owner})
+            why: dict[str, Any] = {} if reason is None else {"reason": reason}
+            msg = f"released everything held by {owner}" + ("" if reason is None else f" ({reason})")
+            self.log.warn("owner_released", msg, owner=owner, **why)
+            self.publish("service", {"event": "owner_released", "owner": owner, **why})
         return freed
 
     def beat_age(self, owner: str) -> float | None:
@@ -534,6 +598,39 @@ class Supervisor:
         self.log.warn("lease_expired", f"{owner} sent no heartbeat for {silent:.0f}s", owner=owner)
         await self.release_owner(owner)
         self.publish("service", {"event": "lease_expired", "owner": owner, "silent_s": round(silent, 1)})
+
+    async def _release_gone_holder(self) -> None:
+        """Free the GPU when the process the holder named at its acquire is gone (F-H47).
+
+        Gone: no running process has the pid, or one runs with another creation time (pid reuse). This is how
+        a Nightshift Code console closed with X (its `finally` never runs) gives the card back, while a live
+        but idle console keeps it for as long as it runs. A model still loading for it is abandoned. A probe
+        that fails (access denied) keeps the holder, with one `holder_probe_failed` WARN per holder; the
+        dashboard's Release button still frees it.
+        """
+        h = self._holder
+        if h is None:
+            return
+        if h.owner != self.lock.state.owner:  # released or handed on since: the record is stale
+            self._holder = None
+            return
+        try:
+            created = self.process_probe(h.pid)
+        except Exception as e:
+            if not h.warned:
+                h.warned = True
+                self.log.warn("holder_probe_failed", str(e), owner=h.owner, pid=h.pid)
+            return
+        if created is not None and not h.known:  # unreadable at grant time: this is the holder as it runs
+            h.created, h.known = created, True
+            return
+        if created is not None and created == h.created:
+            return
+        rt = self.services.get(self.lock.state.service or "")
+        if rt is not None and rt.state == "starting":
+            rt.abort = True  # `_start_locked` stops the load at its next health poll
+        self._holder = None
+        await self.release_owner(h.owner, reason="holder_gone")
 
     async def stop_all(self, *, include_persistent: bool = False) -> None:
         """Terminate every model service and clear crash state, owners and the GPU lock holder."""
@@ -628,9 +725,11 @@ class Supervisor:
             "crashes": 0,
             "error": None,
         }
+        holder = self._current_holder()
         return {
             "gpu_owner": st.owner,
             "gpu_service": st.service,
+            "holder_pid": holder.pid if holder is not None else None,  # the holder's own process (F-H47)
             "waiting": [{"owner": o, "service": s} for o, s in self.lock.waiters()],
             "shutting_down": self.shutting_down,
             "uptime_s": round(now - self.started_at, 1),
@@ -653,12 +752,13 @@ class Supervisor:
 
     # ------------------------------------------------------------------ monitor
     async def tick(self) -> None:
-        """One monitor pass: reap crashes, idle-unload, auto-exit."""
+        """One monitor pass: expire leases, free a gone holder, reap crashes, idle-unload, auto-exit."""
         now = self.clock()
         if self._last_tick is not None and now - self._last_tick > self.cfg.suspend_gap_s:
             self._lease_beat = now  # the PC slept: the studio could not beat either
         self._last_tick = now
         await self._expire_lease(now)
+        await self._release_gone_holder()
         for rt in self.services.values():
             if rt.op_lock.locked():
                 continue

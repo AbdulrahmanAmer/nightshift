@@ -16,7 +16,9 @@ if (-not (Test-NsSupervisor)) {
 }
 
 Write-Host 'Loading the coding model (a minute or two the first time)...'
-$body = @{ service = 'llama'; owner = $owner; model_alias = 'code'; wait = $true; timeout_s = 7200 }
+# pid: this console's own process. Closing the window with X skips the finally below; the engine then frees
+# the GPU itself once this process is gone.
+$body = @{ service = 'llama'; owner = $owner; model_alias = 'code'; wait = $true; timeout_s = 7200; pid = $PID }
 $ep = Invoke-NsPost -Path '/acquire' -Body $body -TimeoutSec 7500
 
 # /acquire answers with the exact address of the llama-server it started; use it rather than guessing.
