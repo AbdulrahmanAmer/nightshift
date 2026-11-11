@@ -537,6 +537,8 @@ def _attempt(
         damaged = _damage_of(e)
         if damaged is not None:  # 4b.2: the database broke under this job: the night ends, not this job
             damaged.data.setdefault("job_id", job_id)
+            if damaged is e:
+                raise
             raise damaged from e
         code, detail, raw = e.code, str(e), str(getattr(e, "detail", "") or "")
         if code == PAUSED and job_id != "(not created)":  # stopped between two stages by a pause (P47)
@@ -550,6 +552,8 @@ def _attempt(
         damaged = _damage_of(e)
         if damaged is not None:  # 4b.2: ... unless the file is the database: then every job would fail
             damaged.data.setdefault("job_id", job_id)
+            if damaged is e:
+                raise
             raise damaged from e
         code, detail = UNEXPECTED, f"{UNEXPECTED}: {describe_unexpected(e)}"
         env.log.error("daily_job_crashed", job_id=job_id, traceback=traceback.format_exc())
