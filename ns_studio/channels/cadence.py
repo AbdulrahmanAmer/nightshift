@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -25,6 +26,9 @@ REJECT_MIN_REVIEWED = 5
 CRITIC_BAR_STEP = 0.5
 CRITIC_BAR_COOLDOWN_DAYS = 7
 JITTER_MIN = 45
+#: The GPU kit's own channel (dev/kit/gpukit.py, card gpu-kit): a night never plans it, whatever its status,
+#: except one full story video on each of the two nights the kit armed (_kit_night_job).
+KIT_CHANNEL = "gpu-kit"
 
 
 @dataclass
@@ -270,14 +274,14 @@ def jobs_due_today(
 def plan_daily(
     paths: Paths, db: Db, now: datetime | None = None, *, why: dict[str, str] | None = None
 ) -> list[DailyJob]:
-    """The nightly plan: one entry per active channel that is due today.
+    """The nightly plan: one entry per active channel that is due today (never the GPU kit's channel).
 
     `why` (when given) receives, per active channel that is not due, the reason in words.
     """
     now = now or datetime.now(UTC)
     out: list[DailyJob] = []
     for ch in all_channels(paths):
-        if ch.status != "active":
+        if ch.status != "active" or ch.slug == KIT_CHANNEL:
             continue
         plan = plan_channel(db, ch, now)
         reasons: list[str] = []
@@ -286,7 +290,47 @@ def plan_daily(
             out.append(DailyJob(ch, ch.format, count, plan))
         elif why is not None and reasons:
             why[ch.slug] = reasons[0]
+    kit = _kit_night_job(paths, db, now)
+    if kit is not None:
+        out.append(kit)
     return out
+
+
+def _kit_night_job(paths: Paths, db: Db, now: datetime) -> DailyJob | None:
+    """The one exception to never planning the kit's channel: on a night the GPU kit armed (its record,
+    `ns_supervisor.kitnights`, read by its one reader), one full story video on it, once a night, never after
+    the record's end. Anything unusual (no record, an unreadable one, no channel file): None."""
+    def made_tonight(lo: datetime, hi: datetime) -> bool:
+        """A kit job was made in this night's window, or one was worked on in it (night 1's job continued by
+        this night's resume): either is the night's one kit video, never both."""
+        rows = db.query("select created_at from combos where channel = ?", (KIT_CHANNEL,))
+        if any(lo <= _aware(r["created_at"]) < hi for r in rows):
+            return True
+        from ns_studio import ledger
+
+        return any(
+            line.get("channel") == KIT_CHANNEL and line.get("kind") in ("job_end", "stage", "acquire")
+            and lo <= _aware(str(line.get("at"))) < hi
+            for line in ledger.read(paths, months=1)
+        )  # fmt: skip
+
+    try:
+        night = importlib.import_module("ns_supervisor.kitnights").kit_night(paths, now, made_tonight)
+        if night is None:
+            return None
+        ch = next((c for c in all_channels(paths) if c.slug == KIT_CHANNEL), None)
+        if ch is None:
+            return None
+    except Exception:  # noqa: BLE001 - the owner's night never depends on the kit
+        return None
+    why = [f"the GPU kit's armed night {night}"]
+    plan = CadencePlan(ch.slug, f"GPU kit night {night}", 1, 0, reasons=why)
+    return DailyJob(ch, "master_first", 1, plan)
+
+
+def _aware(ts: str) -> datetime:
+    when = datetime.fromisoformat(ts)
+    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
 
 
 # ---------------------------------------------------------------- release order and jitter

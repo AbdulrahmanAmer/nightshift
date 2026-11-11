@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
 import { dayInline, doneWords, MAKES_VIDEO, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, nightComes, plural, stageWords, stoppedAt, store } from "../lib/format";
-import type { ChannelSummary, InterruptedJob, Job, MorningNote, Output, OutputDetail, Run } from "../lib/types";
+import type { ChannelSummary, InterruptedJob, Job, LeftForTime, MorningNote, Output, OutputDetail, Run } from "../lib/types";
 import { cx } from "../ui/kit";
 import { JobError } from "../ui/JobError";
 import { Scene } from "../visuals/Scene";
@@ -157,8 +157,8 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
   const mark = useCallback((k: string, v = true) => setProg((p) => { const n = { ...p, [k]: v }; store.set("ns-post-" + o.output_id, n); return n; }), [o.output_id]);
   const description = useMemo(() => {
     if (!d) return "";
-    const ch = d.chapters?.length ? "\n\n" + d.chapters.map((c) => `${fmtDur(c.start_s)} ${c.title}`).join("\n") : "";
-    return (d.description || "") + ch + (d.hashtags?.length ? "\n\n" + d.hashtags.join(" ") : "");
+    // the description already holds the chapter list (the sheet's own text): only the hashtag line is added
+    return (d.description || "") + (d.hashtags?.length ? "\n\n" + d.hashtags.join(" ") : "");
   }, [d]);
   const copy = async (text: string, label: string, key: string) => {
     try { await navigator.clipboard.writeText(text); toast(`${label} copied`, "ok"); mark(key); }
@@ -199,7 +199,7 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
     { key: "description", title: "Description", sub: d?.chapters?.length ? `With ${d.chapters.length} chapters and ${d.hashtags?.length ?? 0} hashtags` : `With ${d?.hashtags?.length ?? 0} hashtags`, action: <Button size="sm" variant="soft" leadingIcon="copy" onClick={() => copy(description, "Description", "description")} disabled={!d}>Copy</Button> },
     { key: "thumb", title: "Thumbnail", sub: o.kind === "long" ? (d?.thumbnails?.length ? `Pick one of the ${d.thumbnails.length} made for this video` : "Open the one that was made") : "Pick a frame in Studio", action: o.kind === "long" && !demo ? <span className="flex gap-1">{(d?.thumbnails?.length ? d.thumbnails : ["thumb_1.jpg"]).map((t) => { const n = Number(/\d/.exec(t)?.[0] || 1); return <a key={t} href={api.thumbChoiceUrl(n, o.output_id)} target="_blank" rel="noreferrer" aria-label={`Open thumbnail ${n}`} onClick={() => mark("thumb")} className="ds-focus block overflow-hidden rounded-ds-sm shadow-ds-control"><img src={api.thumbChoiceUrl(n, o.output_id)} alt="" loading="lazy" className="h-9 w-16 object-cover" /></a>; })}</span> : <Button size="sm" variant="ghost" onClick={() => mark("thumb")}>Done</Button> },
     { key: "audience", title: "Audience", sub: d?.made_for_kids ? "Yes, it's made for kids" : "No, it's not made for kids", action: <Button size="sm" variant="ghost" onClick={() => mark("audience")}>Done</Button> },
-    { key: "altered", title: "Altered content", sub: d?.ai_disclosure === "yes" ? "Answer Yes" : "Answer No. The voice is production help, footage is real stock", action: <Button size="sm" variant="ghost" onClick={() => mark("altered")}>Done</Button> },
+    { key: "altered", title: "Altered content", sub: d ? [`${d.ai_disclosure === "unknown" ? "You decide" : `Answer ${d.ai_disclosure === "yes" ? "Yes" : "No"}`}${d.ai_disclosure_reason ? `: ${d.ai_disclosure_reason}` : ""}`, d.ai_disclosure_note].filter(Boolean).join(". ") : undefined, action: <Button size="sm" variant="ghost" onClick={() => mark("altered")}>Done</Button> },
     { key: "tags", title: "Tags", sub: d?.tags?.length ? `${d.tags.length} tags, ${d.tags.slice(0, 3).join(", ")}` : "No tags", action: <Button size="sm" variant="soft" leadingIcon="copy" onClick={() => copy((d?.tags || []).join(", "), "Tags", "tags")} disabled={!d}>Copy</Button> },
     { key: "schedule", title: "Schedule and related video", sub: [d?.publish_after ? `Publish ${fmtWhen(d.publish_after)}` : "Any time", o.kind !== "long" && d?.related_video_instruction].filter(Boolean).join(". "), action: <Button size="sm" variant="ghost" onClick={() => mark("schedule")}>Done</Button> },
   ];
@@ -291,6 +291,11 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
       {/* posting checklist, in YouTube's upload order */}
       <Card ref={aside} as="aside" aria-labelledby="q-post" padding="md" className={cx("scroll-thin @min-[1020px]:sticky @min-[1020px]:top-4 @min-[1020px]:max-h-[calc(100dvh-40px)] @min-[1020px]:overflow-y-auto", SPAN["2/4"])}>
         <CardHeader id="q-post" title="Post it" className="!mb-3" actions={<span className="mr-2 text-ds-2xs text-ds-muted ds-num">{doneCount} of {total} done</span>} />
+        {d?.youtube_notes?.length ? (
+          <ul aria-label="Changed for YouTube" className="mb-3 flex flex-col gap-1.5 rounded-ds-md bg-ds-sunken px-3 py-2">
+            {d.youtube_notes.map((n) => <li key={n} className="flex gap-2 text-ds-xs leading-ds-snug text-ds-text-2"><Icon name="info" size={14} className="mt-0.5 shrink-0 text-ds-muted" />{n}</li>)}
+          </ul>
+        ) : null}
         <ol className="-mx-2 flex flex-col gap-1">
           <StepItem n={1} className={nextKey === "approve" ? "is-next" : undefined} done={approved} current={!approved} title={approved ? "Approved" : "Watch it, then decide"} sub={approved ? "Ready to post" : undefined}
             action={approved && o.status === "pending" ? <Button size="sm" variant="ghost" leadingIcon="undo" onClick={() => mark("approved", false)}>Undo</Button> : undefined}>
@@ -378,7 +383,7 @@ function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; st
   return (
     <Card as="section" aria-labelledby="q-plan" className={cx("self-stretch", className)}>
       <CardHeader id="q-plan" title="Tonight's plan" actions={<Button variant="ghost" size="sm" leadingIcon="edit" onClick={() => go("#/channels")}>Edit</Button>} />
-      {status?.engine?.vram_owner && <p role="status" className="mb-3 flex flex-wrap items-center gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2 text-ds-xs"><StatusDot tone="accent" />GPU held by <strong className="font-semibold" title={status.engine.vram_owner}>{ownerWords(status.engine.vram_owner)}</strong>. {nightComes(status) ? "Tonight's run waits for it." : "Jobs that need it wait."}{!status.job && <Button size="sm" variant="soft" onClick={() => releaseGpu(status.engine.vram_owner!)}>Release</Button>}</p>}
+      {status?.engine?.gpu_wait ? <p role="status" className="mb-3 flex flex-wrap items-center gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2 text-ds-xs"><StatusDot tone="attention" />{status.engine.gpu_wait.said}</p> : status?.engine?.vram_owner && <p role="status" className="mb-3 flex flex-wrap items-center gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2 text-ds-xs"><StatusDot tone="accent" />GPU held by <strong className="font-semibold" title={status.engine.vram_owner}>{ownerWords(status.engine.vram_owner)}</strong>. {nightComes(status) ? "Tonight's run waits for it." : "Jobs that need it wait."}{!status.job && <Button size="sm" variant="soft" onClick={() => releaseGpu(status.engine.vram_owner!)}>Release</Button>}</p>}
       <div className="flex flex-col gap-4">
         {plan.length ? plan.map((c) => (
           <AssignmentCard key={c.slug} categories={[c.display_name]} moreLabel={`Options for ${c.display_name}`} menu={[{ icon: "edit", label: "Edit channel", onSelect: () => go(`#/channels?edit=${encodeURIComponent(c.slug)}`) }, { icon: "pause", label: "Skip tonight and pause", onSelect: () => pause(c) }]}
@@ -469,14 +474,14 @@ function MachineMeters({ className }: { className?: string }) {
   const vramGb = status?.engine?.vram_gb ?? (vramMb ? Math.round(vramMb / 1024) : null);
   const temp = gpu?.temp_c;
   const meters: MeterDatum[] = [
-    { label: "GPU", value: load == null ? null : Math.round(load), source: load == null ? "not reported by the engine yet" : `${gpu!.name}, ${Math.round(load)}% busy` },
+    { label: "GPU", value: load == null ? null : Math.round(load), source: load == null ? "not reported by the engine yet" : `${gpu!.simulated ? "simulated: " : ""}${gpu!.name}, ${Math.round(load)}% busy` },
     vramPct != null
       ? { label: "VRAM", value: vramPct, display: `${gb(used!)} GB`, source: `${gb(used!)} of ${gb(total!)} GB in use` }
       : { label: "VRAM", value: null, display: used != null ? `${gb(used)} GB` : vramGb ? `${vramGb} GB` : undefined, source: used != null ? `${gb(used)} GB in use, total not reported` : vramGb ? `${vramGb} GB in use` : "no model loaded" },
     { label: "Disk", value: disk && disk.total_gb != null && disk.free_gb != null ? Math.round(((disk.total_gb - disk.free_gb) / Math.max(1, disk.total_gb)) * 100) : null, source: disk ? `${disk.free_gb} GB free of ${disk.total_gb} GB` : "unknown until the engine answers" },
   ];
   const diskLine = disk ? `${disk.free_gb} GB free on ${disk.home}` : null;
-  const gpuLine = gpu ? `${gpu.name}${temp != null ? ` · ${Math.round(temp)} °C` : ""}` : null;
+  const gpuLine = gpu ? `${gpu.simulated ? "Simulated card (fake_gpu): " : ""}${gpu.name}${temp != null ? ` · ${Math.round(temp)} °C` : ""}` : null;
   return <MeterGroup className={className} title="This PC" meters={meters}
     caption={gpuLine ? [gpuLine, diskLine].filter(Boolean).join(". ") : diskLine ? `${diskLine}. GPU load appears once the engine reports it` : "Readings appear once the engine answers"} />;
 }
@@ -488,6 +493,7 @@ function interruptedWords(u: InterruptedJob, status: ReturnType<typeof useApp>["
     case "resumed": return `interrupted${at}, then continued and finished`;
     case "failed_again": return `interrupted${at}, continued but stopped again`;
     case "waiting": {
+      if (u.said) return `interrupted${at}, waiting for the graphics card's memory (${u.said})${nightComes(status) ? ": the next night continues it" : ""}`;
       if (nightComes(status)) return `interrupted${at}, waiting for the GPU: the next night continues it`;
       // No night is coming, or the status is not known yet (then no cause is named). The Studio shortcut puts `studio` in front of what is typed.
       const way = `once the GPU is free, open the Nightshift Studio shortcut and type run --resume ${u.job_id}${u.has_card === false ? "" : ", or press Retry from where it stopped on its card in Create, under Earlier, while it is listed there"}`;
@@ -497,6 +503,23 @@ function interruptedWords(u: InterruptedJob, status: ReturnType<typeof useApp>["
     case "open": return `interrupted${at}, not finished`;
     default: return `interrupted${at}, not finished`;
   }
+}
+
+/** A duration as the morning note says it: "5 h 40 min", "52 min", "40 s" (ns_studio/nightclock.py words). */
+const hm = (s?: number | null) => { const n = Math.max(0, Math.round(Number(s) || 0)); if (n < 60) return `${n} s`; const m = Math.floor(n / 60); const h = Math.floor(m / 60); return h && m % 60 ? `${h} h ${m % 60} min` : h ? `${h} h` : `${m} min`; };
+const FULL_PLANS = ["master_first", "master_from_script", "master_from_owner_script"];
+/** One thing the night left for time (NS-W211), in the morning note's words (ns_studio/notifications.py). */
+function leftWords(x: LeftForTime, channelName: (s?: string | null) => string, status: ReturnType<typeof useApp>["status"]): string {
+  if (x.said) return x.said.startsWith("simulated (") ? x.said : x.said.charAt(0).toUpperCase() + x.said.slice(1); // the decision's own sentence: the note and this card never disagree (a simulated card's mark stays as written)
+  const ch = channelName(x.channel); const was = x.left_s == null ? "" : `, ${hm(x.left_s)} ${x.left_s < 120 ? "was" : "were"} left`;
+  if (x.reason === "stage_too_long") return `${ch}: ${x.job_id ? "a half-made video waits" : "not started"}: its ${x.stage || "longest"} stage takes longer than a whole night on this PC (make it from Create, where a run has no time limit)`;
+  const way = (first: string) => nightComes(status) ? `the next nightly run continues it${first}` : "press Retry on its card to continue it";
+  if (x.job_id && !x.resumed) return `${ch}: stopped at ${x.stage || "a stage"}; ${way("")}`;
+  if (x.job_id) return `${ch}: its half-made video was not continued (${x.need_s == null ? "it needs more time" : `it needs about ${hm(x.need_s)} more`}${was}); ${way(" first")}`;
+  const what = plural(x.jobs, FULL_PLANS.includes(x.fmt || "") ? "full video" : "Short");
+  if (x.need_s == null) return `${ch}: ${what} not started`;
+  const took = x.basis === "default" ? `Nightshift plans ${hm(x.need_s)} for one until it has timed one on this PC` : `${x.jobs === 1 ? "it takes" : "each takes"} about ${hm(x.need_s)} here`;
+  return `${ch}: ${what} not started (${took}${was})`;
 }
 
 /** "Last night": what the newest nightly run made and what stopped, from GET /runs. Shown only after a run has happened. */
@@ -511,6 +534,9 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
   const noRoom = r.summary?.no_room ?? []; const notStarted = noRoom.reduce((n, x) => n + x.jobs, 0);
   // jobs the night did not start because their channel was paused (before or during the night, P47); a half-made one waits for the resume
   const held = r.summary?.paused ?? []; const heldJobs = held.reduce((n, x) => n + x.jobs, 0);
+  // work the night left for the next night to end inside Windows' limit for the task, and how long it took of it (card night-fits; an older report has neither)
+  const left = r.summary?.out_of_time ?? []; const leftJobs = left.filter((x) => x.reason !== "cannot_fit_new" && x.reason !== "stage_too_long").reduce((n, x) => n + x.jobs, 0); const t = r.summary?.timing;
+  const ofLimit = t && t.limit_s && t.used_s != null ? ` ${t.simulated_card ? `${t.simulated_card}: took` : "Took"} ${hm(t.used_s)} of ${hm(t.limit_s)}${t.gpu_s && t.gpu_s >= 60 ? `, ${hm(t.gpu_s)} of it getting the graphics card` : ""}.` : "";
   // A run that was killed (power cut, crash) has a finish time written by the recovery, but it did not finish: say so, and name the jobs it left half made.
   const interrupted = r.state === "interrupted"; const live = r.state === "running"; const unfinished = r.summary?.interrupted_jobs ?? [];
   const took = r.duration_s ? (r.duration_s >= 3600 ? `${Math.floor(r.duration_s / 3600)} h ${Math.round((r.duration_s % 3600) / 60)} min` : `${Math.max(1, Math.round(r.duration_s / 60))} min`) : null;
@@ -525,13 +551,16 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
         {skipped.length ? ` ${plural(skipped.reduce((n, x) => n + x.jobs, 0), "job")} skipped.` : ""}
         {notStarted ? ` ${plural(notStarted, "job")} not started, not enough disk space.` : ""}
         {heldJobs ? ` ${plural(heldJobs, "job")} held, the channel${new Set(held.map((x) => x.channel)).size > 1 ? "s were" : " was"} paused.` : ""}
+        {ofLimit}
+        {leftJobs ? ` Left for time: ${plural(leftJobs, "video")}, to end inside Windows' limit for the nightly task.` : ""}
         {interrupted ? ` ${r.note || "Interrupted: it never finished."}` : ""}
       </p>
       {unfinished.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{unfinished.map((u) => <li key={u.job_id}>{channelName(u.channel)}: {interruptedWords(u, status)}</li>)}</ul>}
       {notes.data.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{notes.data.map((n, i) => <li key={i}>{n.message} <span className="text-ds-muted">({fmtClock(n.at)})</span></li>)}</ul>}
       {noRoom.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{noRoom.map((x, i) => <li key={i}>{channelName(x.channel)}: {plural(x.jobs, "job")} not started, not enough disk space ({x.short || x.message || "free some space"})</li>)}</ul>}
       {held.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{held.map((x, i) => <li key={i}>{x.job_id ? `${channelName(x.channel)} is paused: its half-made job waits for the resume` : `${plural(x.jobs, "job")} not started: ${channelName(x.channel)} is paused`}</li>)}</ul>}
-      {skipped.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{skipped.map((x) => <li key={x.channel}>{channelName(x.channel)}: {plural(x.jobs, "job")} skipped because an earlier one stopped</li>)}</ul>}
+      {left.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{left.map((x, i) => <li key={i}>{leftWords(x, channelName, status)}</li>)}</ul>}
+      {skipped.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{skipped.map((x) => <li key={x.channel}>{channelName(x.channel)}: {plural(x.jobs, "job")} skipped because {x.reason === "vram" ? "other programs held the graphics card's memory (NS-E208)" : "an earlier one stopped"}</li>)}</ul>}
       {failed.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{failed.slice(0, 3).map((f) => <li key={f.job_id}>{channelName(f.channel)}: {f.code ? `${f.code}. ` : ""}{f.error || "stopped"}</li>)}</ul>}
     </Card>
   );

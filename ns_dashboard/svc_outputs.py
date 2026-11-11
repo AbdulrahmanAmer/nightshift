@@ -19,6 +19,9 @@ from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.security import is_within
 from ns_dashboard.state import AppState
 from ns_studio.errors import StudioError
+from ns_studio.media import sheet_read as sr
+from ns_studio.media.outbox import disclosure_for, read_sheet, refit_output
+from ns_studio.media.youtube_rules import WARNING_PREFIX, read_notes
 
 URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 EXCERPT_CHARS = 1500
@@ -31,17 +34,26 @@ OUTPUT_SELECT = (
 
 
 def _read_json(f: Path) -> Any:
+    """A job file (a policy result, a transcript); never an upload sheet (those go through `read_sheet`)."""
     try:
         return json.loads(read_text_retry(f))
     except (OSError, ValueError):
         return None
 
 
-def _read_text(f: Path) -> str | None:
-    try:
-        return f.read_text(encoding="utf-8")
-    except OSError:
-        return None
+def _sheet_dict(j: sr.SheetRead) -> dict[str, Any] | None:
+    """The `.json` sheet for the Queue: the sheet when it is one, else the object it holds (an older or odd
+    layout the Queue still shows), else None."""
+    if j.usable:
+        data: dict[str, Any] = j.value.model_dump(mode="json")
+        return data
+    if j.state == sr.LAYOUT:
+        try:
+            loose = json.loads(j.text)
+        except ValueError:
+            return None
+        return loose if isinstance(loose, dict) else None
+    return None
 
 
 def policy_notes(policy: Any) -> list[str]:
@@ -143,8 +155,13 @@ class OutputsService:
         row = self._row(output_id)
         item = output_item(row)
         video = Path(row["path"])
-        sheet = _read_json(video.with_suffix(".json"))
-        sheet_dict = sheet if isinstance(sheet, dict) else None
+        j, t = read_sheet(row)  # the one reader of sheet files (`sheet_read.read_sheet_file`)
+        problem = None
+        if not (j.state == sr.OK and t.state == sr.OK) and row["status"] in ("pending", "approved"):
+            problem = self._repair_sheet(row)  # mended now, or the one sentence that is true for its case
+            j, t = read_sheet(row)
+        sheet_dict = _sheet_dict(j)
+        sheet_text = t.text if t.state in (sr.OK, sr.NOT_UTF8, sr.LAYOUT) else None
         job_dir = self.s.paths.job_dir(row["job_id"])
         policy = None
         for name in ("policy_final.json", "policy_text.json"):
@@ -162,13 +179,23 @@ class OutputsService:
         up = self.s.db.one("SELECT video_url, published_at FROM uploads WHERE output_id = ?", (output_id,))
         flat = sheet_dict or {}
         adv = advice or {}
+        answer = adv.get("ai_disclosure", flat.get("ai_disclosure"))
+        told = None
+        if answer in ("yes", "no"):  # the answer for the voice the job spoke with, and why (rule R8)
+            told = disclosure_for(self.s.paths, row["job_id"], row["kind"], str(answer))
+        notes = read_notes(sheet_text).owner_lines()
+        if problem:
+            notes.insert(0, f"{WARNING_PREFIX}{problem}")
         item.update(
             {
                 "description": flat.get("description", ""),
                 "tags": flat.get("tags", []),
                 "hashtags": flat.get("hashtags", []),
                 "publish_after": flat.get("publish_after"),
-                "ai_disclosure": adv.get("ai_disclosure", flat.get("ai_disclosure")),
+                "ai_disclosure": told.answer if told else answer,
+                "ai_disclosure_reason": told.reason if told else None,
+                "ai_disclosure_note": (told.note or None) if told else None,
+                "youtube_notes": notes,
                 "made_for_kids": adv.get("made_for_kids", flat.get("made_for_kids")),
                 "age_restrict_suggested": adv.get(
                     "age_restrict_suggested", flat.get("age_restrict_suggested")
@@ -178,7 +205,7 @@ class OutputsService:
                 "thumbnails": flat.get("thumbnails"),
                 "policy_notes": policy_notes(policy),
                 "sheet": sheet_dict,
-                "sheet_text": _read_text(video.with_suffix(".txt")),
+                "sheet_text": sheet_text,
                 "policy": policy,
                 "advice": advice,
                 "story_excerpt": self._story_excerpt(row),
@@ -189,6 +216,19 @@ class OutputsService:
             }
         )
         return item
+
+    def _repair_sheet(self, row: sqlite3.Row) -> str | None:
+        """A sheet whose files are not both whole, handled as `sheet_read.plan_sheet` says
+        (`outbox.refit_output`): None when it was mended, else the owner's one sentence for its case."""
+        try:
+            with self.s.db.lock:
+                changed, sentence = refit_output(self.s.paths, self.s.db, row)
+        except (OSError, ValueError) as e:  # a write that failed: said with its text; tried again on opening
+            return f"the sheet could not be written ({e}); Nightshift tries again each time it is opened"
+        if changed:
+            self.s.log.info("sheet_mended", "the upload sheet was mended when the video was opened",
+                            output_id=row["output_id"])
+        return sentence
 
     def _story_excerpt(self, row: sqlite3.Row) -> str | None:
         if row["kind"] == "clip":

@@ -20,12 +20,13 @@ from ns_common.errors import NsError
 from ns_common.models import ClipPlanItem, PolicyCheck, PolicyResult, Seo
 from ns_common.paths import contracts_dir
 from ns_studio.context import JobContext
+from ns_studio.media.youtube_rules import TAGS_MAX_CHARS, tags_length
 from ns_studio.text.prompts import call_json
 
 TITLE_TARGET = 70
 TAGS_MAX = 20
 TAGS_MIN = 10
-TAGS_CHARS = 500
+TAGS_CHARS = int(TAGS_MAX_CHARS.value)  # YouTube's R4, counted by `tags_length`
 HASHTAGS_MAX = 5
 HASHTAGS_MIN = 3
 CHECK_CODES = {"misleading_claims": "NS-E603", "metadata_spam": "NS-E606", "real_entities": "NS-E602"}
@@ -75,7 +76,7 @@ def check_metadata_spam(seo: Seo) -> PolicyCheck:
     problems: list[str] = []
     if len(seo.tags) > TAGS_MAX:
         problems.append(f"{len(seo.tags)} tags")
-    if sum(len(t) + 1 for t in seo.tags) > TAGS_CHARS:
+    if tags_length(seo.tags) > TAGS_CHARS:
         problems.append("tags longer than 500 characters")
     if len(seo.hashtags) > HASHTAGS_MAX:
         problems.append(f"{len(seo.hashtags)} hashtags")
@@ -131,16 +132,14 @@ def normalize_tags(raw: list[Any], extra: list[str]) -> list[str]:
     """Unique tags, 10 to 20 when enough material exists, at most 500 characters in total."""
     out: list[str] = []
     seen: set[str] = set()
-    total = 0
     for item in [*raw, *extra]:
         tag = re.sub(r"\s+", " ", str(item)).strip().lstrip("#")
         if not tag or len(tag) > 30 or tag.lower() in seen:
             continue
-        if total + len(tag) + 1 > TAGS_CHARS or len(out) >= TAGS_MAX:
+        if tags_length([*out, tag]) > TAGS_CHARS or len(out) >= TAGS_MAX:
             break
         out.append(tag)
         seen.add(tag.lower())
-        total += len(tag) + 1
         if len(out) >= TAGS_MAX:
             break
     return out

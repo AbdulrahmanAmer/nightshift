@@ -20,7 +20,7 @@ from typing import Annotated, Any
 
 from fastapi import FastAPI  # pyright: ignore[reportMissingImports]
 from fastapi.responses import JSONResponse, StreamingResponse  # pyright: ignore[reportMissingImports]
-from pydantic import BaseModel, Field, StrictInt
+from pydantic import BaseModel, Field, StrictBool, StrictInt
 
 from installer.stage2.web import venvrepair
 from ns_common import first_start
@@ -38,7 +38,7 @@ from ns_supervisor.core import Supervisor, SupervisorConfig
 from ns_supervisor.health_cfg import read_health_timeout
 from ns_supervisor.scheduled import overdue_scheduled_jobs
 
-_STATUS = {"NS-E201": 409, "NS-E202": 502, "NS-E203": 504}
+_STATUS = {"NS-E201": 409, "NS-E202": 502, "NS-E203": 504, "NS-E208": 409}  # E208: the card's memory is held
 
 
 class AcquireBody(BaseModel):
@@ -52,6 +52,8 @@ class AcquireBody(BaseModel):
     # The caller's own process (F-H47): the GPU is freed once it is gone. A pid that is not a positive whole
     # number (a string, 0, -5, 1.5, true) is refused with 422; missing means no check.
     pid: Annotated[StrictInt, Field(gt=0, le=0xFFFFFFFF)] | None = None
+    # vram-busy: a run nobody watches (the nightly) may wait for the card's memory inside `timeout_s`
+    vram_wait: StrictBool = False
 
 
 class ReleaseBody(BaseModel):
@@ -104,6 +106,7 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         tmpsweep.sweep_state_tmp(sup.paths)  # a crash between "create" and "swap" left a ~ns*.tmp behind
         sup.write_state()
+        sup.tell_fake_gpu_ignored()  # NS-W121 as a morning note, once while it waits
         tasks: list[asyncio.Task[Any]] = []
         if run_monitor:
             tasks.append(asyncio.create_task(sup.run_monitor()))
@@ -142,7 +145,8 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
     @app.post("/acquire")
     async def acquire(body: AcquireBody) -> dict[str, Any]:
         return await sup.acquire(
-            body.service, body.owner, body.model_alias, wait=body.wait, timeout_s=body.timeout_s, pid=body.pid
+            body.service, body.owner, body.model_alias, wait=body.wait, timeout_s=body.timeout_s,
+            pid=body.pid, vram_wait=body.vram_wait,
         )
 
     @app.post("/release")

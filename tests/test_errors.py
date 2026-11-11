@@ -136,3 +136,21 @@ def test_every_named_command_exists():
         if hasattr(command, "get_command") and second:      # a group: its command too
             sub = command.get_command(click.Context(command), second)
             assert sub is not None, f"'{tool} {first} {second}' is named but is no command of {tool} {first}"
+
+
+def test_no_hint_tells_the_owner_to_tune_for_a_busy_card():
+    """vram-busy: a model that did not load because another program held the card's memory is NS-E208, whose
+    hint names closing programs; NS-E203 (a model too slow to answer) no longer sends the owner to `ns tune`
+    first, and says that a busy card is NS-E208."""
+    table = load_errors()
+    assert "NS-E208" in table, "no code for a card whose memory other programs hold"
+    e208 = table["NS-E208"]
+    assert "graphics card" in e208.message and "Close them" in e208.hint, e208
+    assert "Nightshift never closes another program" in e208.hint
+    assert "Automatic runs are on" in e208.hint, "the promise of a next night carries its condition"
+    hint = table["NS-E203"].hint
+    assert not hint.startswith("The model may be too large"), hint
+    assert "NS-E208" in hint and hint.index("ns doctor") < hint.index("ns tune"), hint
+    for code, entry in table.items():
+        if "graphics card" in entry.message and "memory" in entry.message:
+            assert "ns tune" not in entry.hint, code

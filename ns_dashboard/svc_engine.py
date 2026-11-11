@@ -15,7 +15,7 @@ import ns_common
 from ns_common.commandline import render
 from ns_common.config import load_install_state, load_runtime
 from ns_common.errors import NsError
-from ns_common.models import GpuStatus
+from ns_common.models import GpuStatus, StatusGpuWait
 from ns_dashboard.errors import ApiError, SupervisorUnavailable
 from ns_dashboard.events import iter_sse
 from ns_dashboard.state import (
@@ -126,10 +126,14 @@ class EngineService:
             self.s.loading_since.setdefault(name, now)
         state, detail, elapsed = "idle", "Services idle", None
         loading_service = None
+        wait = self._gpu_wait((st or {}).get("gpu_wait"))
         if not reachable:
             detail = "Engine not running"
         elif "services" not in (st or {}):
             state, detail = "starting", "Engine starting"
+        elif wait is not None:  # vram-busy: a nightly load waits for the card's memory (the Queue says why)
+            state, detail = "loading", "Waiting for the graphics card's memory"
+            loading_service = wait["service"]
         elif starting:
             loading_service = starting[0]
             state = "loading"
@@ -141,7 +145,9 @@ class EngineService:
             state, detail = "ready", "Ready"
         if self.s.draining:
             detail = "Shutting down..."
+        extra = {"gpu_wait": wait} if wait is not None else {}  # only while it waits
         return {
+            **extra,
             "state": state,
             "detail": detail,
             "elapsed_s": elapsed,
@@ -220,6 +226,16 @@ class EngineService:
             "last_error": last_error,
             "gpu": self._gpu((st or {}).get("gpu")),
         }
+
+    @staticmethod
+    def _gpu_wait(raw: Any) -> dict[str, Any] | None:
+        """The engine's `gpu_wait` as `StatusGpuWait`, or None when it is absent or malformed."""
+        if not isinstance(raw, dict):
+            return None
+        try:
+            return StatusGpuWait.model_validate(raw).model_dump(mode="json")
+        except ValueError:
+            return None
 
     @staticmethod
     def _gpu(raw: Any) -> dict[str, Any] | None:

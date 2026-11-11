@@ -130,6 +130,7 @@ def run_story_jobs(
     """
     from ns_studio import diskroom, jobs
     from ns_studio.channels.crud import get_channel
+    from ns_studio.footage_keys import precheck
     from ns_studio.orchestrator import plan_job, stage_names
     from ns_studio.policy.regen import run_job_guarded
 
@@ -140,6 +141,8 @@ def run_story_jobs(
     if resume_job_id:  # Retry (count 1), or a request held by a pause: its half-made video, then the rest
         _require_not_paused(env, channel, left=n - 1, half_made=resume_job_id)
         ctx = jobs.load_job(env, resume_job_id)
+        # Retry: only a job that will still fetch stock footage (`clips` not done) is checked (stock-truth)
+        precheck(env.services, env.paths, env.log, fmt=str(ctx.fmt), job_dir=ctx.job_dir)
         # NS-E104 before the job runs again, for the stages it has left (a drive that filled up meanwhile)
         diskroom.require_story_room(
             env.paths, env.log, ctx.channel, ctx.fmt, fake=fake, resume_dir=ctx.job_dir)
@@ -161,6 +164,9 @@ def run_story_jobs(
             env.log.info("story_run_paused", channel=ch.slug, made=i, left=n - i)
             # nothing a person asked for is lost: the videos still owed (`left`) wait for the resume
             raise ChannelPaused(_paused_text(ch.display_name, i, n), left=n - i)
+        # before any model: no key, or every stored key refused by its site (card stock-truth; asked once and
+        # kept, so a batch asks each site once). The dashboard checked only that a key is stored.
+        precheck(env.services, env.paths, env.log, fmt=fmt)
         # every job of a batch, a scheduled one too: the drive may have filled up since the request was made
         diskroom.require_story_room(env.paths, env.log, ch, fmt, fake=fake)
         if script is not None:

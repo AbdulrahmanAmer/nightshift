@@ -89,7 +89,8 @@ def test_every_field_a_settings_model_gained_since_0_1_14_is_in_the_table() -> N
         ("Runtime", "tiny_story"), ("InstallerAnswers", "tiny_story"),
         ("Answers", "nightly"), ("InstallerAnswers", "nightly_seen"),  # setup's nightly question (used once)
         ("InstallerAnswers", "shortcuts_here"),  # the yes to moving another install's shortcuts (used once)
-    }  # what 0.1.15 adds
+        ("Runtime", "fake_gpu"), ("InstallerAnswers", "fake_gpu"),  # H-10: the simulated graphics card
+    }  # what 0.1.15 and 0.1.16 add
 
 
 def test_the_tripwire_catches_a_field_added_deep_inside_a_model() -> None:
@@ -275,7 +276,7 @@ def test_for_version_takes_out_what_the_target_lacks_and_names_it(monkeypatch: p
 
 
 def test_for_version_on_real_files() -> None:
-    rt = {**Runtime.default("cpu-dev").model_dump(mode="json"), "tiny_story": True}
+    rt = {**disk_dict(Runtime.default("cpu-dev")), "tiny_story": True}  # as written: fake_gpu (off) left out
     assert for_version("runtime.json", rt, "0.1.14") == ["tiny_story"] and "tiny_story" not in rt
     old.Runtime.model_validate(rt)
     answers = {**example_answers(), "tiny_story": True, "allow_cpu": True}

@@ -56,7 +56,8 @@ SKIP_ANYWHERE = frozenset(
 # top-level entries are program files (a test keeps this list covering the repository's tracked entries).
 ROOT_ENTRIES = frozenset(
     {
-        "build_spec.md", "build_spec_v1.md", "changelog.md", "claude.md", "demo.cmd", "install.cmd",
+        "build_spec.md", "build_spec_v1.md", "changelog.md", "claude.md", "demo.cmd", "gpu-kit.cmd",
+        "install.cmd",
         "operator.md", "readme.md", "uninstall.cmd", "version", "contracts", "dev", "docs", "installer",
         "launchers", "manifest.json", "ns_common", "ns_dashboard", "ns_studio", "ns_supervisor", "ns_tts",
         "pyproject.toml", "uv.lock", "tools", "tests", "bin", "answers.example.json", ".editorconfig",

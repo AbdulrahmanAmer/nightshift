@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 
+from ns_common import devmode
 from ns_common.config import embed_server_args
 from ns_common.errors import NsError
 from ns_common.models import Runtime
@@ -42,6 +43,13 @@ class ServiceDef:
     def health_url(self) -> str:
         """URL polled by the supervisor until it answers 200."""
         return f"{self.base_url}{self.health_path}"
+
+
+def fake_gpu(rt: Runtime) -> bool:
+    """The simulated graphics card is in effect for these settings (`devmode.fake_gpu_in`: the switch on a dev
+    or engine-test install). Then llama, the voice service and whisper are GPU tenants, as on the GPU PC; the
+    embedding server stays off the card, as it is there (`CUDA_VISIBLE_DEVICES=-1`)."""
+    return devmode.fake_gpu_in(rt.model_dump(mode="json"))
 
 
 def llama_variant(rt: Runtime, alias: str | None) -> str:
@@ -102,7 +110,7 @@ def _llama(rt: Runtime, paths: Paths, alias: str | None) -> ServiceDef:
         cmd=cmd,
         host=cfg.host,
         port=cfg.port,
-        gpu=fl.n_gpu_layers != 0 and not rt.dev_mode,
+        gpu=(fl.n_gpu_layers != 0 and not rt.dev_mode) or fake_gpu(rt),
         variant=llama_variant(rt, alias),
         model_alias=aliases,
         env=_env(paths),
@@ -141,7 +149,11 @@ def _tts(rt: Runtime, paths: Paths) -> ServiceDef:
         cmd = [venv_python(paths, "supervisor"), "-m", "ns_tts.server", "--port", str(cfg.port),
                "--engine", "fake"]  # fmt: skip
     return ServiceDef(
-        name="tts", cmd=cmd, host=cfg.host, port=cfg.port, gpu=cfg.device == "cuda" and not fake,
+        name="tts",
+        cmd=cmd,
+        host=cfg.host,
+        port=cfg.port,
+        gpu=(cfg.device == "cuda" and not fake) or fake_gpu(rt),
         env=_env(paths),
     )
 

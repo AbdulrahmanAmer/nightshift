@@ -29,7 +29,7 @@ from ns_studio.daily import _paused_now as paused_now
 from ns_studio.daily import nothing_due_message, run_daily
 from ns_studio.diskroom import require_story_room
 from ns_studio.errors import PAUSED, UNEXPECTED, StudioError, describe_unexpected, hint_of
-from ns_studio.footage_keys import require_footage_key
+from ns_studio.footage_keys import precheck
 from ns_studio.gate import job_gate
 from ns_studio.learn import importer, reweight, status
 from ns_studio.orchestrator import OWNER_SCRIPT_FORMATS, plan_job, run_job
@@ -296,6 +296,8 @@ def _run_jobs(
             env.log.info("run_channel_paused", channel=ctx.channel.slug, job_id=ctx.job_id)
             who = f"{ctx.channel.display_name} ({ctx.channel.slug})"
             raise StudioError(PAUSED, f"{who}: job {ctx.job_id} was not continued")
+        # only when it will still fetch stock footage (its `clips` not done): no key or every key refused
+        precheck(env.services, env.paths, env.log, fmt=str(ctx.fmt), job_dir=ctx.job_dir)
         # a resumed job needs only what its unfinished stages still write; refused (NS-E104) before it starts
         require_story_room(env.paths, env.log, ctx.channel, ctx.fmt, fake=env.fake, resume_dir=ctx.job_dir)
         jobs.record_policy(ctx, policy)  # after the last refusal (the pause and the room checks above)
@@ -324,7 +326,8 @@ def _run_jobs(
                     raise StudioError(PAUSED, f"{ch.display_name} ({ch.slug}): {made}")
                 echo(f"channel {ch.slug} was paused: {count - n} job(s) not started")
                 break
-            require_footage_key(env.services)  # before any GPU work: `clips` would fail an hour in
+            # before any GPU work: `clips` would fail an hour in (no key, or every stored key refused)
+            precheck(env.services, env.paths, env.log, fmt=job_fmt)
             # and before the job exists: a drive with less room than the job needs writes nothing (D-33)
             require_story_room(env.paths, env.log, ch, job_fmt, fake=env.fake)
             if script is not None:
@@ -352,6 +355,32 @@ def _say_how_to_continue(ctx: JobContext) -> Iterator[None]:
         raise
 
 
+def _kit_nights(env: jobs.Env, now: datetime) -> Any:
+    """The GPU kit's nights record at a night's start (`ns_supervisor.kitnights.night_start`): said in the
+    log; an expired one pauses the kit's channel first. Whatever goes wrong, the night runs as if there were
+    no record."""
+    try:
+        return importlib.import_module("ns_supervisor.kitnights").night_start(env.paths, now, env.log)
+    except Exception as e:  # noqa: BLE001 - the owner's night never depends on the kit
+        env.log.warn("gpu_kit_nights_unreadable", str(e))
+        return None
+
+
+def _kit_nights_over(env: jobs.Env, kit: Any, now: datetime) -> str | None:
+    """A night that found the kit's nights over: put back what the kit switched on (`end_nights`). The
+    sentence said when Automatic runs were switched off (they were the kit's), else None."""
+    if kit is None or getattr(kit, "kind", None) != "expired":
+        return None
+    try:
+        said = importlib.import_module("ns_supervisor.kitnights").end_nights(env.paths, kit, now, env.log)
+    except Exception as e:  # noqa: BLE001
+        env.log.warn("gpu_kit_nights_put_back_failed", str(e))
+        said = None
+    if said:
+        echo(said)
+    return said
+
+
 def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
     """The `--daily` branch of `studio run`."""
     now = datetime.now(UTC)
@@ -363,12 +392,23 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
         for dj in due:
             echo(f"{dj.channel.slug}: {dj.count} x {dj.fmt} ({dj.plan.describe()})")
         return
+    kit = _kit_nights(env, now)  # the GPU kit's record (never raises; read again by the planner)
+    if kit is not None and getattr(kit, "kind", None) == "expired":
+        # the night after the kit's two: what the kit switched on is put back BEFORE the night. When the runs
+        # were the kit's (off before it, nobody chose them since), they are off now and this night makes
+        # nothing: the owner never asked for it. When they are the owner's, the night runs as usual.
+        said = _kit_nights_over(env, kit, now)
+        kit = None
+        if said:
+            return
     notifier = notifications.nightly_notifier(env.paths, env.log)
     try:
         report = run_daily(env, now=now, notifier=notifier)
     except (NsError, StudioError) as e:  # the night itself broke (not one job): say so before exiting
         notifications.send(env.paths, env.log, notifier, notifications.failure_message(e.code))
         raise
+    finally:
+        _kit_nights_over(env, kit, now)
     for item in report.get("interrupted_jobs", []):
         echo(interrupted_line(item))
     if not (report["channels"] or report["jobs"] or report["failures"]):
@@ -382,6 +422,9 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
         echo(f"job {f['job_id']} FAILED {f['code']}: {f['error']}")
     for r in report.get("no_room", []):
         echo(f"{r['channel']}: {r['jobs']} x {r['format']} NOT STARTED, no room: {r['message']}")
+    left_for_time = notifications.time_note(report)  # NS-W211: what the night left inside the task's limit
+    if left_for_time:
+        echo(left_for_time)
     for bad_slug, problem in report.get("unreadable_profiles", []):
         echo(f"channel {bad_slug} NOT RUN, its profile cannot be read: {problem}")
     echo(f"backup: {report['backup']}")

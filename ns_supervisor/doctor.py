@@ -26,22 +26,25 @@ from ns_common import (
     __version__,
     commandline,
     config_snapshot,
+    devmode,
     ffmpeg,
     first_start,
     rollback_intent,
     testguard,
 )
+from ns_common import stock_answer as sa
 from ns_common.atomic import read_text_retry, retry_busy, write_zip_atomic
 from ns_common.config import load_install_state
 from ns_common.devmode import is_dev
-from ns_common.errors import NsError
+from ns_common.errors import NsError, describe
 from ns_common.models import InstallState, Runtime
 from ns_common.paths import Paths, repo_root
 from ns_common.runtime_read import read_runtime
 from ns_common.uv import find_uv
-from ns_supervisor import launch_reach, procs
+from ns_supervisor import launch_reach, procs, schedule, schedule_cfg
 from ns_supervisor.childenv import child_env, window_flags
 from ns_supervisor.client import SupervisorClient
+from ns_supervisor.gpu import simulated_mark, smi_source
 
 MEDIA_SUFFIXES = frozenset(
     {".mp4", ".mkv", ".mov", ".webm", ".avi", ".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg"}
@@ -168,7 +171,7 @@ def build_bundle(
     out_dir: Path | None = None,
     now: datetime | None = None,
     freeze: Callable[[Paths, str], str | None] = freeze_venv,
-    smi: Callable[[], str | None] = procs.nvidia_smi_report,
+    smi: Callable[[], str | None] | None = None,
     app: Path | None = None,
     setup_dir: Path | None = None,
     temp_dir: Path | None = None,
@@ -192,6 +195,10 @@ def build_bundle(
             for f in sorted(paths.logs.rglob("*")):
                 if f.is_file():
                     _add_file(z, f, "logs/" + f.relative_to(paths.logs).as_posix(), skipped)
+        ledger = paths.data / "ledger"  # the night ledger (ns_studio/ledger.py): every night's times
+        if ledger.is_dir():
+            for f in sorted(ledger.glob("ledger-*.jsonl")):
+                _add_file(z, f, f"ledger/{f.name}", skipped)
         for src, arc in (
             (paths.install_state_file, "install_state.json"),
             (paths.runtime_file, "runtime.json"),
@@ -205,7 +212,14 @@ def build_bundle(
         _add_setup_evidence(
             z, paths, skipped, setup_dir or setup_data_dir(), temp_dir or Path(tempfile.gettempdir())
         )
-        report = smi()
+        if smi is not None:
+            report = smi()
+        else:  # this install's nvidia-smi: the simulated card says so on its first line (H-10)
+            source = smi_source(paths)
+            report = procs.nvidia_smi_report(source)
+            mark = simulated_mark(source)
+            if report is not None and mark is not None:
+                report = simulated_header(mark) + report
         z.writestr("nvidia-smi.txt", report if report is not None else "nvidia-smi is not available\n")
         for venv in VENVS:
             text = freeze(paths, venv)
@@ -245,22 +259,85 @@ def diagnose(
     up = client.is_up()
     where = client.base_url if up else "not running (opening the Dashboard starts it)"
     rows.append(("supervisor", up, where))
-    if is_dev(paths):       # docs/DEV_MODE.md: a dev install has no graphics card to ask
+    source = smi_source(paths)
+    mark = simulated_mark(source)
+    if mark is not None:    # H-10: the simulated graphics card answers, and the row says it is one
+        name = procs.gpu_name(source)
+        rows.append(("nvidia-smi", name is not None,
+                     f"{mark}: {name}" if name is not None
+                     else f"{mark}: run\\fake_gpu.json makes it fail (\"fail\")"))  # fmt: skip
+    elif is_dev(paths):     # docs/DEV_MODE.md: a dev install has no graphics card to ask
         rows.append(("nvidia-smi", True, "not needed (dev mode)"))
     elif profile == "cpu-dev":
         # D-44: an install that runs on the processor (the engine test, a PC with no NVIDIA card) has no
         # driver to ask for; a gpu install, or one whose runtime.json cannot be read, still asks
         rows.append(("nvidia-smi", True, "not needed (this install runs on the processor: profile cpu-dev)"))
     else:
-        smi = procs.nvidia_smi_report()
+        smi = procs.nvidia_smi_report(source)
         rows.append(("nvidia-smi", smi is not None, "ok" if smi is not None else "no NVIDIA driver found"))
+    row = fake_gpu_row(paths)
+    if row is not None:
+        rows.append(row)
     have_ffmpeg = ffmpeg.available()
     rows.append(("ffmpeg", have_ffmpeg, "on PATH" if have_ffmpeg else "ffmpeg/ffprobe not found"))
     rows.append(launch_reach.doctor_row(paths))
+    rows.append(task_limit_row(paths))
     rows.append(commands_row(paths))
+    rows += stock_key_rows(paths)
     app = Path(st.app_path) if st.app_path else repo_root()
     rows.append(program_folders(paths, app, on_wait))
     rows.append(python_environments(paths, app))
+    return rows
+
+
+def _stored_stock_keys() -> dict[str, str]:
+    """The keys the studio reads (`ns_studio.jobs.load_keys`: Credential Manager, else `secrets.dpapi`)."""
+    from ns_studio.jobs import load_keys
+
+    return load_keys()
+
+
+def stock_key_rows(
+    paths: Paths,
+    *,
+    keys: Callable[[], dict[str, str]] | None = None,
+    ask: Callable[[str, str], sa.Answer] | None = None,
+) -> list[tuple[str, bool, str]]:
+    """One row per stock footage site (card stock-truth): ok, wrong, could not be checked now, or no key
+    stored, each by the one classifier through setup's own key check (`installer.stage2.web.keys.ask`). Never
+    the key's text, never a crash: a key store that cannot be read is a row that says so."""
+    if devmode.fake_footage(paths):  # a dev install or the engine test: placeholder footage, no key needed
+        said = "not needed (this install uses placeholder footage)"
+        return [(f"stock key {p}", True, said) for p in sa.PROVIDERS]
+    try:
+        stored = (keys or _stored_stock_keys)()
+    except Exception as e:  # noqa: BLE001 - a row, never a traceback
+        return [("stock keys", False, f"could not read the stored keys ({type(e).__name__})")]
+    if ask is None:
+        from installer.stage2.web.keys import ask as setup_ask
+
+        ask = setup_ask
+    rows: list[tuple[str, bool, str]] = []
+    for p in sa.PROVIDERS:
+        name, key = sa.NAMES[p], stored.get(p)
+        if not key:  # not a fault of the install (setup allows none); a video asks for one (NS-E502)
+            if any(stored.get(o) for o in sa.PROVIDERS):
+                how = "optional: the other site's key is enough"
+            else:
+                how = f"a video needs one: add a Pixabay key (free) in {sa.KEYS_PLACE}"
+            rows.append((f"stock key {p}", True, f"no key stored ({how})"))
+            continue
+        try:
+            a = ask(p, key)
+        except Exception as e:  # noqa: BLE001 - a row, never a traceback
+            rows.append((f"stock key {p}", False, f"could not be checked ({type(e).__name__})"))
+            continue
+        if a.ok:
+            rows.append((f"stock key {p}", True, f"{name} accepted the key"))
+        elif a.kind == sa.KEY_WRONG:
+            rows.append((f"stock key {p}", False, f"{a.code}: {a.sentence} {a.way_out}"))
+        else:
+            rows.append((f"stock key {p}", True, f"could not be checked now ({a.code}): {a.sentence}"))
     return rows
 
 
@@ -309,6 +386,29 @@ def bundle_notes(paths: Paths) -> list[str]:
     _, rows = runtime_rows_of(paths)
     rows = [r for r in rows if r[0] == "runtime.json"] + [install_state_row(paths)[1]]
     return [f"[FAIL] {name}: {detail}" for name, ok, detail in rows if not ok]
+
+
+#: The first line of `nvidia-smi.txt` in a diagnostics zip made on the simulated graphics card.
+def simulated_header(mark: str) -> str:
+    """The first line of `nvidia-smi.txt` in a diagnostics zip made on the simulated graphics card."""
+    return (
+        f"{mark}: not a real graphics card. These numbers come from run\\fake_gpu.json "
+        "(docs/DEV_MODE.md, 'A simulated graphics card').\n"
+    )
+
+
+def fake_gpu_row(paths: Paths) -> tuple[str, bool, str] | None:
+    """The row "fake_gpu" (H-10), only when runtime.json sets the switch: ok on a dev or engine-test install
+    (the simulated card is on, and says where its numbers come from), FAIL with NS-W121 on any other install
+    (the switch is ignored there). None when the switch is not set."""
+    if devmode.fake_gpu(paths):
+        return ("fake_gpu", True,
+                f"on: the simulated graphics card; nvidia-smi is answered from "
+                f"{devmode.fake_gpu_file(paths)} (docs/DEV_MODE.md)")  # fmt: skip
+    if devmode.fake_gpu_ignored(paths):
+        info = describe("NS-W121")
+        return ("fake_gpu", False, f"NS-W121: {info.message} {info.hint}")
+    return None
 
 
 ENV_ROW = "python environments"
@@ -371,6 +471,44 @@ def commands_row(
     if found.ok is False:
         return (row, True, f"{WARN}{found.why}: rename or remove it from your PATH")
     return (row, True, "'ns' and 'studio' open this install")
+
+
+LIMIT_ROW = "nightly task limit"
+
+
+def _hours(seconds: int) -> str:
+    return f"{seconds // 3600} h" if seconds % 3600 == 0 else f"{round(seconds / 60)} min"
+
+
+def task_limit_row(
+    paths: Paths, read: Callable[[], schedule.TaskState | None] | None = None
+) -> tuple[str, bool, str]:
+    """The row "nightly task limit" (card night-fits): how long Windows lets the nightly task run, read the
+    way `ns schedule` reads the task, against `schedule_cfg.TASK_TIME_LIMIT_S`, the time every night plans
+    inside. A task whose limit was changed in Task Scheduler is said with the way back (read only). A test run
+    that gave no reader does not ask Windows (`testguard`)."""
+    planned = int(schedule_cfg.TASK_TIME_LIMIT_S)
+    if read is None:
+        if testguard.under_test():
+            return (LIMIT_ROW, True, "not read: a test run does not ask Task Scheduler")
+        read = partial(schedule.read_task, timeout_s=schedule.READ_TIMEOUT_S)
+    try:
+        task = read()
+    except schedule.ScheduleError as e:
+        return (LIMIT_ROW, True, f"{WARN}Windows did not say ({e}); run ns doctor again")
+    if task is None or task.limit_s is None:
+        return (LIMIT_ROW, True, f"{_hours(planned)} when the nightly task is registered")
+    if task.limit_s == planned:
+        return (LIMIT_ROW, True, f"{_hours(planned)}, the time each night is planned inside")
+    way = (
+        "Switch Automatic runs off and on again in Settings > Schedule: Nightshift registers the task again "
+        f"with {_hours(planned)}"
+    )
+    if task.limit_s == 0 or task.limit_s > planned:     # longer than planned: a night ends before it
+        allows = "never stops it" if task.limit_s == 0 else f"lets it run {_hours(task.limit_s)}"
+        return (LIMIT_ROW, True, f"Windows {allows}; each night is still planned inside {_hours(planned)}")
+    return (LIMIT_ROW, True, f"{WARN}Windows stops the nightly task after {_hours(task.limit_s)}, but each "
+            f"night is planned inside {_hours(planned)}, so a long night can be stopped half way. {way}")
 
 
 #: The log events that say the start check, an update or a rollback changed something beside the program.

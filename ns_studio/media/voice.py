@@ -18,6 +18,7 @@ from ns_common.tts_timeout import TTS_TIMEOUT_CAP_S, batch_timeout_s, load_rtf
 from ns_studio.context import JobContext
 from ns_studio.media.audio import VOICE_LUFS, VOICE_TP, loudnorm, measure_lufs
 from ns_studio.media.fake_voice import note_voice_engine
+from ns_studio.media.youtube_rules import VOICE_RECORD
 from ns_studio.stages import Tenant
 from ns_studio.voice_wpm import record_voice_wpm
 
@@ -178,6 +179,8 @@ def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], 
             }
     if items:
         record_voice_wpm(ctx, items[0].voice, items, manifest)  # words per minute this voice really speaks
+        voice = job_voice(ctx)  # the upload sheet's altered-content answer reads the voice the job spoke with
+        ctx.write_json(VOICE_RECORD, {"mode": voice.mode, "name": voice.name or voice.speaker})
     return manifest, len(todo)
 
 

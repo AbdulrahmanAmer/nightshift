@@ -330,6 +330,75 @@ service, so set them before starting the engine, and restart the engine to chang
 | `NS_TTS_FAKE_SPEECH=sapi` or `tones` | fake engine | force Windows speech or tone bursts for the fake voice (see "What the fake voice is") |
 | `NS_TTS_FAKE_DELAY_S=<seconds>` | fake engine | make design, clone and speech wait that long before they answer (below); default 0, at most 120 |
 | `NS_RELEASE_SOURCE=<address on this PC>` | updater | a dev or engine-test install reads its releases from a fake GitHub on this PC (below); every other install refuses it with NS-E704 |
+| `"fake_gpu": true` in `answers.json` | installer, engine | a dev or engine-test install runs on a simulated graphics card ("A simulated graphics card" below); every other install ignores it with NS-W121 |
+| `NS_FAKE_GPU_LEASE_S=<seconds>` | engine | with `fake_gpu` in effect, the GPU lease time for a proof: 30 to 600 (below) |
+
+### A simulated graphics card (`fake_gpu`)
+
+A PC without an NVIDIA card never takes the GPU lock: llama runs with `-ngl 0`, the fake voice and whisper on
+the CPU are no GPU services, so who holds the card, the queue, the busy answer, the lease that expires and the
+release when a Nightshift Code console is closed could not be shown on the laptop. With `"fake_gpu": true` in
+the answers of a **dev or engine-test install** (an install whose answers also say `fake_voice`, `fake_footage`
+or `tiny_story`, or a dev install), setup writes `fake_gpu: true` into `config\runtime.json`, Repair keeps it, and:
+
+- **The same code decides.** The engine's service table makes llama, the voice service and whisper GPU tenants
+  (what they are on the GPU PC); the embedding server stays off the card, as it is there. The lock, the guard
+  before every step of an acquire, the holder's pid, the lease, its heartbeat and expiry, the busy refusal
+  (NS-E201), the queue and every release are the code that runs on the GPU PC: nothing of it is faked.
+- **Only nvidia-smi is simulated.** Every question the engine asks nvidia-smi (the status numbers, the memory a
+  service uses, the memory in use, the name, the full table in the diagnostics zip) is answered by the simulated
+  card (`ns_supervisor/gpu.py:FakeSmi`) in the text nvidia-smi prints, so the product's own parsers read it. The
+  real nvidia-smi is never run while the switch is in effect. Its numbers come from `run\fake_gpu.json`, read on
+  every question (the status caches 2 s):
+
+  ```json
+  {"name": "Simulated GPU (fake_gpu)", "total_mb": 16311, "base_mb": 800, "load_pct": 0, "temp_c": 40,
+   "per_process": "na",
+   "others": [{"pid": 4242, "type": "C", "name": "game.exe", "mb": 9000}],
+   "services": {"llama": 6000, "tts": 500},
+   "fail": null, "delay_s": 0}
+  ```
+
+  Every key may be left out (missing file: these defaults, no other programs). `services` sets the MiB a running
+  llama or voice service uses; without it, llama uses the size of its model file plus 500 and the voice service
+  500. `others` are programs that are not Nightshift's (a game holding 9000 MiB is a card with less free memory
+  than a model asks; `type` is C, G or C+G as the table prints it, and only C is listed as a compute app).
+  memory.used is `base_mb` (what is in use with nothing of ours loaded; the GPU PC showed 812 MiB) plus every
+  program's MiB. Per process the default `per_process: "na"` is what the GPU PC prints under WDDM: `[N/A]` (the
+  table says N/A), so the memory one service uses is unknown there as it is on the target; `"mb"` gives the MiB
+  instead (a TCC or Linux driver, not the GPU PC). `load_pct` or `temp_c` set to null is `[N/A]`. For the GPU
+  PC's recorded state the table is byte for byte its recording (tests/fixtures/supervisor). MiB values are held
+  to 0..`total_mb`. `fail` makes nvidia-smi fail as the real one does:
+  `missing` (the tool is not there), `hang` (no answer within the caller's 5 s or 20 s), `driver` (exit code 9
+  and "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver"); `delay_s` answers that much
+  later. A file that cannot be read, or a value of the wrong kind, gives the defaults for what is wrong and one
+  WARN `fake_gpu_file` in `logs\supervisor-*.jsonl` per content.
+- **It says so everywhere.** `/status` and the dashboard's `GET /api/status` carry `gpu.simulated: true` (the key
+  is absent on a real card, so a real install's answer is unchanged); the Dashboard header shows a
+  "Simulated card" chip and the Queue page's meters say "Simulated card (fake_gpu)"; Settings lists `fake_gpu`
+  with the other test switches; `ns doctor` has a row `fake_gpu` (on, and where the numbers come from) and its
+  `nvidia-smi` row says "simulated (fake_gpu)"; the diagnostics zip's `nvidia-smi.txt` starts with "simulated
+  (fake_gpu): not a real graphics card"; on an engine-test install `ns verify` gives its idle-VRAM check as "n/a: simulated graphics card
+  (fake_gpu)" (never a number) and its report's `machine.gpu` as "simulated (fake_gpu): <name>" (on a dev install
+  `ns verify` answers its dev-mode line first: `vram.idle = n/a` with "dev mode: no graphics card to measure" and
+  no `machine.gpu`: no number is shown there either); the engine log
+  says `fake_gpu_on` at every start and a service's `vram_mb` line carries `card: simulated (fake_gpu)`. Every one
+  of them takes the words from one function, `ns_supervisor/gpu.py:simulated_mark`.
+- **The lease time for a proof.** `NS_FAKE_GPU_LEASE_S` in the environment of the process that starts the engine
+  (read once, when the engine starts: restart the engine to change it) sets how long a silent `studio:` or
+  Assistant lease is kept: a whole number of seconds from 30 to 600. Anything else keeps 600 s and logs WARN
+  `fake_gpu_lease`; without `fake_gpu` in effect the variable is ignored.
+- **A real install ignores it.** `fake_gpu: true` on any other install (set by hand) changes nothing: the engine
+  logs WARN NS-W121 at every start and leaves one morning note while an earlier one still waits, `ns doctor`
+  shows the row `fake_gpu` as FAIL with NS-W121, and setup says NS-W121 when the answers ask for it and leaves
+  it off. The way out: remove `fake_gpu` from `answers.json` and `config\runtime.json`, then restart Nightshift
+  (Stop All, then open the Dashboard). The dashboard can never set it (`PUT /api/settings` refuses it with
+  `test_switch`).
+- **What it does not prove.** The driver freeing memory when a process ends; the real values nvidia-smi
+  prints on the GPU PC (only their shape is copied); real load times and real CUDA out-of-memory text; NVENC; how fast the Assistant
+  and a job contend for a real card; anything a VRAM measurement decides. Those need the GPU PC. A dev
+  install's studio runs its fakes in process (it takes no lease), so the nightly's lease is shown on an
+  engine-test install.
 
 ### `NS_TTS_FAKE_DELAY_S`: a slow fake voice engine
 

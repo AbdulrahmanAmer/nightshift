@@ -299,8 +299,11 @@ def test_daily_stops_when_the_gpu_stayed_busy_and_reports_it(tmp_home: Path):
 
     report = daily.run_daily(env, now=NOW, rng=random.Random(1), run_fn=busy)
     assert len(calls) == 1  # no second two-hour wait for the remaining jobs
-    assert [f["code"] for f in report["failures"]] == ["NS-E201"]
-    assert report["jobs"] == [] and report["skipped"] == [{"channel": "after-dark", "jobs": 3}]
+    # vram-busy (review c913351): the job that met the busy card waits for the next night, as a half-made
+    # one does and as one that met NS-E208 does: not a failure; the two others are skipped
+    assert report["failures"] == []
+    assert [(i["job_id"], i["state"]) for i in report["interrupted_jobs"]] == [(calls[0], "waiting")]
+    assert report["jobs"] == [] and report["skipped"] == [{"channel": "after-dark", "jobs": 2}]
     assert Path(report["backup"]).exists()  # the night still ends with its backup and report
 
 

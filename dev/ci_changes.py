@@ -92,6 +92,7 @@ NOT_DOC_READERS: dict[str, str] = {
     "installer/stage2/web/appcopy.py": "names the top-level entries it copies (docs, *.md); reads no text",
     "ns_supervisor/update.py": "reads CHANGELOG.md of the installed program, not of the repository",
     "tests/test_check_scope.py": "document paths are test data for the scope rules; it opens no document",
+    "tests/test_fake_gpu.py": "git ls-files lists *.py, *.ts, *.tsx and *.ps1 only; it reads no document",
     "tests/test_installer_folder_rules.py": "repo/readme.md is a file it makes in a temporary folder",
     "tests/test_ns_update_release_notes.py": "writes its own CHANGELOG.md in a temporary folder, reads that",
     "tests/test_resolve_manifest.py": "README.md is an entry of a made-up GitHub tree listing",

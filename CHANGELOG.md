@@ -9,20 +9,26 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [0.1.15] - 2026-11-10
 
-This is release candidate 0.1.15-rc4, published for testing. It is a prerelease: it is not offered as an update to a
-PC on 0.1.14, and you install it by hand (`Nightshift-Setup-0.1.15-rc4.zip` for a first install, or
-`Nightshift-Update-0.1.15-rc4.zip` through Settings > Updates > From a file). Compared with 0.1.15-rc3 it adds the
-items of block D, "install and update safety": an update or rollback typed in a terminal hands over to its own
-window, a second Nightshift on the same PC takes nothing of the first without your yes, setup asks about the nightly
-run and keeps it off unless you say yes, packages are installed from a lock, the local servers refuse requests made
-by web pages, and `ns` and `studio` work in any new terminal. 0.1.15-rc3 added the items of block B (the Code
-console gives the graphics card back when it is closed and Nightshift Code fits a 16K context and keeps its edit
-tools, pausing a channel stops its queued jobs, Automatic runs is a switch, work whose lock file cannot be opened is
-no longer held for ever, assembled audio keeps full precision, a model an install cannot use is refused up front,
-an updater test source, the clip captions with a hesitation, a stage table no job rewrites, a true hint for NS-E301,
-and the tests that measure every join of a video made in parts). Below is everything merged since 0.1.14; each
-"Not covered" line is a limit the change shipped with. "Shown by tests" means the change is covered by the test
-suite and no more is claimed.
+This is release candidate 0.1.15-rc5, published for testing. It is a prerelease: it is not offered as an update to a
+PC on 0.1.14, and you install it by hand (`Nightshift-Setup-0.1.15-rc5.zip` for a first install, or
+`Nightshift-Update-0.1.15-rc5.zip` through Settings > Updates > From a file). It is the first candidate meant to be
+installed on the GPU PC, and nothing in it has run on a real graphics card yet. Compared with 0.1.15-rc4 it adds the
+items of block E, "the first real nights": a nightly run never begins work that cannot end inside the time Windows
+allows the task, and says in the morning what it left and what stopped a night that died; other programs holding the
+graphics card's memory are waited for and named; the upload sheet holds what YouTube accepts; every answer of Pexels
+and Pixabay is told for what it is and a wrong key is found before a job starts; a simulated graphics card lets
+a PC without one run the code that hands the card over; and a one-command kit, `GPU-KIT.cmd`, proves the product on
+the GPU PC and packs what it found into one zip. 0.1.15-rc4 added the items of block D, "install and update
+safety": an update or rollback typed in a terminal hands over to its own window, a second Nightshift on the same PC
+takes nothing of the first without your yes, setup asks about the nightly run and keeps it off unless you say yes,
+packages are installed from a lock, the local servers refuse requests made by web pages, and `ns` and `studio` work
+in any new terminal. 0.1.15-rc3 added the items of block B (the Code console gives the graphics card back when it is
+closed and Nightshift Code fits a 16K context and keeps its edit tools, pausing a channel stops its queued jobs,
+Automatic runs is a switch, work whose lock file cannot be opened is no longer held for ever, assembled audio keeps
+full precision, a model an install cannot use is refused up front, an updater test source, the clip captions with a
+hesitation, a stage table no job rewrites, a true hint for NS-E301, and the tests that measure every join of a video
+made in parts). Below is everything merged since 0.1.14; each "Not covered" line is a limit the change shipped with.
+"Shown by tests" means the change is covered by the test suite and no more is claimed.
 
 ### Setup and install
 
@@ -230,6 +236,82 @@ suite and no more is claimed.
   text, so a channel in a script that takes more tokens (Cyrillic takes about 2.3 times as many) can send a prompt
   over 16384 on a processor install; a clip moment longer than 120 seconds that crosses the middle of a split window
   fits neither half; a story title with an emoji still becomes the outbox folder name. Shown by tests.
+- `GPU-KIT.cmd` proves the product on the GPU PC and packs what it found into one zip (gpu-kit). It is in the Setup
+  zip beside `INSTALL.cmd`: after you install the candidate, double-click it. It finds the install (`-Home`, your
+  `NIGHTSHIFT_HOME`, the install it sits in, or it asks once for the folder), says which one it is using, prints
+  its plan, and refuses an install that is not a GPU install, with the way out. It tells every step in one line
+  that ends PASS, FAIL, WAIT or NOT RUN, and the steps are: (1) start, which checks this is a GPU install and that
+  no other install's Nightshift is running; (2) record this PC: the graphics card, driver and video memory, the
+  disk, the sleep settings, `ns doctor`, and the check of the model files (`ns verify --downloads`, skipped when
+  the kit ran it less than a day ago); (3) test each model once with `ns verify` and run the proofs that fit a
+  real install (`prove.py --all --strict`); (4) try each stored stock-footage key, Pixabay and Pexels, with one
+  real search and one real download; (5) make one story video with the real models on the kit's own channel
+  (about 3 hours); (6) cut 3 minutes from that video and make one clip from them in Clips; (7) make a voice
+  designed from a description and a voice cloned from the video's narration, each speaking one sentence; (8) open
+  Nightshift Code on the graphics card, send it one prompt, close it and check the card is free within 5 seconds;
+  (9) ask the Assistant one question; (10) switch Automatic runs on for the next two nights if they are off, say
+  the two times, and stop until you run it again after the second morning; (11) and (12) read night 1 and night
+  2; (13) collect everything, put back what the kit changed and write the zip. After the steps it asks a few
+  questions only you can answer (the posting sheet pasted into YouTube Studio, the video watched, the morning
+  note, the two hand checks in `dev/kit/night-task-end.txt`); "later" keeps a question for the next run.
+  `GPU-KIT.cmd -Unattended` is the same run for a program or an AI session that starts it without a person at
+  the window: it never reads the keyboard and never waits for a key, leaves those questions open and lists them
+  for the owner (a later double-click asks exactly the open ones), ends with a fixed exit code (0 done, 1 a step
+  failed, 2 refused, 3 waiting: run again later, 4 another kit run holds the lock, 5 blocked, 130 interrupted)
+  and prints one last line of JSON saying the step, the state, when to run again, the open questions and the
+  zip; every prompt of the attended run ends by time whatever the input is. `docs/GPU_PC_SESSION.md` is the
+  instruction file for such a session: the first real install on the GPU PC, the kit, and the report back. Step 5
+  does not start when the video (the estimate and 30 minutes to spare) would not end before the nightly run: it
+  says WAIT with the hours and the time to run it again. Resumable: close the window whenever you like, run
+  `GPU-KIT.cmd` again and it goes on from the step it reached (its state is `kit\kit-state.json` in the install);
+  a video job the kit started that was cut off is continued, not made again, and there is one kit channel, one
+  story video, one settings change and one zip however often it runs. What it changes on the PC and puts back:
+  its own channel `gpu-kit` (made from the first active channel's language and voice, active only for its video
+  and the two nights, paused again at the end and on every way out); Automatic runs, switched on for exactly two
+  nights only when they were off (the old value is written first) and switched off again in step 13 or by the
+  night after the two, unless you switched them yourself in between (the next entry); two test voices
+  (`gpukit-design-<date>` and `gpukit-clone-<date>` in the voice library), removed again unless a channel names
+  one as its voice; and one stock clip per key, removed from the footage cache again unless a video used it. Left
+  on the PC on purpose, and listed in the zip's README: the kit's story video, the two night videos and the clip
+  in the Queue on the kit's channel, the clip's 3-minute input in Library > Sources, one Assistant conversation
+  and one OpenCode session. Each of the two armed nights makes one more full story video on the kit's channel,
+  besides what your channels have due (step 10 says what each has due). A night is read from its own run record
+  and is a PASS only when the run's summary lists the kit's video and the night ledger has it ended "done" in
+  that run, inside a known time limit, or when the night's own time rule says it did not begin or finish the
+  video (that is recorded as the finding); a night that did not run, made nothing for the kit, knew no limit or
+  ran past it is a FAIL with the reason. The stock keys are tried before the long video: a provider with no
+  stored key is NOT RUN for that provider, and a stored key that fails stops the kit with Nightshift's own
+  sentence for that answer, before any video is made. A step is NOT RUN, and nothing is started or ended, when
+  someone else is using Nightshift or the graphics card: an update that is unfinished gives NS-W210 and its way
+  out; Nightshift Code, a job, a waiting job or a model loading holds the card; and step 3, which stops and
+  reloads every model, runs only while nobody else uses Nightshift at all. The kit ends only what it started: it
+  starts Nightshift's engine when it is down and asks it to shut down at the end only when its own start record
+  is still the engine that runs and nothing else is using it (otherwise it leaves it running and says why; the
+  engine ends by itself after 30 minutes without use); it closes only its own Nightshift Code window by the
+  process it recorded; it never sends Stop All; and a closed window stops nothing and says so. The zip is one file,
+  `kit\nightshift-gpu-kit-<date>.zip`, written whole and atomically, also after a failed step, with a
+  `MISSING.txt` that names each part that is not there and why; the last lines say "Send this one file" or why
+  not yet. It holds the machine record, the model and proof results, the stock results, the story job's stage
+  times, path, length, QC result, frame grid and posting sheet (not the video itself), the clip, voice, Code and
+  Assistant results, both nights' ledgers, logs, morning notes and Windows' power and restart events, the
+  diagnostics zip, your answers and the kit's state. Masked in every text file, and listed in its README: the
+  stock-footage keys and tokens stored on this PC (every value, in every spelling it can take), the usual key
+  shapes and any value named key, token, secret, password or authorization, Hugging Face, GitHub and Bearer
+  tokens, the Windows user name and profile folder, the install's home path, the PC's name and the account's
+  security id; pictures and audio are copied as they are. The kit sends nothing anywhere: it asks only this PC's
+  own Nightshift. A run on a test install with the simulated graphics card (`-DryRun`, which a real install
+  refuses, as it refuses an install that is not a GPU install without it) is marked SIMULATED on every result
+  line and on the first line of the zip's README, and ends by saying that its zip is a test, not the GPU PC's
+  proof. Not covered: nothing in the kit has run on a real graphics card or with real models; on this laptop its
+  dry run gave NOT RUN for the stock keys, the clip, the cloned voice and Nightshift Code (no FFmpeg, OpenCode or
+  key there), so those steps are shown by tests with stand-ins only; `GPU-KIT.cmd` itself has not been run from a
+  real install yet, because block E's install proof has not run. Step 3's model test stops and reloads every
+  model, so a video or Nightshift Code started during it loses its model (the kit says so first and starts it
+  only while nobody else uses Nightshift); ending the engine is a check followed by a request, so something
+  started in the instant between them is not seen; the stage times, the 3-hour estimate and what a night makes
+  beside your own work are unknown until the GPU PC's nights have written the ledger. Shown by tests with
+  stand-ins for the engine, the clock, FFmpeg, OpenCode, the models and the Windows readers, and by a dry run on a
+  test install with the simulated card, not on a real one.
 
 ### Updates, files and safety
 
@@ -568,6 +650,133 @@ suite and no more is claimed.
   install the uninstaller cannot see (set up before the install list existed and holding no task, shortcut or
   variable) loses its Credential Manager keys when another install is uninstalled and keeps its own
   `secrets.dpapi`. Shown by tests.
+- A nightly run plans inside the time Windows allows it and never begins work that cannot end inside it (night-fits,
+  part a). Windows stops the nightly task 6 hours after it started it, whatever it is doing. A run the task started
+  now works to a deadline 10 minutes before that (kept for the report, the publish times, the backup and the morning
+  note), counted from the task's own start, which the launch script hands to it. Before each new video, each
+  half-made video it would continue, each wait for the graphics card and each stage, it asks one question with four
+  answers: begin it; stop here for tonight (the finished stages are kept, and the next nightly run goes back to the
+  video before it starts new ones); do not start it tonight (the channel stays due and is planned again, first); or
+  give it up for the nightly run, because one of its stages cannot fit a night on this PC. The times it plans with
+  are this PC's own: every stage, every wait for the graphics card and every model load is written with its seconds
+  into a night ledger (`data\ledger\ledger-<yyyymm>.jsonl`, in the diagnostics zip), a stage is planned at the
+  longest of its last 5 passes, and until a type of video has been timed here Nightshift plans 3 hours for a full
+  video, 2.5 hours for a part of a series and 1 hour for a Short or any other job, so a first night makes less
+  rather than being stopped half way. A video that needs more than the night has left can still be begun as the
+  night's first work and is then made over several nights. The wait for the graphics card is no longer 2 hours
+  whatever the hour: it ends early enough for the next stage to fit. A run you start yourself (`studio run`, Create,
+  Retry) has no deadline and is never refused for time. What you read: when work was left, the morning note says how
+  long the night took ("Last night's run used 5 h 40 min of the 6 hours Windows allows it"), then one sentence for
+  each video that was left, begun over several nights or given up, with its numbers and its way on, and ends with
+  NS-W211; the Queue's Last night card shows the same sentences, and a video stopped for time has its sentence on
+  its Queue card. "Cannot fit" needs evidence that survives one odd night: 2 of the stage's last 5 passes took
+  longer than a whole fresh night has here, the newest among them (one such pass alone is tried once more, and only
+  as a night's first work), or a half-made video was the night's first work on two nights in a row and each time had
+  too little time left for its next stage. The half-made video is then left for Retry on its Queue card, new videos
+  of that type are not started at night, the note says so once and the Last night card every night, with the ways
+  out (make them from Create; for full videos also Default type > Shorts only in Channels), and it heals without a
+  setting: one pass of that stage inside a night's time, from Retry or from a video made in Create, lets the nightly
+  run make them again. A half-made video that no night has moved forward for more than 3 days is left for Retry too.
+  `ns doctor` has a row "nightly task limit" that warns when the task registered in Windows stops earlier than the 6
+  hours each night is planned inside, and says how to register it again. Not covered: shown by tests on a clock the
+  tests move, not on an install and not with real stage times: the 3, 2.5 and 1 hour figures are guesses until the
+  GPU PC's first nights have written the ledger; an estimate can be too short, and the stage under way then runs
+  past the deadline (the next entry says what follows); the ledger does not record how long a story is, so the
+  longest of the last five passes stands for every length; a type of video refused again on later nights is said on
+  the Last night card, not again in the note; `NS_TEST_NIGHT_LIMIT_S` (60 to 21600 seconds) shortens the limit for a
+  proof, on a dev or engine-test install only.
+- A night that died says what stopped it (night-fits, part b). When a nightly run is found dead (when the Dashboard
+  starts, when `studio` starts, or by the next night), the morning note and the job's Queue card no longer say
+  "power cut, crash or restart" for every case. Nightshift reads what it recorded itself (the night ledger, a mark
+  it writes 2 minutes before Windows' limit while the run still works, and a beat file it rewrites every 30 seconds
+  while the run lives) and, read only, Windows' System event log around the last beat (`wevtutil`, events 1074,
+  6006, 6008 and 41, at most 20 events and 5 seconds), and says one of these: "Windows stopped the night's run at
+  <hh:mm>, at the 6-hour limit it allows the nightly task"; "Windows restarted the PC at <hh:mm> to finish
+  installing updates, during the night's run" (the second such night within 14 days adds, once, where to set Active
+  hours in Windows Update: NS-W212); "The PC lost power or stopped unexpectedly at about <hh:mm>, during the night's
+  run"; "The PC was shut down or restarted at <hh:mm> (asked by <program>), during the night's run"; or, when the
+  evidence explains nothing, when the run was last known alive and exactly what is missing (the PC did not restart,
+  so the run's own process was ended; the event log could not be read; it names nothing at that time; or it holds
+  more events than Nightshift reads). A cause is said only on its evidence: without a beat no Windows event is tied
+  to the run, and a night of an older version, which left no evidence, keeps the old words. Each sentence goes on
+  with the video and the stage it was at, and how it continues (the next nightly run while Automatic runs are on, or
+  Retry). Sleep: when the PC slept or hibernated during the night's run (Windows' own count of the time asleep, read
+  at every beat), the ledger gets a `slept` line, and a stage that fails within 2 minutes of the wake is not a
+  failure: the video is interrupted and continued by the next nightly run, and the note says when the PC went to
+  sleep and woke, and that the run keeps the PC from falling asleep when idle but not from Sleep chosen in Start,
+  the power button, a closed lid or a low battery. A night whose stage under way ran past Windows' limit and that
+  then ended by itself says so in the morning note ("worked 6 h 35 min, 35 min past the 6 hours Windows allows the
+  nightly task"). Not covered: it is NOT known whether Windows ends the whole process tree of the nightly task at
+  the limit, or only the program it started (`cmd.exe`, which started PowerShell, which started `studio`):
+  Microsoft's documentation does not say, the tests show both answers with stand-in processes, and only a real task
+  on the GPU PC can show which one Windows gives (`dev/kit/night-task-end.txt` is the check to run there). If only
+  `cmd.exe` is ended, the night runs on past the limit, by at most the stage under way, because no stage or wait is
+  begun that would end after the deadline. Not known either: whether modern standby counts as sleep (the same file
+  has a step for it). An FFmpeg that a stopped night left running is not found and ended by this change; a night
+  that hangs keeps writing its beat and is not called dead; a restart you chose yourself with "Update and restart"
+  also counts as a restart for updates. Shown by tests with a fake event log made from a capture of a real one and
+  with process trees ended by their recorded pids, not on an install: no sentence here has yet been produced by a
+  real stop.
+- Other programs holding the graphics card's memory are found before a model loads (vram-busy). Right before every
+  start of a model on the card (the nightly run, `studio run`, a dashboard job, Retry, the Assistant, Nightshift
+  Code, a voice preview or a new voice, `ns verify`, the warm-up) the engine reads the card's memory and compares
+  what is free with what that model needs plus 512 MB. What a model needs is measured, not guessed: after each load
+  the engine records how much the card's used memory grew (`run\vram-need.json`; the largest of the last three loads
+  of the same model, context and flags), and a model that was never measured on this PC is always tried, and
+  measured. When a measured model does not fit because of memory that other programs hold, a start you made yourself
+  (`studio run`, the Dashboard, the Assistant, Nightshift Code, a voice preview) is refused at once with NS-E208,
+  and the nightly run waits: it looks again every 2 minutes for at most 30 minutes, never longer than the night's
+  own time decision gave it, and the Queue says "Waiting for the graphics card's memory: other programs are using
+  9.1 GB of the graphics card's 15.9 GB (game.exe, chrome.exe; Windows does not say how much each uses), and the
+  story model needs 10.4 GB (measured on its last load). Close them and the run goes on." When the memory does not
+  come free, the night keeps its videos for the next night (the job stays interrupted, not failed, and the rest of
+  the night is skipped), and one morning note with NS-E208 says what held the memory, how long Nightshift waited and
+  what to close. What is named: the programs Windows lists on the card, by process name only (never a path or a
+  window title), five at most; Nightshift's own processes and Windows' own are never named. What cannot be named or
+  counted: under WDDM, the driver mode of a Windows desktop PC, Windows does not say how much memory each program
+  uses, so the sentence gives the total held by others, names the programs without numbers and says so; when Windows
+  lists no program it says "Windows did not say which program". A model that needs more than the card holds even
+  when idle is never blamed on another program: it is tried, and if it does not start the error is NS-E203 with the
+  numbers, and NS-E203's hint no longer sends you to `ns tune` first. Nightshift never closes another program and
+  never loads a smaller model instead. Where the card cannot be read (no nvidia-smi, or an install on the processor
+  without the simulated card) nothing is checked and a load goes ahead as before. Not covered: shown by tests with
+  scripted readings and on the simulated card, never on a real one, so what the story model really needs, what an
+  idle card of the GPU PC keeps in use (1,024 MB is assumed until three quiet readings agree) and whether memory
+  comes back within the 10 seconds the engine allows after it stops one of its own models are not measured; the
+  first load of a model is never refused, so a card that is full on the first night still fails the old way (NS-E202
+  or NS-E203); a game open at the very first reading can hide in the idle figure until a quieter reading lowers it;
+  `NS_TEST_VRAM_WAIT_S` (60 to 1800 seconds) shortens the wait for a proof, on a dev or engine-test install only;
+  `proofs/vram_busy.py` is the proof for an engine-test install and has not been run on one.
+- Every night now looks for the GPU kit's record before it plans, even if you never run the kit (gpu-kit). The kit
+  writes `run\gpu-kit-nights.json` before it changes anything for its two nights: each night's window (a day long,
+  from 30 minutes before the run time), what each makes (one full story video on the kit's channel), what
+  Automatic runs were before the kit, the run time it armed and the end of night 2's window. One reader
+  (`ns_supervisor/kitnights.py`) answers for the nightly run, the planner, the three routes to Automatic runs and
+  the kit's last step, and it never raises. No record, which is every PC that never ran the kit: nothing changes,
+  and the planner pays one missing-file check. A valid record: the night inside a window plans the kit's video
+  (below). An expired record, a night after the end of night 2's window: the nightly run first puts back what the
+  kit changed, then runs exactly as it would without a record. It pauses the kit's channel before the night, so
+  the night neither plans nor continues the kit's job; it switches Automatic runs off only when they were off
+  before the kit, nobody switched them since, and the task is still at the time the kit armed, and then leaves a
+  morning note and that night makes nothing, because you never asked for it; it removes the record. When the runs
+  are yours, that night runs as usual. An unreadable record (torn, not JSON, a time without a time zone, written by
+  a newer version, a file that cannot be opened): the night runs as if there were none, the log says why, and one
+  morning note names the file and says to switch Automatic runs off in Settings if you did not switch them on
+  yourself, or to run `GPU-KIT.cmd` again, which puts back what it changed; the file is left as it is, and no
+  night switches Automatic runs off while it cannot be read. The planner's one exception: it never plans a
+  channel named `gpu-kit`, except on an armed night, when it adds one full story video (`master_first`) on it,
+  last in the night's plan, once a night (not when a kit job was made or worked on in that night's window, so a
+  night-1 job continued by night 2 is that night's one), never after the record's end, and the video goes through
+  the night's time rule like any other, so it can be left for time. If you switch Automatic runs yourself after
+  the kit armed them, by any of the three routes (a request to the switch in Settings, `ns schedule install`
+  without `--disabled`, or yes to setup's nightly question), the record notes it once with the route and the time,
+  and from then neither a night nor the kit switches them off: the switch is yours. A request the kit itself makes
+  is not counted as yours. Not covered: shown by tests with stand-in nights and clocks and by the kit's dry run on
+  a test install, where the nights ran through the install's own stub with a 20-minute test limit, never started
+  by the Windows task and never on a real graphics card or with real models; nothing in the kit has run on a real
+  graphics card, and `GPU-KIT.cmd` itself has not been run from a real install yet (block E's install proof has
+  not run). When the kit switched Automatic runs on and its record is then unreadable, they stay on after the two
+  nights until you or the kit's last step switch them off. Shown by tests.
 
 ### Videos and stories
 
@@ -720,6 +929,70 @@ suite and no more is claimed.
   where the voice must still be chosen, and the screen shows NS-E310's general line above the name text; a voice you
   made yourself under the suggested name between a kill and the next run is adopted; Library has no rename or
   delete for voices. Shown by tests.
+- The upload sheet holds what YouTube Studio accepts (posting-sheet-true). Every sheet (the `.txt`, its `.json` and
+  the Queue's copy buttons) now passes one check of YouTube's rules, each kept in one file with the page it comes
+  from and the day that page was read (2026-11-11): `<` and `>` are removed from the title, the description and the
+  tags (YouTube refuses them); the title is 1 to 100 characters, cut at a word, an emoji counted as two (the safe
+  side), and an empty title becomes the story's working title; the description with its hashtag line is at most
+  5,000 bytes, shortened in its summary at a sentence and never in the chapter list or the fixed lines; the tags
+  come to at most 500 characters counted YouTube's way (the commas, and two quotes for a tag with a space); hashtags
+  are single words after a `#`, five at most; a chapter list is given only when there are at least three chapters,
+  the first at 00:00, ascending and each at least 10 seconds, and is left out otherwise with the reason; a vertical
+  video longer than 3 minutes gets a warning that YouTube will post it as a regular video, not a Short; and made for
+  kids is answered on every sheet. A line "Changed for YouTube: ..." says what was changed and "WARNING FOR YOUTUBE:
+  ..." what could not be repaired. Sheets written by earlier versions that still wait to be posted are brought up to
+  the rules once, when the Dashboard starts. A sheet you edited by hand is not lost: before it is rewritten your
+  text is kept beside it as `<name>.before-<version>.txt`, and a line "YOUR EDITS KEPT: ..." on the sheet names that
+  file; a `.txt` saved as UTF-16 or ANSI is re-saved as UTF-8 with its original bytes kept the same way; a sheet
+  whose `.json` cannot be read is rebuilt from its `.txt` and the job's records, and one that cannot be read at all
+  gets a line in the Queue that names the file and says what to do. The altered or synthetic content advice now
+  follows the voice the video was narrated with: a cloned voice is always "Yes (the narration is a voice cloned from
+  a person's recording)", with YouTube's own-voice example quoted below it; a preset or designed voice keeps the
+  answer of the policy check, with its reason; a video whose narrating voice was not recorded (made before this
+  version) says "You decide", with YouTube's rule quoted; the fixed "Answer No. The voice is production help" is
+  gone from the Queue. A sheet whose clips came from Pexels or Pixabay also offers one line, "OPTIONAL CREDIT (not
+  required; paste it at the end of the description or leave it out): Stock footage from Pixabay.": neither site
+  requires a credit in the published video, and when the pasted line would take the description past 5,000 bytes the
+  sheet says the credit was left out instead of offering it. Not covered: nothing has been pasted into YouTube
+  Studio yet, so that Studio accepts each field as given, and how it counts an emoji in a title, are not shown
+  (`dev/kit/K8_PASTE_CHECK.md` is that check, for the GPU PC session); the rules are YouTube's pages as read on
+  2026-11-11, and the sentence quoted for the altered-content rule should be compared with the page once more before
+  the final release; a change you made to the altered-content line or to Nightshift's own note lines is not kept as
+  an edit; "You decide" is stored as "no" in the `.json`; a UTF-8 `.txt` to which a few bytes in another encoding
+  were appended is read wholly as ANSI, and when its `.json` is torn as well those wrong characters reach the
+  rebuilt sheet (the change line says the file was read as ANSI); the credit names the site only, never a
+  photographer. Shown by tests, not on an install.
+- Every answer of Pexels and Pixabay is told for what it is, and a wrong key is found before a job starts
+  (stock-truth). One function now reads what a stock-footage site answered, for every caller (setup's key question,
+  Settings > Stock footage keys, the check before a job, `ns doctor`, the clip search and the clip download), and
+  each kind of answer has its own sentence, way out and code: the site did not accept the key (Pexels answers 401,
+  Pixabay 400 with "Invalid or missing API key") is NS-E501 for Pexels and NS-E502 for Pixabay, and only this kind
+  ever names the key; the site's request limit was reached (429) is NS-E504, which says the key is fine, and
+  Nightshift waits as long as the site asks; the site is failing (5xx) or no answer came is NS-E503; an answer
+  Nightshift does not read (any other status, or a page that is not the documented list) is NS-E505, which says it
+  does not mean the key is wrong. Before, a busy or failing site could be reported as a rejected key. Setup and
+  Settings still refuse a key the site refused, but a key they could not check now is kept and said so (NS-W501,
+  NS-W502), and a saved key is no longer deleted because the site was down. A wrong or revoked key no longer shows
+  only 30 to 90 minutes into a job, at the clips stage: before a job that will still fetch stock footage begins (the
+  nightly run, `studio run` and `--resume`, Create, Retry) each site with a stored key is asked once, for at most 15
+  seconds, and the answer is kept for 12 hours (30 minutes when the site could not be asked). When every stored key
+  was refused the job does not start and no model is loaded; with one key refused and one accepted the job runs on
+  the other site and a note says so; a busy, failing or unreachable site never stops a job. `ns doctor` has a row
+  per site, `stock key pexels` and `stock key pixabay`: accepted, refused (with the sentence and the way out), could
+  not be checked now, or no key stored. Pexels is asked at its documented address
+  (`https://api.pexels.com/v1/videos/search`; Pexels says the old one will be deprecated). The key's text goes into
+  no log, error, note or file (a test searches every file of the home for it), and "Stock footage keys are still
+  written in an answers file" has its own code now, NS-E126. Shown live with a real Pixabay key on 2026-11-11, on
+  the request code as it was before this change: one video search (80 hits, every field the product reads present)
+  and one download through the product's own code, and setup's check accepting that key and refusing a wrong one.
+  What the sites answered then is what this change was built on, and its tests replay those answers; the changed
+  code itself has made no request to either site. Pexels is shown only up to authentication, and at its old
+  addresses: a wrong key answers 401. No real Pexels key was used, so no Pexels search or download has run, and the
+  address the product asks now has not been requested live. Not covered: a key revoked inside the 12 hours is found
+  at the clips stage of the first job and stops the next job at once; the clip feature (your own footage) is not
+  checked; whether the Footage page shows the link to Pexels that Pexels asks for was not checked, and a
+  photographer's name is not kept; box F-B14 (rate limits against a real site) is unticked and must be proven again,
+  because its evidence quoted the old code.
 
 ### Clips and the Assistant
 
@@ -785,6 +1058,28 @@ suite and no more is claimed.
   config with every test switch off: NS-E704, no request); applying an update from the fake and rolling back were not
   run, because they need the previous candidate installed first; a redirect to another host is followed once before it
   is refused, and its answer is discarded.
+- A simulated graphics card for a PC that has none (H-10, test switch `fake_gpu`). On a PC without an NVIDIA card
+  nothing ever takes the graphics card, so who holds it, the queue behind it, the busy answer and the release could
+  not be shown there. With `"fake_gpu": true` in the answers of a dev or engine-test install, setup writes the
+  switch into `config\runtime.json` (Repair keeps it) and the engine treats the language model, the voice service
+  and whisper as users of the one graphics card, as they are on the GPU PC. The lock, the queue, the busy answer
+  (NS-E201), the lease and its expiry and every release are then decided by the same code as on a real card; nothing
+  of that is faked. Only nvidia-smi is: every question the engine asks it is answered from `run\fake_gpu.json` (the
+  card's name and size, other programs holding memory, a missing, hanging or failing nvidia-smi) in the text the
+  real tool prints, and the real tool is not run. Every number measured on the simulated card is marked "simulated
+  (fake_gpu)" wherever it is shown or kept: `/status` and the Dashboard header ("Simulated card"), the Queue's
+  meters, `ns doctor` and the diagnostics zip, `ns verify` (which gives "n/a" instead of an idle-memory figure), the
+  engine log, the night ledger and the times in the morning note, and the memory a model was measured to need, which
+  is kept apart from a real card's. `NS_FAKE_GPU_LEASE_S` (30 to 600 seconds) shortens the lease for a proof. A real
+  install ignores the switch: set by hand there it changes nothing, the engine warns with NS-W121 at every start and
+  leaves one morning note, `ns doctor` shows the row `fake_gpu` as FAIL, setup says NS-W121 and leaves it off, and
+  the dashboard can never set it. Not covered: it proves nothing about a real card: the driver giving memory back
+  when a process ends, the values nvidia-smi prints on the GPU PC (only their shape is copied, from one recording),
+  real load times, a real out-of-memory error and NVENC all need the GPU PC; a dev install's studio runs its fakes
+  in its own process and takes no lease, so the night's lease shows only on an engine-test install; that closing the
+  real Nightshift Code window ends its process in time (F-H47) stays open for the GPU PC;
+  `proofs/f_h47_closed_code_window.py` is the proof for an engine-test install (a process that holds the card ends,
+  and the card is free within 5 seconds) and has not been run on one. Shown by tests.
 
 ### Behind the scenes
 
@@ -845,6 +1140,11 @@ suite and no more is claimed.
   name with a typographic apostrophe gets working shortcuts, toasts, nightly task, uninstaller and update windows. Not covered: the guard does not see a literal built in a loop, a join or a call it does not follow, and
   the cmd.exe action of the nightly task still holds the home path as typed (a `%` or, with delayed expansion
   switched on in the registry, a `!` in a hand-set home is read by cmd).
+- Checklist: `docs/FINALIZATION.md` and `docs/FEATURE_STATUS.md` carry what QA showed on 0.1.15-rc4: three boxes
+  ticked (F-E17, F-G1, F-G4), nine given rc4's evidence with the older evidence kept beside it (F-B21 to F-B25,
+  F-B27, F-B28, F-H38, F-H143), and two unticked as stale (F-B26: its code changed after its proof; F-B14: its
+  evidence quotes NS-E501 for a rate limit, which is NS-E504 since the stock-footage change above). No product
+  behaviour.
 
 ## [0.1.14] - 2026-11-09
 

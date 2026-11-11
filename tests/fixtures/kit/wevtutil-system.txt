@@ -1,0 +1,45 @@
+Event[0]
+  Log Name: System
+  Source: Microsoft-Windows-Configuration-Change-Monitor
+  Date: 2026-11-11T06:17:04.7670000Z
+  Event ID: 1
+  Task: N/A
+  Level: Information
+  Opcode: Info
+  Keyword: N/A
+  User: S-1-5-21-1111111111-2222222222-333333333-1001
+  User Name: DESKTOP-KIT\kituser
+  Computer: DESKTOP-KIT
+  Description: 
+N/A
+
+Event[1]
+  Log Name: System
+  Source: Microsoft-Windows-Configuration-Change-Monitor
+  Date: 2026-11-11T06:09:27.6790000Z
+  Event ID: 1
+  Task: N/A
+  Level: Information
+  Opcode: Info
+  Keyword: N/A
+  User: S-1-5-21-1111111111-2222222222-333333333-1001
+  User Name: DESKTOP-KIT\kituser
+  Computer: DESKTOP-KIT
+  Description: 
+N/A
+
+Event[2]
+  Log Name: System
+  Source: Microsoft-Windows-Configuration-Change-Monitor
+  Date: 2026-11-11T06:04:21.2800000Z
+  Event ID: 1
+  Task: N/A
+  Level: Information
+  Opcode: Info
+  Keyword: N/A
+  User: S-1-5-21-1111111111-2222222222-333333333-1001
+  User Name: DESKTOP-KIT\kituser
+  Computer: DESKTOP-KIT
+  Description: 
+N/A
+

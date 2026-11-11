@@ -20,7 +20,7 @@ def read(rel: str) -> str:
 
 
 def test_changelog_has_a_heading_for_the_version_file():
-    # a release candidate (VERSION 0.1.15-rc4) uses the heading of the final version it previews (H-12)
+    # a release candidate (VERSION 0.1.15-rc5) uses the heading of the final version it previews (H-12)
     version = read("VERSION").strip().split("-rc", 1)[0]
     text = read("CHANGELOG.md")
     m = re.search(rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\s*$", text, re.MULTILINE)
@@ -202,6 +202,39 @@ def test_the_manifest_pins_the_v0_1_4_voice_engine_asset_under_its_new_name():
     assert pin["version"] == "0.1.4"
     # the digest GitHub shows for that release asset (gh api repos/.../releases/tags/v0.1.4)
     assert pin["sha256"] == "dac3dbdd1cc4291aebb18a127eff71aab2d5595437f35213ef6f64176ae4e6f5"
+
+
+# ---- card gpu-kit: the one-command kit is in the Setup zip --------------------------------------------
+def test_the_setup_zip_carries_the_gpu_kit():
+    entries = re.search(r"(?m)^\$RequiredEntries = @\((.*)\)\s*$", read("dev/make_bundle.ps1"))
+    assert entries, "make_bundle.ps1 has no $RequiredEntries line"
+    required = re.findall(r"'([^']+)'", entries.group(1))
+    assert {"GPU-KIT.cmd", "dev/kit/gpukit.ps1", "dev/kit/gpukit.py"} <= set(required)
+    raw = (ROOT / "GPU-KIT.cmd").read_bytes()
+    raw.decode("ascii")
+    assert b"\r\n" in raw and b"\n" not in raw.replace(b"\r\n", b"")  # CRLF only
+    text = raw.decode("ascii")
+    assert r'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0dev\kit\gpukit.ps1" %*' in text
+    # a person's window waits for a key, by time; `pause` (which reads its input and never ends on a pipe
+    # nobody writes to, as an agent's shell gives) is gone; unattended, or with no keyboard, nothing waits
+    assert '\r\n"%SystemRoot%\\System32\\timeout.exe" /t 99999 >nul 2>nul\r\n' in text
+    assert not re.search(r"(?im)^\s*pause\b", text)
+    assert 'if /i "%%~A"=="-Unattended" set "NS_UNATTENDED=1"' in text
+    from installer.stage2.web import appcopy
+
+    assert "gpu-kit.cmd" in appcopy.ROOT_ENTRIES  # setup copies it into <home>\app with dev\kit
+    exe = shutil.which("powershell.exe")  # Windows PowerShell 5.1, as GPU-KIT.cmd runs it
+    if exe is None:
+        pytest.skip("Windows PowerShell 5.1 not available")
+    check = ("$e = $null; $t = $null; "
+             "[void][System.Management.Automation.Language.Parser]::ParseFile($env:NS_PS1, "
+             "[ref]$t, [ref]$e); if ($e.Count) { $e | ForEach-Object { $_.Message }; exit 1 }; "
+             "$PSVersionTable.PSVersion.Major")  # fmt: skip
+    for rel in ("dev/kit/gpukit.ps1", "dev/kit/tools/nsup.ps1", "dev/kit/tools/nsproc.ps1"):
+        env = {**os.environ, "NS_PS1": str(ROOT / rel)}
+        done = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", check], capture_output=True,
+                              text=True, timeout=120, env=env, check=False)  # fmt: skip
+        assert done.returncode == 0 and done.stdout.strip() == "5", (rel, done.stdout, done.stderr)
 
 
 # ---- manifest.version follows VERSION at release build (install audit #8) -------------------------

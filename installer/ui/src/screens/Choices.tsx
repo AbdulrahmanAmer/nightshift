@@ -176,7 +176,7 @@ export function Choices() {
     setKeys((p) => ({ ...p, [k]: { status: "checking", checked: val } }));
     try {
       const r = await api.checkKey(k, val);
-      setKeys((p) => (p[k].checked === val ? { ...p, [k]: r.ok ? { status: "ok", checked: val } : { status: "bad", message: r.message ?? "The key was not accepted", checked: val } } : p));
+      setKeys((p) => (p[k].checked === val ? { ...p, [k]: r.ok ? { status: "ok", message: r.message ?? undefined, checked: val } : { status: "bad", message: r.message ?? "The key was not accepted", checked: val } } : p));
     } catch { setKeys((p) => ({ ...p, [k]: { status: "bad", message: "Setup could not check the key", checked: val } })); }
   };
 
@@ -213,9 +213,9 @@ export function Choices() {
     const err = st.status === "bad" ? st.message : shown(field);
     return (
       <LabeledField inline label={k === "pexels" ? t.keys.pexels : t.keys.pixabay} type="password" autoComplete="off" spellCheck={false} value={val} disabled={locked}
-        placeholder={keySet[k] ? "••••••••" : ""} hint={keySet[k] && !val ? t.keys.pexelsKept : !val ? (k === "pexels" ? t.keys.pexelsOptional : t.keys.pixabayOptional) : undefined} error={err}
+        placeholder={keySet[k] ? "••••••••" : ""} hint={st.status === "ok" && st.message ? st.message : keySet[k] && !val ? t.keys.pexelsKept : !val ? (k === "pexels" ? t.keys.pexelsOptional : t.keys.pixabayOptional) : undefined} error={err}
         onChange={(e) => { const v = e.target.value; set(field, v); setKeys((p) => ({ ...p, [k]: { status: "idle" } })); }} onBlur={() => void checkKey(k)}
-        trailing={st.status === "ok" ? <span className="flex shrink-0 items-center gap-1 text-ds-xs text-ds-success-ink"><SetupIcon name="check" size={14} />{t.keys.works}</span> : st.status === "checking" ? <span className="shrink-0 text-ds-xs text-ds-text-2">{t.keys.checking}</span> : undefined} />
+        trailing={st.status === "ok" && !st.message ? <span className="flex shrink-0 items-center gap-1 text-ds-xs text-ds-success-ink"><SetupIcon name="check" size={14} />{t.keys.works}</span> : st.status === "checking" ? <span className="shrink-0 text-ds-xs text-ds-text-2">{t.keys.checking}</span> : undefined} />
     );
   };
 

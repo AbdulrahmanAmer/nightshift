@@ -120,8 +120,8 @@ class HomeCtx(Ctx):
         if not self.owner.allow_spawn:
             raise AssertionError(f"ctx.spawn is refused by the fake-services home: {args[:2]}")
         script = Path(str(args[1])).name if len(args) > 1 else ""
-        if script == "footage.py" and str(args[0]) == sys.executable:
-            return super().spawn(args, env, name)  # the fake endpoint: a real child, pid recorded
+        if script in ("footage.py", "console_holder.py") and str(args[0]) == sys.executable:
+            return super().spawn(args, env, name)  # a fake endpoint or console: a real child, pid recorded
         if script == "dashboard_no_worker.py":
             return self.owner.start_proof_dashboard(self, args, env or {})
         raise AssertionError(f"ctx.spawn is refused by the fake-services home: {args[:2]}")

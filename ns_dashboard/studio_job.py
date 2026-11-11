@@ -99,10 +99,12 @@ def _acquirer(args: dict[str, Any]) -> Any:
     except Exception:  # no or unreadable runtime.json: the defaults
         runtime = Runtime.default("gpu")
     client: Any = make_acquirer(str(url))  # a SupervisorClient (has `heartbeat`) or the HTTP fallback
-    return StudioAcquirer(
+    acq = StudioAcquirer(
         runtime, paths, client=client, ensure=lambda _client: None,
         on_owner=lambda owner: emit("owner", owner=owner),  # the dashboard frees every one on Cancel
     )
+    acq.send_pid = True  # vram-busy: this child's own CUDA context is ours, never "another program"
+    return acq
 
 
 def _common(args: dict[str, Any]) -> dict[str, Any]:

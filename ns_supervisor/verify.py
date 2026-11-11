@@ -35,6 +35,7 @@ from ns_supervisor import check_names as names
 from ns_supervisor import procs
 from ns_supervisor.benchmark import measure_tok_s
 from ns_supervisor.childenv import child_env, window_flags
+from ns_supervisor.gpu import SIMULATED_EVIDENCE, labelled, simulated_mark, smi_source
 
 OWNER = "verify"
 TTS_SENTENCE = "Nightshift verification sentence. The quick brown fox jumps over the lazy dog."
@@ -299,8 +300,9 @@ class Deps:
     nvenc: Callable[[], None] = nvenc_probe
     x264: Callable[[], None] = x264_probe       # a dev install probes the CPU encoder instead of NVENC
     job: Callable[[Paths], float | None] = fake_job
-    vram_used: Callable[[], int | None] = procs.gpu_memory_used_mb
-    gpu_name: Callable[[], str | None] = procs.gpu_name
+    # None: this install's nvidia-smi (`gpu.smi_source`: the simulated card under `fake_gpu`, H-10)
+    vram_used: Callable[[], int | None] | None = None
+    gpu_name: Callable[[], str | None] | None = None
     ram: Callable[[], float | None] = ram_gb
     tts_engine: Callable[[str], str | None] = tts_engine_kind
     sleep: Callable[[float], None] = time.sleep
@@ -371,6 +373,10 @@ def run_verify(
     `progress` gets one line as each talker starts: the voice test can take minutes and nothing else shows it.
     """
     d = deps or Deps()
+    smi = smi_source(paths, rt)
+    mark = simulated_mark(smi)  # H-10: a simulated card's numbers are labelled and never gate evidence
+    vram_used = d.vram_used or (lambda: procs.gpu_memory_used_mb(smi))
+    gpu_name = d.gpu_name or (lambda: procs.gpu_name(smi))
     rec = _Recorder(NsLogger("verify", paths.logs))
     ram = d.ram()
     tg = targets_for(ram)
@@ -596,13 +602,15 @@ def run_verify(
         if rt.dev_mode or no_card:
             why = "dev mode" if rt.dev_mode else "cpu-dev profile"
             return Out(True, "n/a", log=f"{why}: no graphics card to measure")
+        if mark is not None:
+            return Out(True, f"n/a: {SIMULATED_EVIDENCE}", log=f"{mark}: its numbers are no evidence")
         try:
             ctl.stop_all()
         except NsError as e:  # no supervisor means nothing of ours is loaded; still measure the GPU
             rec.log.warn("stop_all_failed", e.detail)
         used: int | None = None
         for _ in range(10):
-            used = d.vram_used()
+            used = vram_used()
             if used is None or used <= tg.idle_vram_mb:
                 break
             d.sleep(0.5)
@@ -615,7 +623,7 @@ def run_verify(
     rec.run(names.VRAM_IDLE, idle_vram, "NS-E102")
 
     machine: dict[str, str | float | None] = {
-        "gpu": None if rt.dev_mode or no_card else d.gpu_name(),
+        "gpu": None if rt.dev_mode or no_card else labelled(mark, gpu_name()),
         "ram_gb": ram,
         "disk_type": None,
         "os": platform.platform(),

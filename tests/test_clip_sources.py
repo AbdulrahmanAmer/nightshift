@@ -110,7 +110,7 @@ def test_pexels_gives_up_after_repeated_429_and_codes_errors():
     )
     with pytest.raises(NsError) as ei:
         src.search("x", orientation="portrait")
-    assert ei.value.code == "NS-E501" and len(t.slept) == 4
+    assert ei.value.code == "NS-E504" and len(t.slept) == 4  # the site's limit, never the key (stock-truth)
 
     bad = PexelsSource("K", Path("."), client=_client(lambda r: httpx.Response(401)))
     with pytest.raises(NsError) as ei2:
@@ -243,8 +243,8 @@ def test_d5_repeated_503_is_an_outage_never_the_key_hint():
         with pytest.raises(NsError) as ei:
             src.search("x", orientation="portrait")
         assert ei.value.code == "NS-E503"
-        assert f"{host} is not answering right now; Nightshift will try again" in ei.value.detail
-        assert "key" not in ei.value.detail.lower() and "key" not in ei.value.definition.hint.lower()
+        assert f"{host} is not answering right now" in ei.value.detail and "Tried 4 times" in ei.value.detail
+        assert "did not accept" not in ei.value.detail and "key" not in ei.value.definition.hint.lower()
         assert calls["n"] > 1
 
 
@@ -266,14 +266,24 @@ def test_d5_timeouts_and_resets_are_retried():
 
 def test_d5_key_errors_stop_at_once_without_a_retry():
     t = FakeTime()
-    for status, cls, code in (
-        (401, PexelsSource, "NS-E501"),
-        (403, PexelsSource, "NS-E501"),
-        (401, PixabaySource, "NS-E502"),
-        (400, PixabaySource, "NS-E502"),
+    # card stock-truth: only Pexels' 401 and Pixabay's 400 with its own words say the key is wrong; any other
+    # 4xx is an answer not understood (NS-E505). Neither is retried.
+    for status, cls, code, body in (
+        (401, PexelsSource, "NS-E501", ""),
+        (403, PexelsSource, "NS-E505", ""),
+        (401, PixabaySource, "NS-E505", ""),
+        (400, PixabaySource, "NS-E505", ""),
+        (400, PixabaySource, "NS-E502", "[ERROR 400] Invalid or missing API key (https://pixabay.com/api/docs/)."),
     ):
         calls = {"n": 0}
-        src = cls("K", Path("."), client=_client(_counting(calls, status)), sleep=t.sleep, wall=t.clock)
+
+        def answer(
+            r: httpx.Request, status: int = status, body: str = body, seen: dict = calls
+        ) -> httpx.Response:
+            seen["n"] += 1
+            return httpx.Response(status, text=body)
+
+        src = cls("K", Path("."), client=_client(answer), sleep=t.sleep, wall=t.clock)
         with pytest.raises(NsError) as ei:
             src.search("x", orientation="portrait")
         assert ei.value.code == code and calls["n"] == 1 and t.slept == []
@@ -366,7 +376,7 @@ def test_d5_a_download_503_is_an_outage_not_a_key_error(tmp_path: Path):
     bad = PexelsSource("K", tmp_path, client=_client(lambda r: httpx.Response(403)))
     with pytest.raises(NsError) as ei2:
         bad.download(cand, tmp_path / "pexels" / "b.mp4")
-    assert ei2.value.code == "NS-E501"
+    assert ei2.value.code == "NS-E505"  # a file link carries no key: its 403 is not a wrong key
 
 
 def _enospc_open(real_open):

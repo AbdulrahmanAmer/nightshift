@@ -135,6 +135,8 @@ STDLIB_ONLY_NS_COMMON = {
     # of settings fields added since 0.1.14, whose plain-dict rule the setup window's answers writer uses.
     "ns_common.rollback_intent",
     "ns_common.new_fields",
+    # card stock-truth: the one reading of a Pexels or Pixabay answer (the setup window's key check uses it)
+    "ns_common.stock_answer",
 }
 # installer.stage2.devmode (dev mode numbers, stubs, mode switch) is stdlib-only too and shared by the setup
 # server and the wizard; the test below keeps it that way.

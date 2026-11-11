@@ -122,6 +122,7 @@ def apply_engine_test(ctx: StepContext, rt: Runtime) -> None:
     """
     rt.fake_footage = ctx.fake_footage
     rt.tiny_story = ctx.tiny_story
+    rt.fake_gpu = ctx.fake_gpu      # only on a test install: anywhere else s01 said NS-W121 and it stays off
     if ctx.fake_voice:
         rt.tts.engine = "fake"
 
@@ -304,4 +305,5 @@ class S07Configs(Step):
             raise make_error("NS-E110", "config/opencode.json was not written")
         leaking = [f.name for f in answer_files(ctx) if _file_has_keys(f)]
         if leaking:
-            raise make_error("NS-E501", f"API keys are still written in {', '.join(leaking)}")
+            # its own code (card stock-truth): NS-E501 says the Pexels key was refused, which is not this
+            raise make_error("NS-E126", f"API keys are still written in {', '.join(leaking)}")

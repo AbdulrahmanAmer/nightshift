@@ -40,7 +40,7 @@ COVERED = {
             "test_f_b13_fails_when_a_fetched_clip_is_not_the_fakes_bytes",
             "test_f_b13_fails_when_library_does_not_list_a_fetched_clip",
             "test_f_b14_fails_when_a_fetch_ignores_retry_after",
-            "test_f_b14_fails_when_an_endless_429_does_not_end_in_ns_e501",
+            "test_f_b14_fails_when_an_endless_429_does_not_end_in_ns_e504",
         ],
     },
     "f-b18-studio-status": {
@@ -50,6 +50,14 @@ COVERED = {
     "f-c1-status-events": {
         "passes": "test_f_c1_passes_on_the_fake_services_home",
         "fails": ["test_f_c1_fails_when_an_events_frame_differs_from_the_status"],
+    },
+    "f-h47-closed-code-window": {
+        "passes": "test_fh47_proof_runs_against_a_fake_home",
+        "fails": ["test_fh47_proof_fails_when_a_closed_console_keeps_the_card"],
+    },
+    "vram-busy": {
+        "passes": "test_vram_busy_proof_runs_against_a_fake_home",
+        "fails": ["test_vram_busy_proof_fails_when_a_load_is_not_checked"],
     },
 }
 
@@ -147,7 +155,7 @@ def test_f_b13_b14_passes_against_the_fake_footage_endpoint(
     assert_passed(result, at_least_checks=30)
     names = step_names(result)
     assert any("Library > Footage (GET /api/library/footage) lists the fetched" in n for n in names)
-    assert any(n.startswith("endless 429: the fetch fails with the coded NS-E501") for n in names)
+    assert any(n.startswith("endless 429: the fetch fails with the coded NS-E504") for n in names)
     assert "cleanup: the proof's keys, clip rows and clip files are gone" in names
     assert proof_home.state.db.one("select count(*) as n from clips")["n"] == 0
     # the fake endpoint was a real child with its pid recorded, and the runner stopped it
@@ -196,7 +204,7 @@ def test_f_b14_fails_when_a_fetch_ignores_retry_after(
     assert_fails_at(result, "the fetch waited out 3 Retry-After periods")
 
 
-def test_f_b14_fails_when_an_endless_429_does_not_end_in_ns_e501(
+def test_f_b14_fails_when_an_endless_429_does_not_end_in_ns_e504(
     proof_home: ProofHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     from ns_common.errors import NsError
@@ -204,18 +212,18 @@ def test_f_b14_fails_when_an_endless_429_does_not_end_in_ns_e501(
 
     real = clip_sources._HttpSource._get
 
-    def other_code(self, *args, **kwargs):  # giving up on a 429 is reported as an outage, not NS-E501
+    def other_code(self, *args, **kwargs):  # giving up on a 429 is reported as the key, not NS-E504
         try:
             return real(self, *args, **kwargs)
         except NsError as err:
-            if "rate limited" in str(err):
-                raise NsError("NS-E503", str(err)) from err
+            if err.code == "NS-E504":
+                raise NsError("NS-E501", str(err)) from err
             raise
 
     monkeypatch.setattr(clip_sources._HttpSource, "_get", other_code)
     allow_footage_proof(proof_home, tmp_path, monkeypatch)
     result = proof_home.run("f_b13_b14_footage_429")
-    assert_fails_at(result, "endless 429: the fetch fails with the coded NS-E501")
+    assert_fails_at(result, "endless 429: the fetch fails with the coded NS-E504")
 
 
 def has_ffmpeg(folder: Path) -> bool:
@@ -311,6 +319,88 @@ def test_f_c1_fails_when_an_events_frame_differs_from_the_status(
     monkeypatch.setattr(svc_engine, "iter_sse", other_status)
     result = proof_home.run("f_c1_status_events")
     assert_fails_at(result, "the frame's status equals GET /api/status")
+
+
+# ------------------------------------------------------------------------------- F-H47 on the simulated card
+class RealEngine:
+    """The REAL engine (`Supervisor` and `create_app`, the real holder probe and monitor) over the proof home,
+    made an engine-test install with `fake_gpu` (H-10), on its own free port. The services are stub processes
+    with the gpu flags of the real service table; the proof home's fake engine is stopped first."""
+
+    def __init__(self, ph: ProofHome) -> None:
+        from ns_common.config import save_runtime
+        from ns_common.models import Runtime
+        from ns_supervisor.app import create_app
+        from ns_supervisor.core import Supervisor
+        from ns_supervisor.services import SERVICES, build_service
+        from ns_supervisor.testing import fast_config, free_port, stub_def
+        from tests.proofhome import _Server
+
+        rt = Runtime.default("cpu-dev").model_copy(update={"fake_footage": True, "fake_gpu": True})
+        rt.tts.engine = "fake"
+        save_runtime(ph.paths, rt)
+        ports = {n: free_port() for n in SERVICES}
+
+        def resolve(name: str, alias: str | None) -> Any:
+            real = build_service(rt, ph.paths, name, alias)
+            return stub_def(name, ports[name], gpu=real.gpu, variant=real.variant,
+                            model_alias=real.model_alias, persistent=real.persistent)  # fmt: skip
+
+        self.sup = Supervisor(ph.paths, rt, config=fast_config(idle_unload_s=60), resolver=resolve)
+        self.server = _Server(create_app(self.sup))
+        self.url = f"http://127.0.0.1:{self.server.port}"
+
+    def stop(self) -> None:
+        self.server.stop()  # its lifespan stops the services and closes the job
+
+
+@pytest.fixture
+def fh47_home(proof_home: ProofHome) -> ProofHome:
+    proof_home.supervisor.stop()
+    proof_home.supervisor = RealEngine(proof_home)  # type: ignore[assignment]  # stopped by proof_home.close
+    proof_home.allow_spawn = True  # the console stand-in: a real child, ended by its pid
+    return proof_home
+
+
+def test_fh47_proof_runs_against_a_fake_home(fh47_home: ProofHome):
+    result = fh47_home.run("f_h47_closed_code_window")
+    assert_passed(result, at_least_checks=10)
+    names = step_names(result)
+    assert "the card is free within 5 s of the console closing" in names
+    assert "the next nightly job gets the card at once (wait false)" in names
+
+
+def test_fh47_proof_fails_when_a_closed_console_keeps_the_card(
+    fh47_home: ProofHome, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_supervisor.core import Supervisor
+
+    async def never(self: Supervisor) -> None:  # the F-H47 defect: nobody looks at the holder's process
+        return None
+
+    monkeypatch.setattr(Supervisor, "_release_gone_holder", never)
+    result = fh47_home.run("f_h47_closed_code_window")
+    assert_fails_at(result, "the card is free within 5 s of the console closing")
+
+
+# ------------------------------------------------------------------------------ vram-busy, the simulated card
+def test_vram_busy_proof_runs_against_a_fake_home(fh47_home: ProofHome):
+    result = fh47_home.run("vram_busy")
+    assert_passed(result, at_least_checks=8)
+    names = step_names(result)
+    assert "the Dashboard's start is refused at once with NS-E208 naming game.exe" in names
+    assert "the nightly's load goes ahead once the memory is free" in names
+    assert "the nightly gives up at its bound with NS-E208, saying how long it waited" in names
+
+
+def test_vram_busy_proof_fails_when_a_load_is_not_checked(
+    fh47_home: ProofHome, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_supervisor import vram
+
+    monkeypatch.setattr(vram, "check", lambda *a, **k: None)  # the defect: nothing reads the card first
+    result = fh47_home.run("vram_busy")
+    assert_fails_at(result, "the Dashboard's start is refused at once with NS-E208 naming game.exe")
 
 
 # ------------------------------------------------------------------------------------------ the rule

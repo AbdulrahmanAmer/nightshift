@@ -7,7 +7,7 @@ Applied on 2026-11-01 with `gh api` using the owner's token; every command is re
 
 | Setting | Value | Why |
 |---|---|---|
-| Required status checks | `lint`, `types`, `test`, `ui-build`, `powershell-parse`, `scope-check` | The jobs of `.github/workflows/ci.yml` that decide merge safety (`scope-check` runs on pull requests only; `ui-build` rebuilds `ns_dashboard/ui` with node 20 and fails when the committed `ns_dashboard/static` differs). `bundle` reports but does not block. Names must equal the job ids in ci.yml. `test` is the job that gathers the unit-test shards `test-shard (1/8)` to `(8/8)` and `test-collect` (they are not required themselves): it always runs, and fails when any of them failed, was skipped or was cancelled, or when the shards did not together run exactly the unsharded collection (`dev/ci_shards.py verify`). A docs-only pull request (H-11; `dev/ci_changes.py decide` in the job `changes`: only `docs/**`, top-level `*.md` and `contracts/CHANGE_REQUESTS.md` changed) runs no shard: `test` then gathers `test-docs` (the test files that read documents) and passes only when they ran and passed, saying how many; `types` and `ui-build` still report, with one step that says "docs-only change: not applicable" (a skipped required job would count as passed without saying why); `lint`, `powershell-parse` and `scope-check` run as always. |
+| Required status checks | `lint`, `types`, `test`, `ui-build`, `powershell-parse`, `scope-check` | The jobs of `.github/workflows/ci.yml` that decide merge safety (`scope-check` runs on pull requests only; `ui-build` rebuilds `ns_dashboard/ui` with node 20 and fails when the committed `ns_dashboard/static` differs). `bundle` reports but does not block. Names must equal the job ids in ci.yml. `test` is the job that gathers the unit-test shards `test-shard (1/12)` to `(12/12)` and `test-collect` (they are not required themselves): it always runs, and fails when any of them failed, was skipped or was cancelled, or when the shards did not together run exactly the unsharded collection (`dev/ci_shards.py verify`). A docs-only pull request (H-11; `dev/ci_changes.py decide` in the job `changes`: only `docs/**`, top-level `*.md` and `contracts/CHANGE_REQUESTS.md` changed) runs no shard: `test` then gathers `test-docs` (the test files that read documents) and passes only when they ran and passed, saying how many; `types` and `ui-build` still report, with one step that says "docs-only change: not applicable" (a skipped required job would count as passed without saying why); `lint`, `powershell-parse` and `scope-check` run as always. |
 | Require branches to be up to date | off | Builders on disjoint paths would otherwise rebase constantly. |
 | Force pushes | forbidden | History of published branches is never rewritten (ENGINEERING section 5). |
 | Branch deletion | forbidden | |
@@ -19,7 +19,7 @@ Applied on 2026-11-01 with `gh api` using the owner's token; every command is re
 Read the checks by name, not by count: a docs-only pull request and a code pull request show different sets.
 A docs-only pull request is one whose changes are all `docs/**`, top-level `*.md` or `contracts/CHANGE_REQUESTS.md`
 and touch none of the CI machinery (`dev/ci_changes.py`, `dev/ci_shards.py`, `dev/ci_shard_weights.json`,
-`.github/`); every other pull request is a code pull request. The eight shards are `SHARDS` in `dev/ci_shards.py`.
+`.github/`); every other pull request is a code pull request. The twelve shards are `SHARDS` in `dev/ci_shards.py`.
 
 | Check name (as GitHub shows it) | Required | Docs-only pull request | Code pull request |
 |---|---|---|---|
@@ -31,7 +31,7 @@ and touch none of the CI machinery (`dev/ci_changes.py`, `dev/ci_shards.py`, `de
 | `scope-check` | yes | pass | pass |
 | `test` | yes | pass: "docs-only change: N document tests ran, the code suite was not run" | pass: every shard and `test-collect` passed and ran the whole collection |
 | `test-docs` | no | pass | skipped |
-| `test-shard (1/8)` ... `test-shard (8/8)` | no | one skipped entry named `test-shard (${{ matrix.shard }}/8)` (a matrix skipped before it expands) | eight entries, each pass |
+| `test-shard (1/12)` ... `test-shard (12/12)` | no | one skipped entry named `test-shard (${{ matrix.shard }}/12)` (a matrix skipped before it expands) | twelve entries, each pass |
 | `test-collect` | no | skipped | pass |
 | `bundle` | no | skipped | pass |
 
@@ -91,8 +91,8 @@ gh api -X PUT repos/AbdulrahmanAmer/nightshift/actions/permissions/workflow -f d
 
 | File | Trigger | What |
 |---|---|---|
-| `.github/workflows/ci.yml` | pull request; push to `main` and to tags; nightly schedule | `changes` (the docs-only decision), `lint`, `types`, `test` (gathers `test-shard (1/8)` to `(8/8)` and `test-collect`, or `test-docs` on a docs-only pull request), `ui-build`, `powershell-parse`, `bundle`; `scope-check` on pull requests only. A pull request branch is tested by its `pull_request` run alone (a push to it starts nothing a second time); a branch with no pull request has no CI until one is opened, and a draft pull request runs it. |
-| `.github/workflows/release.yml` | tag `v*` | tests (the same eight shards and the same proof, no marker filter: a full run; a tag run has no docs-only path), UI build (node 20) and check, `dev/make_bundle.ps1`, GitHub Release (body from `dev/release_notes.md` plus the changelog entries) with `Nightshift-Setup-<ver>.zip`, `Nightshift-Update-<ver>.zip` and a `.sha256` for each (v0.1.0 and v0.1.1 used `Nightshift-<ver>.zip`, `.sha256`, `nightshift-app-<ver>.zip`) |
+| `.github/workflows/ci.yml` | pull request; push to `main` and to tags; nightly schedule | `changes` (the docs-only decision), `lint`, `types`, `test` (gathers `test-shard (1/12)` to `(12/12)` and `test-collect`, or `test-docs` on a docs-only pull request), `ui-build`, `powershell-parse`, `bundle`; `scope-check` on pull requests only. A pull request branch is tested by its `pull_request` run alone (a push to it starts nothing a second time); a branch with no pull request has no CI until one is opened, and a draft pull request runs it. |
+| `.github/workflows/release.yml` | tag `v*` | tests (the same twelve shards and the same proof, no marker filter: a full run; a tag run has no docs-only path), UI build (node 20) and check, `dev/make_bundle.ps1`, GitHub Release (body from `dev/release_notes.md` plus the changelog entries) with `Nightshift-Setup-<ver>.zip`, `Nightshift-Update-<ver>.zip` and a `.sha256` for each (v0.1.0 and v0.1.1 used `Nightshift-<ver>.zip`, `.sha256`, `nightshift-app-<ver>.zip`) |
 | `.github/workflows/build-qwentts.yml` | `workflow_dispatch`, tag `v*` | builds `Nightshift-VoiceEngine-win-cuda-x64.zip` (v0.1.0: `qwentts-win-cuda-x64.zip`) on `windows-2022` (see "qwentts build") |
 
 Cutting a release (orchestrator; the full loop including the qwentts pin is under "Release loop" below): move the `## [Unreleased]` entries in `CHANGELOG.md` under `## [x.y.z]`, set `VERSION`,

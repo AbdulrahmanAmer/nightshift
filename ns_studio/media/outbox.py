@@ -2,20 +2,33 @@
 
 from __future__ import annotations
 
+import json
 import random
 import re
 import zlib
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from ns_common.atomic import copy_atomic, read_text_retry, sweep_stale_tmp, write_text_atomic
+from ns_common.atomic import (
+    copy_atomic,
+    read_text_retry,
+    sweep_stale_tmp,
+    write_bytes_atomic,
+    write_text_atomic,
+)
+from ns_common.logging import NsLogger
 from ns_common.models import Channel, ClipRef, Metadata, PolicyAdvice, PolicyResult, Seo
 from ns_common.paths import Paths
 from ns_studio.context import JobContext
+from ns_studio.media import sheet_read as sr
+from ns_studio.media import youtube_rules as yr
 from ns_studio.media.master import load_shorts
+from ns_studio.media.sheet_read import read_sheet_file
 from ns_studio.media.shotplan import Shot
+from ns_studio.media.youtube_rules import Notes
 from ns_studio.stages import Tenant
 from ns_studio.text.story_profile import job_mark
 
@@ -169,14 +182,45 @@ def clip_refs(shots: Sequence[Shot]) -> list[ClipRef]:
 
 
 def load_advice(ctx: JobContext) -> PolicyAdvice:
-    """Disclosure advice from the final (else text) policy result; defaults when no gate has run."""
+    """Disclosure advice from the final (else text) policy result; defaults when no gate has run.
+
+    The altered-content answer is Yes for a job narrated by a cloned voice whatever the gate wrote (R8,
+    `youtube_rules.disclosure`): a gate file of an earlier release, or no gate at all (policy off)."""
+    advice = PolicyAdvice(made_for_kids=ctx.channel.made_for_kids)
     for name in ("policy_final.json", "policy_text.json"):
         if ctx.file(name).exists():
-            return PolicyResult.model_validate(ctx.read_json(name)).advice
-    return PolicyAdvice(made_for_kids=ctx.channel.made_for_kids)
+            advice = PolicyResult.model_validate(ctx.read_json(name)).advice
+            break
+    answer = yr.disclosure(advice.ai_disclosure, yr.job_voice_mode(ctx)).stored
+    return advice.model_copy(update={"ai_disclosure": answer})
 
 
-def build_metadata(
+def working_title(ctx: JobContext) -> str:
+    """The story's working title (used when the SEO title is empty once cleaned), else the job id."""
+    return working_title_of(ctx.job_dir, ctx.job_id)
+
+
+def working_title_of(job_dir: Path, job_id: str) -> str:
+    """`working_title` from a job folder: `story.json`, else the owner's script title, else the job id."""
+    for name, key in (("story.json", "working_title"), ("script_source.json", "title")):
+        try:
+            data = json.loads(read_text_retry(job_dir / name))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and str(data.get(key) or "").strip():
+            return str(data[key])
+    return job_id
+
+
+@dataclass
+class Sheet:
+    """An upload sheet: its validated `.json` record and the notes its `.txt` tells the owner."""
+
+    meta: Metadata
+    notes: Notes
+
+
+def build_sheet(
     *,
     channel: Channel,
     job_id: str,
@@ -189,19 +233,31 @@ def build_metadata(
     prompt_versions: dict[str, int],
     publish_at: str,
     extra: dict[str, Any] | None = None,
-) -> Metadata:
-    """Assemble and validate the upload metadata record (schema `metadata`)."""
+    fallback_title: str = "",
+    duration_s: float | None = None,
+    voice_mode: str | None = None,
+    changes: Sequence[str] = (),
+) -> Sheet:
+    """Assemble the upload record with every field fitted to YouTube's rules (`youtube_rules.fit`).
+
+    `duration_s` of a Short is checked against R7; `voice_mode` gives the altered-content answer its reason
+    (R8); `changes` are lines the caller already made for YouTube (a chapter list left out)."""
+    f = yr.fit(
+        title=seo.title, description=seo.description, tags=seo.tags, hashtags=seo.hashtags,
+        fallback_title=fallback_title or job_id, short_seconds=duration_s if kind != "long" else None,
+    )
+    told = yr.disclosure(advice.ai_disclosure, voice_mode)
     data: dict[str, Any] = {
         "channel": channel.slug,
         "job_id": job_id,
         "kind": kind,
         "k": k,
-        "title": seo.title,
-        "description": seo.description,
-        "tags": seo.tags,
-        "hashtags": seo.hashtags,
+        "title": f.title,
+        "description": f.description,
+        "tags": f.tags,
+        "hashtags": f.hashtags,
         "publish_after": publish_at,
-        "ai_disclosure": advice.ai_disclosure,
+        "ai_disclosure": told.stored,
         "made_for_kids": advice.made_for_kids or channel.made_for_kids,
         "age_restrict_suggested": advice.age_restrict_suggested,
         "clips": [c.model_dump() for c in clip_refs(shots)],
@@ -209,7 +265,13 @@ def build_metadata(
         "prompt_versions": prompt_versions,
     }
     data.update(extra or {})
-    return Metadata.model_validate(data)
+    notes = yr.notes_for(told, f.warnings, [*changes, *f.changes])
+    return Sheet(Metadata.model_validate(data), notes)
+
+
+def build_metadata(**kw: Any) -> Metadata:
+    """The upload metadata record (schema `metadata`), fitted to YouTube's rules; see `build_sheet`."""
+    return build_sheet(**kw).meta
 
 
 def _yes_no(flag: bool) -> str:
@@ -250,11 +312,19 @@ TEST_BANNER = (
 )
 
 
-def sheet_text(meta: Metadata, video_name: str, *, related_title: str | None = None) -> str:
+def sheet_text(
+    meta: Metadata, video_name: str, *, related_title: str | None = None, notes: Notes | None = None
+) -> str:
     """The plain-text upload sheet: everything to paste into YouTube Studio, in order.
 
-    The sheet of a video made on an engine-test install (`meta.profile`) opens with a line that says so."""
+    The sheet of a video made on an engine-test install (`meta.profile`) opens with a line that says so.
+    Then come the `notes`: a warning per problem YouTube would not accept that has no safe repair, and one
+    "Changed for YouTube" line naming every change made to fit its rules. The altered-content line gives its
+    reason, and the note below it says what is left to the owner's judgement. A video with Pexels or Pixabay
+    clips gets the optional credit line (`youtube_rules.credit_line`: asked for, not required)."""
+    notes = notes or Notes()
     lines = [TEST_BANNER.format(mark=meta.profile), ""] if meta.profile else []
+    lines += notes.head_lines()
     lines += [
         f"FILE: {video_name}",
         f"TITLE: {meta.title}",
@@ -269,10 +339,14 @@ def sheet_text(meta: Metadata, video_name: str, *, related_title: str | None = N
         publish_line(meta.publish_after),
         "",
         "SETTINGS:",
-        f"  Altered or synthetic content: {meta.ai_disclosure.capitalize()}",
+        *yr.disclosure_lines(meta.ai_disclosure, notes),
         f"  Made for kids: {_yes_no(meta.made_for_kids)}",
         f"  Age restriction suggested: {_yes_no(meta.age_restrict_suggested)}",
     ]
+    # an offer (card stock-truth), never a field, counted against R3 with the description and hashtags
+    credit = yr.credit_line([c.source for c in meta.clips], meta.description, meta.hashtags)
+    if credit:
+        lines += ["", credit]
     if related_title:
         lines += ["", f"Related video: set Related video -> {related_title}"]
     if meta.midroll_suggestions_s:
@@ -282,10 +356,12 @@ def sheet_text(meta: Metadata, video_name: str, *, related_title: str | None = N
 
 
 def write_sheet_txt(
-    meta: Metadata, video_name: str, path: Path, *, related_title: str | None = None
+    meta: Metadata, video_name: str, path: Path, *, related_title: str | None = None,
+    notes: Notes | None = None,
 ) -> Path:
     """Write the upload sheet next to the video."""
-    write_text_atomic(path, sheet_text(meta, video_name, related_title=related_title), newline=None)
+    text = sheet_text(meta, video_name, related_title=related_title, notes=notes)
+    write_text_atomic(path, text, newline=None)
     return path
 
 
@@ -341,15 +417,285 @@ def retime_sheet(entry: Mapping[str, str], publish_at: str) -> Metadata | None:
     metadata, or None when the sheet is missing or unreadable (nothing is changed then).
     """
     sheet = Path(entry["json"])
-    try:
-        meta = Metadata.model_validate_json(read_text_retry(sheet))
-    except (OSError, ValueError):
+    j = read_sheet_file(sheet, "json")
+    if not j.usable:  # the start sweep and the Queue deal with a sheet that is not whole
         return None
-    meta = meta.model_copy(update={"publish_after": publish_at})
+    t = read_sheet_file(Path(entry["txt"]), "txt")
+    if t.state in (sr.HELD, sr.OS_ERROR):  # its notes cannot be read now: retimed at the next night
+        return None
+    before: Any = j.value
+    name = Path(entry["mp4"]).name
+    notes: Notes
+    moved = before.model_copy(update={"publish_after": publish_at})
+    meta, notes = refit(moved, yr.read_notes(t.text), fallback_title=before.job_id)
+    if t.state != sr.MISSING:  # the owner's own text (an edit, another layout or encoding) is kept first
+        ours = {yr.bare_sheet(render_sheet(m, name)) for m in (before, meta)}
+        if t.state != sr.OK or yr.bare_sheet(t.text) not in ours:
+            notes.kept = keep_copy(Path(entry["txt"]), t.raw)
     related = (meta.related_video_instruction or "").removeprefix(RELATED_PREFIX) or None
     write_text_atomic(sheet, meta.model_dump_json(indent=2) + "\n", newline=None)
-    write_sheet_txt(meta, Path(entry["mp4"]).name, Path(entry["txt"]), related_title=related)
+    write_sheet_txt(meta, name, Path(entry["txt"]), related_title=related, notes=notes)
     return meta
+
+
+def refit(
+    meta: Any, old: Notes, *, fallback_title: str, duration_s: float | None = None,
+    told: yr.Disclosure | None = None,
+) -> tuple[Any, Notes]:
+    """A sheet already written, fitted to YouTube's rules again (`youtube_rules.fit`), with its notes.
+
+    The notes it already carried (`old`, read from its `.txt`) are kept and the new changes added, so a
+    rewrite never drops a line that told the owner what was changed. A chapter list that breaks R6 is taken
+    out of the description. `told` replaces the altered-content answer and its reason (the start sweep)."""
+    description, changes = meta.description, []
+    chapters = getattr(meta, "chapters", None)
+    why = yr.chapter_problem(chapters, duration_s) if chapters else None
+    if why:
+        description = yr.drop_chapter_lines(description)
+        changes.append(f"left the chapter list out of the description: {why}")
+    f = yr.fit(
+        title=meta.title, description=description, tags=meta.tags, hashtags=meta.hashtags,
+        fallback_title=fallback_title, short_seconds=duration_s if meta.kind != "long" else None,
+    )
+    update: dict[str, Any] = {
+        "title": f.title, "description": f.description, "tags": f.tags, "hashtags": f.hashtags,
+    }
+    if why:
+        update["chapters"] = None
+    new = Notes(f.warnings, [*changes, *f.changes])
+    if told is not None:
+        update["ai_disclosure"] = told.stored
+        new = yr.notes_for(told, f.warnings, [*changes, *f.changes])
+    fitted = type(meta).model_validate({**meta.model_dump(), **update})
+    return fitted, old.merged(new)
+
+
+def disclosure_for(paths: Paths, job_id: str, kind: str, answer: str) -> yr.Disclosure:
+    """The altered-content answer of a written output and its reason, from the job's own voice record
+    (`youtube_rules.voice_mode_of`; never the channel's current voice): what the start sweep writes and the
+    Queue shows."""
+    return yr.disclosure(answer, yr.voice_mode_of(paths.job_dir(job_id)), kind=kind)
+
+
+SHEET_RULES_FILE = "sheet-rules.json"
+#: Starts in a row at which the sweep tries a sheet it cannot read, then stops and says so.
+SWEEP_TRIES = 5
+
+
+def sweep_sheets(paths: Paths, db: Any, log: NsLogger) -> int:
+    """Dashboard start: the sheets of videos waiting to be posted, brought up to YouTube's rules once.
+
+    Pending and approved outputs only (an uploaded video is on YouTube already, a rejected one is not going).
+    Each sheet's two files are read by `sheet_read.read_sheet_file` and `sheet_read.plan_sheet` decides what
+    happens (the table is there): fitted from its `.json`, rebuilt from its `.txt`, or left as it is with the
+    owner's sentence. A sheet left as it is is NOT marked done: `data/sheet-rules.json` lists it, and the next
+    start (at most `SWEEP_TRIES` starts in a row) and every opening of the video in the Queue try it again,
+    with a WARN at each try. Each file is written atomically in the order kept copy, `.txt`, `.json`,
+    `outputs.title`, and `data/sheet-rules.json` last, so a sweep killed half-way redoes only what still
+    differs; a second run with nothing left to retry does nothing. Returns the outputs rewritten."""
+    marker = paths.data / SHEET_RULES_FILE
+    try:
+        state = json.loads(read_text_retry(marker))
+    except (OSError, ValueError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    same = state.get("rules_version") == yr.RULES_VERSION
+    raw = state.get("retry")
+    retry: dict[str, Any] = raw if same and isinstance(raw, dict) else {}
+    if same and not retry:
+        return 0
+    rows = db.query(
+        "SELECT output_id, job_id, channel, kind, k, path, title, duration_s, combo_id, profile FROM outputs"
+        " WHERE status IN ('pending', 'approved') ORDER BY created_at, output_id"
+    )
+    if same:  # an earlier run of this version did the rest: only the sheets it left as they were
+        rows = [r for r in rows if r["output_id"] in retry]
+    rewritten = 0
+    left: dict[str, int] = {}
+    for row in rows:
+        oid = str(row["output_id"])
+        try:
+            changed, sentence = refit_output(paths, db, row)
+        except (OSError, ValueError) as e:  # a write that failed (a full disk): the same retry, its text said
+            changed, sentence = 0, f"the sheet could not be written ({e})"
+        rewritten += changed
+        if sentence is None:
+            continue
+        tries = int(retry.get(oid, 0)) + 1
+        if tries < SWEEP_TRIES:
+            left[oid] = tries
+            then = (f"Nightshift tries again at the next start (try {tries} of {SWEEP_TRIES}) and whenever "
+                    "the video is opened in the Queue")
+        else:
+            then = (f"Nightshift stopped trying at its starts after {SWEEP_TRIES}; opening the video in the "
+                    "Queue tries once more")
+        log.warn("sheet_unreadable", f"the upload sheet of {oid} was left as it is: {sentence}. {then}",
+                 output_id=oid, path=str(row["path"]), tries=tries)
+    write_text_atomic(
+        marker,
+        json.dumps({"rules_version": yr.RULES_VERSION, "retry": left, "rewritten": rewritten,
+                    "at": datetime.now(UTC).isoformat(timespec="seconds")}) + "\n",
+    )
+    log.info("sheets_fitted", f"upload sheets brought up to YouTube's rules: {rewritten}", count=rewritten)
+    return rewritten
+
+
+def render_sheet(meta: Any, video_name: str, notes: Notes | None = None) -> str:
+    """The `.txt` text of a story or clip sheet (LF line ends)."""
+    if meta.kind == "clip":
+        from ns_studio.clipper.stages_clip import clip_sheet_text
+
+        return clip_sheet_text(meta, video_name, notes=notes)
+    related = (meta.related_video_instruction or "").removeprefix(RELATED_PREFIX) or None
+    return sheet_text(meta, video_name, related_title=related, notes=notes)
+
+
+def keep_copy(txt: Path, raw: bytes) -> str:
+    """Keep the owner's `.txt` (its bytes as they are, whatever their encoding) as
+    `<stem>.before-<version>.txt` next to it; returns that file's name. A copy already there with the same
+    bytes is reused (a sweep killed after keeping it); one with other bytes is never overwritten: `-2`,
+    `-3` is added."""
+    from ns_common import __version__
+
+    n = 1
+    while True:
+        dest = txt.with_name(f"{txt.stem}.before-{__version__}{'' if n == 1 else f'-{n}'}.txt")
+        there = read_sheet_file(dest, "raw")
+        if there.state == sr.MISSING:
+            write_bytes_atomic(dest, raw)
+            return dest.name
+        if there.raw == raw:
+            return dest.name
+        n += 1
+
+
+_SEO_FILES = {
+    "long": ("seo_long.json",), "short": ("seo_shorts.json", "seo.json"), "clip": ("seo_clips.json",),
+}
+
+
+def seo_record(paths: Paths, row: Any) -> Path | None:
+    """The job's own SEO file for this output's kind (what the job wrote), when the job folder has one."""
+    job_dir = paths.job_dir(str(row["job_id"]))
+    return next((job_dir / n for n in _SEO_FILES.get(str(row["kind"]), ()) if (job_dir / n).is_file()), None)
+
+
+def rebuild_sheet(paths: Paths, db: Any, row: Any, f: dict[str, Any]) -> Any:
+    """A `.json` sheet rebuilt from the job's own records: `f`, the fields the owner pastes, parsed from its
+    `.txt` (`sheet_read.parse_sheet_text`: title, description, hashtags, tags, publish time, settings,
+    related video, mid-roll marks, clip source), the footage it used from the database (`clip_usage` joined
+    with `clips`), the combo and the test mark from its `outputs` row, the prompt versions from the job
+    folder's `prompt_versions.json`, the chapters from `long/chapters.json` (a master that lists them) and the
+    thumbnails next to the video."""
+    from ns_studio.context import PROMPT_VERSIONS_FILE
+
+    video = Path(str(row["path"]))
+    job_id, kind = str(row["job_id"]), str(row["kind"])
+    job_dir = paths.job_dir(job_id)
+    try:
+        saved = json.loads(read_text_retry(job_dir / PROMPT_VERSIONS_FILE))
+        versions = {str(k): int(v) for k, v in saved.items()}
+    except (OSError, ValueError, AttributeError):
+        versions = {}
+    data: dict[str, Any] = {
+        "channel": row["channel"], "job_id": job_id, "k": row["k"], "title": f["title"],
+        "description": f["description"], "tags": f["tags"], "hashtags": f["hashtags"],
+        "publish_after": f["publish_after"], "ai_disclosure": f["ai_disclosure"],
+        "made_for_kids": f["made_for_kids"], "age_restrict_suggested": f["age_restrict_suggested"],
+        "combo_id": row["combo_id"] or "", "prompt_versions": versions,
+    }
+    if kind == "clip":
+        from ns_studio.clipper.models import ClipMetadata
+
+        source_video, template = f["source"] or (video.stem, "")
+        return ClipMetadata.model_validate({**data, "source_video": source_video, "template": template})
+    item = str(row["output_id"]).rsplit("/", 1)[-1]
+    clips = db.query(
+        "SELECT DISTINCT c.source AS source, c.clip_id AS id, c.url AS url, c.license AS license"
+        " FROM clip_usage u JOIN clips c ON c.source = u.source AND c.clip_id = u.clip_id"
+        " WHERE u.job_id = ? AND u.item = ?",
+        (job_id, item),
+    )
+    chapters = None
+    if kind == "long" and re.search(r"^\d{1,2}:\d{2}(?::\d{2})? ", f["description"], re.M):
+        try:
+            doc = json.loads(read_text_retry(job_dir / "long" / "chapters.json"))
+            chapters = [{"timestamp": c["timestamp"], "title": c["title"], "start_s": c["start_s"]}
+                        for c in doc["chapters"]]
+        except (OSError, ValueError, KeyError, TypeError):
+            chapters = None
+    thumbs = sorted(p.name for p in video.parent.glob("thumb_*.jpg")) if kind == "long" else []
+    data.update({
+        "kind": kind, "clips": [dict(c) for c in clips], "chapters": chapters,
+        "midroll_suggestions_s": f["midroll_suggestions_s"], "thumbnails": thumbs or None,
+        "related_video_instruction": f"{RELATED_PREFIX}{f['related']}" if f["related"] else None,
+        "parent_job_id": job_id if f["related"] else None,
+    })
+    if row["profile"]:
+        data["profile"] = row["profile"]
+    return Metadata.model_validate(data)
+
+
+REBUILT = "rebuilt the .json sheet from the .txt and the job's records, because the .json could not be read"
+_ENCODINGS = {"utf-16-le": "UTF-16", "utf-16-be": "UTF-16 (big-endian)", "ansi": "ANSI"}
+
+
+def read_sheet(row: Any) -> tuple[sr.SheetRead, sr.SheetRead]:
+    """The two files of an output's sheet, each read by the one reader."""
+    video = Path(str(row["path"]))
+    json_read = read_sheet_file(video.with_suffix(".json"), "json")
+    return json_read, read_sheet_file(video.with_suffix(".txt"), "txt")
+
+
+def refit_output(paths: Paths, db: Any, row: Any) -> tuple[int, str | None]:
+    """One output's sheet brought up to YouTube's rules (the start sweep; the Queue when it opens a sheet
+    that is not whole): (1 when its files were rewritten else 0, the owner's sentence when it was left as it
+    is). What happens is `sheet_read.plan_sheet`'s answer for the two files as `read_sheet_file` found
+    them."""
+    video = Path(str(row["path"]))
+    jpath, tpath = video.with_suffix(".json"), video.with_suffix(".txt")
+    j, t = read_sheet(row)
+    job_id = str(row["job_id"])
+    plan = sr.plan_sheet(j, t, seo_record(paths, row), paths.job_dir(job_id))
+    if plan.action in (sr.WAIT, sr.GONE):
+        return 0, plan.sentence
+    rebuilt = plan.action == sr.REBUILD
+    meta = rebuild_sheet(paths, db, row, t.value) if rebuilt else j.value
+    old_text = t.text if t.state != sr.MISSING else None
+    told = disclosure_for(paths, job_id, str(row["kind"]), meta.ai_disclosure)
+    fitted, notes = refit(
+        meta, yr.read_notes(old_text), told=told, duration_s=row["duration_s"],
+        fallback_title=working_title_of(paths.job_dir(job_id), job_id),
+    )
+    if rebuilt:
+        notes.changes = list(dict.fromkeys([REBUILT, *notes.changes]))
+    if t.state == sr.NOT_UTF8 and t.usable:
+        notes.changes = list(dict.fromkeys(
+            [f"re-saved {tpath.name} as UTF-8 (it was saved as {_ENCODINGS.get(t.encoding, t.encoding)})",
+             *notes.changes]))
+    if j.state == sr.NOT_UTF8 and j.usable:
+        notes.changes = list(dict.fromkeys([f"re-saved {jpath.name} as UTF-8", *notes.changes]))
+    text = render_sheet(fitted, video.name, notes)
+    if old_text is not None:
+        new_bare, old_bare = yr.bare_sheet(text), yr.bare_sheet(old_text)
+        # Nightshift's own rendering of the .json it fits: its repairs are said on the change line. Anything
+        # else (an edit, another layout, another encoding, a rebuild whose repair changes the owner's text)
+        # is the owner's text and is kept as .before- before it is replaced.
+        ours = not rebuilt and not plan.keep_txt and old_bare == yr.bare_sheet(render_sheet(meta, video.name))
+        if plan.keep_txt or (old_bare != new_bare and not ours):
+            notes.kept = keep_copy(tpath, t.raw)
+            text = render_sheet(fitted, video.name, notes)
+    changed = 0
+    if text != old_text or t.state != sr.OK:
+        write_text_atomic(tpath, text, newline=None)
+        changed = 1
+    if rebuilt or j.state != sr.OK or fitted.model_dump(mode="json") != meta.model_dump(mode="json"):
+        write_text_atomic(jpath, fitted.model_dump_json(indent=2) + "\n", newline=None)
+        changed = 1
+    if row["title"] != fitted.title:
+        db.execute("UPDATE outputs SET title = ? WHERE output_id = ?", (fitted.title, row["output_id"]))
+    return changed, None
 
 
 class OutboxStage:
@@ -375,12 +721,13 @@ class OutboxStage:
         shots_all: dict[str, Any] = ctx.read_json("clips/shots.json")
         seos = [Seo.model_validate(s) for s in ctx.read_json("seo.json")]
         advice = load_advice(ctx)
+        voice, fallback = yr.job_voice_mode(ctx), working_title(ctx)
         mark = job_mark(ctx)
         manifest: dict[str, Any] = {}
         for item, info in rendered.items():
             k = int(item[1:])
             shots = [Shot.from_json(s) for s in shots_all[item]["shots"]]
-            meta = build_metadata(
+            sheet = build_sheet(
                 channel=ctx.channel,
                 job_id=ctx.job_id,
                 kind="short",
@@ -394,10 +741,12 @@ class OutboxStage:
                     ctx.channel, ctx.job_id, item, day_offset=short_day_offset(ctx.channel, k)
                 ),
                 extra={"profile": mark} if mark else None,
+                fallback_title=fallback, duration_s=float(info["duration_s"]), voice_mode=voice,
             )
+            meta = sheet.meta
             mp4 = copy_if_changed(Path(info["path"]), outbox_target(ctx, "short", k))
             write_text_atomic(mp4.with_suffix(".json"), meta.model_dump_json(indent=2) + "\n", newline=None)
-            write_sheet_txt(meta, mp4.name, mp4.with_suffix(".txt"))
+            write_sheet_txt(meta, mp4.name, mp4.with_suffix(".txt"), notes=sheet.notes)
             record_output(
                 ctx, kind="short", k=k, item=item, meta=meta, path=mp4,
                 duration_s=float(info["duration_s"]), shots=shots, profile=mark,
@@ -416,14 +765,25 @@ CHAPTERS_PLACEHOLDER = "[[CHAPTERS]]"
 
 
 def seo_from(d: dict[str, Any]) -> Seo:
-    """A `Seo` from a SEO document that may carry extra fields (chapter titles, thumbnail text)."""
-    return Seo(
-        title=str(d["title"])[:100],
+    """A `Seo` from a SEO document that may carry extra fields (chapter titles, thumbnail text).
+
+    The fields are taken as written: `build_sheet` fits them to YouTube's rules and says what it changed
+    (a cut here was silent, and in the middle of a word)."""
+    return Seo.model_construct(
+        title=str(d["title"]),
         description=str(d["description"]),
-        tags=list(d["tags"]),
-        hashtags=list(d.get("hashtags", []))[:5],
+        tags=[str(t) for t in d["tags"]],
+        hashtags=[str(h) for h in d.get("hashtags", [])],
         keywords=list(d.get("keywords", [])),
     )
+
+
+def chapter_check(
+    chapters: Sequence[dict[str, Any]], duration_s: float
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """The chapters to list in the description (none when they break R6) and the line that says why."""
+    why = yr.chapter_problem(chapters, duration_s)
+    return ([], [f"left the chapter list out of the description: {why}"]) if why else (list(chapters), [])
 
 
 def chapter_list(chapters: Sequence[dict[str, Any]]) -> str:
@@ -434,8 +794,11 @@ def chapter_list(chapters: Sequence[dict[str, Any]]) -> str:
 def long_description(description: str, chapters: Sequence[dict[str, Any]]) -> str:
     """Master description (spec §9.1): summary lines, blank, chapter list, then the rest.
 
-    The `[[CHAPTERS]]` placeholder is replaced; without one the list goes after the first paragraph.
+    The `[[CHAPTERS]]` placeholder is replaced; without one the list goes after the first paragraph. With
+    no chapters (they broke YouTube's chapter rules) the placeholder and the blank lines around it go.
     """
+    if not chapters:
+        return re.sub(r"\n{3,}", "\n\n", description.replace(CHAPTERS_PLACEHOLDER, "")).strip("\n")
     block = chapter_list(chapters)
     if CHAPTERS_PLACEHOLDER in description:
         return description.replace(CHAPTERS_PLACEHOLDER, block)
@@ -457,37 +820,41 @@ def short_description(description: str, master_title: str) -> str:
 def run_outbox_master(ctx: JobContext) -> None:
     """Publish the master (`long/`) and its derived Shorts (`shorts/`) with metadata and upload sheets."""
     advice = load_advice(ctx)
+    voice, fallback = yr.job_voice_mode(ctx), working_title(ctx)
     chapters_doc: dict[str, Any] = ctx.read_json("long/chapters.json")
-    chapters = chapters_doc["chapters"]
     long_info = ctx.read_json("render/long.json")
+    chapters, chapter_note = chapter_check(chapters_doc["chapters"], float(long_info["duration_s"]))
     long_shots = [Shot.from_json(s) for s in ctx.read_json("clips/shots.json")["long"]["shots"]]
     long_seo = seo_from(ctx.read_json("seo_long.json"))
     long_seo = long_seo.model_copy(update={
         "description": long_description(long_seo.description, chapters),
-        "hashtags": [h for h in long_seo.hashtags if h.lower() != "#shorts"][:5],
+        "hashtags": [h for h in long_seo.hashtags if h.lower() != "#shorts"],
     })
     thumbs = [f"thumb_{i}.jpg" for i in (1, 2, 3) if ctx.file(f"long/thumb_{i}.jpg").exists()]
     mark = job_mark(ctx)
     marked: dict[str, Any] = {"profile": mark} if mark else {}
     manifest: dict[str, Any] = {}
 
-    meta = build_metadata(
+    sheet = build_sheet(
         channel=ctx.channel, job_id=ctx.job_id, kind="long", k=None, seo=long_seo, advice=advice,
         shots=long_shots, combo_id=ctx.combo.combo_id, prompt_versions=ctx.versions(),
         publish_at=publish_after(ctx.channel, ctx.job_id, "long", day_offset=1 + series_delay_days(ctx)),
         extra={
             "chapters": [{"timestamp": c["timestamp"], "title": c["title"], "start_s": c["start_s"]}
-                         for c in chapters],
+                         for c in chapters] or None,
             "midroll_suggestions_s": chapters_doc.get("midroll_suggestions_s", []),
             "thumbnails": thumbs,
             **marked,
         },
+        fallback_title=fallback, voice_mode=voice, changes=chapter_note,
     )
+    meta = sheet.meta
+    master_title = meta.title  # the Shorts name the master as it will be titled on YouTube
     mp4 = copy_if_changed(Path(long_info["path"]), outbox_target(ctx, "long"))
     for t in thumbs:
         copy_if_changed(ctx.file(f"long/{t}"), mp4.parent / t)
     write_text_atomic(mp4.with_suffix(".json"), meta.model_dump_json(indent=2) + "\n", newline=None)
-    write_sheet_txt(meta, mp4.name, mp4.with_suffix(".txt"))
+    write_sheet_txt(meta, mp4.name, mp4.with_suffix(".txt"), notes=sheet.notes)
     record_output(ctx, kind="long", k=None, item="long", meta=meta, path=mp4,
                   duration_s=float(long_info["duration_s"]), shots=long_shots, profile=mark)
     manifest["long"] = {"mp4": str(mp4), "json": str(mp4.with_suffix(".json")),
@@ -505,8 +872,8 @@ def run_outbox_master(ctx: JobContext) -> None:
         shots = [Shot.from_json(s) for s in shorts_shots[item]["shots"]]
         spec = specs.get(k)
         base = seo_from(seos[min(k, len(seos)) - 1])
-        seo = base.model_copy(update={"description": short_description(base.description, long_seo.title)})
-        smeta = build_metadata(
+        seo = base.model_copy(update={"description": short_description(base.description, master_title)})
+        ssheet = build_sheet(
             channel=ctx.channel, job_id=ctx.job_id, kind="short", k=k, seo=seo, advice=advice, shots=shots,
             combo_id=(spec.combo_id if spec else None) or ctx.combo.combo_id,
             prompt_versions=ctx.versions(),
@@ -514,12 +881,15 @@ def run_outbox_master(ctx: JobContext) -> None:
                 ctx.channel, ctx.job_id, item,
                 day_offset=1 + short_day_offset(ctx.channel, k) + series_delay_days(ctx),
             ),
-            extra={"related_video_instruction": f"Set Related video -> {long_seo.title}",
+            extra={"related_video_instruction": f"{RELATED_PREFIX}{master_title}",
                    "parent_job_id": ctx.job_id, **marked},
+            fallback_title=fallback, duration_s=float(info["duration_s"]), voice_mode=voice,
         )
+        smeta = ssheet.meta
         smp4 = copy_if_changed(Path(info["path"]), outbox_target(ctx, "short", k))
         write_text_atomic(smp4.with_suffix(".json"), smeta.model_dump_json(indent=2) + "\n", newline=None)
-        write_sheet_txt(smeta, smp4.name, smp4.with_suffix(".txt"), related_title=long_seo.title)
+        write_sheet_txt(smeta, smp4.name, smp4.with_suffix(".txt"), related_title=master_title,
+                        notes=ssheet.notes)
         record_output(ctx, kind="short", k=k, item=item, meta=smeta, path=smp4,
                       duration_s=float(info["duration_s"]), shots=shots, profile=mark)
         manifest[item] = {"mp4": str(smp4), "json": str(smp4.with_suffix(".json")),

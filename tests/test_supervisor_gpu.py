@@ -6,7 +6,6 @@ from ns_common.models import GpuStatus, Runtime
 from ns_common.paths import Paths
 from ns_supervisor.core import Supervisor
 from ns_supervisor.gpu import (
-    FakeGpuProbe,
     NullGpuProbe,
     NvidiaSmiGpuProbe,
     parse_nvidia_smi,
@@ -84,11 +83,16 @@ def test_run_nvidia_smi_is_none_without_the_binary(monkeypatch: pytest.MonkeyPat
     assert run_nvidia_smi() is None
 
 
-def test_fake_probe_sequence_repeats_the_last_value() -> None:
-    a, b = GpuStatus(name="a"), GpuStatus(name="b", load_pct=1.0)
-    f = FakeGpuProbe(values=[a, b])
-    assert [f.sample(), f.sample(), f.sample()] == [a, b, b] and f.calls == 3
+def test_the_null_probe_reports_nothing() -> None:
     assert NullGpuProbe().sample() is None
+
+
+def test_a_probe_of_the_simulated_card_says_so_and_a_real_one_never_does() -> None:
+    """H-10: the reading carries `simulated: true` only from a probe that asks the simulated card."""
+    sim = NvidiaSmiGpuProbe(runner=lambda: LINE, simulated=True).sample()
+    real = NvidiaSmiGpuProbe(runner=lambda: LINE).sample()
+    assert sim is not None and sim.simulated is True and sim.model_dump(mode="json")["simulated"] is True
+    assert real is not None and "simulated" not in real.model_dump(mode="json")
 
 
 def _sup(tmp_path: Path, runtime: Runtime, **kw: object) -> Supervisor:
@@ -102,8 +106,8 @@ def _sup(tmp_path: Path, runtime: Runtime, **kw: object) -> Supervisor:
 
 
 def test_supervisor_status_carries_the_gpu_block(tmp_path: Path) -> None:
-    gpu = GpuStatus(name="RTX", load_pct=12.5, vram_used_mb=1000, vram_total_mb=16000, temp_c=50.0)
-    sup = _sup(tmp_path, Runtime.default("gpu"), gpu_probe=FakeGpuProbe(gpu))
+    probe = NvidiaSmiGpuProbe(runner=lambda: "RTX, 12.5, 1000, 16000, 50\n")  # nvidia-smi's own line shape
+    sup = _sup(tmp_path, Runtime.default("gpu"), gpu_probe=probe)
     assert sup.status()["gpu"] == {
         "name": "RTX",
         "load_pct": 12.5,
@@ -114,7 +118,8 @@ def test_supervisor_status_carries_the_gpu_block(tmp_path: Path) -> None:
 
 
 def test_supervisor_status_gpu_is_null_without_a_reading(tmp_path: Path) -> None:
-    assert _sup(tmp_path, Runtime.default("gpu"), gpu_probe=FakeGpuProbe(None)).status()["gpu"] is None
+    absent = NvidiaSmiGpuProbe(runner=lambda: None)  # nvidia-smi absent, failing or hanging
+    assert _sup(tmp_path, Runtime.default("gpu"), gpu_probe=absent).status()["gpu"] is None
 
 
 def test_cpu_dev_profile_uses_no_probe(tmp_path: Path) -> None:

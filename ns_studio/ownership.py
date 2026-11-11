@@ -58,7 +58,7 @@ from ns_common.errors import describe
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.singleton import AlreadyRunning, FileLock
-from ns_studio.errors import PAUSED, UNEXPECTED, StudioError
+from ns_studio.errors import OUT_OF_TIME, PAUSED, UNEXPECTED, StudioError
 
 OWNERS = "owners"
 INTERRUPTED_CODE = "NS-E328"
@@ -136,6 +136,33 @@ OFFER_SOURCE = "nightly_recovery"
 #: Queue card says so, with NS-E330, instead of naming a restart that did not happen.
 PAUSED_OWNER = "its channel was paused"
 PAUSED_REASON = "its channel is paused"  # `resume_problem` of a job whose channel is paused
+#: The `owner` of a record the nightly closed itself before a stage, to end inside Windows' time limit for the
+#: nightly task (card night-fits, S6), and the `reason` that record carries: its card says so, with NS-W211.
+OUT_OF_TIME_OWNER = "it was left for time"
+OUT_OF_TIME_REASON = "out_of_time"
+#: The `owner` of a record the nightly closed because other programs held the graphics card's memory when its
+#: model was to load (card vram-busy, NS-E208): its card says so, with NS-E208, and the nightly continues it.
+VRAM_OWNER = "other programs held the graphics card's memory"
+VRAM_CODE = "NS-E208"
+#: The `owner` of a record the nightly closed because the graphics card stayed in use by another task for
+#: the whole wait (NS-E201): a new job waits for the next night as a half-made one does (card vram-busy).
+CARD_BUSY_OWNER = "the graphics card was in use by another task"
+CARD_BUSY_CODE = "NS-E201"
+#: The `owner` and `reason` of a record the nightly closed itself because its stage stopped as the PC woke
+#: from a sleep (card night-fits-b, 4b.4): continued by the next nightly run like a job left for time.
+SLEPT_OWNER = "the PC went to sleep"
+SLEPT_REASON = "slept"
+#: What the run does and does not hold off (`ns_common.keepawake`: ES_SYSTEM_REQUIRED stops idle sleep only).
+SLEEP_WAYS = (
+    "the run keeps the PC from falling asleep when idle, but not from Sleep chosen in Start, the power "
+    "button, a closed lid or a low battery"
+)
+SLEPT_HINT = (
+    f"The PC went to sleep while the night's run worked on this video ({SLEEP_WAYS}). Press Retry to "
+    "continue it from where it stopped: the finished stages are kept."
+)
+#: The hint of a nightly job whose stop was explained (`nightcause`): the card's words say what stopped it.
+INTERRUPTED_HINT_KNOWN = "Press Retry to continue it from where it stopped: the finished stages are kept."
 
 Liveness = Literal["live", "dead", "interrupted", "ended", "unknown"]
 
@@ -676,6 +703,11 @@ def hold(paths: Paths, kind: str, owner_id: str, **fields: Any) -> Iterator[None
         _HELD[key] = 1
     known = read_record(paths, owner_id) or {}
     extra = {k: v for k, v in fields.items() if v is not None}
+    if kind == "job" and known.get("cannot_fit"):
+        # Someone runs a job the night gave up (a Retry, `studio run --resume`): it is no longer given up. If
+        # this run is interrupted too, the job is an interrupted job like any other and the nightly decides
+        # about it again by the same decision (card night-fits: a healed stage is then continued).
+        extra.update(cannot_fit=None, resume_problem=None, misses=0, first_next=False)
     origin = known.get("origin") or extra.get("origin") or "manual"
     extra.pop("origin", None)
     write_record(
@@ -764,12 +796,20 @@ FATES = ("open", "resumed", "failed_again", "waiting")
 
 
 def interrupted_entry(
-    job_id: str, channel: str | None, stage: str | None, fate: str = "open", *, has_card: bool | None = None
+    job_id: str,
+    channel: str | None,
+    stage: str | None,
+    fate: str = "open",
+    *,
+    has_card: bool | None = None,
+    said: str | None = None,
 ) -> dict[str, Any]:
     """One `interrupted_jobs` entry of a run summary: which job, where it stopped and what became of it.
 
     `state` is the fate (one of `FATES`); `resumed` is `state == "resumed"` (the key older readers know);
-    `has_card` says whether a Retry card in the Queue stands for the job (omitted when not known).
+    `has_card` says whether a Retry card in the Queue stands for the job (omitted when not known); `said`
+    is why a `waiting` job waits when that was the graphics card's memory (the engine's NS-E208 words, which
+    name the programs Windows reported; omitted otherwise).
     """
     if fate not in FATES:
         raise ValueError(f"unknown fate {fate!r}")
@@ -782,6 +822,8 @@ def interrupted_entry(
     }
     if has_card is not None:
         item["has_card"] = has_card
+    if said:
+        item["said"] = said
     return item
 
 
@@ -837,6 +879,10 @@ def run_state(
             why = f": {summary['reason']}" if summary.get("reason") else ""  # a refused night says why
             return "failed", f"the night stopped on a problem ({summary['failed']}) before it finished{why}"
         if isinstance(summary, Mapping) and summary.get("interrupted") is True:
+            if summary.get("cause_said"):  # what stopped it, found when it was closed (`nightcause`)
+                said = str(summary["cause_said"])
+                said = said[:1].lower() + said[1:] if said.startswith("The ") else said
+                return "interrupted", f"interrupted: {said}"
             if summary.get("owner") == "unknown":
                 return (
                     "interrupted",
@@ -887,6 +933,8 @@ def _card_text(
     owner: str | None = None,
     origin: str = NIGHTLY_ORIGIN,
     by: str = "nightly",
+    limit_s: int | None = None,
+    cause_said: str | None = None,
 ) -> str:
     """The words of an interrupted job's Queue card. Three things are said, each from its own fact:
 
@@ -899,12 +947,28 @@ def _card_text(
       is paused cannot be retried (Retry answers 409 `channel_paused`), so its card never says "press Retry"
       without "after the resume", and it says that the first nightly run after the resume continues it. The
       sentences stay true when the owner pauses or resumes later, because nothing rewrites a card then.
+
+    A job the night left before a stage for time (`OUT_OF_TIME_OWNER`, card night-fits) says that instead of a
+    stop, with the task's limit (`limit_s`, the one the night planned with; the registered one by default).
+    A job of a dead night whose stop was explained (`cause_said`, `nightcause`) says what stopped it; one the
+    night closed as the PC woke from a sleep (`SLEPT_OWNER`) says that.
     """
     at = f"Interrupted at {stage}" if stage else "Interrupted"
     cause = "its channel was paused" if owner == PAUSED_OWNER else "the PC or Nightshift stopped"
     nightly = origin == NIGHTLY_ORIGIN
     during = "during the night's run" if nightly else "while this job ran"
     stopped = f"{at}: {cause} {during}."
+    if owner in (VRAM_OWNER, CARD_BUSY_OWNER):  # the card was not free: the error table's own sentence
+        stopped = f"{at} {during}: {describe(VRAM_CODE if owner == VRAM_OWNER else CARD_BUSY_CODE).message}"
+    elif nightly and owner == SLEPT_OWNER:
+        stopped = f"{at}: the PC went to sleep during the night's run, and the stage stopped as it woke."
+    elif nightly and cause_said and owner != PAUSED_OWNER:
+        said = cause_said[:1].lower() + cause_said[1:] if cause_said.startswith("The ") else cause_said
+        stopped = f"{at}: {said}."
+    if owner == OUT_OF_TIME_OWNER:
+        stopped = _left_words(stage, limit_s)
+        if resume == "pending" and reason is None and nightly:
+            return f"{stopped} The next nightly run continues it{IF_NIGHTLY_ON}, or press Retry."
     if resume == "resumed":
         if by == "hand":
             return f"{stopped} It was continued with studio run --resume and it finished."
@@ -928,15 +992,46 @@ def _card_text(
     return f"{stopped} Press Retry to continue it{why}."
 
 
+def _left_words(stage: str | None, limit_s: int | None) -> str:
+    """`Left at <stage> so the night's run would end inside Windows' 6-hour limit for the nightly task.`"""
+    from ns_studio.nightclock import limit_adjective
+
+    if limit_s is None:
+        from ns_supervisor.schedule_cfg import TASK_TIME_LIMIT_S
+
+        limit_s = int(TASK_TIME_LIMIT_S)
+    where = f" at {stage}" if stage else ""
+    return (
+        f"Left{where} so the night's run would end inside Windows' {limit_adjective(int(limit_s))} limit for "
+        "the nightly task."
+    )
+
+
 def _card_error(
-    stage: str | None, owner: str | None, reason: str | None, origin: str = NIGHTLY_ORIGIN
+    stage: str | None,
+    owner: str | None,
+    reason: str | None,
+    origin: str = NIGHTLY_ORIGIN,
+    cause_said: str | None = None,
 ) -> dict[str, Any]:
     """The code and hint of the card: NS-E330 when a pause stopped the job or holds it now (its hint says to
-    resume the channel first), else NS-E328 (its hint says to press Retry, which then works). The NS-E328 hint
-    names the night's run only for a job of the nightly run (`origin`)."""
+    resume the channel first), NS-W211 for a job the night left for time, else NS-E328 (its hint says to press
+    Retry, which then works). The NS-E328 hint names the night's run only for a job of the nightly run
+    (`origin`), and names no guessed cause when the card's words say what stopped it (a sleep,
+    `cause_said`)."""
     if owner == PAUSED_OWNER or reason == PAUSED_REASON:
         return {"code": PAUSED, "hint": describe(PAUSED).hint, "stage": stage}
+    if owner == OUT_OF_TIME_OWNER:
+        return {"code": OUT_OF_TIME, "hint": describe(OUT_OF_TIME).hint, "stage": stage}
+    if owner == VRAM_OWNER:
+        return {"code": VRAM_CODE, "hint": describe(VRAM_CODE).hint, "stage": stage}
+    if owner == CARD_BUSY_OWNER:
+        return {"code": CARD_BUSY_CODE, "hint": describe(CARD_BUSY_CODE).hint, "stage": stage}
     hint = INTERRUPTED_HINT if origin == NIGHTLY_ORIGIN else INTERRUPTED_HINT_BY_HAND
+    if origin == NIGHTLY_ORIGIN and owner == SLEPT_OWNER:
+        hint = SLEPT_HINT
+    elif origin == NIGHTLY_ORIGIN and cause_said:
+        hint = INTERRUPTED_HINT_KNOWN
     return {"code": INTERRUPTED_CODE, "hint": hint, "stage": stage}
 
 
@@ -972,7 +1067,7 @@ def _card_result(
 ) -> dict[str, Any]:
     return {
         "studio_job_ids": [job_id],
-        "error": _card_error(stage, rec.get("owner"), reason, _origin_of(rec)),
+        "error": _card_error(stage, rec.get("owner"), reason, _origin_of(rec), rec.get("cause_said")),
         "interrupted": {
             "stage": stage,
             "origin": _origin_of(rec),
@@ -981,6 +1076,9 @@ def _card_result(
             "resume": resume,
             "reason": reason,
             "at": _iso(),
+            "limit_s": rec.get("limit_s"),
+            "cause": rec.get("cause"),
+            "cause_said": rec.get("cause_said"),
         },
     }
 
@@ -1003,7 +1101,8 @@ def offer_job(
     if mine is None and rows:
         return None
     result = _card_result(job_id, stage, rec, resume, reason)
-    message = _card_text(stage, resume, reason, rec.get("owner"), _origin_of(rec))
+    message = _card_text(stage, resume, reason, rec.get("owner"), _origin_of(rec), limit_s=rec.get("limit_s"),
+                         cause_said=rec.get("cause_said"))
     stamp = _iso(when)
     if mine is not None:
         _write_card(db, str(mine["job_id"]), "failed", message, result, finished=stamp)
@@ -1048,10 +1147,12 @@ def _settle(
     failure: tuple[str, str] | None = None,
     output_ids: Sequence[str] | None = None,
     by: str = "nightly",
+    stopped: Mapping[str, Any] | None = None,
 ) -> None:
     """Rewrite the card of an interrupted job after somebody tried to continue it (no card, no change).
 
-    `by` is who: the nightly run (it continues only its own jobs), or `hand` for `studio run --resume`."""
+    `by` is who: the nightly run (it continues only its own jobs), or `hand` for `studio run --resume`.
+    `stopped` replaces what stopped it last (`owner`, `stage`, `limit_s`): the continuation stopped too."""
     mine = _our_row(_rows_for(db, job_id))
     if mine is None:
         return
@@ -1064,12 +1165,17 @@ def _settle(
     interrupted["resume"] = resume
     if reason is not None:
         interrupted["reason"] = reason
+    interrupted.update(stopped or {})
     result["interrupted"] = interrupted
     stage = interrupted.get("stage")
     origin = _origin_of(interrupted)
-    message = _card_text(stage, resume, reason, interrupted.get("owner"), origin, by)
-    if resume == "needs_retry":  # the code and hint follow the reason it waits now, like the words
-        result["error"] = _card_error(stage, interrupted.get("owner"), reason, origin)
+    message = _card_text(
+        stage, resume, reason, interrupted.get("owner"), origin, by, limit_s=interrupted.get("limit_s"),
+        cause_said=interrupted.get("cause_said"),
+    )
+    if resume == "needs_retry" or stopped:  # the code and hint follow why it waits now, like the words
+        result["error"] = _card_error(stage, interrupted.get("owner"), reason, origin,
+                                      interrupted.get("cause_said"))
     if status == "done":
         result.pop("error", None)
         result["output_ids"] = list(output_ids or [])
@@ -1096,6 +1202,20 @@ def settle_failed(db: SqlDb, job_id: str, code: str, detail: str) -> None:
     _settle(db, job_id, "failed", "retry", failure=(code, detail))
 
 
+def settle_left_for_time(db: SqlDb, job_id: str, stage: str | None, limit_s: int | None) -> None:
+    """The nightly continued the job and left it again before `stage` for time (card night-fits, S6): its card
+    says so, NS-W211, and that the next nightly run continues it."""
+    stopped = {"owner": OUT_OF_TIME_OWNER, "stage": stage, "limit_s": limit_s}
+    _settle(db, job_id, "failed", "pending", stopped=stopped)
+
+
+def settle_slept(db: SqlDb, job_id: str, stage: str | None) -> None:
+    """The nightly continued the job and its stage stopped as the PC woke from a sleep (card night-fits-b):
+    its card says so and that the next nightly run continues it."""
+    stopped = {"owner": SLEPT_OWNER, "stage": stage, "cause": SLEPT_REASON, "cause_said": None}
+    _settle(db, job_id, "failed", "pending", stopped=stopped)
+
+
 def settle_needs_retry(db: SqlDb, job_id: str, reason: str) -> None:
     """The nightly cannot continue the job (its channel was paused, it is too old): the card says Retry."""
     _settle(db, job_id, "failed", "needs_retry", reason=reason)
@@ -1117,6 +1237,8 @@ class Interrupted:
     problem: str | None = None
     card_id: str | None = None
     dashboard_owned: bool = False
+    #: what stopped its dead night (`nightcause.Cause`), for a job of the nightly run; None when not asked
+    cause: Any = None
 
     @property
     def has_card(self) -> bool:
@@ -1155,10 +1277,41 @@ def resume_problem(paths: Paths, rec: Mapping[str, Any], now: datetime | None = 
         return "its channel is paused"
     if str(info.get("fmt")) != ch.format:
         return "its channel now makes another type of video"
-    created = _parse(info.get("created_at"))
-    if created is not None and now - created > timedelta(days=RESUME_WITHIN_DAYS):
+    if rec.get("cannot_fit"):  # the night's time decision gave it up (card night-fits): its own sentence
+        return str(rec["cannot_fit"])
+    from ns_studio import nightfit
+
+    anchor = age_anchor(paths, rec, info)
+    if anchor is not None and nightfit.too_old((now - anchor).total_seconds() / 86400, RESUME_WITHIN_DAYS):
+        if rec.get("progressed_at"):
+            return f"no night has finished a stage of it for more than {RESUME_WITHIN_DAYS} days"
         return f"it is more than {RESUME_WITHIN_DAYS} days old"
     return None
+
+
+def age_anchor(
+    paths: Paths,
+    rec: Mapping[str, Any],
+    info: Mapping[str, Any] | None = None,
+    *,
+    lines: Sequence[Mapping[str, Any]] | None = None,
+) -> datetime | None:
+    """Where a job's age counts from (card night-fits, `nightfit.too_old`): when a stage of it last FINISHED
+    (the ledger's `stage` lines, so a night Windows killed after it finished stages still counts, and the
+    record's `progressed_at` written when the night left it), else its creation. A night that left it
+    without finishing a stage does not make it younger. `lines`: the ledger already read (else it is read)."""
+    if info is None:
+        info = job_info(paths, str(rec["id"]))
+    from ns_studio import ledger
+
+    if lines is None:
+        try:
+            lines = ledger.read(paths)
+        except Exception:  # noqa: BLE001 - an unreadable ledger: the record alone
+            lines = []
+    found = [t for t in (_parse(rec.get("progressed_at")), _parse(ledger.last_done_at(lines, str(rec["id"]))))
+             if t is not None]
+    return max(found) if found else _parse(info.get("created_at"))
 
 
 def _has_output(db: SqlDb, job_id: str) -> bool:
@@ -1189,13 +1342,20 @@ def job_finished(paths: Paths, db: SqlDb, job_id: str, fmt: str | None = None) -
     return all(isinstance(entries.get(n), dict) and entries[n].get("status") == "done" for n in names)
 
 
-def _close_job(paths: Paths, db: SqlDb, rec: dict[str, Any], now: datetime, owner: str) -> Interrupted | None:
+def _close_job(
+    paths: Paths, db: SqlDb, rec: dict[str, Any], now: datetime, owner: str, cause: Any = None
+) -> Interrupted | None:
     """Close one dead job: offer it in the Queue first, then record it as interrupted.
 
     The card comes first on purpose: the record is what tells the next `recover` that there is still
     something open, so when the database refuses the card (locked) the record stays open and the next call
-    tries again, instead of losing the job for good. Raises what the database raised.
+    tries again, instead of losing the job for good. Raises what the database raised. `cause` is what stopped
+    its dead night (`nightcause.Cause`): its card and record keep the sentence when it says more than the old
+    words.
     """
+    kind, said, _extra = _cause_fields(cause)
+    # this stop's cause only: a cause an earlier stop of the same job left in its record is not this one's
+    rec = {**rec, "cause": kind, "cause_said": said}
     job_id = str(rec["id"])
     info = job_info(paths, job_id)
     fmt = rec.get("fmt") or info.get("fmt")
@@ -1228,6 +1388,7 @@ def _close_job(paths: Paths, db: SqlDb, rec: dict[str, Any], now: datetime, owne
         owner,
         origin == "daily" and problem is None,
         problem,
+        cause=cause,
     )
     # Only a job `make_job` announced is a story job someone started; a series part or a job reopened by hand
     # (a record made by `hold` alone) has its own way back, so the Queue gets no second card for it.
@@ -1253,6 +1414,8 @@ def _close_job(paths: Paths, db: SqlDb, rec: dict[str, Any], now: datetime, owne
         owner=owner,
         channel=channel,
         fmt=fmt,
+        cause=rec["cause"],
+        cause_said=rec["cause_said"],
     )
     return item
 
@@ -1286,6 +1449,7 @@ def _close_run(
     now: datetime,
     *,
     mode_note: str | None = None,
+    cause: Any = None,
 ) -> dict[str, Any]:
     # `jobs` is what the run made (the key the Queue counts videos from); what it left half made is listed
     # apart, under `interrupted_jobs`, so an interrupted night never reads as "1 video made".
@@ -1296,6 +1460,9 @@ def _close_run(
         "jobs": [],
         "interrupted_jobs": [],
     }
+    kind, said, extra = _cause_fields(cause)
+    if said is not None:  # what stopped it (`nightcause`): `run_state` and the morning note say it
+        summary["cause"], summary["cause_said"] = kind, said
     for j in listed:
         job_id = str(j.get("job_id"))
         item = closed.get(job_id)
@@ -1319,25 +1486,63 @@ def _close_run(
         (_iso(seen), json.dumps(summary), run_id),
     )
     write_record(paths, run_id, state="interrupted", closed_at=_iso(now), owner=owner)
-    return {"run_id": run_id, "owner": owner, "interrupted_jobs": summary["interrupted_jobs"]}
+    out: dict[str, Any] = {"run_id": run_id, "owner": owner, "interrupted_jobs": summary["interrupted_jobs"]}
+    if said is not None:
+        out.update(cause=kind, said=said, extra=extra)
+    return out
+
+
+def _cause_fields(cause: Any) -> tuple[str | None, str | None, str | None]:
+    """(kind, sentence, NS-W212 sentence) of a `nightcause.Cause` that says more than the old words, else
+    three Nones."""
+    if cause is None or not getattr(cause, "known", False):
+        return None, None, None
+    extra = getattr(cause, "extra", None)
+    return str(cause.kind), str(cause.said), str(extra) if extra else None
 
 
 def _recover_owned(
-    paths: Paths, db: SqlDb, now: datetime, out: Recovery, log: NsLogger | None = None
+    paths: Paths,
+    db: SqlDb,
+    now: datetime,
+    out: Recovery,
+    log: NsLogger | None = None,
+    explain: Any = None,
 ) -> None:
     """Close the dead jobs, then the dead runs. One job the database refuses (locked) never stops the others:
-    it stays open, and so does the run that listed it, so the next call closes both."""
+    it stays open, and so does the run that listed it, so the next call closes both. `explain(run_id)` says
+    what stopped a dead nightly run (`nightcause`, asked once per run; None: not asked)."""
     records = list_records(paths)
     closed: dict[str, Interrupted] = {}
     stuck: set[str] = set()
+    dead_runs = {
+        str(rec["id"]) for rec in records
+        if rec.get("kind") == "run" and rec.get("state") in OPEN_STATES
+        and liveness(paths, str(rec["id"]), rec) == "dead"
+    }
+    causes: dict[str, Any] = {}
+
+    def cause_of(run_id: Any) -> Any:
+        if explain is None or not run_id or str(run_id) not in dead_runs:
+            return None
+        if str(run_id) not in causes:
+            try:
+                causes[str(run_id)] = explain(str(run_id))
+            except Exception as e:  # noqa: BLE001 - a cause is never required: the old words stay
+                causes[str(run_id)] = None
+                if log is not None:
+                    log.warn("night_cause_failed", str(e), run_id=str(run_id))
+        return causes[str(run_id)]
+
     for rec in records:
         if rec.get("kind") != "job" or rec.get("state") not in OPEN_STATES:
             continue
         if liveness(paths, str(rec["id"]), rec) != "dead":
             continue
         pid = rec.get("pid")
+        cause = cause_of(rec.get("run_id")) if rec.get("origin") == NIGHTLY_ORIGIN else None
         try:
-            item = _close_job(paths, db, rec, now, f"process {pid} is gone" if pid else "gone")
+            item = _close_job(paths, db, rec, now, f"process {pid} is gone" if pid else "gone", cause)
         except Exception as e:  # noqa: BLE001 - sqlite3 errors, a locked database: retried by the next call
             stuck.add(str(rec["id"]))
             if log is not None:
@@ -1347,9 +1552,7 @@ def _recover_owned(
             closed[item.job_id] = item
             out.jobs.append(item)
     for rec in records:
-        if rec.get("kind") != "run" or rec.get("state") not in OPEN_STATES:
-            continue
-        if liveness(paths, str(rec["id"]), rec) != "dead":
+        if rec.get("kind") != "run" or str(rec["id"]) not in dead_runs:
             continue
         run_id = str(rec["id"])
         if stuck & {str(j.get("job_id")) for j in rec.get("jobs") or [] if isinstance(j, dict)}:
@@ -1359,6 +1562,7 @@ def _recover_owned(
             write_record(paths, run_id, state="done", closed_at=_iso(now))
             continue
         pid = rec.get("pid")
+        cause = cause_of(run_id)
         out.runs.append(
             _close_run(
                 paths,
@@ -1369,8 +1573,13 @@ def _recover_owned(
                 f"process {pid} is gone" if pid else "gone",
                 closed,
                 now,
+                cause=cause,
             )
         )
+        if cause is not None:  # once, as the run is closed: what NS-W212's two-in-two-weeks counts
+            from ns_studio import nightcause
+
+            nightcause.record(paths, run_id, cause, now=now, log=log)
 
 
 def _recover_legacy(
@@ -1466,11 +1675,20 @@ def recovery_message(
 
     `outcomes` is what the nightly then did with a resumable job, by job id: `("resumed", None)`,
     `("failed", <code>)`, `("waiting", None)` (the GPU was busy), `("paused", None)` (its channel was paused
-    during the night) or `("busy", None)` (a Retry from the Queue was already running it). Without an outcome
-    the note never claims the job is being continued: it says when it will be, and how to continue it by hand.
+    during the night), `("busy", None)` (a Retry from the Queue was already running it), or the night's time
+    decision with its one sentence: `("out_of_time", <sentence>)`, `("gave_up", <sentence>)`, or
+    `("slept", <sentence>)` (its stage stopped as the PC woke from a sleep). Without an outcome the note never
+    claims the job is being continued: it says when it will be, and how to continue it by hand.
+
+    A night's job (or run) whose stop `nightcause` explained starts with that sentence ("Windows restarted
+    the PC at 03:12 to finish installing updates, during the night's run, while <channel>'s video was at
+    <stage>.") instead of "The night's run was interrupted (power cut, crash or restart)", which stays for
+    a night that left no evidence (an older version's).
     """
     outcomes = outcomes or {}
-    night: list[str] = []  # jobs of the nightly run
+    night: list[str] = []  # jobs of the nightly run whose stop nothing explains
+    explained: list[str] = []  # jobs (or runs) of the nightly run with what stopped them (`nightcause`)
+    extra: str | None = None
     hand: list[str] = []  # jobs the owner started: no night's run was interrupted for them
     unknown = False
     for j in out.jobs:
@@ -1492,6 +1710,14 @@ def recovery_message(
             )
         elif what == "busy":
             tail = "It is being continued right now from the Queue."
+        elif what in ("out_of_time", "gave_up", "slept") and code:  # the night's decision, its one sentence
+            tail = f"{code[:1].upper()}{code[1:]}."
+        elif what == "out_of_time":
+            tail = (
+                "The night's run had too little time left to continue it inside Windows' limit for the "
+                "nightly task, so the next nightly run continues it first; "
+                f"or {_way_back(j)}. {WHILE_NIGHTLY_ON}"
+            )
         elif what == "paused":
             tail = (
                 "Its channel was paused during the night, so it waits; resume the channel and the next "
@@ -1505,12 +1731,27 @@ def recovery_message(
             tail = (
                 "Press Retry in the Queue to continue it" if j.has_card else f"To continue it, {_way_back(j)}"
             ) + (f" ({j.problem})." if j.problem else ".")
+        _kind, said, more = _cause_fields(j.cause)
+        if j.origin == NIGHTLY_ORIGIN and said:  # what stopped the night, then what became of the job
+            video = f"while {j.channel or j.job_id}'s video was at {j.stage}" if j.stage else (
+                f"while {j.channel or j.job_id}'s video was being made")
+            explained.append(f"{said}, {video}. {tail}")
+            extra = extra or more
+            continue
         (night if j.origin == NIGHTLY_ORIGIN else hand).append(f"{j.channel or j.job_id} {where}. {tail}")
-    if not night and out.runs:
-        unknown = unknown or any(r.get("owner") == "unknown" for r in out.runs)
-        night.append("It had not made a video yet, so nothing is lost.")
-    parts: list[str] = []
-    if night:  # a run of the night was closed, or a job it had made
+    if not night and not explained and out.runs:
+        for r in out.runs:
+            if r.get("said"):
+                explained.append(f"{r['said']}. It had not made a video yet, so nothing is lost.")
+                extra = extra or r.get("extra")
+        bare = [r for r in out.runs if not r.get("said")]
+        if bare:
+            unknown = unknown or any(r.get("owner") == "unknown" for r in bare)
+            night.append("It had not made a video yet, so nothing is lost.")
+    parts: list[str] = list(explained)
+    if extra:  # NS-W212: a second restart for updates within two weeks, said once
+        parts.append(f"{extra}.")
+    if night:  # a run of the night was closed, or a job it had made, and nothing explains what stopped it
         parts.append("The night's run was interrupted (power cut, crash or restart). " + " ".join(night))
     if hand:
         head = "A job you started yourself was" if len(hand) == 1 else "Jobs you started yourself were"
@@ -1543,6 +1784,8 @@ def recover(
     now: datetime | None = None,
     log: NsLogger | None = None,
     note: bool = True,
+    events: Any = None,
+    boot: datetime | None = None,
 ) -> Recovery:
     """Close what a dead process left open: unfinished runs, half-made jobs; tell the owner once.
 
@@ -1551,9 +1794,21 @@ def recover(
     (`RECOVER_WAIT_S`) and then scans, so what it returns is what it closed itself, possibly nothing. The
     nightly passes `note=False` and leaves its own note after it has tried to continue the jobs
     (`leave_recovery_note`), so the note says what happened.
+
+    A dead nightly run is explained by `nightcause.cause` (card night-fits-b) from its ledger, its beat,
+    Windows' System log (`events`: `winevents.SystemLog()` by default, refused under pytest, which reads as
+    "could not be read") and the PC's last start (`boot`: psutil's by default).
     """
     now = now or _now()
     out = Recovery()
+
+    def explain(run_id: str) -> Any:
+        from ns_common.winevents import SystemLog
+        from ns_studio import nightcause
+
+        source = events if events is not None else SystemLog()
+        return nightcause.cause(paths, run_id, source, boot if boot is not None else _boot_time(), log=log)
+
     guard = FileLock(owners_dir(paths) / "recover.lock")  # the engine and the nightly may start together
     deadline = time.monotonic() + RECOVER_WAIT_S
     while True:
@@ -1570,7 +1825,7 @@ def recover(
         except OSError:
             break  # no lock file can be made here, also after the tries: carry on unguarded
     try:
-        _recover_owned(paths, db, now, out, log)
+        _recover_owned(paths, db, now, out, log, explain)
         _recover_legacy(paths, db, now, out, log)
         _prune(paths, now)
     finally:
@@ -1586,6 +1841,16 @@ def recover(
         if note:
             leave_recovery_note(paths, log, out)
     return out
+
+
+def _boot_time() -> datetime | None:
+    """When this PC last started (psutil), or None when it cannot be read."""
+    try:
+        import psutil
+
+        return datetime.fromtimestamp(float(psutil.boot_time()), UTC)
+    except Exception:  # noqa: BLE001 - not known: the cause says less
+        return None
 
 
 def leave_recovery_note(

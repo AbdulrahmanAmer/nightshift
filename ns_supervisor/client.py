@@ -75,10 +75,13 @@ class SupervisorClient:
         model_alias: str | None = None,
         timeout_s: int = 7200,
         pid: int | None = None,
+        vram_wait: bool = False,
     ) -> Endpoint:
         """Acquire `service` for `owner`; blocks while the GPU is busy (up to `timeout_s`).
 
         `pid`: the caller's own process; the engine frees the GPU once it is gone (sent only when given).
+        `vram_wait`: the nightly's load may wait for the card's memory inside `timeout_s` (sent only when set;
+        anyone else gets NS-E208 at once when other programs hold it).
         """
         body: dict[str, Any] = {
             "service": service,
@@ -89,6 +92,8 @@ class SupervisorClient:
         }
         if pid is not None:
             body["pid"] = pid
+        if vram_wait:
+            body["vram_wait"] = True
         r = self._call("POST", "/acquire", body=body, timeout_s=timeout_s + 240)
         return Endpoint(str(r["endpoint"]), r.get("model_alias"))
 

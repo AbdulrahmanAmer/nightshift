@@ -79,6 +79,7 @@ def test_procs_helpers_child_env(
     seen: list[dict[str, Any]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(procs.sys, "platform", "win32")
+    monkeypatch.setattr(gpu.shutil, "which", lambda name: "nvidia-smi")  # found on PATH: it is run
     procs.kill_tree(1)
     procs.soft_stop(1)
     procs._nvsmi(["-L"])

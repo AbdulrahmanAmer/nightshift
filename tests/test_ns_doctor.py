@@ -194,7 +194,7 @@ class Down:
 def smi_row(paths: Paths, monkeypatch: pytest.MonkeyPatch, report: str | None) -> tuple[bool, str]:
     from ns_supervisor import procs
 
-    monkeypatch.setattr(procs, "nvidia_smi_report", lambda: report)
+    monkeypatch.setattr(procs, "nvidia_smi_report", lambda smi=None: report)
     rows = {name: (ok, detail) for name, ok, detail in doctor.diagnose(paths, Down())}  # type: ignore[arg-type]
     return rows["nvidia-smi"]
 
@@ -262,7 +262,7 @@ def test_ns_doctor_exits_0_on_a_cpu_install_when_the_rest_is_ok(
         py = paths.venvs / venv / "Scripts" / "python.exe"
         py.parent.mkdir(parents=True)
         py.write_bytes(b"MZ")
-    monkeypatch.setattr(procs, "nvidia_smi_report", lambda: None)
+    monkeypatch.setattr(procs, "nvidia_smi_report", lambda smi=None: None)
     monkeypatch.setattr(doctor.ffmpeg, "available", lambda: True)  # (the PC's FFmpeg is not what is tested)
     up = SupervisorClient("http://sup", client=httpx.Client(
         transport=httpx.MockTransport(lambda req: httpx.Response(200, json={"ok": True}))))
@@ -275,3 +275,98 @@ def test_ns_doctor_exits_0_on_a_cpu_install_when_the_rest_is_ok(
     res = CliRunner().invoke(ns_cli.app, ["doctor"], env={"NIGHTSHIFT_HOME": str(home)})
     assert "[FAIL] nvidia-smi: no NVIDIA driver found" in res.output and res.exit_code == 1, res.output
     assert res.output.count("[FAIL]") == 1, res.output
+
+
+# ------------------------------------------------------------------------- D-44 x H-10: the row's table
+# The row "nvidia-smi" for every (profile x fake_gpu switch x NVIDIA driver on the PC) the merged code can
+# reach. "test" is an engine-test install (fake_footage), "dev" a dev install; "set, ignored" is the switch
+# typed into a normal install (NS-W121). The simulated card answers whenever the switch is in effect, the
+# processor and dev installs say they need no driver, and every other install asks the real tool.
+#
+# | profile                 | switch            | driver | nvidia-smi row                    | fake_gpu row |
+# |-------------------------|-------------------|--------|-----------------------------------|--------------|
+# | gpu                     | off               | yes/no | ok "ok" / FAIL "no NVIDIA driver" | -            |
+# | gpu                     | on (test install) | any    | ok "simulated (fake_gpu): <name>" | ok "on: ..." |
+# | gpu                     | ignored (normal)  | yes/no | ok "ok" / FAIL "no NVIDIA driver" | FAIL NS-W121 |
+# | cpu-dev                 | off               | any    | ok "not needed (... cpu-dev)"     | -            |
+# | cpu-dev                 | on (test install) | any    | ok "simulated (fake_gpu): <name>" | ok "on: ..." |
+# | cpu-dev                 | ignored (normal)  | any    | ok "not needed (... cpu-dev)"     | FAIL NS-W121 |
+# | any, dev install        | off               | any    | ok "not needed (dev mode)"        | -            |
+# | any, dev install        | on                | any    | ok "simulated (fake_gpu): <name>" | ok "on: ..." |
+# | unknown: missing/no JSON| cannot be read    | yes/no | ok "ok" / FAIL "no NVIDIA driver" | -            |
+# | unknown: JSON, invalid  | on (test install) | any    | ok "simulated (fake_gpu): <name>" | ok "on: ..." |
+# The last row: the runtime.json row is the FAIL (NS-E125); the switch is read as every tolerant reader
+# (is_dev, the commands row) reads it, so the nvidia-smi this install's commands ask is the simulated card.
+SIM_SAYS = "simulated (fake_gpu): Simulated GPU (fake_gpu)"
+NO_DRIVER = (False, "no NVIDIA driver found")
+REAL = {True: (True, "ok"), False: NO_DRIVER}
+
+
+def table_home(paths: Paths, profile: str, switch: str) -> None:
+    """runtime.json for one cell: `profile` gpu, cpu-dev, dev (a dev install on cpu-dev), missing, notjson,
+    invalid (JSON that fails validation); `switch` off, on (a test install), ignored (a normal install)."""
+    if profile == "missing":
+        return
+    paths.ensure()
+    if profile == "notjson":
+        paths.runtime_file.write_text("{not json", encoding="utf-8")
+        return
+    rt = Runtime.default("gpu" if profile in ("gpu", "invalid") else "cpu-dev")
+    data = rt.model_dump(mode="json")
+    data["dev_mode"] = profile == "dev"
+    if switch == "on":
+        data["fake_footage"] = True     # an engine-test install
+    if switch in ("on", "ignored"):
+        data["fake_gpu"] = True
+    if profile == "invalid":
+        data["supervisor_port"] = "not a port"
+    paths.runtime_file.write_text(json.dumps(data), encoding="utf-8")
+
+
+CELLS = [
+    *[("gpu", "off", d, REAL[d], None) for d in (True, False)],
+    *[("gpu", "on", d, (True, SIM_SAYS), True) for d in (True, False)],
+    *[("gpu", "ignored", d, REAL[d], False) for d in (True, False)],
+    *[("cpu-dev", "off", d, (True, CPU_SAYS), None) for d in (True, False)],
+    *[("cpu-dev", "on", d, (True, SIM_SAYS), True) for d in (True, False)],
+    *[("cpu-dev", "ignored", d, (True, CPU_SAYS), False) for d in (True, False)],
+    *[("dev", "off", d, (True, "not needed (dev mode)"), None) for d in (True, False)],
+    *[("dev", "on", d, (True, SIM_SAYS), True) for d in (True, False)],
+    *[(p, "off", d, REAL[d], None) for p in ("missing", "notjson") for d in (True, False)],
+    *[("invalid", "on", d, (True, SIM_SAYS), True) for d in (True, False)],
+]
+
+
+@pytest.mark.parametrize(
+    ("profile", "switch", "driver", "row", "fake_row"), CELLS,
+    ids=[f"{p}|{s}|{'driver' if d else 'no-driver'}" for p, s, d, _, _ in CELLS],
+)
+def test_the_nvidia_smi_row_is_true_in_every_cell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, profile: str, switch: str, driver: bool,
+    row: tuple[bool, str], fake_row: bool | None,
+) -> None:
+    from ns_supervisor import gpu, procs
+
+    paths = Paths(tmp_path / "ns")
+    table_home(paths, profile, switch)
+    asked: list[object] = []
+
+    def real_tool(smi: object = None) -> str | None:   # the PC's own nvidia-smi, with or without a driver
+        asked.append(smi)
+        return "NVIDIA-SMI 570" if driver else None
+
+    monkeypatch.setattr(procs, "nvidia_smi_report", real_tool)
+    got = doctor.diagnose(paths, Down())  # type: ignore[arg-type]
+    rows = {name: (ok, detail) for name, ok, detail in got}
+    assert rows["nvidia-smi"] == row, got
+    assert all(s is gpu.REAL_SMI for s in asked), asked     # only the real tool is ever asked for the driver
+    if row[1] == SIM_SAYS or row[1].startswith("not needed"):
+        assert asked == []                                   # these rows never ask the PC's driver
+    if fake_row is None:
+        assert "fake_gpu" not in rows
+    else:
+        assert rows["fake_gpu"][0] is fake_row, rows["fake_gpu"]
+        want = "on: the simulated" if fake_row else "NS-W121: "
+        assert rows["fake_gpu"][1].startswith(want), rows["fake_gpu"]
+    if profile in ("notjson", "invalid"):
+        assert rows["runtime.json"][0] is False and "NS-E125" in rows["runtime.json"][1], rows["runtime.json"]
