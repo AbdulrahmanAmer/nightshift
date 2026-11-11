@@ -425,6 +425,15 @@ suite and no more is claimed.
   stage, and these fixes are shown by tests (one per origin: the nightly, `studio run`, Run now, a dashboard request,
   a series part, a clip) and were not run on an install again.
 
+- Stopping Nightshift for an update, a rollback or a Repair always ends (D-46, D-48). The install proof of this
+  version found a rollback refused because Nightshift's own engine hung while exiting, and Nightshift was left
+  down. Now the engine exits within 20 seconds of being asked; the update waits for Nightshift's own programs,
+  showing "Waiting for Nightshift to stop: ...", ends what belongs to THIS install and is still there, and refuses
+  (NS-E706) naming only a program that is not Nightshift's. A refusal starts Nightshift again and says so; when
+  Nightshift's own program cannot be ended it says to restart the PC. Setup's Repair does the same over 0.1.14
+  and the earlier candidates. An interrupted update that was finished or repaired now reads as finished
+  everywhere, and nothing starts a job or the engine while one is unfinished (NS-W210), whichever way the program
+  was started. Not covered: shown by tests with real hung processes, not yet repeated on an install.
 - An update or rollback typed in a terminal now hands over to a separate window (D-39). `ns update <zip>`,
   `ns update --github`, `ns update --git` and `ns update --rollback` return at once and open a window, "Nightshift
   update", that shows each step and the result; closing the terminal or that window stops nothing. The command
