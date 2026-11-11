@@ -200,11 +200,28 @@ def database_row(paths: Paths, now: datetime | None = None) -> tuple[str, bool, 
         if result in (dbrestore.OK, dbrestore.NEW):
             ok, said = True, f"ok (checked {at})"
         elif result in (dbrestore.HELD, dbrestore.NEWER, dbrestore.SLOW):
-            ok, said = True, f"not checked {at} ({chk.get('detail')}); it is checked at the next start"
+            try:
+                starts = int(chk.get("not_checked_starts") or 1)
+            except (TypeError, ValueError):
+                starts = 1
+            if starts >= dbrestore.NOT_CHECKED_SAID_AFTER:  # a bound: never "ok" for ever
+                ok, said = False, (f"could not be checked at the last {starts} starts ({chk.get('detail')}); "
+                                   f"{dbrestore.newest_copy_words(paths)}; close every Nightshift window and "
+                                   "any other program that uses the Nightshift folder, then open the "
+                                   "Dashboard")
+            else:
+                ok, said = True, f"not checked {at} ({chk.get('detail')}); it is checked at the next start"
         elif result == "restore_failed":
             ok, said = False, str(chk.get("detail"))
         else:
             ok, said = False, f"found damaged {at}; opening the Dashboard replaces it with the newest copy"
+    nights = dbrestore.read_json(dbrestore.backup_state_path(paths))
+    if nights is not None and nights.get("failed_nights"):
+        ok = False
+        said += (f"; no nightly copy was made on the last {nights.get('failed_nights')} night(s) "
+                 f"({nights.get('last_error')}); {dbrestore.newest_copy_words(paths)}")
+    if dbrestore.full_check_path(paths).exists():
+        said += "; it answered 'damaged' while in use: the next start checks it in full"
     done = dbrestore.read_json(dbrestore.restored_path(paths))
     if done is not None:
         restored: datetime | None = None

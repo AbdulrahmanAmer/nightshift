@@ -14,6 +14,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from ns_common import dbrestore
 from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.db import BackupFailed, claim_job_id
 from ns_common.dbrestore import BROKE_MID_RUN, WAY_OUT_WINDOW, is_damage_error
@@ -310,9 +311,13 @@ def _run_daily(
             report["publish_times_set"] = apply_publish_times(env, done, rng, now)
             try:
                 report["backup"] = str(env.db.backup(env.paths.backup_dir, today=now.date()))
-            except BackupFailed as e:  # 4b.3: no copy tonight; the older copies all stay (the log says why)
+                dbrestore.backup_made(env.paths)
+            except BackupFailed as e:  # 4b.3: no copy tonight; the older copies all stay. Counted and SAID
+                # (NS-W214 with the age of the newest copy); a copy whose check answered damage makes the
+                # next start check the live file in full.
                 report["backup"], report["backup_failed"] = None, str(e)
-                env.log.warn("backup_failed", str(e))
+                report["backup_note"] = dbrestore.backup_failed(
+                    env.paths, str(e), env.log, notifications.db_note(env.paths), damaged=e.damaged)
         except BaseException as e:  # the night itself broke: close its row, so it never looks unfinished
             damaged = _damage_of(e)
             report["failed"] = DB_DAMAGED if damaged is not None else getattr(e, "code", UNEXPECTED)
@@ -376,6 +381,9 @@ def _stop_for_damage(env: jobs.Env, report: dict, now: datetime, damaged: NsErro
     report["failures"].append({"job_id": job_id, "channel": "The night", "code": DB_DAMAGED,
                                "error": BROKE_MID_RUN, "detail": raw})
     env.log.error("daily_db_damaged", raw, code=DB_DAMAGED)
+    # The quick check of the next start may pass (an index entry without its row): this mark makes that start
+    # run the full check and decide on it, so the note's promise below holds or the owner reads why not.
+    dbrestore.want_full_check(env.paths, f"the night stopped: {raw}", env.log)
     try:
         env.paths.logs.mkdir(parents=True, exist_ok=True)
         write_text_atomic(env.paths.logs / f"nightly-{now:%Y%m%d}.json", json.dumps(report, indent=2) + "\n")

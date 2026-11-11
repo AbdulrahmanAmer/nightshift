@@ -119,7 +119,7 @@ class Db:
         are the copies older than the newest `keep` deleted, and the `.tmp` a killed backup left. A copy that
         fails its check, or cannot be written whole (a full disk), is deleted and `BackupFailed` says why: the
         older copies all stay, and that date's earlier copy too."""
-        from ns_common.dbrestore import check
+        from ns_common.dbrestore import check, is_damage_error
 
         today = today or datetime.now(UTC).date()
         backup_dir.mkdir(parents=True, exist_ok=True)
@@ -134,7 +134,9 @@ class Db:
                 dest.close()
             found = check(tmp, full=True, fixed=True)
             if found.verdict != "ok":
-                raise BackupFailed(f"the copy failed its check ({found.verdict}: {found.detail})")
+                failed = BackupFailed(f"the copy failed its check ({found.verdict}: {found.detail})")
+                failed.damaged = found.verdict == "damaged"  # positive: the live file is checked in full next
+                raise failed
             with open(tmp, "r+b") as fh:
                 os.fsync(fh.fileno())
             os.replace(tmp, target)
@@ -145,7 +147,9 @@ class Db:
         except (OSError, sqlite3.Error) as e:
             with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
-            raise BackupFailed(f"the copy could not be written ({type(e).__name__}: {e})") from e
+            failed = BackupFailed(f"the copy could not be written ({type(e).__name__}: {e})")
+            failed.damaged = is_damage_error(e)  # SQLite answered CORRUPT while reading the live file
+            raise failed from e
         existing = sorted(backup_dir.glob("studio-*.db"))
         stale = existing[:-keep] if len(existing) > keep else []
         for old in stale:
@@ -169,7 +173,10 @@ class Db:
 
 
 class BackupFailed(Exception):
-    """`Db.backup` made no copy (it failed its check, or could not be written); the older copies stay."""
+    """`Db.backup` made no copy (it failed its check, or could not be written); the older copies stay.
+    `damaged`: the copy's full check answered damage (the source's pages are damaged)."""
+
+    damaged = False
 
 
 class UnusableDb(Db):

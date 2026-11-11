@@ -11,9 +11,20 @@ Damage is decided by evidence, never guessed (`check`):
   rows other than `ok`, or SQLite's own CORRUPT / NOTADB answer ("database disk image is malformed", "file
   is not a database"). A file of zero bytes, or no file at all, is "lost" when this home has a history
   (a nightly copy, or a job folder with finished videos); without one it is a new install, made as before.
+* ONE decision: `decide` is the only place that says "damaged / restore / rebuild / resume / give up"; it
+  returns a `Decision` (an `Act` and the evidence it rests on) from the live file's check, the state of each
+  nightly copy (`survey_copies`) and a left-over record compared with the disk (`record_state`). Only
+  positive evidence moves or replaces a file: a copy that is held, slow or unlistable stops the restore with
+  NS-E209 and changes nothing (it is never "a damaged copy"), and a record of an earlier run is checked
+  against the studio.db that is there now before anything acts on it (a sound file that is not the record's
+  copy stays, and the record goes).
+* A damage answer while the database is in use (the night's stop, the dashboard's 503) and a nightly copy
+  that fails its check leave `run/db-full-check.json`: the next start's check is then the FULL one.
+* A check that could not be made is counted (`run/db-check.json`), and a night without a nightly copy too
+  (`run/db-backup.json`); both are said with NS-W214 (the first from the 3rd start in a row).
 * NOT damage: a file another program holds or locks (BUSY, LOCKED, CANTOPEN, IOERR: it is opened as before
-  and checked at the next start); a schema this SQLite cannot read ("malformed database schema", "unsupported
-  file format": a newer program wrote it); a check that ran out of time; a rollback journal left behind
+  and checked at the next start); a file format this SQLite cannot read ("unsupported file format": a newer
+  program wrote it); a check that ran out of time; a rollback journal left behind
   (a writing connection rolls it back, as every open does, and the check is made on that connection). A
   `-wal` whose frames are torn is not damage either: SQLite checks every frame's checksum and drops the ones
   that fail, so the file it reads is whole (what those frames held is lost, and nothing can tell).
@@ -44,6 +55,7 @@ The morning notes belong to `ns_supervisor.notify`, which `ns_common` cannot imp
 from __future__ import annotations
 
 import contextlib
+import enum
 import errno
 import hashlib
 import json
@@ -88,6 +100,15 @@ REQUIRED_TABLES = frozenset({"channels", "runs", "outputs", "combos"})
 #: `ns doctor` shows the restore while its record is younger than this.
 RESTORED_SHOWN_DAYS = 7
 
+#: The code of "the database's safety net is not working": it could not be checked at `NOT_CHECKED_SAID_AFTER`
+#: starts in a row, or a night made no nightly copy.
+UNSAFE_CODE = "NS-W214"
+NOT_CHECKED_SAID_AFTER = 3
+#: The record's format. A record of another version, or with a step unknown to this program, is not acted on.
+RECORD_VERSION = 1
+STEPS = ("chosen", "set_aside", "in_place", "put_back")
+FULL_CHECK_FILE = "db-full-check.json"  # run/: SQLite answered CORRUPT in use; the next start checks in full
+BACKUP_STATE_FILE = "db-backup.json"    # run/: the nights in a row that made no nightly copy
 CHECK_FILE = "db-check.json"         # run/: the last check of studio.db (time, result)
 RECORD_FILE = "db-restore.json"      # run/: a restore in progress (its step)
 RESTORED_FILE = "db-restored.json"   # run/: the last restore (what was used, what is missing)
@@ -125,8 +146,10 @@ def classify(e: sqlite3.Error) -> str:
     """The verdict an SQLite error is evidence of (DAMAGED only for SQLite's own corruption answers)."""
     text = str(e).lower()
     name = str(getattr(e, "sqlite_errorname", "") or "")
-    if "malformed database schema" in text or "unsupported file format" in text:
+    if "unsupported file format" in text:
         return NEWER
+    # "malformed database schema" is SQLITE_CORRUPT of the schema table (damage to page 1), not a newer
+    # program: this product's plain schema gives no SQLite that answer. It falls to the lines below.
     if name.startswith("SQLITE_CORRUPT") or name == "SQLITE_NOTADB":
         return DAMAGED
     if "database disk image is malformed" in text or "file is not a database" in text:
@@ -223,24 +246,43 @@ def check(path: Path, *, full: bool = False, fixed: bool = False) -> Check:
     return _rows_verdict(rows, started)
 
 
-def has_history(paths: Paths) -> bool:
-    """True when this home made videos before: a nightly copy, or a job folder with an outbox manifest."""
+def history(paths: Paths) -> bool | None:
+    """True when this home made videos before (a nightly copy, or a job folder with an outbox manifest),
+    False when both folders were read and hold none, None when one of them could not be read: "could not
+    look" is not "no history"."""
+    unknown = False
     try:
         if any(_BACKUP_NAME.match(p.name) for p in paths.backup_dir.iterdir()):
             return True
-    except OSError:
+    except FileNotFoundError:
         pass
-    try:
-        return any((j / "outbox" / "manifest.json").is_file() for j in paths.jobs_dir.iterdir())
     except OSError:
-        return False
+        unknown = True
+    try:
+        if any((j / "outbox" / "manifest.json").is_file() for j in paths.jobs_dir.iterdir()):
+            return True
+    except FileNotFoundError:
+        pass
+    except OSError:
+        unknown = True
+    return None if unknown else False
 
 
-def assess(paths: Paths) -> Check:
-    """The live studio.db: `check`, with a missing or empty file read against the home's history."""
-    found = check(paths.db_path)
-    if found.verdict == NEW and has_history(paths):
-        return Check(LOST, f"{found.detail}, while this home has nightly copies or finished videos")
+def has_history(paths: Paths) -> bool:
+    return history(paths) is True
+
+
+def assess(paths: Paths, *, full: bool = False) -> Check:
+    """The live studio.db: `check`, with a missing or empty file read against the home's history. A home
+    whose history cannot be read is not a new install: the missing file is LOST, and `decide` then stops on
+    the copies it cannot list (no new, empty database is made over a history nobody could look at)."""
+    found = check(paths.db_path, full=full)
+    if found.verdict == NEW:
+        known = history(paths)
+        if known is None:
+            return Check(LOST, f"{found.detail}, and the nightly copies or job folders cannot be read now")
+        if known:
+            return Check(LOST, f"{found.detail}, while this home has nightly copies or finished videos")
     return found
 
 
@@ -299,32 +341,122 @@ def write_check(paths: Paths, found: Check, log: NsLogger | None, **extra: Any) 
             log.warn("db_check_not_recorded", str(e))
 
 
+def full_check_path(paths: Paths) -> Path:
+    return run_dir(paths) / FULL_CHECK_FILE
+
+
+def backup_state_path(paths: Paths) -> Path:
+    return run_dir(paths) / BACKUP_STATE_FILE
+
+
 def read_record(paths: Paths) -> dict[str, Any] | None:
-    """The restore in progress, or None. A record that cannot be read is set aside as `.bad` and read as a
-    restore from its first step (nothing it may have moved is lost: every move is to `data/damaged`)."""
+    """The restore in progress, or None. A record that cannot be read, of another version, or with a step
+    this program does not know is set aside as `.bad` and read as NO record (row R1): what is on the disk
+    decides, and nothing is moved on the word of a record nobody can read."""
     path = record_path(paths)
     if not path.exists():
         return None
     rec = read_json(path)
-    if rec is None or not isinstance(rec.get("step"), str):
+    known = (rec is not None and rec.get("step") in STEPS and isinstance(rec.get("stamp"), str)
+             and isinstance(rec.get("found_at"), str)
+             and rec.get("version", RECORD_VERSION) == RECORD_VERSION)
+    if known and rec is not None:
+        try:
+            datetime.fromisoformat(rec["found_at"])
+        except ValueError:
+            known = False
+    if not known or rec is None:
         quarantine(path)
-        return {"step": "chosen", "unreadable_record": True}
+        return None
     return rec
 
 
 def _backups(paths: Paths) -> list[tuple[Path, str]]:
+    """The nightly copies, newest first. No folder: no copies (positive). Any other OSError is RAISED: a
+    folder that cannot be listed is "could not look", never "there are none"."""
     try:
         names = sorted((p for p in paths.backup_dir.iterdir() if _BACKUP_NAME.match(p.name)), reverse=True)
-    except OSError:
+    except FileNotFoundError:
         return []
     return [(p, _BACKUP_NAME.match(p.name).group(1)) for p in names]  # type: ignore[union-attr]
 
 
-def good_copy(path: Path) -> str | None:
-    """None when `path` passes the full check and holds studio.db's tables, else why not."""
+# ------------------------------------------------------------------------------------------- the decision
+# states of one nightly copy
+GOOD = "good"        # the full check answered ok and it holds studio.db's tables
+BAD = "bad"          # read, and positively not usable: SQLite's damage answer, zero bytes, not studio.db
+GONE = "gone"        # no file any more
+UNKNOWN = "unknown"  # could not look: held, locked, slow, an OSError. Never "bad".
+
+
+@dataclass(frozen=True)
+class CopyState:
+    name: str
+    state: str
+    detail: str = ""
+    path: str = ""
+
+
+@dataclass(frozen=True)
+class Copies:
+    """The nightly copies as looked at, newest first, up to the first GOOD or UNKNOWN one. `listed` False:
+    the folder itself could not be listed (UNKNOWN for all of them)."""
+
+    listed: bool
+    detail: str = ""
+    states: tuple[CopyState, ...] = ()
+
+
+@dataclass(frozen=True)
+class RecordState:
+    """A restore record checked against the disk: `ours` (studio.db's sha256 is the one the record took of
+    its copy before the rename), `aside` (the record's set-aside file is in data/damaged), `begun` (the
+    put-back began: it writes to the copy, so `ours` no longer holds)."""
+
+    step: str
+    ours: bool | None = False  # None: studio.db is there but could not be read to compare
+    aside: bool = False
+    begun: bool = False
+
+
+class Act(enum.Enum):
+    KEEP = "keep"                # studio.db is sound, or a new install: nothing is done
+    LEAVE = "leave"              # could not look: nothing is changed, it is counted and said after a bound
+    RESTORE = "restore"          # positive damage, and a copy that passed its full check
+    REBUILD = "rebuild"          # positive damage, and every copy was read and is positively not usable
+    STOP = "stop"                # positive damage, but a copy could not be looked at: NS-E209, no change
+    RESUME = "resume"            # a record that matches the disk: its remaining (additive) steps are run
+    DROP_RECORD = "drop_record"  # a record that does not match a sound studio.db: the file stays, it goes
+
+
+@dataclass(frozen=True)
+class Decision:
+    """What is done about studio.db and the evidence it rests on. `row` is the row of the state table."""
+
+    act: Act
+    row: str
+    live: Check
+    record: RecordState | None = None
+    copies: Copies | None = None
+    backup: str | None = None
+    reason: str = ""
+
+    @property
+    def refused(self) -> list[str]:
+        """The copies that were read and are positively not usable."""
+        return [c.name for c in (self.copies.states if self.copies else ()) if c.state == BAD]
+
+
+def copy_state(path: Path) -> CopyState:
+    """One nightly copy, by the full check: GOOD, BAD (positive), GONE or UNKNOWN (could not look)."""
     found = check(path, full=True, fixed=True)
+    where = str(path)
+    if found.verdict == NEW:
+        return CopyState(path.name, GONE if found.detail == "no file" else BAD, found.detail, where)
+    if found.verdict == DAMAGED:
+        return CopyState(path.name, BAD, f"{found.verdict}: {found.detail}", where)
     if found.verdict != OK:
-        return f"{found.verdict}: {found.detail}"
+        return CopyState(path.name, UNKNOWN, f"{found.verdict}: {found.detail}", where)
     try:
         conn = sqlite3.connect(f"{path.as_uri()}?immutable=1", uri=True)
         try:
@@ -332,22 +464,101 @@ def good_copy(path: Path) -> str | None:
         finally:
             conn.close()
     except sqlite3.Error as e:
-        return f"{classify(e)}: {e}"
+        verdict = classify(e)
+        return CopyState(path.name, BAD if verdict == DAMAGED else UNKNOWN, f"{verdict}: {e}", where)
     missing = REQUIRED_TABLES - tables
-    return f"not a copy of studio.db (no {', '.join(sorted(missing))})" if missing else None
+    if missing:
+        return CopyState(path.name, BAD, f"not a copy of studio.db (no {', '.join(sorted(missing))})", where)
+    return CopyState(path.name, GOOD, "", where)
 
 
-def choose(paths: Paths, log: NsLogger | None) -> tuple[Path | None, list[str]]:
-    """D4: the newest nightly copy that passes the full check, and the names of the ones that did not."""
-    refused: list[str] = []
-    for path, _day in _backups(paths):
-        why = good_copy(path)
-        if why is None:
-            return path, refused
-        refused.append(path.name)
-        if log is not None:
-            log.warn("db_backup_not_good", why, backup=str(path))
-    return None, refused
+def good_copy(path: Path) -> str | None:
+    """None when `path` passes the full check and holds studio.db's tables, else why not."""
+    found = copy_state(path)
+    return None if found.state == GOOD else f"{found.state}: {found.detail}"
+
+
+def survey_copies(paths: Paths, log: NsLogger | None) -> Copies:
+    """The evidence about the nightly copies (no decision): each one's state, newest first, up to the first
+    GOOD or UNKNOWN."""
+    try:
+        listed = _backups(paths)
+    except OSError as e:
+        return Copies(False, f"{type(e).__name__}: {e}")
+    states: list[CopyState] = []
+    for path, _day in listed:
+        found = copy_state(path)
+        states.append(found)
+        if found.state != GOOD and log is not None:
+            log.warn("db_backup_not_good", f"{found.state}: {found.detail}", backup=str(path))
+        if found.state in (GOOD, UNKNOWN):
+            break
+    return Copies(True, "", tuple(states))
+
+
+def record_state(paths: Paths, rec: dict[str, Any]) -> RecordState:
+    """The record's claims read from the disk (no decision)."""
+    ours: bool | None = False
+    want = rec.get("copy_sha256")
+    if want:
+        try:
+            ours = _sha256(paths.db_path) == want
+        except FileNotFoundError:
+            ours = False
+        except OSError:
+            ours = None  # could not look
+    named = rec.get("aside_name")
+    aside = bool(named) and (damaged_dir(paths) / str(named)).exists()
+    return RecordState(str(rec["step"]), ours, aside, bool(rec.get("put_back_begun")))
+
+
+def _from_copies(live: Check, record: RecordState | None, copies: Copies, row: str) -> Decision:
+    """Positive damage of studio.db: what the copies allow (rows L3, L4, L5)."""
+    if not copies.listed:
+        return Decision(Act.STOP, f"{row}/L4", live, record, copies, None,
+                        f"the folder of the nightly copies cannot be read now ({copies.detail})")
+    for c in copies.states:
+        if c.state == GOOD:
+            return Decision(Act.RESTORE, f"{row}/L3", live, record, copies, c.path,
+                            f"{c.name} passed its check")
+        if c.state == UNKNOWN:
+            return Decision(Act.STOP, f"{row}/L4", live, record, copies, None,
+                            f"the nightly copy {c.name} cannot be read now ({c.detail})")
+    return Decision(Act.REBUILD, f"{row}/L5", live, record, copies, None,
+                    "every nightly copy was read and none is usable" if copies.states else "no nightly copy")
+
+
+def decide(live: Check, record: RecordState | None, copies: Callable[[], Copies]) -> Decision:
+    """THE decision about studio.db: every "damaged / restore / put back / give up" of this module is one row
+    of this function (the state table of the fix, rows L1-L5 and R2-R9). Pure: `live` is the check of the
+    file as it is now, `record` a left-over record already compared with the disk, `copies` gives the
+    evidence about the nightly copies and is asked only by the rows that need it.
+
+    The invariant: only positive evidence moves or replaces a database. "Could not look" is LEAVE or STOP."""
+    unknown = live.verdict not in (OK, NEW, DAMAGED, LOST)
+    if record is None:
+        if live.verdict in (OK, NEW):
+            return Decision(Act.KEEP, "L1", live)
+        if unknown:
+            return Decision(Act.LEAVE, "L2", live, reason=f"{live.verdict}: {live.detail}")
+        return _from_copies(live, None, copies(), "L")
+    if unknown:  # R6: a record never makes "could not look" into a reason to move anything
+        return Decision(Act.LEAVE, "R6", live, record, reason=f"{live.verdict}: {live.detail}")
+    if record.step in ("chosen", "set_aside"):
+        if live.verdict == OK:
+            if record.ours is None:  # R6: whether it is the recorded copy could not be read
+                return Decision(Act.LEAVE, "R6", live, record, reason="studio.db could not be compared "
+                                "with the copy of the restore that was begun")
+            if record.ours:  # the rename was made; the process stopped before it said so
+                return Decision(Act.RESUME, "R7", live, record, reason="studio.db is the recorded copy")
+            return Decision(Act.DROP_RECORD, "R2", live, record,
+                            reason="studio.db is not the recorded copy and passed its check")
+        moved = record.aside or record.step == "set_aside"
+        row = "R3" if not moved else ("R5" if live.verdict == DAMAGED else "R4")
+        return _from_copies(live, record, copies(), row)
+    if live.verdict == OK:  # in_place, put_back: only additive steps are left
+        return Decision(Act.RESUME, "R8", live, record, reason="the copy is in place and passed its check")
+    return _from_copies(live, record, copies(), "R9")
 
 
 # ------------------------------------------------------------------------------------------- messages
@@ -419,6 +630,9 @@ def restored_message(info: dict[str, Any]) -> str:
         verb = "is" if gone == 1 else "are"
         extra += (f" {gone} video{'' if gone == 1 else 's'} made since then {verb} no longer in the Outbox "
                   "(rejected or moved) and stayed out of the Queue.")
+    if info.get("not_ours"):
+        extra += (" The database in place now is not the copy as Nightshift put it there (another program "
+                  "replaced or changed it before this was finished); it passed its check and was kept.")
     kept = f" {KEPT}" if info.get("damaged") else ""
     return head + back + extra + tail + kept
 
@@ -486,40 +700,211 @@ def _restore_lock(paths: Paths, log: NsLogger | None, note: NoteFn) -> Iterator[
 # ------------------------------------------------------------------------------------------- the opener
 def ensure_sound(paths: Paths, log: NsLogger | None, note: NoteFn) -> Check:
     """D0 to D9: leave studio.db sound, or raise NS-E209. Returns what the check found."""
-    if read_record(paths) is None:
-        found = assess(paths)
-        write_check(paths, found, log)
-        if not found.damaged:
-            if found.verdict in (HELD, NEWER, SLOW) and log is not None:
-                log.info("db_not_checked", f"{found.verdict}: {found.detail}; checked at the next start")
-            return found
+    if not record_path(paths).exists():  # with a record, another process may be mid-restore: under the lock
+        d = _decide_now(paths, log, None)
+        if d.act in (Act.KEEP, Act.LEAVE):
+            return _settled(paths, log, note, d)
         if log is not None:
-            log.warn("db_damaged", found.detail, verdict=found.verdict)
+            log.warn("db_damaged", d.live.detail, verdict=d.live.verdict)
     with _restore_lock(paths, log, note):
         rec = read_record(paths)
-        if rec is None:  # another process may have restored it while this one waited
-            found = assess(paths)
-            write_check(paths, found, log)
-            if not found.damaged:
-                return found
-            rec = _start(paths, log, note, found)
-        _finish(paths, log, note, rec)
+        d = _decide_now(paths, log, rec)  # again: another process may have restored it while this one waited
+        if d.act in (Act.KEEP, Act.LEAVE):
+            return _settled(paths, log, note, d)
+        _act(paths, log, note, d, rec)
     found = assess(paths)
-    write_check(paths, found, log, restored=True)
+    write_check(paths, found, log, restored=d.act is not Act.DROP_RECORD, row=d.row, not_checked_starts=0)
     return found
 
 
-def _start(paths: Paths, log: NsLogger | None, note: NoteFn, found: Check) -> dict[str, Any]:
-    """D4, then D5's record: written before anything moves."""
-    backup, refused = choose(paths, log)
+def _decide_now(paths: Paths, log: NsLogger | None, rec: dict[str, Any] | None) -> Decision:
+    """Gather the evidence from the disk and ask `decide`. The live check is the FULL one while the mark of a
+    damage answer in use waits (`want_full_check`)."""
+    live = assess(paths, full=full_check_path(paths).exists())
+    state = record_state(paths, rec) if rec is not None else None
+    d = decide(live, state, lambda: survey_copies(paths, log))
+    if log is not None and d.act not in (Act.KEEP,):
+        log.info("db_decision", d.reason, act=d.act.value, row=d.row, verdict=live.verdict)
+    return d
+
+
+def newest_copy_words(paths: Paths) -> str:
+    """"the newest nightly copy is from <date>", by the folder's listing (each copy was checked when made)."""
+    try:
+        listed = _backups(paths)
+    except OSError as e:
+        return f"the nightly copies cannot be listed now ({type(e).__name__})"
+    if not listed:
+        return "there is no nightly copy yet"
+    try:
+        return f"the newest nightly copy is from {_local(listed[0][0].stat().st_mtime)}"
+    except OSError:
+        return f"the newest nightly copy is {listed[0][0].name}"
+
+
+FULL_CHECK_PASSED = (
+    "Nightshift's database answered 'damaged' while it was in use; the full check at this start found it "
+    "sound, so nothing was replaced. If a night stops the same way again, run 'ns doctor --bundle' and send "
+    "the zip."
+)
+NOT_CHECKED_WAY_OUT = (
+    "Close every Nightshift window (Stop All) and any other program that uses the Nightshift folder, then "
+    "open the Dashboard: Nightshift checks it again. If this note returns, run 'ns doctor --bundle' and send "
+    "the zip."
+)
+COPY_WAY_OUT = (
+    "Close any program that is using the folder data\\backup (a backup tool, a virus scan), then close every "
+    "Nightshift window (Stop All) and open the Dashboard: Nightshift looks again."
+)
+
+
+def _settled(paths: Paths, log: NsLogger | None, note: NoteFn, d: Decision) -> Check:
+    """KEEP and LEAVE: nothing is changed. A check that could not be made is counted in `run/db-check.json`
+    and, from the `NOT_CHECKED_SAID_AFTER`-th start in a row, said (NS-W214; the same words wait once)."""
+    if d.act is Act.KEEP:
+        write_check(paths, d.live, log, not_checked_starts=0, row=d.row)
+        if d.live.verdict == OK and full_check_path(paths).exists():
+            clear_full_check(paths, log)
+            _say(note, FULL_CHECK_PASSED, log)
+        return d.live
+    before = read_json(check_path(paths)) or {}
+    try:
+        n = int(before.get("not_checked_starts") or 0) + 1
+    except (TypeError, ValueError):
+        n = 1
+    write_check(paths, d.live, log, not_checked_starts=n, row=d.row)
+    if log is not None:
+        log.info("db_not_checked", f"{d.reason}; nothing was changed", starts=n)
+    if n >= NOT_CHECKED_SAID_AFTER:
+        _say(note, f"{UNSAFE_CODE}: Nightshift's database could not be checked at its last starts "
+                   f"({d.live.verdict}: {d.live.detail}), so damage to it would not be found; "
+                   f"{newest_copy_words(paths)}. {NOT_CHECKED_WAY_OUT}", log)
+    return d.live
+
+
+def want_full_check(paths: Paths, why: str, log: NsLogger | None = None) -> None:
+    """SQLite answered CORRUPT while the database was in use (the night's stop, the dashboard's 503), or a
+    nightly copy failed its full check: the next start's check of studio.db is the FULL one (the quick check
+    does not compare an index with its table), and `decide` rests on that."""
+    try:
+        _write(full_check_path(paths), {"at": _now().isoformat(timespec="seconds"), "why": why[:500],
+                                        "pid": os.getpid()})
+    except OSError as e:
+        if log is not None:
+            log.warn("db_full_check_not_marked", str(e))
+
+
+def clear_full_check(paths: Paths, log: NsLogger | None) -> None:
+    try:
+        full_check_path(paths).unlink(missing_ok=True)
+    except OSError as e:  # the next start checks in full once more: slower, never wrong
+        if log is not None:
+            log.warn("db_full_check_mark_left", str(e))
+
+
+def backup_failed(
+    paths: Paths, why: str, log: NsLogger | None, note: NoteFn, *, damaged: bool = False
+) -> str:
+    """A night made no nightly copy: counted in `run/db-backup.json` and said (NS-W214, with the age of the
+    newest copy). `damaged`: the copy's full check answered damage, so the live file is checked in full at
+    the next start. Returns the sentence."""
+    before = read_json(backup_state_path(paths)) or {}
+    try:
+        n = int(before.get("failed_nights") or 0) + 1
+    except (TypeError, ValueError):
+        n = 1
+    now = _now().isoformat(timespec="seconds")
+    try:
+        _write(backup_state_path(paths), {"failed_nights": n, "since": before.get("since") or now,
+                                          "last_at": now, "last_error": why[:500]})
+    except OSError as e:
+        if log is not None:
+            log.warn("db_backup_state_not_written", str(e))
+    if damaged:
+        want_full_check(paths, f"the nightly copy failed its check: {why}", log)
+    sentence = (f"{UNSAFE_CODE}: No nightly copy of Nightshift's database was made tonight ({why}); "
+                f"{newest_copy_words(paths)}. Free space on the drive of the Nightshift folder and close any "
+                "program that uses the folder data\\backup; the next night makes a copy again while "
+                "Automatic runs are on in Settings. If this note returns, run 'ns doctor --bundle' and send "
+                "the zip.")
+    if log is not None:
+        log.warn("db_backup_failed", sentence, code=UNSAFE_CODE, nights=n)
+    _say(note, sentence, log)
+    return sentence
+
+
+def backup_made(paths: Paths) -> None:
+    """A nightly copy was made and passed its check: the count of failed nights ends."""
+    with contextlib.suppress(OSError):
+        backup_state_path(paths).unlink(missing_ok=True)
+
+
+KEPT_FOUND = (
+    "Nightshift had begun to replace its database (found damaged {found}) and was stopped before it "
+    "finished. The database that is there now passed its check, so it was kept as it is and the "
+    "replacement was not continued. Anything that was set aside is kept in data\\damaged."
+)
+
+
+def _act(paths: Paths, log: NsLogger | None, note: NoteFn, d: Decision, rec: dict[str, Any] | None) -> None:
+    """Carry out `d` (under the restore lock). Nothing here decides: each branch is one `Act`."""
+    if d.act is Act.DROP_RECORD and rec is not None:
+        said = KEPT_FOUND.format(found=_local(datetime.fromisoformat(str(rec["found_at"]))))
+        if log is not None:
+            log.warn("db_restore_record_dropped", said, step=rec.get("step"), row=d.row)
+        try:
+            quarantine(record_path(paths))
+        except OSError as e:  # the next start decides the same again
+            if log is not None:
+                log.warn("db_restore_record_left", str(e))
+        _say(note, said, log)
+        return
+    if d.act is Act.STOP:
+        moved = d.record is not None and (d.record.aside or d.record.step != "chosen")
+        if d.record is not None and not moved:  # nothing has moved: the next start decides from the check
+            with contextlib.suppress(OSError):
+                record_path(paths).unlink(missing_ok=True)
+        raise _failed(paths, log, note, f"{d.reason}, so nothing was changed", COPY_WAY_OUT, row=d.row)
+    if d.act is Act.RESUME and rec is not None and d.record is not None:
+        if d.row == "R7":
+            rec["step"] = "in_place"
+        elif rec["step"] == "in_place" and d.record.ours is False and not d.record.begun:
+            rec["not_ours"] = True  # sound, but not the bytes this program put there: said in the note
+        _save(paths, rec, log, note)
+        _finish(paths, log, note, rec)
+        return
+    if d.act in (Act.RESTORE, Act.REBUILD):
+        if rec is None or rec["step"] in ("in_place", "put_back"):  # L3, L5, R9: a restore from its start
+            rec = _start(paths, log, note, d, carried=(rec or {}).get("damaged"))
+        else:  # R3, R4, R5: the record's own restore goes on, with the copy decided now
+            try:
+                _choose_into(rec, d)
+            except OSError as e:  # the copy went between the check and here: nothing has been moved for it
+                raise _failed(paths, log, note, f"the nightly copy cannot be read now ({e}), so nothing was "
+                              "changed", COPY_WAY_OUT, row=d.row) from e
+            _save(paths, rec, log, note)
+        _finish(paths, log, note, rec)
+
+
+def _choose_into(rec: dict[str, Any], d: Decision) -> None:
+    backup = Path(d.backup) if d.backup else None
+    rec.update({"backup": str(backup) if backup else None,
+                "backup_time": backup.stat().st_mtime if backup else None,
+                "refused": sorted(set(rec.get("refused") or []) | set(d.refused)), "row": d.row})
+
+
+def _start(
+    paths: Paths, log: NsLogger | None, note: NoteFn, d: Decision, carried: list[str] | None = None
+) -> dict[str, Any]:
+    """D5's record, from the decision: written before anything moves."""
     now = _now()
     rec: dict[str, Any] = {
-        "step": "chosen", "why": found.verdict, "detail": found.detail,
+        "version": RECORD_VERSION, "step": "chosen", "why": d.live.verdict, "detail": d.live.detail,
         "found_at": now.isoformat(timespec="seconds"), "stamp": now.strftime("%Y%m%d-%H%M%S"),
-        "backup": str(backup) if backup else None,
-        "backup_time": backup.stat().st_mtime if backup else None, "refused": refused, "pid": os.getpid(),
+        "pid": os.getpid(), "damaged": list(carried or []),
     }
     try:
+        _choose_into(rec, d)
         _write(record_path(paths), rec)
     except OSError as e:
         why = "the disk is full" if _disk_full(e) else f"the record of the restore cannot be written ({e})"
@@ -537,19 +922,8 @@ def _save(paths: Paths, rec: dict[str, Any], log: NsLogger | None, note: NoteFn)
 
 def _finish(paths: Paths, log: NsLogger | None, note: NoteFn, rec: dict[str, Any]) -> None:
     """Run the record's remaining steps in order; each one ends by saving the next step."""
-    if rec.get("unreadable_record") or "stamp" not in rec:
-        now = _now()
-        rec.update({"why": "damaged", "detail": "the record of an earlier restore could not be read",
-                    "found_at": now.isoformat(timespec="seconds"), "stamp": now.strftime("%Y%m%d-%H%M%S"),
-                    "refused": []})
-        rec.pop("unreadable_record", None)
-        rec.pop("backup", None)  # chosen again below
-    if rec["step"] in ("chosen", "set_aside") and not _still_good(rec):
-        backup, refused = choose(paths, log)
-        rec.update({"backup": str(backup) if backup else None,
-                    "backup_time": backup.stat().st_mtime if backup else None,
-                    "refused": sorted(set(rec.get("refused") or []) | set(refused))})
-        _save(paths, rec, log, note)
+    # Which copy, and whether anything may move at all, was decided by `decide` in this same call, under the
+    # lock, from the disk as it is now (`_act`): no step below looks for a reason of its own.
     if rec["step"] == "chosen":
         _set_aside(paths, log, note, rec)
     if rec["step"] == "set_aside":
@@ -558,15 +932,6 @@ def _finish(paths: Paths, log: NsLogger | None, note: NoteFn, rec: dict[str, Any
         _put_back(paths, log, note, rec)
     if rec["step"] == "put_back":
         _tell(paths, log, note, rec)
-
-
-def _still_good(rec: dict[str, Any]) -> bool:
-    """The record's copy is still there and good (None: the fresh path was chosen, nothing to re-check)."""
-    if "backup" not in rec:
-        return False
-    if rec["backup"] is None:  # no good copy was left: a good one cannot have appeared since
-        return True
-    return good_copy(Path(str(rec["backup"]))) is None
 
 
 def _aside_name(paths: Paths, stamp: str, base: str = "studio") -> Path:
@@ -612,7 +977,7 @@ def _move_aside(
                     with contextlib.suppress(OSError):
                         record_path(paths).unlink()
                 if _refused(e):
-                    raise _failed(paths, log, note, "another Nightshift window is using it, so it could not "
+                    raise _failed(paths, log, note, "another program is using it, so it could not "
                                   "be set aside", WAY_OUT_WINDOW, file=str(src)) from e
                 why = "the disk is full" if _disk_full(e) else f"{src.name} could not be set aside ({e})"
                 raise _failed(paths, log, note, why, WAY_OUT_RETRY, file=str(src)) from e
@@ -622,7 +987,9 @@ def _move_aside(
 def _set_aside(paths: Paths, log: NsLogger | None, note: NoteFn, rec: dict[str, Any]) -> None:
     """D5: the damaged files go to data/damaged (never deleted), under one name kept in the record, so a
     set-aside that is finished by a later start puts the -wal and -shm beside their own file."""
-    if not rec.get("aside_name"):
+    named = rec.get("aside_name")
+    taken = bool(named) and (damaged_dir(paths) / str(named)).exists() and paths.db_path.exists()
+    if not named or taken:  # taken: that name holds an earlier studio.db; the one here now gets its own
         rec["aside_name"] = _aside_name(paths, str(rec["stamp"])).name
         _save(paths, rec, log, note)
     moved = _move_aside(paths, rec, log, note, base="studio", may_cancel=True)
@@ -651,13 +1018,12 @@ def _put_in_place(paths: Paths, log: NsLogger | None, note: NoteFn, rec: dict[st
     from ns_common.db import Db
 
     live = paths.db_path
-    if live.exists() and rec.get("copy_sha256") and _sha256(live) == rec["copy_sha256"]:
-        rec["step"] = "in_place"  # the rename was made; the process stopped before it said so
-        _save(paths, rec, log, note)
-        return
+    # "studio.db is already our copy" is row R7 of `decide` and never reaches this step.
     if any(Path(str(live) + s).exists() for s in _SIDE):
-        # a studio.db that is not our copy, or a -wal/-shm beside where the copy goes: a stale -wal would be
-        # replayed onto the copy and break it, so they are set aside too (never deleted)
+        # Reached only by rows R4 and R5 (or straight after this call's own set-aside): `decide` read the file
+        # that is here now and it is absent, empty or positively damaged; a sound one is row R2 and stays. A
+        # -wal/-shm beside where the copy goes would be replayed onto the copy and break it, so what is here
+        # is set aside too (never deleted).
         moved = _move_aside(paths, {"stamp": f"{rec['stamp']}-found"}, log, note, base="studio",
                             may_cancel=False)
         rec["damaged"] = sorted(set(rec.get("damaged") or []) | set(moved))
@@ -713,11 +1079,25 @@ def _put_back(paths: Paths, log: NsLogger | None, note: NoteFn, rec: dict[str, A
     """D7 and D8: migrate, then the videos made since the copy go back to the Queue (each at most once)."""
     from ns_common.db import Db
 
+    if not rec.get("put_back_begun"):  # from here studio.db is written to: its sha256 is no longer the copy's
+        rec["put_back_begun"] = True
+        _save(paths, rec, log, note)
     db = Db(paths.db_path)
     try:
         db.migrate()
         since = rec.get("backup_time") if rec.get("backup") else None
-        found = put_back_videos(paths, db, since)
+        found = find_videos(paths, db, since)
+        # Saved BEFORE the first insert: each insert is committed by itself, so a process killed between two
+        # of them leaves rows the next start no longer sees as missing. The ids of an earlier, killed
+        # put-back stay in the list (union), and the note counts every video that went back.
+        rec["put_back"] = sorted(set(rec.get("put_back") or []) | {row[0] for row in found["rows"]})
+        rec["unreadable"] = found["unreadable"]
+        rec["gone"] = found["gone"]
+        _save(paths, rec, log, note)
+        insert_videos(db, found["rows"])
+        # counted from the rows that exist: an id saved by a killed run whose row is not there is not claimed
+        rec["put_back"] = [i for i in rec["put_back"]
+                           if db.execute("select 1 from outputs where output_id=?", (i,)).fetchone()]
     except (OSError, sqlite3.Error) as e:
         if _disk_full(e):
             raise _failed(paths, log, note, f"the disk is full ({_free_words(paths)})",
@@ -726,9 +1106,6 @@ def _put_back(paths: Paths, log: NsLogger | None, note: NoteFn, rec: dict[str, A
                       WAY_OUT_RETRY) from e
     finally:
         db.close()
-    rec["put_back"] = sorted(set(rec.get("put_back") or []) | set(found["put_back"]))
-    rec["unreadable"] = found["unreadable"]
-    rec["gone"] = found["gone"]
     rec["step"] = "put_back"
     _save(paths, rec, log, note)
 
@@ -745,19 +1122,43 @@ def _duration(job_dir: Path, item: str) -> float | None:
         return None
 
 
+_INSERT_OUTPUT = (
+    "insert into outputs(output_id, job_id, channel, kind, k, title, path, duration_s, combo_id,"
+    " status, profile, created_at) values (?,?,?,?,?,?,?,?,?,'pending',?,?)"
+    " on conflict(output_id) do nothing"
+)
+
+
 def put_back_videos(paths: Paths, db: Any, since: float | None) -> dict[str, Any]:
-    """D8: each job folder whose `outbox/manifest.json` is newer than `since` (every one when None) gives its
-    items back as `outputs` rows, status `pending`, from the item's sheet `.json`. A row the copy has stays as
-    it is (`on conflict do nothing`). An item whose sheet cannot be read is counted (`unreadable`); one whose
-    video is no longer where the manifest says (rejected, moved) is counted (`gone`)."""
+    """D8 in one call (`find_videos`, then `insert_videos`): for a caller with no record to keep. The restore
+    itself saves the found ids between the two (`_put_back`)."""
+    found = find_videos(paths, db, since)
+    put = insert_videos(db, found["rows"])
+    return {"put_back": put, "unreadable": found["unreadable"], "gone": found["gone"]}
+
+
+def insert_videos(db: Any, rows: list[tuple[Any, ...]]) -> list[str]:
+    """The rows of `find_videos` into `outputs`; a row that is there stays as it is. Returns the ids added."""
+    put: list[str] = []
+    for row in rows:
+        if db.execute(_INSERT_OUTPUT, row).rowcount:
+            put.append(str(row[0]))
+    return put
+
+
+def find_videos(paths: Paths, db: Any, since: float | None) -> dict[str, Any]:
+    """D8, reading only: each job folder whose `outbox/manifest.json` is newer than `since` (every one when
+    None) gives its items as `outputs` rows (`rows`, status `pending`, from the item's sheet `.json`) when
+    the database has no row of that id. An item whose sheet cannot be read is counted (`unreadable`); one
+    whose video is no longer where the manifest says (rejected, moved) is counted (`gone`)."""
     from ns_common.models import Metadata
 
-    put: list[str] = []
+    rows: list[tuple[Any, ...]] = []
     unreadable = gone = 0
     try:
         folders = sorted(p for p in paths.jobs_dir.iterdir() if p.is_dir())
-    except OSError:
-        folders = []
+    except FileNotFoundError:  # no job folder at all: positively no video. Any other OSError is raised: a
+        folders = []           # folder that cannot be listed must not become "no video was found"
     for job_dir in folders:
         manifest_file = job_dir / "outbox" / "manifest.json"
         try:
@@ -784,16 +1185,11 @@ def put_back_videos(paths: Paths, db: Any, since: float | None) -> dict[str, Any
                 gone += 1
                 continue
             output_id = f"{job_dir.name}/{item}"
-            cur = db.execute(
-                "insert into outputs(output_id, job_id, channel, kind, k, title, path, duration_s, combo_id,"
-                " status, profile, created_at) values (?,?,?,?,?,?,?,?,?,'pending',?,?)"
-                " on conflict(output_id) do nothing",
-                (output_id, job_dir.name, meta.channel, meta.kind, meta.k, meta.title, str(mp4),
-                 _duration(job_dir, item), meta.combo_id, meta.profile, created),
-            )
-            if cur.rowcount:
-                put.append(output_id)
-    return {"put_back": put, "unreadable": unreadable, "gone": gone}
+            if db.execute("select 1 from outputs where output_id=?", (output_id,)).fetchone():
+                continue
+            rows.append((output_id, job_dir.name, meta.channel, meta.kind, meta.k, meta.title, str(mp4),
+                         _duration(job_dir, item), meta.combo_id, meta.profile, created))
+    return {"rows": rows, "unreadable": unreadable, "gone": gone}
 
 
 def _tell(paths: Paths, log: NsLogger | None, note: NoteFn, rec: dict[str, Any]) -> None:
@@ -804,7 +1200,10 @@ def _tell(paths: Paths, log: NsLogger | None, note: NoteFn, rec: dict[str, Any])
     info["restored_at"] = _now().isoformat(timespec="seconds")
     info["by_pid"] = os.getpid()
     info["missing"] = NOT_IN_THE_COPY if rec.get("backup") else GONE_HISTORY
+    info["not_ours"] = bool(rec.get("not_ours"))
+    info["row"] = rec.get("row")
     info["message"] = restored_message(info)
+    clear_full_check(paths, log)  # the restore is the answer to a damage answer in use
     try:
         _write(restored_path(paths), info)
     except OSError as e:

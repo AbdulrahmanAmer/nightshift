@@ -31,7 +31,7 @@ from starlette.staticfiles import NotModifiedResponse, StaticFiles
 from starlette.types import Scope
 
 from ns_common.db import UnusableDb
-from ns_common.dbrestore import BROKE_IN_DASHBOARD, is_damage_error
+from ns_common.dbrestore import BROKE_IN_DASHBOARD, is_damage_error, want_full_check
 from ns_common.dbrestore import DAMAGED_CODE as DB_DAMAGED
 from ns_common.errors import NsError, describe
 from ns_common.loopback import OWN_PAGE, Choose, LoopbackGuard, media_type
@@ -286,6 +286,7 @@ def create_app(
         if not is_damage_error(exc):
             raise exc
         st.log.error("db_damaged_in_use", str(exc), code=DB_DAMAGED)
+        want_full_check(st.paths, f"the dashboard: {exc}", st.log)  # the next start checks in full
         body = {"error": {"code": DB_DAMAGED, "message": f"{DB_DAMAGED}: {BROKE_IN_DASHBOARD}",
                           "hint": describe(DB_DAMAGED).hint}}
         return ok(body, 503)
