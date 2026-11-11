@@ -215,10 +215,13 @@ def stop_nightshift(
     skip = _family()
     if client is not None and client.is_up():
         out.lines.append(_ask(client, tell, sleep, clock))
-    elif mine:
-        out.lines.append("The engine does not answer; its own processes are still running.")
-    else:
-        out.lines.append("The engine is not running.")
+    else:   # D-51: the cause is said first, before the lines that wait and end (with `say`, at once)
+        cause = ("The engine does not answer; its own processes are still running." if mine
+                 else "The engine is not running.")
+        if say is not None:
+            say(cause)
+        else:
+            out.lines.append(cause)
     look = holders or (lambda: [])
 
     def left() -> tuple[list[Own], list[str]]:
