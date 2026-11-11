@@ -299,6 +299,10 @@ class S04Venvs(Step):
             ) from e
         if how == "marked":
             ctx.log.warn("venv_record_marked_finished", str(venvrepair.record_path(ctx.paths.home)))
+        # D-48: an update or rollback that was interrupted is finished now: its state says so (setup holds
+        # run/update.lock for the whole run, `controller._guard_venvs`, so no update process writes it)
+        if venvrepair.close_update_state(ctx.paths.home, ctx.app_path, venvrepair.BY_SETUP):
+            ctx.log.info("update_state_closed", by=venvrepair.BY_SETUP)
         # the done-state is written last, after every venv was filled (the wizard cleared it before the work)
         ctx.set_flag("venvs_installed", True)
         ctx.set_flag("venvs_version", ctx.manifest.version)

@@ -417,6 +417,12 @@ def main() -> None:
     ap.add_argument("--engine", choices=["qwentts", "reference", "fake"], default=None)
     args = ap.parse_args()
     paths = Paths.from_env()
+    from installer.stage2.web import venvrepair
+
+    why = venvrepair.home_refusal(paths.home)   # D-48 review note: a model server started by hand, gated too
+    if why is not None:
+        sys.stderr.write(f"NS-W210: {why}\n")
+        raise SystemExit(venvrepair.REFUSED_EXIT)
     fake = args.engine == "fake" or os.environ.get("NS_TTS_FAKE") == "1"
     try:
         rt = load_runtime(paths)

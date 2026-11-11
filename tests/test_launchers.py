@@ -1680,8 +1680,15 @@ def _diagnostics_home(tmp_path: Path, doctor: str | None) -> tuple[Path, Path, P
     work.mkdir()
     if doctor is not None:
         sup = home / "venvs" / "supervisor"
+        # ns.exe is a copy of this interpreter, which finds its Python through pyvenv.cfg. Under a venv (the
+        # laptop) that file is the venv's own; an interpreter with no venv (the CI runner) has none, so one
+        # that points at this Python is written.
         shutil.copy(Path(sys.executable), sup / "Scripts" / "ns.exe")
-        shutil.copy(Path(sys.prefix) / "pyvenv.cfg", sup / "pyvenv.cfg")
+        cfg = Path(sys.prefix) / "pyvenv.cfg"
+        if cfg.is_file():
+            shutil.copy(cfg, sup / "pyvenv.cfg")
+        else:
+            (sup / "pyvenv.cfg").write_text("home = " + sys.base_prefix + "\n", encoding="utf-8")
         (work / "doctor").write_text(doctor, encoding="ascii")
     return home, launcher.parent / "diagnostics.ps1", work
 

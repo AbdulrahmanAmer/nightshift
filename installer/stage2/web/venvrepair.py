@@ -50,6 +50,7 @@ import sys
 import time
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -230,7 +231,30 @@ def update_running(home: Path) -> bool:
     """True while another process holds ``run/update.lock`` (an update, rollback, setup or the launch
     script's replay): byte 0 is locked then, and reading it is refused. It only looks: taking the lock, even
     for a moment, could make a starting update refuse itself. Off Windows: False (nothing to look at)."""
-    lock = Path(home) / "run" / "update.lock"
+    return _held(Path(home) / "run" / "update.lock")
+
+
+def engine_answers(home: Path, timeout_s: float = 2.0) -> bool:
+    """True when the engine of this home answers ``GET /status`` on the port its ``config/runtime.json``
+    names (8099 without one). A lock held by an engine that closed its port and never exited (D-46) is not
+    an engine that runs. Standard library only (setup asks it)."""
+    import urllib.error
+    import urllib.request
+
+    port = 8099
+    try:
+        port = int(json.loads(read_text_retry(Path(home) / "config" / "runtime.json", "utf-8-sig"))
+                   .get("supervisor_port") or 8099)
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/status", timeout=timeout_s) as r:  # noqa: S310
+            return int(r.status) == 200
+    except (OSError, urllib.error.URLError, ValueError):
+        return False
+
+
+def _held(lock: Path) -> bool:
     if sys.platform != "win32":
         return False
     try:
@@ -358,6 +382,68 @@ def pending_sentence(home: Path, app: Path, record: Mapping[str, Any] | None, pr
 #: Exit code of `main` when a start is refused (the launchers' `Start-NsSupervisor` and the engine use it).
 REFUSED_EXIT = 4
 
+# ---------------------------------------------------------------- D-48: the update state, once it is finished
+STATE_NAME = "update_state.json"
+#: Words of a stored state that sends the owner to finish the environments (every wording since 0.1.15-rc3:
+#: `ns_supervisor.update` SYNC_STOPPED, ROLLBACK_SYNC_STOPPED, FINISH_AT_START, `_unfinished`). The launch
+#: script has the same list (`$finishMarks`).
+FINISH_MARKS = (
+    "finishes the Python environments", "To fill every environment", "To finish it:",
+    "could not be refreshed",
+)
+#: Who finished an interrupted update, in the words of the closed state.
+BY_SETUP = "setup (INSTALL.cmd, Repair)"
+
+
+def needs_finish(state: Mapping[str, Any]) -> bool:
+    """True when an update state says an update or rollback stopped with environments left to finish: a
+    `running` state (whoever asks holds ``run/update.lock`` or has found its worker dead) or a `failed` one,
+    written while a repair record waited (``record``), or naming environments left (``venvs_left``,
+    ``record_left``), or telling the owner to finish them (``FINISH_MARKS``)."""
+    if state.get("state") not in ("running", "failed"):
+        return False
+    if state.get("record") or state.get("venvs_left") or state.get("record_left"):
+        return True
+    text = f"{state.get('message') or ''} {state.get('if_stopped_here') or ''}"
+    return any(mark in text for mark in FINISH_MARKS)
+
+
+def finished_sentence(by: str, version: str, at: datetime) -> str:
+    """What the closed state says (the launch script writes the same words)."""
+    return (
+        f"An update or rollback was interrupted and has since been finished by {by} "
+        f"({at:%Y-%m-%d %H:%M}): Nightshift {version or 'unknown version'}, its program and Python "
+        "environments, is in place."
+    )
+
+
+def close_update_state(home: Path, app: Path, by: str, *, now: datetime | None = None) -> bool:
+    """D-48: whoever finishes the environments an interrupted update or rollback left (setup's Repair here;
+    the launch script's replay in PowerShell; the next update writes its own state) brings
+    ``run/update_state.json`` to the final state: `done`, saying who finished it and what is in place. Only
+    a state that `needs_finish` is changed, and only by a caller that holds ``run/update.lock`` (no update
+    process writes the file then). True when it was rewritten; a file that cannot be read or written stays
+    (its readers say what is true: ``ns_supervisor.update_job.settled``)."""
+    path = Path(home) / "run" / STATE_NAME
+    try:
+        raw = json.loads(read_text_retry(path))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(raw, dict) or not needs_finish(raw):
+        return False
+    at = now or datetime.now()
+    version = program_version(app)
+    data = {
+        "state": "done", "old": str(raw.get("old") or ""), "new": version, "exit_code": 0,
+        "message": finished_sentence(by, version, at), "updated_at": at.isoformat(timespec="seconds"),
+        "finished_by": by, "log": str(raw.get("log") or ""),
+    }
+    try:
+        write_text_atomic(path, json.dumps(data))
+    except OSError:
+        return False
+    return True
+
 
 def start_refusal(home: Path, app: Path) -> str | None:
     """The one start gate of the Python side (D-39b review): None when Nightshift may start from the program
@@ -379,6 +465,29 @@ def start_refusal(home: Path, app: Path) -> str | None:
     if update_running(home):    # (review note: a live update is not an interrupted one: other words)
         why = running_sentence(home)
     return "Nightshift was not started: " + why.replace(f" ({CODE})", "", 1)
+
+
+def program_of(home: Path) -> Path:
+    """The program folder this home runs (``config/install_state.json``'s ``app_path``, or its ``.bak``),
+    else the program this code is in. Standard library only, like ``start_refusal``."""
+    config = Path(home) / "config"
+    for name in ("install_state.json", "install_state.json.bak"):
+        try:
+            app = json.loads(read_text_retry(config / name, "utf-8-sig")).get("app_path")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(app, str) and app:
+            return Path(app)
+    return Path(__file__).resolve().parents[3]
+
+
+def home_refusal(home: Path) -> str | None:
+    """D-48: THE start gate of every entry that starts a job, a model or the engine (``studio run`` and the
+    other job and voice commands, ``ns tune``, the dashboard server, the dashboard's job runner, the clip
+    runner, the assistant), whatever started the interpreter (``studio.exe``, ``python -m``, a shim): each
+    calls this first, before it opens or writes anything, so the route cannot matter. ``start_refusal`` for
+    the program of this home; None when it may start."""
+    return start_refusal(Path(home), program_of(home))
 
 
 def running_sentence(home: Path) -> str:
@@ -412,12 +521,169 @@ def main(argv: Sequence[str]) -> int:
     return REFUSED_EXIT
 
 
-#: Read-only: every process's id, image and command line (Windows PowerShell 5.1, CIM). The folder looked
-#: for is not on this command line, so the listing never names itself.
+#: Read-only: every process's id, image and command line (Windows PowerShell 5.1, CIM), then, after the
+#: unit separator (character 31, never in a command line Windows starts), its parent's id and its start
+#: time in milliseconds since 1970 (UTC). The folder looked for is not on this command line, so the
+#: listing never names itself.
 PROCESS_LIST = (
-    "Get-CimInstance Win32_Process | ForEach-Object { '{0}|{1}|{2}' -f $_.ProcessId, $_.ExecutablePath, "
-    "$_.CommandLine }"
+    "Get-CimInstance Win32_Process | ForEach-Object { $t = ''; "
+    "if ($_.CreationDate) { $t = ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }; "
+    "'{0}|{1}|{2}{3}{4}{3}{5}' -f $_.ProcessId, $_.ExecutablePath, $_.CommandLine, [char]31, "
+    "$_.ParentProcessId, $t }"
 )
+FIELD = "\x1f"
+
+
+# ------------------------------------------- D-46 review: which running process is THIS install's own
+@dataclass(frozen=True)
+class Proc:
+    """One running process as a listing gives it. ``created``: seconds since 1970 (None: not known);
+    ``env_home``: its NIGHTSHIFT_HOME when it could be read (None: not read, or not set)."""
+
+    pid: int
+    ppid: int | None
+    exe: str
+    cmdline: str
+    created: float | None
+    env_home: str | None = None
+
+
+#: A record written in the same second as a process started still counts it (coarse file times).
+RECORD_SLACK_S = 2.0
+#: The modules a process must run to be taken for this home's engine when it holds the home's engine lock.
+ENGINE_MODULE = "ns_supervisor.app"
+
+
+def parse_listing(listing: str) -> list[Proc]:
+    """``PROCESS_LIST``'s lines as `Proc` (a line without the parent and time fields has neither)."""
+    out: list[Proc] = []
+    for line in listing.splitlines():
+        main, *more = line.strip().split(FIELD)
+        pid, _, rest = main.partition("|")
+        exe, _, cmd = rest.partition("|")
+        if not pid.isdigit():
+            continue
+        ppid = int(more[0]) if more and more[0].strip().isdigit() else None
+        when = more[1].strip() if len(more) > 1 else ""
+        out.append(Proc(int(pid), ppid, exe, cmd, int(when) / 1000.0 if when.isdigit() else None))
+    return out
+
+
+def _folder_in(home: Path, text: str) -> bool:
+    """True when the whole folder ``home`` is named in ``text`` (``D:/NS2`` is not ``D:/NS``)."""
+    root = os.path.normcase(os.path.abspath(home))
+    low = os.path.normcase(text)
+    at = low.find(root)
+    while at >= 0:
+        end = at + len(root)
+        if end == len(low) or low[end] in (os.sep, '"', " ", "'"):
+            return True
+        at = low.find(root, at + 1)
+    return False
+
+
+def _inside(path: str, folder: Path) -> bool:
+    """True when the file ``path`` is under ``folder``."""
+    root = os.path.normcase(os.path.abspath(folder)) + os.sep
+    return bool(path) and os.path.normcase(os.path.abspath(path)).startswith(root)
+
+
+def is_this_install(home: Path, proc: Proc, record_written: float | None) -> bool:
+    """D-46 review, blocker 1: a pid that ``run/supervisor.json`` records is this install's own process ONLY
+    when both hold:
+
+    A. it is tied to THIS install: its program file is under ``home`` (a venv's ``python.exe``, ``ns.exe``,
+       ``bin\\llama-server.exe``), or ``home`` is on its command line (a path of this home as an argument),
+       or its NIGHTSHIFT_HOME is ``home``. The first two come from any listing (CIM or psutil, no
+       elevation); the third is read with psutil from the process's own environment, which Windows allows
+       for a process of the same user that is not elevated (else it is not read, and only A1 or A2 can tie
+       it). Naming a Nightshift module ties nothing: every install, and a checkout, runs the same modules.
+    B. it started no later than the record was written (``RECORD_SLACK_S``): a pid Windows gave to a newer
+       process after the record is not the one recorded.
+
+    =====================  =====================  ====================  ===========  ======
+    program under home     home on command line   NIGHTSHIFT_HOME=home  started <=   ours
+                                                                        record
+    =====================  =====================  ====================  ===========  ======
+    yes                    any                    any                   yes          yes
+    any                    yes                    any                   yes          yes
+    any                    any                    yes                   yes          yes
+    no                     no                     no or not read        yes          no
+    any                    any                    any                   no / unknown no
+    =====================  =====================  ====================  ===========  ======
+
+    The engine itself is found by its lock instead (`own_processes`): only a live engine of this home can
+    hold ``run/supervisor.lock``."""
+    if proc.created is None or record_written is None or proc.created > record_written + RECORD_SLACK_S:
+        return False
+    tied = _inside(proc.exe, home) or _folder_in(home, proc.cmdline)
+    if proc.env_home:
+        tied = tied or os.path.normcase(os.path.abspath(proc.env_home)) == os.path.normcase(
+            os.path.abspath(home))
+    return tied
+
+
+def engine_lock_owner(home: Path) -> int | None:
+    """The pid in ``run/supervisor.lock`` while the lock is held (an engine of this home lives; 0.1.14 and
+    every later version take this lock and write their pid after byte 0); None when it is free."""
+    from ns_common.singleton import read_owner
+
+    lock = Path(home) / "run" / "supervisor.lock"
+    return read_owner(lock) if _held(lock) else None
+
+
+def recorded(home: Path) -> tuple[list[tuple[int, str]], float | None]:
+    """The pids ``run/supervisor.json`` records (the engine, then its services: the format of 0.1.14 to
+    this version, ``{"pid", "children": {name: pid}}``) and when it was written; ([], None) without one."""
+    f = Path(home) / "run" / "supervisor.json"
+    try:
+        written = f.stat().st_mtime
+        data = json.loads(read_text_retry(f))
+        named = [(int(data["pid"]), "the engine")]
+        named += [(int(v), "the dashboard" if k == "dashboard" else f"the {k} service")
+                  for k, v in dict(data.get("children") or {}).items()]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return [], None
+    return named, written
+
+
+def own_processes(home: Path, procs: Sequence[Proc]) -> dict[int, str]:
+    """pid -> what it is, for every running process that is this install's own (the one rule both the
+    update's stop, `ns_supervisor.stopping`, and setup's holder wait use):
+
+    - the engine: the process holding this home's engine lock, as the lock names it, when it runs
+      ``ns_supervisor.app``;
+    - each pid ``supervisor.json`` records that `is_this_install`;
+    - the engine's launcher: its parent, when that program is this home's ``venvs\\supervisor`` python;
+    - every process started by one of those, and started after it (a parent id Windows reused is not a
+      parent)."""
+    by_pid = {p.pid: p for p in procs}
+    own: dict[int, str] = {}
+    holder = engine_lock_owner(home)
+    if holder is not None and holder in by_pid and ENGINE_MODULE in by_pid[holder].cmdline:
+        own[holder] = "the engine"
+    named, written = recorded(home)
+    for pid, what in named:
+        p = by_pid.get(pid)
+        if p is not None and pid not in own and is_this_install(home, p, written):
+            own[pid] = what
+    launcher = Path(home) / "venvs" / "supervisor"
+    for pid, what in list(own.items()):
+        parent = by_pid.get(by_pid[pid].ppid or -1)
+        if what == "the engine" and parent is not None and _inside(parent.exe, launcher):
+            own.setdefault(parent.pid, "the engine's launcher")
+    grew = True
+    while grew:
+        grew = False
+        for p in procs:
+            mother = by_pid.get(p.ppid or -1)
+            if p.pid in own or mother is None or mother.pid not in own:
+                continue
+            if p.created is not None and mother.created is not None and p.created < mother.created:
+                continue
+            own[p.pid] = "a process the engine started"
+            grew = True
+    return own
 
 
 def holders_in(listing: str, venvs: Path, skip: Iterable[int] = ()) -> list[str]:
@@ -428,7 +694,7 @@ def holders_in(listing: str, venvs: Path, skip: Iterable[int] = ()) -> list[str]
     root = os.path.normcase(os.path.abspath(venvs)) + os.sep
     found: list[str] = []
     for line in listing.splitlines():
-        pid, _, rest = line.strip().partition("|")
+        pid, _, rest = line.strip().split(FIELD)[0].partition("|")
         exe, _, cmd = rest.partition("|")
         if not pid.isdigit() or int(pid) in set(skip):
             continue

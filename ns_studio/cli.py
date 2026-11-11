@@ -30,6 +30,7 @@ from ns_studio.daily import nothing_due_message, run_daily
 from ns_studio.diskroom import require_story_room
 from ns_studio.errors import PAUSED, UNEXPECTED, StudioError, describe_unexpected, hint_of
 from ns_studio.footage_keys import require_footage_key
+from ns_studio.gate import job_gate
 from ns_studio.learn import importer, reweight, status
 from ns_studio.orchestrator import OWNER_SCRIPT_FORMATS, plan_job, run_job
 from ns_studio.policy.regen import run_job_guarded
@@ -190,6 +191,8 @@ def run_cmd(
         raise typer.BadParameter(f"--format must be one of {', '.join(jobs.FORMATS)}")
     script_text = _script_text(script, title, count, daily=daily, resume=resume, fmt=fmt, channel=channel)
     with guarded():
+        if not dry_run:
+            job_gate()      # D-48: before the voice, the job folder, job.json, the owner file and the ledger
         jobs.load_stage_modules()
         if dry_run and resume is None and not daily:
             enabled = jobs.prepare_plan(fmt or "shorts_only", policy)
@@ -201,7 +204,6 @@ def run_cmd(
             return
         env = jobs.open_env(fake)
         if not dry_run:
-            engine_gate(env)    # before the voice, the job folder, job.json, the owner file and the ledger
             _setup_voice(env)
         if daily:
             _daily(env, dry_run, policy)
@@ -213,24 +215,6 @@ def run_cmd(
                 env, fmt=fmt, channel=channel, count=count, dry_run=dry_run, resume=resume, policy=policy,
                 script=script_text, title=title,
             )
-
-
-#: The services the engine runs (the acquirer starts it for them); `clips` is the stock sites only.
-ENGINE_SERVICES = frozenset({"llm", "tts", "whisper", "embed"})
-
-
-def engine_gate(env: jobs.Env, needs: frozenset[str] = ENGINE_SERVICES) -> None:
-    """D-39b: a command that will need the engine (for a service of `needs` that is not faked) is refused
-    FIRST, before it writes anything, when the engine may not start now (`NS-W210`:
-    `ns_supervisor.client.start_gate`, the gate `ensure_running` passes later). An engine that already
-    answers lets it through, as there."""
-    if not (needs - env.fake):
-        return
-    try:
-        sup: Any = importlib.import_module("ns_supervisor.client")
-    except ImportError:
-        return      # (the acquirer says NS-E202 when it needs the engine)
-    sup.start_gate(env.paths, sup.SupervisorClient.from_runtime(env.runtime))
 
 
 def _close_dead_work(env: jobs.Env) -> None:
@@ -546,8 +530,8 @@ def channel_validate(slug: Annotated[str | None, typer.Argument()] = None) -> No
 def voice_list(fake_services: FakeOpt = None) -> None:
     """List the voices known to the TTS service."""
     with guarded():
+        job_gate()
         env = jobs.open_env(fake_set(fake_services))
-        engine_gate(env, frozenset({"tts"}))
         owner = "studio:voice-list"
         env.services.acquirer.acquire("tts", owner)
         try:
@@ -568,8 +552,8 @@ def voice_preview(
 ) -> None:
     """Synthesize a short sample with voice NAME and write it to a WAV file."""
     with guarded():
+        job_gate()
         env = jobs.open_env(fake_set(fake_services))
-        engine_gate(env, frozenset({"tts"}))
         target = out or (env.paths.data / "voice_preview.wav")
         target.parent.mkdir(parents=True, exist_ok=True)
         owner = "studio:voice-preview"
@@ -590,8 +574,8 @@ def voice_design(
 ) -> None:
     """Design a voice from a description (needs the VoiceDesign model) and store it in the library."""
     with guarded():
+        job_gate()
         env = jobs.open_env(fake_set(fake_services))
-        engine_gate(env, frozenset({"tts"}))
         folder = voice_setup.design_voice(env, name, description, language=language)
         echo(f"voice {name} created: {folder}")
 
@@ -609,8 +593,8 @@ def voice_clone(
 ) -> None:
     """Clone a voice from a recording and store it in the library."""
     with guarded():
+        job_gate()
         env = jobs.open_env(fake_set(fake_services))
-        engine_gate(env, frozenset({"tts"}))
         folder = voice_setup.clone_voice(
             env, name, audio, text, rights_confirmed=rights_confirmed, language=language
         )
@@ -621,8 +605,8 @@ def voice_clone(
 def voice_apply_pending(fake_services: FakeOpt = None) -> None:
     """Create the voice chosen during setup (queued in config/pending_voice.json), if it is not there yet."""
     with guarded():
+        job_gate()
         env = jobs.open_env(fake_set(fake_services))
-        engine_gate(env, frozenset({"tts"}))
         made = voice_setup.apply_pending_report(env)
         echo(made.said() if made else "no voice is waiting to be created")
 
@@ -841,6 +825,8 @@ def calibrate_cmd(
     """Generate stories for human scoring, or (with --score) correlate scores and set critic_bar."""
     with guarded():
         light = score_csv is not None
+        if not light:
+            job_gate()      # (generating stories runs the language model: D-48)
         env = jobs.open_env(light=True) if light else jobs.open_env(fake_set(fake_services))
         if score_csv is not None:
             rep = calibration.score(env.paths, env.db, channel, score_csv)

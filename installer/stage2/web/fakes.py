@@ -172,6 +172,7 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
         key_check=lambda service, key: {"ok": bool(key), "code": None if key else "NS-E501", "message": None},
         head=modelcheck.fake_head,
         launch=lambda argv, env=None: launched.append(list(argv)),
+        engine_answers=lambda home: False,          # no engine of a scratch home answers (D-46 review)
         launch_captured=lambda argv, env=None, **kw: (launched.append(list(argv)), (0, ""))[1],
         elevate_longpaths=lambda: True, console=lambda text, level: console.append(text),
         uv_path=lambda home: str(uv), handover_uv=lambda: None, clipboard=lambda text: None,

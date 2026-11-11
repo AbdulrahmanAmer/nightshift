@@ -73,6 +73,12 @@ def ask(
     fake_services: Annotated[bool, typer.Option("--fake-services", help="No GPU: use fakes.")] = False,
 ) -> None:
     """Ask the Assistant (it uses the same tools as the dashboard; changes need your OK)."""
+    from ns_studio.gate import refusal
+
+    why = refusal()     # D-48: its tools start jobs; nothing runs on environments an update left unfinished
+    if why is not None:
+        typer.echo(f"error NS-W210: {why}", err=True)
+        raise typer.Exit(1)
     dash = build_dashboard(fake_services)
     raise typer.Exit(run_ask(dash, text, conversation=conversation, yes=yes))
 

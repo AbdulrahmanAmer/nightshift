@@ -34,7 +34,7 @@ from installer.stage2.steps.s08_smoke import S08Smoke, load_report_rows  # noqa:
 from installer.stage2.testing import example_answers, make_test_context  # noqa: E402
 from installer.stage2.web import labels  # noqa: E402
 from ns_common.acquire import Endpoint, Service  # noqa: E402
-from ns_common.config import load_runtime  # noqa: E402
+from ns_common.config import load_runtime, save_runtime  # noqa: E402
 from ns_common.errors import NsError  # noqa: E402
 from ns_common.logging import NsLogger  # noqa: E402
 from ns_common.models import GateReport, Runtime  # noqa: E402
@@ -677,6 +677,8 @@ def cli_run(
     """`ns verify` entered as the product enters it, on the stub services plus the real voice service."""
     home = home or tmp_path / "ns"
     Paths(home).ensure()
+    if not Paths(home).runtime_file.exists():    # `ns verify` starts nothing without settings (NS-E125)
+        save_runtime(Paths(home), Runtime.default("gpu"))
     monkeypatch.setenv("NIGHTSHIFT_HOME", str(home))
     NO_SCHEDULE_CALLS.clear()
     sync = SyncSupervisor(Paths(home), Runtime.default("gpu"), resolver=StubTable())

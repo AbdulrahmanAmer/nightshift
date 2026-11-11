@@ -53,7 +53,7 @@ from ns_common.models import Channel, InstallState, Runtime
 from ns_common.paths import Paths
 from ns_common.uv import find_uv, home_uv, uv_env
 from ns_common.venv_extras import DEV_VENV_EXTRAS, NO_DEPS, VENV_EXTRAS, extras_suffix
-from ns_supervisor import update_job
+from ns_supervisor import stopping, update_job
 from ns_supervisor.childenv import child_env, window_flags
 
 PRESERVE = (".git", "config", "answers.json")
@@ -109,6 +109,12 @@ SETTINGS_BACKUP_HINT = (
 #: install's Python environments to end before it refuses (NS-E706): an engine process still exiting ends
 #: within seconds; a Studio window, a terminal command or a Python prompt does not, and is named.
 HOLDER_WAIT_S = 60.0
+#: D-46 review note: when one of Nightshift's own processes could not be ended it keeps the engine's lock, so
+#: no shortcut can start Nightshift until it is gone; only a restart of the PC ends it.
+OWN_STUCK_WAY_OUT = (
+    "Nightshift cannot start again while it runs: restart the PC, then open Nightshift and run the update "
+    "again."
+)
 #: A venv whose refresh failed on a file in use is tried SYNC_TRIES times, SYNC_PAUSE_S apart (the holder
 #: check ran before, so this is a program started since); then the update stops and says what is left.
 SYNC_TRIES = 3
@@ -170,6 +176,8 @@ class UpdateEnv:
     settle: Callable[[], object] = field(default=lambda: None)
     #: The bound of the wait for programs that run from the Python environments (`wait_no_holders`).
     holder_wait_s: float = HOLDER_WAIT_S
+    #: Where a progress line of the waits goes (the worker's log, which its progress window shows).
+    say: Callable[[str], None] = field(default=lambda line: None)
 
 
 @dataclass
@@ -1018,21 +1026,33 @@ def wait_no_holders(
     find: Callable[[], list[Holder]] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    say: Callable[[str], None] | None = None,
+    nightshift: Callable[[], set[int]] | None = None,
 ) -> None:
     """Return once no program runs from this install's Python environments; `NS-E706`, naming each one,
-    when some still do after `wait_s`. Called after the engine was stopped and before anything on disk is
-    changed, so the refusal is true as written: nothing was changed (`earlier`: what an interrupted
-    rollback's recovery already said in this run)."""
+    when some still do after `wait_s`. Called after Nightshift was stopped (`stopping`: what is ours was
+    waited for and, when it did not end, ended) and before anything on disk is changed, so the refusal is
+    true as written: nothing was changed (`earlier`: what an interrupted rollback's recovery already said in
+    this run). `say` gets "Waiting for ..." when the programs waited for change. A holder that is still
+    Nightshift's own (`nightshift`: the pids `stopping.ours` finds; one that could not be ended) is named as
+    Nightshift's, not as a program the owner has to close."""
     look = find or (lambda: holders(paths))
     try:
         own = {os.getpid(), *(p.pid for p in psutil.Process().parents())}
     except psutil.Error:
         own = {os.getpid()}
     deadline = clock() + wait_s
+    said = ""
     while True:
         found = look()
         if not found:
             return
+        line = "Waiting for these programs to end (they run from Nightshift's Python environments): " + (
+            "; ".join(str(h) for h in found if h.pid not in own)
+        )
+        if say is not None and line != said and any(h.pid not in own for h in found):
+            say(line)
+            said = line
         if any(h.pid in own for h in found):    # waiting cannot help: it is this process (or its starter)
             raise NsError(
                 "NS-E706",
@@ -1049,15 +1069,26 @@ def wait_no_holders(
         if clock() >= deadline:
             break
         sleep(0.25)
+    try:
+        theirs = (nightshift or (lambda: {o.pid for o in stopping.ours(paths)}))()
+    except Exception:  # noqa: BLE001 - the names below are then said as programs to close
+        theirs = set()
+    mine = [h for h in found if h.pid in theirs]
+    others = [h for h in found if h.pid not in theirs]
+    said_mine = (
+        "Nightshift's own processes did not stop when asked and could not be ended: "
+        f"{'; '.join(str(h) for h in mine)}. Nothing was changed. {OWN_STUCK_WAY_OUT}"
+    ) if mine else ""
+    said_others = (
+        "These programs still run from Nightshift's Python environments, and Windows would not let the "
+        f"update replace their files: {'; '.join(str(h) for h in others)}. Nothing was changed. Close "
+        "them and run the update again."
+    ) if others else ""
     raise NsError(
         "NS-E706",
-        " ".join([
-            *earlier,
-            "These programs still run from Nightshift's Python environments, and Windows would not let the "
-            f"update replace their files: {'; '.join(str(h) for h in found)}. Nothing was changed. Close "
-            "them and run the update again.",
-        ]),
+        " ".join([*earlier, *(s for s in (said_others, said_mine) if s)]),
         holders=[h.pid for h in found],
+        own_left=bool(mine),        # (no restart can work while it holds the engine's lock: update_job)
     )
 
 
@@ -1235,7 +1266,7 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
     log.info("update_start", old=old_version, new=new_version, zip=str(zip_path))
     env.stop()
     update_job.step(paths, WAITING_FOR_PROGRAMS, update_job.unchanged_sentence(old_version))
-    wait_no_holders(paths, env.holder_wait_s, earlier=earlier)
+    wait_no_holders(paths, env.holder_wait_s, earlier=earlier, say=env.say)
     names = {"old": old_version, "new": new_version}
     saved: _UpdateCopy | None = None
     recorded = False
@@ -1391,7 +1422,7 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
         raise NsError("NS-E702", nothing)
     env.stop()
     update_job.step(paths, WAITING_FOR_PROGRAMS, update_job.unchanged_sentence(current_version(app)))
-    wait_no_holders(paths, env.holder_wait_s)
+    wait_no_holders(paths, env.holder_wait_s, say=env.say)
     zip_path = config_snapshot.path_for(app)
     with config_snapshot.locked(zip_path) as held:
         if not held:
@@ -1992,7 +2023,7 @@ def _git_update(
     leave_app(app, paths)
     log.info("git_update_start", channel=channel, old=old_version, head=head[:12])
     env.stop()
-    wait_no_holders(paths, env.holder_wait_s)
+    wait_no_holders(paths, env.holder_wait_s, say=env.say)
     try:        # a failed update puts these back (a git install has no program backup to pair a copy with)
         before = config_snapshot.capture(paths.config)
     except config_snapshot.SnapshotError as e:
