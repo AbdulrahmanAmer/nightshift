@@ -12,7 +12,7 @@ Steps, each safe to interrupt and to run again:
    the one checker), shows its progress on the setup screen every few seconds and writes the verdict into
    ``logs/model-check.json``. A file that matches gets a fresh ``hashed_at``: a run killed half way does not
    hash it again. A file that does not match is set aside as ``<name>.bad`` (after a check that the drive can
-   hold the replacement beside it, else NS-E104 and nothing is moved) and its marker removed, so the plan
+   hold the replacement beside it, else NS-E104 and that file stays put) and its marker removed, so the plan
    fetches it as a missing file (resumed from its ``.part`` when one is there).
 2. The download (``ctx.download``) fetches it. Offline or the site gone: the step fails as any download does
    (NS-E105, Retry); the ``.bad`` stays until the replacement verifies, so the owner is never left with
@@ -105,7 +105,9 @@ def _set_aside(ctx: StepContext, item: vd.DownloadItem, row: vd.Row) -> None:
             "NS-E104",
             f"{vd.what(item)} is damaged and is downloaded again beside it (the damaged copy is kept until "
             f"the new one is checked): that needs {human_bytes(need)} free at {dest.parent}, there are "
-            f"{human_bytes(free)}. Free some space and run INSTALL.cmd again (Repair); nothing was changed.",
+            f"{human_bytes(free)}. Free some space and run INSTALL.cmd again (Repair); this file was left "
+            "where it is (a damaged file found before it in this run is already set aside and is fetched by "
+            "that next run).",
         )
     replace_atomic(dest, dest.with_name(dest.name + modelmarks.SET_ASIDE))
     _marker(dest).unlink(missing_ok=True)
