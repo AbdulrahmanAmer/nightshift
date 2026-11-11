@@ -360,12 +360,19 @@ class Plan:
         pin of the program in ``<app>.prev`` NOW. The uv kept in ``bin\\uv.swap`` by S1 goes, unless it is
         the one ``<app>.prev`` pins and ``bin\\uv.prev`` is not: then it takes the place of ``bin\\uv.prev``.
         Never raises: what stays is decided by the next ``settle`` by the same rule."""
-        prev, tmp = uv_dir(self.home, ".prev"), uv_dir(self.home, ".swap")
+        prev, nxt, tmp = (uv_dir(self.home, s) for s in (".prev", ".next", ".swap"))
         if self.swapped and self.how == "next" and tmp.exists():
             try:
                 if _serves(tmp, older) and not _serves(prev, older):
-                    shutil.rmtree(prev, ignore_errors=True)
+                    # ``bin\\uv.prev`` is moved aside (to the free ``bin\\uv.next``), not deleted first: a
+                    # delete that stops half way (a file held) and a refused rename after it would leave half
+                    # a uv in ``bin\\uv.prev``, which the next ``settle`` (kept uv there, ``bin\\uv.prev``
+                    # not the pinned one) would put into ``bin\\uv``. A kill or a refusal between the two
+                    # renames leaves ``bin\\uv.swap`` and no ``bin\\uv.prev``: ``settle`` finishes it.
+                    shutil.rmtree(nxt, ignore_errors=True)
+                    os.rename(prev, nxt)
                     os.rename(tmp, prev)
+                    shutil.rmtree(nxt, ignore_errors=True)
                 else:
                     shutil.rmtree(tmp, ignore_errors=True)
             except OSError:
