@@ -636,6 +636,7 @@ def test_what_is_not_damage_is_opened_as_it_is(tmp_home: Path, monkeypatch: pyte
     runs out of time and a new install are NOT damage: nothing is set aside, no note, the check says why."""
     paths = home()
     holder: sqlite3.Connection | None = None
+    before = ""
     if kind != "new_install":
         backups(paths, [1])
         build_db(paths.db_path, "live")

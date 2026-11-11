@@ -207,12 +207,13 @@ def database_row(paths: Paths, now: datetime | None = None) -> tuple[str, bool, 
             ok, said = False, f"found damaged {at}; opening the Dashboard replaces it with the newest copy"
     done = dbrestore.read_json(dbrestore.restored_path(paths))
     if done is not None:
+        restored: datetime | None = None
         try:
             restored = datetime.fromisoformat(str(done["restored_at"]))
             age_days = ((now or datetime.now(UTC)) - restored).total_seconds() / 86400
         except (KeyError, ValueError, TypeError):
             age_days = None
-        if age_days is not None and age_days < dbrestore.RESTORED_SHOWN_DAYS:
+        if restored is not None and age_days is not None and age_days < dbrestore.RESTORED_SHOWN_DAYS:
             on = restored.astimezone().strftime("%Y-%m-%d")
             if done.get("backup") and done.get("backup_time") is not None:
                 made = datetime.fromtimestamp(float(done["backup_time"])).strftime("%Y-%m-%d")
