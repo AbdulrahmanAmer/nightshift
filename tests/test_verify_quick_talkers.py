@@ -18,6 +18,7 @@ import re
 import threading
 import time
 from collections.abc import Iterator
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -651,13 +652,22 @@ def test_a_talker_that_stalls_is_a_warning_within_the_bound_and_the_run_goes_on(
     tmp_path: Path, three_talkers: Service_, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     set_up(three_talkers, "ok", "timeout", monkeypatch)
-    t0 = time.monotonic()
     report = run(tmp_path, three_talkers)
-    took = time.monotonic() - t0
     rows = tts_rows(report)
     assert rows["tts.preset"].passed and rows["tts.design"].passed
     assert rows["tts.clone"].passed is True and rows["tts.clone"].value == names.TALKER_WARNING_VALUE
-    assert took < 1.4, took                       # gave up after the bound, not after the 1.5 s sentence
+    # The stalled talker alone, from verify's own lines: asked at "speaking", given up at "talker_failed". Not
+    # the whole run: the preset, the design voice and the rest of verify take their own time on a busy PC.
+    lines = [
+        json.loads(ln)
+        for f in sorted((tmp_path / "ns" / "logs").glob("verify-*.jsonl"))
+        for ln in f.read_text(encoding="utf-8").splitlines()
+    ]
+    asked = [r["ts"] for r in lines if r["event"] == "speaking" and r["data"].get("mode") == "clone"]
+    gave_up = [r["ts"] for r in lines if r["event"] == "talker_failed" and r["data"].get("mode") == "clone"]
+    assert len(asked) == 1 and len(gave_up) == 1, lines
+    took = (datetime.fromisoformat(gave_up[0]) - datetime.fromisoformat(asked[0])).total_seconds()
+    assert took < 1.4, took                     # gave up after the 0.4 s bound, not after the 1.5 s sentence
     assert report.checks[-1].name == "vram.idle"          # and the rest of verify still ran
 
 
