@@ -300,6 +300,8 @@ class LocalProduct:
             return None, None
         if self.world.refuse_cancel and method == "POST" and path.endswith("/cancel"):
             return None, None
+        if self.world.jobs_route_times_out and method == "GET" and path.startswith("/api/jobs/"):
+            return None, None  # the job route times out while /api/health answers
         out = self.http.api(method, path, body, timeout)
         if method == "PUT" and path == "/api/settings":
             self.world.traps.hit("settings applied")
@@ -548,6 +550,7 @@ class World:
         self.clip_status = "done"
         self.dashboard_down = False
         self.refuse_cancel = False
+        self.jobs_route_times_out = False
         self.traps, self.clock = Traps(), Clock()
         self.product = LocalProduct(self)
         self.windows = CannedWindows(self)
@@ -1853,3 +1856,51 @@ def test_an_unanswered_cancel_never_says_cancelled(world: World) -> None:
             "Nightshift's Dashboard, Queue, and press Cancel on clip job")  # fmt: skip
     assert said in line, line
     assert "cancel asked" not in line
+
+
+# ------------------------------------------------------------------------------------------------ round 6
+def test_an_unfinished_update_is_the_products_own_refusal_and_nothing_is_started(world: World) -> None:
+    """The product's start gate (`ns_supervisor.client.start_gate`): a repair record that waits (here one
+    that cannot be read, which the launch script treats as present) refuses every start with NS-W210. The
+    first step that needs the engine is NOT RUN with the product's sentence and hint; nothing is started."""
+    from ns_common.errors import describe_shown
+
+    (world.home / "run" / "venv-repair.json").write_text("{torn", encoding="utf-8")
+    world.dashboard_down = True
+    assert world.run() == 0, world.out
+    rec = world.state()["steps"]["K2"]
+    hint = describe_shown("NS-W210", world.home).hint
+    assert rec["result"] == "NOT RUN" and not rec["done"], rec
+    assert (
+        rec["line"].startswith("NS-W210: ")
+        and f"What to do: {hint} Then run GPU-KIT.cmd again." in rec["line"]
+    )
+    assert "Nightshift was not started: " in rec["line"]
+    assert world.product.count("start_engine") == 0 and world.task.has is None
+    assert "engine_started_by_kit" not in world.state()
+
+
+def test_a_coded_start_failure_shows_that_codes_hint(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    from ns_common.errors import describe_shown
+
+    def refuses(timeout: float) -> tuple[bool, str]:
+        raise NsError("NS-E202", "the engine did not answer within 30 s")
+
+    monkeypatch.setattr(world.product, "start_engine", refuses)
+    world.dashboard_down = True
+    assert world.run() == 1
+    rec = world.state()["steps"]["K2"]
+    assert rec["result"] == "FAIL" and rec["line"].startswith("NS-E202: "), rec
+    assert f"What to do: {describe_shown('NS-E202', world.home).hint}" in rec["line"]
+
+
+def test_a_job_route_that_always_times_out_still_ends_by_time(world: World) -> None:
+    world.clip_status = "running"
+    world.jobs_route_times_out = True
+    assert world.run() == 1
+    line = world.state()["steps"]["KC"]["line"]
+    assert (
+        world.results()["KC"] == "FAIL"
+        and "did not finish in 1 h 30 min" in line
+        and "cancel asked (HTTP 200)" in line
+    )

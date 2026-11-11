@@ -839,9 +839,22 @@ class Kit:
         """The dashboard answers (started with the kit's nsup when it did not: then stopped by `finish`)."""
         if self.product.api("GET", "/api/health", timeout=10)[0] == 200:
             return None
+        from ns_common.errors import NsError
+        from ns_common.paths import Paths
+        from ns_supervisor.client import start_gate
+
+        self.refusal = None
+        try:  # the product's ONE start gate: an update left unfinished, a repair waiting (NS-W210)
+            start_gate(Paths(self.home))
+        except NsError as e:
+            self.refusal = e
+            return str(e)
         self.state["engine_started_by_kit"] = True
         self.save()  # before the start: a kill from here on still stops it at the end of the next run
-        ok, text = self.product.start_engine(300)
+        try:
+            ok, text = self.product.start_engine(300)
+        except NsError as e:  # the product's own coded reason
+            return f"Nightshift's engine did not start: {e}"
         begun = self.now()
         while ok:  # started: it answers within a bound, or that is the answer
             if self.product.api("GET", "/api/health", timeout=10)[0] == 200:
@@ -861,8 +874,7 @@ class Kit:
             return None
         why = self.engine()
         if why:
-            return Result("FAIL", f"{why}. What to do: run GPU-KIT.cmd again; if this line comes back, send "
-                          "the zip.", done=False, stop=True)  # fmt: skip
+            return self.not_started(why)
         self.put_back_extras()  # (the kit's own Code window, test voices or stock clip of a killed run)
         if need != "card" or self.own_work_running(step):
             return None
@@ -870,6 +882,25 @@ class Kit:
         while self.engine_status() is None and (self.now() - begun).total_seconds() < ENGINE_ANSWER_S:
             self.clock.sleep(2)
         return self.card_taken()
+
+    def not_started(self, why: str) -> Result:
+        """The engine is not up: the product's OWN reason and way out when it gave a coded one (the start
+        gate's refusal is NOT RUN; a coded failure of the start is FAIL with that code's message and hint);
+        only an unexplained failure gets the kit's own sentence."""
+        from ns_common.errors import describe_shown
+
+        refusal = getattr(self, "refusal", None)
+        codes = [refusal.code] if refusal is not None else re.findall(r"NS-[EW]\d{3}", why)
+        for code in reversed(codes):
+            try:
+                d = describe_shown(code, self.home)
+            except KeyError:
+                continue
+            detail = (refusal.detail if refusal is not None else why)[:400]
+            line = f"{code}: {d.message} ({detail}). What to do: {d.hint} Then run GPU-KIT.cmd again."
+            return Result("NOT RUN" if refusal is not None else "FAIL", line, done=False, stop=True)
+        return Result("FAIL", f"{why}. What to do: run GPU-KIT.cmd again; if this line comes back, send the "
+                      "zip.", done=False, stop=True)  # fmt: skip
 
     def own_work_running(self, step: str) -> bool:
         """The card may be held by the kit's OWN work of this step, started by an earlier run: its studio
@@ -1411,7 +1442,10 @@ class Kit:
         job: dict[str, Any] = {}
         while True:
             st, got = self.product.api("GET", f"/api/jobs/{rec['job_id']}")
-            if st is None:  # the Dashboard stopped answering: brought up again, never polled dead
+            over = (self.now() - begun).total_seconds() > CLIP_BOUND_S
+            if (
+                st is None and not over
+            ):  # the Dashboard stopped answering: brought up again, never polled dead
                 why = self.engine()
                 if why:
                     self.save()
@@ -1420,11 +1454,12 @@ class Kit:
                                   f"clip job {rec['job_id']} ({why}); the job may still be running: run "
                                   "GPU-KIT.cmd again, it follows the same job"),
                                   done=False, stop=True)  # fmt: skip
+                self.clock.sleep(POLL_S)  # (a route that keeps timing out still ends by time)
                 continue
             job = got if st == 200 and isinstance(got, dict) else {}
             if job.get("status") in ("done", "failed", "cancelled"):
                 break
-            if (self.now() - begun).total_seconds() > CLIP_BOUND_S:
+            if over:
                 # at its bound the job is cancelled through the product's own route, not left running
                 cst, _ = self.product.api("POST", f"/api/jobs/{rec['job_id']}/cancel", {})
                 rec.update({"cancelled_at_bound": True, "cancel_status": cst})
