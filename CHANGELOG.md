@@ -425,6 +425,18 @@ suite and no more is claimed.
   stage, and these fixes are shown by tests (one per origin: the nightly, `studio run`, Run now, a dashboard request,
   a series part, a clip) and were not run on an install again.
 
+- Stopping Nightshift for an update, a rollback or a Repair always ends (D-46, D-48). The install proof of this
+  version found a rollback refused because Nightshift's own engine hung while exiting, and Nightshift was left
+  down. Now the engine exits within 20 seconds of being asked; the update waits for Nightshift's own programs,
+  showing "Waiting for Nightshift to stop: ...", ends what belongs to THIS install and is still there, and refuses
+  (NS-E706) naming only a program that is not Nightshift's. A refusal starts Nightshift again and says so; when
+  Nightshift's own program cannot be ended it says to restart the PC. Setup's Repair does the same over 0.1.14
+  and the earlier candidates. An interrupted update that was finished or repaired now reads as finished
+  everywhere, and nothing starts a job or the engine while one is unfinished (NS-W210), whichever way the program
+  was started. A rollback that had to end an engine which no longer answered starts Nightshift again and its
+  last line says so (D-51). Shown on an install of this candidate's code before its last two fixes (D-50, D-51):
+  12 terminal rollbacks of 12, an engine hung in its own exit, and a foreign program holding a file; the D-51
+  case itself is shown by tests only.
 - An update or rollback typed in a terminal now hands over to a separate window (D-39). `ns update <zip>`,
   `ns update --github`, `ns update --git` and `ns update --rollback` return at once and open a window, "Nightshift
   update", that shows each step and the result; closing the terminal or that window stops nothing. The command
@@ -464,8 +476,10 @@ suite and no more is claimed.
   update stop with NS-E702 and no way out named (an outside program has to cause it); a start in the few renames
   between the record and the swap is let through. Shown by tests.
 - `studio run`, the voice commands, `studio dashboard` and `ns verify` read the repair record before they ask the
-  engine (D-39b with default-port-tests). They refuse with NS-W210 when a record waits and the engine is down, say
-  that an update or rollback is running now when one holds `run\update.lock`, and go on in every other state; with
+  engine (D-39b with default-port-tests, D-48). While a record waits, `studio run` and the voice commands refuse
+  with NS-W210 whether or not the engine answers; `ns verify` and `studio dashboard` refuse when the engine is down
+  and go on when it answers. All of them say that an update or rollback is running now when one holds
+  `run\update.lock`, and go on when nothing waits; with
   nothing waiting the check is a file look and no connection, so the footage-key and no-channel refusals still come
   before any job, with their codes and messages unchanged. Not covered: a record held open by another program is
   waited for a moment, and `install_state.json` is read when the engine is up; the engine's own start refuses
@@ -512,17 +526,22 @@ suite and no more is claimed.
   Shown by tests.
 - The local servers refuse requests made by web pages (FN-1). The engine (port 8099), the voice service (8091) and
   the dashboard answer only requests addressed to 127.0.0.1 or localhost; the engine and the voice service answer no
-  web page at all, and the dashboard answers its own page and refuses a form-type POST (form-urlencoded, multipart
-  or `text/plain`) unless it carries an Origin of the dashboard's own address, and answers 415 to a body that is
+  web page at all, and the dashboard answers a browser only from its own page: the same scheme, name and port the
+  request was addressed to (D-45). A page served by another program on this PC, on another port or under the other
+  name, is refused for reading as well as for changing anything. The dashboard also answers 415 to a body that is
   not JSON on its JSON routes. Before, a page you visited could send a plain form POST to the engine and stop the
   night's services. A refusal is NS-E207 and leaves one morning note naming the page (at most three pages and one
   "more" a day, counted across the servers); a page opened from a file is named as such. Nightshift's own programs,
-  the dashboard page and its uploads work as before. A tool of yours that posts forms to the dashboard must now send
-  `Origin: http://127.0.0.1:<port>` (the dashboard's own address), and a script that calls the engine or the voice
-  service must address 127.0.0.1 or localhost, send no Origin and send JSON, not a form. Not covered: the setup
+  the dashboard page and its uploads work as before. A script of yours must address 127.0.0.1 or localhost and send no
+  Origin, Referer or Sec-Fetch-* header, with a JSON body or none; a tool that must post a form to the dashboard
+  sends an Origin equal to exactly the address it called (scheme, name and port). Not covered: the setup
   server keeps its own check; llama-server and the embedding service are not guarded by this; update
   packages are still checked for integrity only (the SHA256 beside the zip proves it arrived whole, not who made
-  it), not signed; a page served by another program on this PC is outside this check; the fake services of fake installs have no guard. Shown by tests.
+  it), not signed; a browser too old to mark its own requests (Firefox before 70, Edge's IE mode) is taken for a
+  program, and can send a request with no body to the routes that take none (stop everything, start a check); the
+  refusal note counts "at least" what it had seen when it was written (D-50); the fake services of fake installs
+  have no guard. Shown in a real browser (Edge) on an install of this candidate's code before its last two fixes:
+  every request from a page on another port and from a file page was refused and nothing ran.
 - Morning notes have one owner, and Mark all read removes only what you saw (FN-2). Every note any part of Nightshift
   leaves goes through one module under one lock (the launch script takes the same lock), so two notes written at the
   same moment are both kept, and Mark all read removes exactly the notes the bell showed; a note that arrives

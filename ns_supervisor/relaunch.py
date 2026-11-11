@@ -6,6 +6,29 @@ now remembers what was running before the update (`observe`) and, when it is don
 again (`restart`) the way the shortcuts do: the engine, as `Start-NsSupervisor` does, and the dashboard
 launcher when a window host was open. It returns only once the engine answers `/status`, so the worker can
 write the `done` state after that and the reconnecting page finds a live dashboard.
+
+D-51: "as it was found" is what the owner knows, not only what answers. An engine that hung before the
+update (it holds this home's engine lock, `run/supervisor.lock`, and answers nothing) was running as far as
+the owner knows: its dashboard may still answer. The update ends it by its recorded process (`stopping`), so
+it is counted as running and started again. The table (`observe`, `restart`):
+
+=======================  ========================  ==================================================
+engine before            dashboard before          started again (when the run may start anything)
+=======================  ========================  ==================================================
+answers `/status`        up (its service, a live   the engine, which starts its dashboard (as the
+                         dashboard process of THIS  Dashboard shortcut: the launcher when a window host
+                         install, or a window      was open), then `warmup("dashboard")`
+                         host)
+answers `/status`        not up                    the engine without its dashboard (`--headless`)
+hung (lock held)         up / not up               the same two rows (the dashboard: a live process of
+                                                   this install, `stopping.ours`, or a window host)
+not running              up (a dashboard left by   the engine and its dashboard
+                         an engine that died)
+not running              not up                    nothing
+=======================  ========================  ==================================================
+
+`started` says whether `restart` started anything; `running` asks `/status` now. The worker's result ends
+with the sentence they decide (`update_job.now_running`).
 """
 
 from __future__ import annotations
@@ -15,6 +38,7 @@ import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ns_common.errors import NsError
 from ns_common.paths import Paths
@@ -61,9 +85,34 @@ def start_dashboard_launcher(paths: Paths, app: Path, *, popen: PopenFn | None =
         raise NsError("NS-E202", f"cannot start the dashboard launcher: {e}") from e
 
 
+def _service_up(status: Mapping[str, Any], name: str) -> bool:
+    """`/status` says the service runs (starting or ready)."""
+    services = status.get("services")
+    info = services.get(name) if isinstance(services, Mapping) else None
+    return isinstance(info, Mapping) and info.get("state") in ("starting", "ready")
+
+
+def own_dashboard_alive(paths: Paths) -> bool:
+    """A dashboard process of THIS install runs (`stopping.ours`: recorded in `run/supervisor.json` and tied
+    to this home by `venvrepair.is_this_install`); the answer of a hung engine's `/status` is not needed."""
+    from ns_supervisor import stopping
+
+    return any(o.what == "the dashboard" for o in stopping.ours(paths))
+
+
+def engine_lock_held(paths: Paths) -> bool:
+    """An engine of this home holds its lock (it may answer nothing: D-46, D-51)."""
+    from ns_supervisor import stopping
+
+    return stopping.engine_lives(paths)
+
+
 @dataclass
 class Relaunch:
-    """What was running before the update, and how to start it again. Every side effect is a field (tests)."""
+    """What was running before the update, and how to start it again. Every side effect is a field (tests).
+
+    `engine_held` and `dashboard_alive` default to the real checks of `paths` (`engine_lock_held`,
+    `own_dashboard_alive`); `start_quiet` starts the engine without its dashboard (None: `start_engine`)."""
 
     paths: Paths
     client: SupervisorClient
@@ -71,31 +120,68 @@ class Relaunch:
     start_engine: Callable[[], None]
     start_window: Callable[[], None]
     wait_s: float = ENGINE_WAIT_S
+    engine_held: Callable[[], bool] | None = None
+    dashboard_alive: Callable[[], bool] | None = None
+    start_quiet: Callable[[], None] | None = None
     engine_was_up: bool = field(default=False, init=False)
     window_was_open: bool = field(default=False, init=False)
+    dashboard_was_up: bool = field(default=False, init=False)
+    started: bool = field(default=False, init=False)
 
     @property
     def wanted(self) -> bool:
-        """True when something was running that the update stopped."""
-        return self.engine_was_up or self.window_was_open
+        """True when something of Nightshift was running (as far as the owner knows) that the update stops."""
+        return self.engine_was_up or self.window_was_open or self.dashboard_was_up
+
+    def _ask(self, check: Callable[[], bool] | None, real: Callable[[Paths], bool]) -> bool:
+        try:
+            return bool(check()) if check is not None else real(self.paths)
+        except Exception:  # noqa: BLE001 - a check that fails says "not seen"; the update goes on
+            return False
 
     def observe(self) -> None:
-        """Remember, before the update stops the engine, whether it and a dashboard window are running."""
-        self.engine_was_up = self.client.is_up()
-        self.window_was_open = self.window_open()
+        """Remember, before the update stops the engine, what of Nightshift runs: the engine (it answers
+        `/status`, or an engine of this home holds its lock), its dashboard (the engine says its service runs;
+        or, when it does not answer, a live dashboard process of this install) and a dashboard window."""
+        try:
+            status: dict[str, Any] | None = self.client.status()
+        except NsError:
+            status = None
+        self.window_was_open = self._ask(self.window_open, lambda _p: False)
+        self.engine_was_up = status is not None or self._ask(self.engine_held, engine_lock_held)
+        if status is not None:
+            dashboard = _service_up(status, "dashboard")
+        else:
+            dashboard = self._ask(self.dashboard_alive, own_dashboard_alive)
+        self.dashboard_was_up = self.window_was_open or dashboard
+
+    def running(self) -> bool:
+        """The engine answers `/status` now."""
+        return self.client.is_up()
 
     def restart(self) -> None:
-        """Start the engine (and the dashboard window when one was open) and wait for `/status`.
+        """Start again what `observe` saw (the table in the module docstring) and wait for `/status`.
 
         Does nothing when nothing was running before. An engine that is up already (an update that changed
-        nothing) is left alone. Raises `NS-E202` when the engine does not answer in `wait_s`.
+        nothing) is left alone. Raises `NS-E202` when the engine does not answer in `wait_s`. `started` is set
+        before the spawn: an engine that was started and does not answer was still started (and the caller
+        says that it could not restart by itself).
         """
         if not self.wanted or self.client.is_up():
             return
-        spawn = self.start_window if self.window_was_open else self.start_engine
-        ensure_running(self.client, self.paths, headless=False, wait_s=self.wait_s, spawn=spawn)
+        if self.window_was_open:
+            spawn = self.start_window
+        elif self.dashboard_was_up or self.start_quiet is None:
+            spawn = self.start_engine
+        else:
+            spawn = self.start_quiet
+        self.started = True
+        ensure_running(self.client, self.paths, headless=not self.dashboard_was_up, wait_s=self.wait_s,
+                       spawn=spawn)
+        if not self.dashboard_was_up:
+            return
         try:
-            self.client.warmup("dashboard")     # a headless engine does not start it by itself
+            self.client.warmup("dashboard")     # (the window's launcher asks too; twice is fine)
         except NsError:
             pass                                # the page shows the dashboard's own error when it matters
 
@@ -109,4 +195,5 @@ def default_relaunch(paths: Paths) -> Relaunch:
         window_open=lambda: presence.host_window_open(paths),
         start_engine=lambda: spawn_supervisor(paths, headless=False),
         start_window=lambda: start_dashboard_launcher(paths, control.app_path(paths)),
+        start_quiet=lambda: spawn_supervisor(paths, headless=True),
     )

@@ -79,7 +79,7 @@ def _root(ctx: typer.Context) -> None:
 def cmd_stop() -> None:
     """Stop the engine and every model process (what 'Nightshift - Stop All' runs)."""
     paths = Paths.from_env()
-    for line in control.stop(paths, _client(paths)):
+    for line in control.stop(paths, _client(paths), say=echo):    # (setup's Repair stops Nightshift here)
         echo(line)
 
 
@@ -199,6 +199,10 @@ def cmd_tune(
         for line in tune.matrix_lines(rt):
             echo(line)
         return
+    try:        # D-48: it starts llama-server and saves runtime.json: not on unfinished environments
+        start_gate(paths)
+    except NsError as e:
+        raise _die(e) from e
     if rt.dev_mode:
         echo("Dev mode: the language model is a fake, so there is nothing to tune.")
         return
@@ -235,7 +239,11 @@ def _settle_schedule(paths: Paths) -> None:
 
 
 def _stop_engine(paths: Paths) -> None:
-    control.stop(paths, _client(paths))
+    """D-46: an update, rollback or resync stops Nightshift as one sequence (`stopping`): ask the engine, wait
+    for it AND every program of the environments (the holder check's list), end what is ours by its recorded
+    process, and only then does the holder check refuse, naming what is left. Each line goes to the log."""
+    for line in control.stop(paths, _client(paths), holders=lambda: update.holders(paths), say=echo):
+        echo(line)
 
 
 def _sync(paths: Paths, app_dir: Path) -> None:
@@ -271,6 +279,7 @@ def _apply_update(
         verify=lambda a: update.verify_quick(a, venv_python(paths, "supervisor")),
         reregister=lambda a: _reregister(paths, a),
         settle=lambda: control.wait_down(_client(paths)),
+        say=echo,
     )
     if rollback:
         res = update.rollback_app(app_dir, env, paths=paths)

@@ -37,6 +37,7 @@ from typing import Any, Protocol, TextIO
 
 import psutil
 
+from installer.stage2.web import venvrepair
 from ns_common import testguard
 from ns_common.atomic import REPLACE_WAIT_S, read_text_retry, write_text_atomic
 from ns_common.commandline import ps_formatter
@@ -84,16 +85,53 @@ DONE_STATES = ("done", "failed")
 PopenFn = Callable[..., Any]
 
 RESTART_HINT = "Nightshift could not restart by itself; click the Nightshift Dashboard shortcut."
+#: D-46, D-51: the last sentence of a result, whatever the outcome (`now_running`): Nightshift was running
+#: before (as far as the owner knows: it answered, or its engine held its lock, or its dashboard ran) and the
+#: run started it again ...
+STARTED_AGAIN = "Nightshift was started again, as it was running before."
+#: ... the run started nothing, and Nightshift answers (an update that changed nothing stopped nothing) ...
+STILL_RUNNING = "Nightshift is running."
+#: ... or it does not answer now (it was not running before, so nothing was started).
+NOT_RUNNING = "Nightshift is not running now; to start it, click the Nightshift Dashboard shortcut."
 
 
 class Relauncher(Protocol):
-    """Starts Nightshift again after the update (`ns_supervisor.relaunch.Relaunch`)."""
+    """Starts Nightshift again after the update (`ns_supervisor.relaunch.Relaunch`). The worker also reads,
+    when they are there, `started` (restart started something) and `running()` (it answers now)."""
 
     def observe(self) -> None:
         """Remember what is running now (called before the update stops the engine)."""
 
     def restart(self) -> None:
         """Start it again and return once the engine answers `/status`; raises `NsError` otherwise."""
+
+
+def now_running(relaunch: Relauncher | None) -> str:
+    """D-51: the sentence a result ends with when the run may start Nightshift and did not fail to: whether
+    Nightshift runs now and, if not, how to start it. Called after `restart` returned without an error.
+
+    - `started`: it was running before and was started again, and answered (`restart` returns only then);
+    - else it answers now (`running()`): it was never stopped;
+    - else: it does not run, and the shortcut starts it (no environment or record is left: those runs end
+      with their own way out and never come here).
+    Without a relauncher (no product caller) or one that cannot tell, nothing is said."""
+    if relaunch is None:
+        return ""
+    if getattr(relaunch, "started", False):
+        return STARTED_AGAIN
+    probe = getattr(relaunch, "running", None)
+    if probe is None:
+        return ""
+    try:
+        up = bool(probe())
+    except Exception:  # noqa: BLE001 - a probe that failed did not see it answer
+        up = False
+    return STILL_RUNNING if up else NOT_RUNNING
+
+
+def _ending(message: str, relaunch: Relauncher | None) -> str:
+    said = now_running(relaunch)
+    return f"{message} {said}" if said else message
 
 
 def under_engine(env: Mapping[str, str] | None = None) -> bool:
@@ -173,6 +211,10 @@ def step(paths: Paths, message: str, if_stopped_here: str) -> None:
     if raw.get("state") != "running" or raw.get("pid") != os.getpid():
         return
     keep = {k: raw[k] for k in ("log", "pid", "old") if k in raw}
+    # D-48: a step taken while the repair record waits is one a finisher (the launch script's replay,
+    # setup's Repair) completes if this process dies in it: they close the state then (`needs_finish`)
+    if venvrepair.record_path(paths.home).is_file():
+        keep["record"] = True
     # stored with the plain `ns ...` words: the Update window, the CLI and the dashboard render them when
     # they show them (FN-3, `ns_common.commandline.render`)
     _progress(paths, "running", message, if_stopped_here=if_stopped_here, **keep)
@@ -287,9 +329,46 @@ def effective_status(
 
 
 def read_status_checked(paths: Paths, **kw: Any) -> dict[str, Any]:
-    """`read_status` with `effective_status` applied (what the dashboard shows)."""
+    """`read_status` with `effective_status` and `settled` applied (what the dashboard shows)."""
     kw.setdefault("describe", lambda: where(paths))
-    return effective_status(read_status(paths), **kw)
+    return settled(paths, effective_status(read_status(paths), **kw))
+
+
+#: D-48: what a reader says of an interrupted update whose environments nothing has left to finish now.
+FINISHED_SINCE = (
+    "An update or rollback was interrupted earlier and has been finished since; nothing is left to do."
+)
+
+
+def nothing_left(paths: Paths) -> bool:
+    """True when nothing of an interrupted update is left to finish: no repair record waits for the program
+    in place, no environment holds another Nightshift, the program folder is there and no update runs. The
+    one test of every reader (`settled`; the bell, `notify.shown_notes`). False when it cannot be told."""
+    try:
+        from ns_supervisor import control
+
+        app = control.app_path(paths)
+        record = venvrepair.read(paths.home)
+        if (record is not None and venvrepair.matches(record, app)) or venvrepair.mixed(paths.home, app):
+            return False
+        return app.is_dir() and not venvrepair.update_running(paths.home)
+    except Exception:  # noqa: BLE001 - unreadable: the stored words stay (a reader must still answer)
+        return False
+
+
+FINISHED_TITLE = "An interrupted update or rollback was finished"
+
+
+def settled(paths: Paths, st: dict[str, Any]) -> dict[str, Any]:
+    """D-48, every reader of the state: a `failed` state that sends the owner to finish the environments
+    (`venvrepair.needs_finish`) while no repair record waits for the program in place and no environment
+    holds another Nightshift is no longer true (a finisher that did not close the state did the work: an
+    older launch script, a Repair of an older setup). It reads as `done`, saying so and what is in place
+    (`where`, read from the disk now); `finished_since` marks it. Anything else is returned as it is."""
+    if st.get("state") != "failed" or not venvrepair.needs_finish(st) or not nothing_left(paths):
+        return st
+    return {**st, "state": "done", "exit_code": 0, "finished_since": True,
+            "message": " ".join(s for s in (FINISHED_SINCE, where(paths)) if s)}
 
 
 def new_log_path(paths: Paths, now: datetime | None = None) -> Path:
@@ -766,7 +845,10 @@ def run_worker(
     left a Python environment unfinished (`NsError.data["venvs_left"]`) starts nothing: the state then
     carries `venvs_left`, and its message says so. Whenever the run ends with Nightshift not running, the
     result is also left as a morning note, and with `watched` false (no window follows this run: the
-    Settings page, `--detach` from a script) the progress window is opened for it (`_tell`).
+    Settings page, `--detach` from a script) the progress window is opened for it (`_tell`). D-51: every
+    result that may start Nightshift ends with whether it runs now and, if not, how to start it
+    (`now_running`); the others end with their own way out (an environment or record left, an own process
+    that could not be ended: no start can work then).
 
     `cleanup` runs once the engine is back (the update applied, or was put back and the old version is up):
     the worker cannot delete the private venv copy it runs from, so this starts a detached helper that does
@@ -838,6 +920,10 @@ def _work(
             _final(paths, "failed", message, exit_code=1, record_left=True, relaunched=False,
                    updated=applied, **base)
             return 1
+        if e.data.get("own_left"):      # D-46 review note: its own process holds the engine's lock; no
+            _tell(paths, log, watched, message, title=NOT_RESTARTED_TITLE)     # start can work: none is tried
+            _final(paths, "failed", message, exit_code=1, own_left=True, relaunched=False, **base)
+            return 1
     except Exception as e:  # a worker has nobody to show a traceback to: log it, report failure
         sys.stderr.write(f"{type(e).__name__}: {e}\n")
         message = f"{type(e).__name__}: {e}"
@@ -856,7 +942,7 @@ def _work(
             _final(paths, "failed", f"{out.message} {RESTART_HINT}", exit_code=1,
                    restart_failed=True, **versions)
             return 1
-        _final(paths, "done", out.message, exit_code=0, **versions)
+        _final(paths, "done", _ending(out.message, relaunch), exit_code=0, **versions)
         if cleanup is not None:
             _guarded(cleanup)
         return 0
@@ -873,8 +959,8 @@ def _work(
     if _restart(relaunch):
         _tell(paths, log, watched, f"{message} {RESTART_HINT}")
         _final(paths, "failed", f"{message} {RESTART_HINT}", exit_code=1, restart_failed=True, **base)
-    else:
-        _final(paths, "failed", message, exit_code=1, **base)
+    else:   # D-46: a refusal or a failure never leaves Nightshift down; D-51: the owner reads whether it runs
+        _final(paths, "failed", _ending(message, relaunch), exit_code=1, **base)
         if cleanup is not None and relaunch is not None:
             _guarded(cleanup)
     return 1

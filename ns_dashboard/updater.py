@@ -309,10 +309,11 @@ def read_update_state(
         return out
     was_running = raw["state"] == "running"
     try:
-        from ns_supervisor.update_job import effective_status, where
+        from ns_supervisor.update_job import effective_status, settled, where
 
-        # `running` with a dead worker is `failed`, said by the step it died in or read from the disk
-        raw = effective_status(raw, alive=alive, now=now(), describe=lambda: where(paths))
+        # `running` with a dead worker is `failed`, said by the step it died in or read from the disk; one
+        # whose environments were finished since (D-48: nothing is left to do) is `done`, said as such
+        raw = settled(paths, effective_status(raw, alive=alive, now=now(), describe=lambda: where(paths)))
     except ImportError:
         if was_running and _stale(raw, now):
             raw = {**raw, "state": "failed", "message": STALE_MESSAGE}

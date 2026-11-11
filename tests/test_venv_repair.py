@@ -726,7 +726,12 @@ def test_studio_run_is_refused_before_it_writes_anything(
     assert made == [] and spawns.calls == []
     assert not paths.jobs_dir.exists() or not any(paths.jobs_dir.iterdir())
     assert not (paths.data / "voice_preview.wav").exists()
-    # faked services need no engine: not refused
+    # D-48: faked services need no engine, but the studio itself runs from the unfinished environment: refused
+    # as well (the block D proof ran a job this way on a dev install, where every service is a fake)
+    r = CliRunner().invoke(studio_cli.app, ["run", "--fake-services"], env=home_env)
+    assert r.exit_code == 1 and SAID in " ".join(r.output.split()), r.output
+    assert made == [] and spawns.calls == []
+    record_file(paths).unlink()         # nothing pending: the faked run goes on as before
     r = CliRunner().invoke(studio_cli.app, ["run", "--fake-services"], env=home_env)
     assert r.exit_code == 0, r.output
     assert made == ["voice", "dead work", "job"] and spawns.calls == []
