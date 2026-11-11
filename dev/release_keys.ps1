@@ -93,8 +93,11 @@ if (($BackupFull -ieq $RootFull) -or $BackupFull.StartsWith($RootFull + "\", [Sy
 }
 $BackupFile = Join-Path $BackupFull $BackupName
 if (Test-Path -LiteralPath $BackupFile) {
+    # (the keys file pins no key, or the check above had answered: so this file is of a run that was
+    # interrupted before the public keys were written, or it is something else of that name)
     Stop-Here ("$BackupFile already exists, and this script never overwrites or deletes a key file. $Unchanged " +
-        "If it is the backup key of an earlier run, the keys already exist; to replace them see ""Lost key"" in OPERATOR.md.")
+        "No release key is pinned yet, so if that file is left from a run of this script that was interrupted, " +
+        "its key signs nothing a Nightshift trusts: move the file away, then run this again.")
 }
 if (-not (Test-Path -LiteralPath $SignScript -PathType Leaf)) {
     Stop-Here "$SignScript is missing: run this from the Nightshift repository. $Unchanged"

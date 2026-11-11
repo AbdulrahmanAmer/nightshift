@@ -50,6 +50,16 @@ ROOT = Path(__file__).resolve().parents[2]
 TEST_KEY_FILE = ROOT / "tests" / "fixtures" / "release_test_key.txt"
 
 
+def key_seed() -> bytes:
+    """The 32 bytes of the TEST key. `ValueError` or `OSError` when its file is not there or holds no key."""
+    lines = [ln.strip() for ln in TEST_KEY_FILE.read_text(encoding="ascii").splitlines()]
+    keys = [ln for ln in lines if ln and not ln.startswith("#")]
+    seed = base64.b64decode(keys[0], validate=True) if len(keys) == 1 else b""
+    if len(seed) != 32:
+        raise ValueError(f"{TEST_KEY_FILE} does not hold one key of 32 bytes")
+    return seed
+
+
 def sign_with_test_key(zip_path: Path) -> Path:
     """Write `<zip>.sig` made with the TEST key (whole, or not at all) and return it. `ValueError` or
     `OSError` when the zip is not a readable package (one that is still being copied into the folder)."""
@@ -57,8 +67,7 @@ def sign_with_test_key(zip_path: Path) -> Path:
         sys.path.insert(0, str(ROOT))
     from ns_common import sigcheck  # the standard library only
 
-    lines = [ln.strip() for ln in TEST_KEY_FILE.read_text(encoding="ascii").splitlines()]
-    seed = base64.b64decode(next(ln for ln in lines if ln and not ln.startswith("#")), validate=True)
+    seed = key_seed()
     version, _prefix = sigcheck.package_version(zip_path)
     signed = sigcheck.message(zip_path.name, version, sigcheck.sha256_file(zip_path))
     text = sigcheck.sig_text(sigcheck.public_key(seed), sigcheck.sign(seed, signed))
@@ -235,6 +244,12 @@ def main(argv: list[str] | None = None) -> int:
     if not folder.is_dir():
         sys.stderr.write(f"github fake could not start: {folder} is not a folder\n")
         return 3
+    if not args.unsigned:  # a fake that cannot sign would serve every release without its .sig, silently
+        try:
+            key_seed()
+        except (OSError, ValueError) as e:
+            sys.stderr.write(f"github fake could not start: the TEST key cannot be read ({e})\n")
+            return 3
     try:
         srv = serve(folder, args.port, args.prerelease, sign=not args.unsigned)
     except OSError as e:
