@@ -11,13 +11,34 @@ rework-table.md), never per command:
 - the root callback of `ns` and of `studio` (`enter`, through `ns_supervisor.homecheck.check_home`), which
   looks the command up in ONE table, `COMMANDS` (reads / writes); a command missing from it counts as writing,
   and tests/test_version_mismatch_writes.py fails for every registered command that is in no row;
-- `ns_studio.jobs.open_env` and the database openers of `ns_common.db` (`may_write`);
-- the start of the engine and of the dashboard (`require_own`), before anything is written; the dashboard's
-  writing routes are in `DASHBOARD_WRITES` (the same test walks them);
+- `ns_studio.jobs.open_env`, the series workshop, a clip job and the database openers of `ns_common.db`
+  (`may_write`);
+- the start of the engine, of the dashboard, of the dashboard's job child and of the voice server
+  (`require_own`), before anything is written; the dashboard's writing routes are in `DASHBOARD_WRITES` (the
+  same test walks them);
 - every settings writer (`first_start.guard` -> `refuse_write`).
 Reads are never refused: a reading command in another version's install is marked as reading for its process,
 so `open_env` and the database openers open that install without writing (no folders made, the database
-read-only, no migration).
+read-only, no migration), and its logger writes no line there (`reading`, asked by `NsLogger`). What SQLite
+itself makes beside a database in WAL mode that it opens read-only (`studio.db-shm`, an empty `-wal`) is the
+one thing a reader can leave; no setting, record or row changes.
+
+What this guard does NOT do (known limits, said here so nobody reads it as more):
+- A program from BEFORE this guard (0.1.14, the 0.1.15 candidates up to rc5) has no such code: in the same
+  accident it still writes a newer install. What limits the harm is older than this card: the settings
+  models are strict (`config_compat`: a field added later stays out of its file until it is used, and an
+  older program refuses a whole file that holds a field it does not know, so it cannot load and re-save
+  it), and `Db.migrate` only adds. `dashboard.json` is a plain record that an older program saves with only
+  the keys it knows (`save_dashboard_settings`); nothing detects that. A "written by" stamp would only tell
+  afterwards, and only for programs that stamp: not built.
+- A window with NO NIGHTSHIFT_HOME at all, in which a program of install B is started by its full path while
+  `%LOCALAPPDATA%\Nightshift` holds another install: `Paths.from_env` uses that folder (its fallback, card
+  second-install-takeover, rule 3), and `decide` answers not-by-variable. Not the accident this card is about
+  (F-E29: "reached only through a NIGHTSHIFT_HOME set in that window"); the shims and the launchers set the
+  variable to their own install, so only a program typed by full path gets there.
+- A settings writer refused here in the MIDDLE of a command (only possible when the other install's version
+  changed while the command ran: its own update) says "Nothing was changed" about its own write; what the
+  command wrote before that moment, while the versions were equal, stays.
 
 Invariant: a process changes an install's settings, its nightly task or its work only when (a) the program
 is in no install (setup from the bundle, the update worker's copy under `run`, a checkout), or (b) the
@@ -301,6 +322,13 @@ def may_write(home: Path) -> bool:
     if _key(v.target) in _reading:
         return False
     raise refusal(v)
+
+
+def reading(home: Path) -> bool:
+    """True while this process only looks at `home`, an install of another version (`enter` marked it). Asked
+    by `ns_common.logging.NsLogger`: a reader adds no line to that install's logs and makes no folder there.
+    One truth test in every process that marked nothing."""
+    return bool(_reading) and _key(Path(home)) in _reading
 
 
 def read_refusal(home: Path, what: Path, error: object) -> Exception:

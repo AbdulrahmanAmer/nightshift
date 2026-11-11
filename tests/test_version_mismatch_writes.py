@@ -661,7 +661,44 @@ def test_a_reader_opens_the_other_install_read_only_and_changes_nothing(two: tup
         env.db.close()
     assert db_file.read_bytes() == before
     assert sorted(p.name for p in (a / "data").iterdir()) == ["studio.db"]       # no backup, no -wal left
-    assert set(p.name for p in a.iterdir()) <= {"app", "config", "data", "logs"}  # the logger's folder only
+    assert sorted(p.name for p in a.iterdir()) == ["app", "config", "data"]      # not even a logs folder
+
+
+def test_a_reader_adds_no_line_to_the_other_installs_logs(two: tuple[Path, Path]) -> None:
+    """Fresh review of 5d9d1db9, point (a): a reading command's logger made `logs` in the other install and
+    added its lines there. A reader writes nothing; a program in its own install logs as always."""
+    from ns_common.logging import NsLogger
+
+    a, b = two
+    (a / "logs").mkdir()
+    (a / "logs" / "studio-20261111.jsonl").write_text('{"event": "its own"}\n', encoding="utf-8")
+    before = tree_of(a)
+    homeguard.enter("studio status", [])
+    assert homeguard.reading(a) and not homeguard.reading(b)
+    log = NsLogger("studio", a / "logs")
+    log.info("looked", "a reader's line")
+    log.warn("looked_again")
+    with log.timed("a_look"):
+        pass
+    assert tree_of(a) == before
+    (a / "logs" / "studio-20261111.jsonl").unlink()
+    (a / "logs").rmdir()
+    NsLogger("studio", a / "logs").error("no_folder_either")
+    assert not (a / "logs").exists()
+    own = NsLogger("studio", b / "logs")
+    own.info("wrote")
+    assert len(list((b / "logs").glob("studio-*.jsonl"))) == 1
+
+
+def test_a_process_that_marked_nothing_logs_as_always(two: tuple[Path, Path]) -> None:
+    """Only `enter` mutes a logger (a reading command of this process): the guard at each choke point, not
+    the logger, is what refuses a writer."""
+    from ns_common.logging import NsLogger
+
+    a, _ = two
+    assert not homeguard.reading(a)
+    NsLogger("supervisor", a / "logs").info("a line")
+    assert len(list((a / "logs").glob("supervisor-*.jsonl"))) == 1
 
 
 def test_a_reader_of_a_missing_database_is_told_and_no_file_is_made(two: tuple[Path, Path]) -> None:

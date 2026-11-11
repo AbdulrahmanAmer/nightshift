@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from ns_common import homeguard
 from ns_common.paths import Paths
 
 Level = Literal["DEBUG", "INFO", "WARN", "ERROR"]
@@ -28,7 +29,12 @@ class NsLogger:
         self.logs_dir = logs_dir
         self.echo = (os.environ.get("NS_LOG_STDERR") == "1") if echo is None else echo
         self.clock = clock or (lambda: datetime.now(UTC))
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        # Card version-mismatch-writes: a reading command that looks at an install of ANOTHER version
+        # (`homeguard.enter` marked its home) writes nothing there: no logs folder, no line. Its words to the
+        # owner are on the terminal; the logs of that install stay what its own programs wrote.
+        self.mute = homeguard.reading(self.logs_dir.parent)
+        if not self.mute:
+            self.logs_dir.mkdir(parents=True, exist_ok=True)
 
     def file_for(self, when: datetime) -> Path:
         return self.logs_dir / f"{self.component}-{when:%Y%m%d}.jsonl"
@@ -44,8 +50,9 @@ class NsLogger:
             "data": data,
         }
         line = json.dumps(rec, ensure_ascii=False, default=str)
-        with self.file_for(now).open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+        if not self.mute:
+            with self.file_for(now).open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
         if self.echo:
             extra = json.dumps(data, default=str)
             print(f"[{level}] {self.component} {event} {msg} {extra}", file=sys.stderr)
