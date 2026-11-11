@@ -21,6 +21,13 @@ owner table, the Dashboard's job table, the Dashboard-in-use probe, the update l
 the kit kept. The kit never sends Stop All: it ends its own things one by one (`Kit.leave_engine` for the
 engine), and what it leaves it says in one line ("Nightshift was left running because ...").
 
+Nothing in the kit waits for input without an end, whatever its input is (a keyboard, a pipe nobody writes
+to, a file, the NUL device, nothing): `timed_input` never waits in a read, the programs the kit starts get no
+input of the kit's (`_run`), and GPU-KIT.cmd and gpukit.ps1 wait for a key or a line only at a keyboard and by
+time. `--unattended` (GPU-KIT.cmd -Unattended) is for an agent's shell: no input is read and no question of
+the owner's is asked or answered (they stay open, listed under "For the owner"); the run ends with one JSON
+line and an exit code of a fixed set (`EXIT`, `UNATTENDED_HELP`, `last_line`).
+
 `main(argv, env=...)` takes stand-ins for the clock, the product and the Windows readers (tests); the real
 Windows readers refuse to run under pytest.
 """
@@ -81,6 +88,29 @@ NIGHT_SOON_S = 3600  # the engine's own look-ahead (`schedule_lookahead_s`): no 
 #: (the request's own 10 minutes and 5 to spare).
 CLIP_OWN_S = 15 * 60
 IDLE_EXIT = "it ends by itself after 30 minutes without use"
+RETRY_S = 30 * 60  # unattended: a wait that names no time is looked at again this much later
+#: Unattended (`--unattended`): what a run's exit code says, a fixed set. The same word is the `state` of
+#: the run's last line (`last_line`). An attended run keeps its own codes (0, 1, 2 refused, 130).
+EXIT = {"done": 0, "failed": 1, "refused": 2, "waiting": 3, "locked": 4, "blocked": 5, "interrupted": 130}
+UNATTENDED_HELP = """\
+--unattended (GPU-KIT.cmd -Unattended): for an agent or a script, not a person. The kit reads no input
+and waits for no key, does not pause before it starts, and asks none of the questions only a person can
+answer (they stay open and are listed under 'For the owner'; a later run without the switch asks them).
+Everything else is as in an attended run: the same steps, bounds, records and zip.
+
+Its exit code:
+    0  done: every step is done and none failed; only questions for the owner may be open
+    1  failed: a step's result is FAIL (next_run_after is set when the kit still goes on later)
+    2  refused: the kit did not start and changed nothing (the line says why)
+    3  waiting: it stopped to wait; run it again after next_run_after (also come_back in kit-state.json)
+    4  locked: another run of the kit holds the kit lock
+    5  blocked: a step could not start now (its line says what has to end first); nothing was changed
+  130  interrupted (Ctrl+C, the window closed)
+
+Its last line on stdout is one JSON object: kit, step (the step it stands at, or 'done'), step_title,
+state (the word of the exit code), exit_code, next_run_after (ISO time or null), open_questions (each
+with group, id, question and look_at, the file to look at), zip (the zip's path or null), failed_steps
+and reason."""
 STOCK_QUERIES = ("lighthouse in fog", "rain on a window at night", "empty country road at dusk")
 CLIP_BOUND_S = 90 * 60  # the clip job of 3 minutes of video, with its models loaded (bounded)
 VOICE_BOUND_S = 30 * 60
@@ -118,6 +148,10 @@ PLAN = (
 
 class Refused(Exception):
     """K0 refuses to start (exit 2): the words say what is wrong and the way out. Nothing was changed."""
+
+
+class Locked(Refused):
+    """Another run of the kit holds the kit lock (a refusal like any other; unattended: its own code)."""
 
 
 # ---------------------------------------------------------------------------------------------- stand-ins
@@ -183,22 +217,32 @@ class Windows(Protocol):
     def events(self, since: datetime, until: datetime) -> str | None: ...
 
 
+def say_line(text: str) -> None:
+    """One line of the kit, written out at once. A person's console shows a line as it is printed anyway;
+    a pipe or a file (an agent's shell) would get it hours later, or never when the shell ends the kit
+    first: the step the kit is at must be readable while it runs."""
+    print(text, flush=True)
+
+
 @dataclass
 class KitEnv:
     clock: Clock | None = None
     product: Product | None = None
     windows: Windows | None = None
     ask: Callable[[str], str | None] | None = None
-    say: Callable[[str], None] = print
+    say: Callable[[str], None] = say_line
 
 
 def _run(
     argv: list[str], timeout: float, env: dict[str, str] | None = None, cwd: Path | None = None
 ) -> tuple[int | None, str]:
-    """A program's exit code and output (its last OUT_LIMIT characters); rc None when it timed out."""
+    """A program's exit code and output (its last OUT_LIMIT characters); rc None when it timed out. The
+    program gets no input (the NUL device), never the kit's own: under an agent's shell that is a pipe
+    nobody writes to, and a program that reads it (`opencode run` does) would wait for its whole bound."""
     try:
         done = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=timeout, env=env, check=False, cwd=cwd)  # fmt: skip
+                              timeout=timeout, env=env, check=False, cwd=cwd,
+                              stdin=subprocess.DEVNULL)  # fmt: skip
     except subprocess.TimeoutExpired:
         return None, f"did not finish in {timeout:.0f} s"
     except OSError as e:
@@ -446,25 +490,121 @@ class RealWindows:
         return text if rc == 0 else None
 
 
-def timed_input(prompt: str, timeout_s: float = ASK_TIMEOUT_S) -> str | None:
-    """One answer typed in this window, or None when nobody answers within `timeout_s` (or no console)."""
-    print(prompt, end=" ", flush=True)
-    if sys.platform != "win32" or not sys.stdin or not sys.stdin.isatty():
-        line = sys.stdin.readline() if sys.stdin else ""
-        return line.strip() if line else None
+#: What was read from an input that is not a keyboard and not yet handed out as a line (the next prompt's).
+_PENDING = bytearray()
+
+
+def _stdin_kind() -> str:
+    """What this process's input is: "console" (a keyboard), "pipe", "file" (a file on disk or the NUL
+    device: reading it never waits) or "none" (closed, or no input at all)."""
+    try:
+        if sys.stdin is None:
+            return "none"
+        fd = sys.stdin.fileno()
+        if sys.platform != "win32":
+            import stat
+
+            mode = os.fstat(fd).st_mode
+            piped = stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode)
+            return "console" if os.isatty(fd) else "pipe" if piped else "file"
+        import ctypes
+        import msvcrt
+
+        kernel = ctypes.windll.kernel32
+        handle = ctypes.c_void_p(msvcrt.get_osfhandle(fd))
+        kind = kernel.GetFileType(handle)  # 1 a file on disk, 2 a character device, 3 a pipe
+        if kind == 2:  # the console, or NUL (which Python's isatty also calls a terminal)
+            return "console" if kernel.GetConsoleMode(handle, ctypes.byref(ctypes.c_ulong())) else "file"
+        return {1: "file", 3: "pipe"}.get(kind, "none")
+    except (OSError, ValueError, AttributeError):
+        return "none"
+
+
+def _keyboard() -> tuple[Callable[[], bool], Callable[[], str]]:
+    """The console's own keyboard calls: is a key waiting, and take it (echoed)."""
     import msvcrt
 
-    end, typed = time.monotonic() + timeout_s, ""
-    while time.monotonic() < end:
-        if not msvcrt.kbhit():
-            time.sleep(0.05)
-            continue
-        ch = msvcrt.getwche()
-        if ch in "\r\n":
-            print()
-            return typed.strip()
-        typed = typed[:-1] if ch == "\b" else typed + ch
-    print("(no answer: left for the next run)")
+    return msvcrt.kbhit, msvcrt.getwche
+
+
+def _pipe_waiting(fd: int) -> int | None:
+    """How many bytes wait in the pipe that is this process's input (0: none yet); None when its other end
+    is closed and nothing is left, or it cannot be asked (nothing will come). It never waits."""
+    if sys.platform != "win32":
+        import select
+
+        return 65536 if select.select([fd], [], [], 0)[0] else 0  # (readable at its end too: read gives b"")
+    import ctypes
+    import msvcrt
+
+    waiting = ctypes.c_ulong(0)
+    handle = ctypes.c_void_p(msvcrt.get_osfhandle(fd))
+    ok = ctypes.windll.kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(waiting), None)
+    return int(waiting.value) if ok else None
+
+
+def _line_from(fd: int, timeout_s: float, piped: bool) -> str | None:
+    """One WHOLE line from an input that is not a keyboard, or None: none came within `timeout_s` (a pipe
+    that stays silent), or the input ended first (a line cut off by the end was never confirmed with Enter:
+    it is no answer). It never waits in a read: a pipe is read only for the bytes that already wait in it,
+    and a file never waits. What follows the line stays for the next prompt (`_PENDING`)."""
+    end = time.monotonic() + timeout_s
+    while b"\n" not in _PENDING and len(_PENDING) < 1_000_000:
+        want = 65536
+        if piped:
+            waiting = _pipe_waiting(fd)
+            if waiting is None:
+                break  # its other end is closed
+            if waiting == 0:
+                if time.monotonic() >= end:
+                    return None  # silent to the bound (what came without its Enter stays for the next prompt)
+                time.sleep(0.05)
+                continue
+            want = min(want, waiting)
+        chunk = os.read(fd, want)
+        if not chunk:
+            break  # the end of the input
+        _PENDING.extend(chunk)
+    if b"\n" not in _PENDING:
+        _PENDING.clear()
+        return None
+    line, _, rest = bytes(_PENDING).partition(b"\n")
+    _PENDING[:] = rest
+    return line.decode(getattr(sys.stdin, "encoding", None) or "utf-8", "replace").strip()
+
+
+def timed_input(prompt: str, timeout_s: float = ASK_TIMEOUT_S) -> str | None:
+    """One answer, or None when none comes within `timeout_s`, WHATEVER this process's input is: a keyboard
+    (what is typed, ended with Enter), a pipe (its next whole line; one that stays silent ends by time, one
+    that closes ends at once, also in the middle of a line), a file or the NUL device (its next whole line,
+    never a wait), or no input at all (None at once). No read ever waits, so every prompt ends by time."""
+    print(prompt, end=" ", flush=True)
+    kind = _stdin_kind()
+    if kind == "console" and sys.platform == "win32":
+        kbhit, getwche = _keyboard()
+        end, typed = time.monotonic() + timeout_s, ""
+        while time.monotonic() < end:
+            if not kbhit():
+                time.sleep(0.05)
+                continue
+            ch = getwche()
+            if ch in "\r\n":
+                print()
+                return typed.strip()
+            typed = typed[:-1] if ch == "\b" else typed + ch
+    elif kind != "none":
+        answer = None
+        with contextlib.suppress(OSError, ValueError):
+            answer = _line_from(sys.stdin.fileno(), timeout_s, piped=kind != "file")
+        if answer is not None:
+            print(answer, flush=True)  # (shown as a typed answer is)
+            return answer
+    print("(no answer: left for the next run)", flush=True)
+    return None
+
+
+def never_ask(prompt: str) -> str | None:
+    """Unattended: nothing is read and no key is waited for. (The steps do not ask either: `Kit.k8`.)"""
     return None
 
 
@@ -764,6 +904,7 @@ class Kit:
     mark: str | None = None
     lock: Path | None = None
     channel_left: str | None = None  # why `pause_channel` left the kit's channel active (other work on it)
+    unattended: bool = False  # run by an agent: no input is read, no question of the owner's is asked
 
     def __post_init__(self) -> None:
         # ONE state for every version: a newer candidate's kit goes on with the nights an older one armed
@@ -2578,12 +2719,38 @@ class Kit:
             "hand_check_files": files,
         }
 
+    def look_at(self, group: str) -> str:
+        """The file a person looks at for a group of questions (full path)."""
+        if group == "watch":
+            return str(self.story_video() or self.ev / "story" / "story.json")
+        if group == "paste":
+            return str(KIT_DIR / "K8_PASTE_CHECK.md")
+        if group == "morning":  # (the notes of the Queue page, as the kit copied them for the zip)
+            return str(self.ev / "morning-notes.json")
+        return str(KIT_DIR / "night-task-end.txt")
+
+    def owner_questions(self) -> list[dict[str, str]]:
+        """Every question only a person can answer that is open now: its group, id, exact words and the
+        file to look at."""
+        return [{"group": g, "id": k, "question": q, "look_at": self.look_at(g)}
+                for g in QUESTIONS if self.ready(g) for k, q in self.open_questions(g)]  # fmt: skip
+
     def k8(self) -> None:
         """The person's checklists: one bounded prompt for all of them; every answer is saved as it is
-        given; `later`, or no answer, keeps a question open for the next run; a result line per group."""
+        given; `later`, or no answer, keeps a question open for the next run; a result line per group.
+        Unattended: no question is asked and none is answered (not as PASS, FAIL or `later`): each stays
+        open in the state and is listed under ONE heading, 'For the owner', with its exact words and the
+        file to look at; a later run by a person asks them."""
         groups = [g for g in QUESTIONS if self.ready(g)]
         todo = [(g, k, q) for g in groups for k, q in self.open_questions(g)]
-        if todo:
+        if todo and self.unattended:
+            self.say(f"For the owner: {len(todo)} question(s) only a person can answer are open. They were "
+                     "not asked and not answered in this unattended run. To answer them, double-click "
+                     "GPU-KIT.cmd (without -Unattended).")  # fmt: skip
+            for n, item in enumerate(self.owner_questions(), 1):
+                self.say(f"  {n}. [{GROUP_TITLES[item['group']]}] {item['question']} Look at: "
+                         f"{item['look_at']}")  # fmt: skip
+        elif todo:
             go = self.ask(f"{len(todo)} question(s) only you can answer are open (about {2 * len(todo)} "
                           "minutes). Type a and press Enter to answer them now; press Enter, or wait 10 "
                           "minutes, to leave them for the next run.")  # fmt: skip
@@ -2621,6 +2788,7 @@ class Kit:
                 line += f"; files in hand-checks: {', '.join(seen['hand_check_files']) or 'none yet'}"
             results[group] = {"result": "WAIT" if left else "PASS", "line": line, "version": self.version}
             self.say(f"{results[group]['result']:7} Questions, {GROUP_TITLES[group]}: {line}")
+        self.state["owner_questions_open"] = self.owner_questions()
         self.save()
 
     # -------------------------------------------------------------------------------------- the zip
@@ -2745,6 +2913,7 @@ class Kit:
                                                 "K4": self.k4, "K5": lambda: self.night(0),
                                                 "K6": lambda: self.night(1), "K7": self.k7}  # fmt: skip
         stopped: str | None = None
+        halted: str | None = None  # the result of the step that stopped the run
         failed = False
         self.state.pop("come_back", None)
         step = "K1"
@@ -2769,10 +2938,15 @@ class Kit:
                 self.say(f"{res.result:7} {self.label(step)}: {res.line}")
                 failed = failed or res.result == "FAIL"
                 if res.stop:
+                    halted = res.result
                     n = STEPS.index(step) + 1
                     stopped = {"FAIL": f"not run: step {n} failed first",
                                "PASS": "waits for the nights: run GPU-KIT.cmd again after the time above"
                                }.get(res.result, f"waits for step {n}")  # fmt: skip
+            if self.unattended and halted == "WAIT" and not self.state.get("come_back"):
+                # an agent is told WHEN to run it again: a wait that names no time is looked at again later
+                self.come_back(self.now() + timedelta(seconds=RETRY_S))
+                self.save()
             self.k8()
         except KeyboardInterrupt:
             self.put_back()
@@ -2798,6 +2972,19 @@ class Kit:
         self.put_back()
         self.finish(blocked=failed and stopped is not None and stopped.startswith("not run"))
         return 1 if failed else 0
+
+    def outcome(self) -> str:
+        """Where the kit stands after a run, read from its own state (a key of EXIT): "failed" when a
+        step's recorded result is FAIL; else by the first step that is not done: none is "done", one that
+        could not start now (NOT RUN: its line says what has to end first) is "blocked", any other
+        "waiting" (run again after `come_back`)."""
+        steps = self.state.get("steps", {})
+        if any((steps.get(s) or {}).get("result") == "FAIL" for s in STEPS):
+            return "failed"
+        first = next((s for s in STEPS if not (steps.get(s) or {}).get("done")), None)
+        if first is None:
+            return "done"
+        return "blocked" if (steps.get(first) or {}).get("result") == "NOT RUN" else "waiting"
 
     def finish(self, blocked: bool) -> None:
         """The end of a run: Nightshift is ended or left (`leave_engine`: only the kit's own engine, only
@@ -3042,9 +3229,9 @@ def take_lock(path: Path) -> None:
             with contextlib.suppress(ValueError):
                 since = datetime.fromisoformat(m.group(2)) if m else None
             if m and _kit_alive(int(m.group(1)), since):
-                raise Refused(f"Another GPU kit is running (pid {m.group(1)}). Let it finish in its own "
-                              "window, or close that window, then run GPU-KIT.cmd again."
-                              ) from None  # fmt: skip
+                raise Locked(f"Another GPU kit is running (pid {m.group(1)}). Let it finish in its own "
+                             "window, or close that window, then run GPU-KIT.cmd again."
+                             ) from None  # fmt: skip
             with contextlib.suppress(OSError):
                 path.unlink()
             continue
@@ -3100,8 +3287,10 @@ def start(args: argparse.Namespace, env: KitEnv) -> Kit:
     if served and os.path.normcase(str(Path(served).resolve())) != os.path.normcase(str(home)):
         raise Refused(f"The Nightshift of another install ({served}) is running on this PC. Close its "
                       "Dashboard window and press Stop All there, then run GPU-KIT.cmd again.")  # fmt: skip
+    unattended = bool(getattr(args, "unattended", False))
     kit = Kit(home, info.version, info.kind, args.dry_run, args.night_now, env, clock, product,
-              env.windows or RealWindows(home), env.ask or timed_input)  # fmt: skip
+              env.windows or RealWindows(home),
+              never_ask if unattended else env.ask or timed_input, unattended=unattended)  # fmt: skip
     kit.ev.mkdir(parents=True, exist_ok=True)  # (a kit folder of another version is left alone)
     take_lock(kit.ev / "kit.lock")
     kit.lock = kit.ev / "kit.lock"
@@ -3141,26 +3330,66 @@ def start(args: argparse.Namespace, env: KitEnv) -> Kit:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="gpukit.py", description="The Nightshift GPU kit (GPU-KIT.cmd).")
+    ap = argparse.ArgumentParser(prog="gpukit.py", description="The Nightshift GPU kit (GPU-KIT.cmd).",
+                                 epilog=UNATTENDED_HELP,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)  # fmt: skip
     ap.add_argument("--home", required=True, help="the install (NIGHTSHIFT_HOME)")
     ap.add_argument("--dry-run", action="store_true", help="a laptop test install (fake_gpu) only")
     ap.add_argument("--night-now", action="store_true", help="dry run: each night at once, through the stub")
     ap.add_argument("--clock", help="dry run: the kit's clock starts at this ISO time")
+    ap.add_argument("--unattended", action="store_true",
+                    help="run by an agent, not a person: never reads input and never waits for a key, asks "
+                         "none of the owner's questions, ends with one JSON line and a fixed exit code "
+                         "(see below)")  # fmt: skip
     return ap
+
+
+def last_line(env: KitEnv, kit: Kit | None, state: str, reason: str = "") -> int:
+    """Unattended: the run's ONE machine-readable last line on stdout (a single JSON object) and the exit
+    code that goes with its `state` (EXIT). `kit` None: the kit did not start (refused, locked)."""
+    steps = kit.state.get("steps", {}) if kit is not None else {}
+    first = next((s for s in STEPS if not (steps.get(s) or {}).get("done")), None)  # (no kit: step 1, K0)
+    env.say(json.dumps({
+        "kit": "nightshift-gpu-kit",
+        "step": first or "done",
+        "step_title": TITLES.get(first or "", "every step is done"),
+        "state": state,
+        "exit_code": EXIT[state],
+        "next_run_after": kit.state.get("come_back") if kit is not None else None,
+        "open_questions": kit.owner_questions() if kit is not None else [],
+        "zip": kit.state.get("zip") if kit is not None else None,
+        "failed_steps": [s for s in STEPS if (steps.get(s) or {}).get("result") == "FAIL"],
+        "reason": reason,
+    }))  # fmt: skip
+    return EXIT[state]
 
 
 def main(argv: list[str] | None = None, *, env: KitEnv | None = None) -> int:
     args = build_parser().parse_args(argv)
     env = env or KitEnv()
+    if not args.unattended:
+        return _main(args, env)
+    try:  # unattended: whatever happens, the last line is the JSON object and the code is one of EXIT
+        return _main(args, env)
+    except Exception as e:  # noqa: BLE001 - an agent gets a state and a code, never only a traceback
+        reason = f"the kit stopped on an error it did not expect ({type(e).__name__}: {str(e)[:300]})"
+        env.say(f"FAIL    {reason}. What to do: send the kit folder as a zip.")
+        return last_line(env, None, "failed", reason)
+
+
+def _main(args: argparse.Namespace, env: KitEnv) -> int:
+    unattended = bool(args.unattended)
     stopped = "Stopped by you during step 1 (start). Run GPU-KIT.cmd again: it starts over from there."
     try:
         kit = start(args, env)
     except Refused as e:
         env.say(f"REFUSED {e}")
+        if unattended:
+            return last_line(env, None, "locked" if isinstance(e, Locked) else "refused", str(e))
         return 2
     except KeyboardInterrupt:
         env.say(stopped)
-        return 130
+        return last_line(env, None, "interrupted", stopped) if unattended else 130
     try:
         env.say(f"Nightshift GPU kit for {kit.version} at {kit.home} (NIGHTSHIFT_HOME).")
         if kit.mark:
@@ -3169,17 +3398,22 @@ def main(argv: list[str] | None = None, *, env: KitEnv | None = None) -> int:
         for line in PLAN:
             env.say(line)
         if not kit.state.get("confirmed"):
-            if (kit.ask("Press Enter to start, or type q and Enter to stop.") or "").strip().lower() == "q":
+            # (unattended: no pause before the start; the switch is the go-ahead, and it is recorded)
+            go = "" if unattended else kit.ask("Press Enter to start, or type q and Enter to stop.")
+            if (go or "").strip().lower() == "q":
                 env.say("Nothing was changed (only the kit's folder was made). Run GPU-KIT.cmd when ready.")
                 return 0
             kit.state["confirmed"] = True
             kit.save()
         env.say(f"PASS    {kit.label('K0')}: {kit.state['steps']['K0']['line']}")
         with _window_close_is_an_interrupt():
-            return kit.run()
+            code = kit.run()
+        if unattended:
+            return last_line(env, kit, "interrupted" if code == 130 else kit.outcome())
+        return code
     except KeyboardInterrupt:
         env.say(stopped)
-        return 130
+        return last_line(env, kit, "interrupted", stopped) if unattended else 130
     finally:
         kit.close()
 
