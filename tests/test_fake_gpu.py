@@ -784,6 +784,7 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("tests/test_ns_doctor.py", "seam"):
         "the PC's own tool with or without a driver (D-44's rows; the row table asserts only REAL_SMI is asked)",
     ("tests/test_damaged_inputs.py", "seam"): "the tool-missing answer while the commands meet a damaged file",
+    ("tests/test_model_files.py", "seam"): "the tool-missing answer while ns doctor reads the model-file rows",
     ("tests/test_night_ledger.py", "dep"): "the zip's nvidia-smi.txt seam while the ledger goes into the zip",
     ("tests/test_ns_verify.py", "dep"): "ns verify's own probes of a real-card install (the gate's numbers)",
     ("tests/test_atomic_writes.py", "dep"): "the tool-missing answer while the zip is written atomically",
