@@ -19,6 +19,8 @@ from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.security import is_within
 from ns_dashboard.state import AppState
 from ns_studio.errors import StudioError
+from ns_studio.media.outbox import disclosure_for
+from ns_studio.media.youtube_rules import read_notes
 
 URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 EXCERPT_CHARS = 1500
@@ -162,13 +164,21 @@ class OutputsService:
         up = self.s.db.one("SELECT video_url, published_at FROM uploads WHERE output_id = ?", (output_id,))
         flat = sheet_dict or {}
         adv = advice or {}
+        sheet_text = _read_text(video.with_suffix(".txt"))
+        answer = adv.get("ai_disclosure", flat.get("ai_disclosure"))
+        told = None
+        if answer in ("yes", "no"):  # the answer for the voice the job spoke with, and why (rule R8)
+            told = disclosure_for(self.s.paths, row["job_id"], row["channel"], row["kind"], str(answer))
         item.update(
             {
                 "description": flat.get("description", ""),
                 "tags": flat.get("tags", []),
                 "hashtags": flat.get("hashtags", []),
                 "publish_after": flat.get("publish_after"),
-                "ai_disclosure": adv.get("ai_disclosure", flat.get("ai_disclosure")),
+                "ai_disclosure": told.answer if told else answer,
+                "ai_disclosure_reason": told.reason if told else None,
+                "ai_disclosure_note": (told.note or None) if told else None,
+                "youtube_notes": read_notes(sheet_text).owner_lines(),
                 "made_for_kids": adv.get("made_for_kids", flat.get("made_for_kids")),
                 "age_restrict_suggested": adv.get(
                     "age_restrict_suggested", flat.get("age_restrict_suggested")
@@ -178,7 +188,7 @@ class OutputsService:
                 "thumbnails": flat.get("thumbnails"),
                 "policy_notes": policy_notes(policy),
                 "sheet": sheet_dict,
-                "sheet_text": _read_text(video.with_suffix(".txt")),
+                "sheet_text": sheet_text,
                 "policy": policy,
                 "advice": advice,
                 "story_excerpt": self._story_excerpt(row),

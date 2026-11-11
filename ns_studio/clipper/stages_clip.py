@@ -47,6 +47,7 @@ from ns_studio.media import outbox as media_outbox
 from ns_studio.media import qc as media_qc
 from ns_studio.media import render as media_render
 from ns_studio.media import transcribe as media_transcribe
+from ns_studio.media import youtube_rules
 from ns_studio.media.caption_plan import (
     AssOptions,
     emphasis_from_list,
@@ -56,6 +57,7 @@ from ns_studio.media.caption_plan import (
 )
 from ns_studio.media.formats import ensure_allowed, formats_allowed
 from ns_studio.media.job_formats import warn_broken_overrides
+from ns_studio.media.youtube_rules import Notes
 from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.stages import Stage, Tenant, register
 from ns_studio.text.prompts import call_json
@@ -838,21 +840,38 @@ class QcStage:
             ctx.log.warn("clip_skipped", job_id=ctx.job_id, code="NS-E404", detail=line[:200])
 
 
-def write_clip_sidecars(json_path: Path, txt_path: Path, meta: ClipMetadata, video_name: str) -> None:
+def write_clip_sidecars(
+    json_path: Path, txt_path: Path, meta: ClipMetadata, video_name: str, notes: Notes | None = None
+) -> None:
     """The clip's metadata (`.json`) and upload sheet (`.txt`), each swapped in whole.
 
     The nightly scheduler (`ns_studio.daily`), `retime_sheet` and a person with the Outbox open read them
     while a re-run rewrites them."""
     write_text_atomic(json_path, meta.model_dump_json(indent=2) + "\n", newline=None)
-    write_text_atomic(txt_path, clip_sheet_text(meta, video_name), newline=None)
+    write_text_atomic(txt_path, clip_sheet_text(meta, video_name, notes=notes), newline=None)
 
 
-def clip_sheet_text(meta: ClipMetadata, video_name: str) -> str:
-    """Plain-text upload sheet of a clip."""
+def fitted_clip_sheet(meta: ClipMetadata, duration_s: float) -> tuple[ClipMetadata, Notes]:
+    """A clip's sheet fitted to YouTube's rules (`youtube_rules.fit`, the story outbox's rules) and the
+    notes that tell the owner what was changed; the altered-content answer of a clip with its reason."""
+    f = youtube_rules.fit(
+        title=meta.title, description=meta.description, tags=meta.tags, hashtags=meta.hashtags,
+        fallback_title=Path(meta.source_video).stem or f"Clip {meta.k}", short_seconds=duration_s,
+    )
+    told = youtube_rules.disclosure(meta.ai_disclosure, None, kind="clip")
+    data = {**meta.model_dump(), "title": f.title, "description": f.description, "tags": f.tags,
+            "hashtags": f.hashtags, "ai_disclosure": told.answer}
+    return ClipMetadata.model_validate(data), Notes(f.warnings, f.changes, told.reason, told.note)
+
+
+def clip_sheet_text(meta: ClipMetadata, video_name: str, *, notes: Notes | None = None) -> str:
+    """Plain-text upload sheet of a clip (the notes first, as on a story's sheet)."""
     yes_no = {True: "Yes", False: "No"}
+    notes = notes or Notes()
     return (
         "\n".join(
             [
+                *notes.head_lines(),
                 f"FILE: {video_name}",
                 f"TITLE: {meta.title}",
                 "",
@@ -866,7 +885,7 @@ def clip_sheet_text(meta: ClipMetadata, video_name: str) -> str:
                 media_outbox.publish_line(meta.publish_after),
                 "",
                 "SETTINGS:",
-                f"  Altered or synthetic content: {meta.ai_disclosure.capitalize()}",
+                *youtube_rules.disclosure_lines(meta.ai_disclosure, notes),
                 f"  Made for kids: {yes_no[meta.made_for_kids]}",
                 f"  Age restriction suggested: {yes_no[meta.age_restrict_suggested]}",
                 f"  Source video: {meta.source_video} (template {meta.template})",
@@ -945,7 +964,6 @@ class OutboxStage:
                 skipped[item] = str(reason) if k in seos else "metadata check failed"
                 continue
             s = seos[k]
-            stem = clip_file_stem(k, s["title"])
             meta = ClipMetadata(
                 channel=ctx.channel.slug,
                 job_id=ctx.job_id,
@@ -965,9 +983,11 @@ class OutboxStage:
                 combo_id=ctx.combo.combo_id,
                 prompt_versions=ctx.versions(),
             )
+            meta, notes = fitted_clip_sheet(meta, float(rinfo["duration_s"]))
+            stem = clip_file_stem(k, meta.title)
             mp4 = ob.copy_if_changed(Path(rinfo["path"]), dest_dir / f"{stem}.mp4")
             json_path, txt_path = dest_dir / f"{stem}.json", dest_dir / f"{stem}.txt"
-            write_clip_sidecars(json_path, txt_path, meta, mp4.name)
+            write_clip_sidecars(json_path, txt_path, meta, mp4.name, notes)
             ctx.db.execute(
                 "INSERT INTO outputs(output_id, job_id, channel, kind, k, title, path, duration_s, combo_id,"
                 " status, source_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,'pending',?,?)"

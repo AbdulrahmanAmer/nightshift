@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ns_common.models import Seo, SeoLong
+from ns_studio.media.youtube_rules import TAGS_MAX_CHARS, tags_length
 
 TAG_FILLERS = (
     "short story",
@@ -20,11 +21,14 @@ TAG_FILLERS = (
     "bedtime story",
     "creepy story",
 )
-MAX_TAG_CHARS = 500
+MAX_TAG_CHARS = int(TAGS_MAX_CHARS.value)  # YouTube's R4, counted as YouTube counts (`tags_length`)
 
 
 def normalize_tags(tags: Sequence[str], primary_keyword: str) -> list[str]:
-    """Dedupe tags (case-insensitive), pad to 10 with generic fiction tags, cap at 20 and 500 characters."""
+    """Dedupe tags (case-insensitive), pad to 10 with generic fiction tags, cap at 20 and 500 characters.
+
+    The 500 are counted as YouTube counts them (a tag with a space adds two quote marks, every comma counts);
+    the outbox drops more when ten tags alone pass it, and says so on the sheet."""
     seen: set[str] = set()
     out: list[str] = []
     for t in [primary_keyword, *tags]:
@@ -39,7 +43,7 @@ def normalize_tags(tags: Sequence[str], primary_keyword: str) -> list[str]:
             seen.add(filler.lower())
             out.append(filler)
     out = out[:20]
-    while len(out) > 10 and sum(len(t) for t in out) + len(out) - 1 > MAX_TAG_CHARS:
+    while len(out) > 10 and tags_length(out) > MAX_TAG_CHARS:
         out.pop()
     return out
 

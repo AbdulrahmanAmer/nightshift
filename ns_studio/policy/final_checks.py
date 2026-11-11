@@ -16,6 +16,7 @@ from ns_common.atomic import write_text_atomic
 from ns_common.errors import describe
 from ns_common.models import PolicyAdvice, PolicyCheck
 from ns_studio.context import JobContext
+from ns_studio.media import youtube_rules
 from ns_studio.policy import phash
 from ns_studio.policy.base import Check, fail, ok
 from ns_studio.policy.judge import JudgeFn, default_judge, record_notes, verdict_failed
@@ -531,8 +532,10 @@ def compute_advice(ctx: JobContext, place_ner: NerFn | None = None) -> PolicyAdv
 
     Altered or synthetic content is "yes" when anything could pass as real footage and when in doubt: a
     place spaCy recognises (GPE, LOC, FAC) in the script or metadata, a claim that the story is real, the
-    classifier's `real_setting` answer being yes, or that answer being missing or unclear.
+    classifier's `real_setting` answer being yes, or that answer being missing or unclear. A job narrated by
+    a cloned voice is always "yes" (`youtube_rules.disclosure`, rule R8).
     """
+
     text = story_text(ctx)
     blob = "\n".join([text, *(t for it in collect_items(ctx) for t in it.texts())])
     lowered = blob.lower()
@@ -542,8 +545,10 @@ def compute_advice(ctx: JobContext, place_ner: NerFn | None = None) -> PolicyAdv
     unclear_or_real = setting is not False  # True (a real place) or missing/None (the classifier did not say)
     places = (place_ner or (lambda t: place_entities(ctx.paths, t)))(blob)
     intense = ctx.channel.audience == "mature" and notes.get("intensity") in ("medium", "high")
+    gates = "yes" if (unclear_or_real or places or claims_real) else "no"
+    answer = youtube_rules.disclosure(gates, youtube_rules.job_voice_mode(ctx)).answer
     return PolicyAdvice(
-        ai_disclosure="yes" if (unclear_or_real or places or claims_real) else "no",
+        ai_disclosure="yes" if answer == "yes" else "no",
         made_for_kids=ctx.channel.made_for_kids,
         age_restrict_suggested=bool(intense),
     )

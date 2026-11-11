@@ -15,6 +15,7 @@ from ns_common.errors import NsError, describe
 from ns_common.models import QcCheck, QcResult
 from ns_studio.context import JobContext
 from ns_studio.media.audio import Loudness, measure_loudness, speech_onset_s
+from ns_studio.media.youtube_rules import CHAPTER_MIN_SECONDS, CHAPTERS_MIN_COUNT
 from ns_studio.stages import Tenant
 from ns_studio.text.story_profile import NORMAL, Mark, StoryProfile, duration_profile, job_mark
 
@@ -299,16 +300,17 @@ def copy_dropped_to_rejected(ctx: JobContext, item: str, info: dict[str, Any], r
 
 
 def chapters_check(doc: dict[str, Any]) -> QcCheck:
-    """Spec §9.1: at least 3 chapters, the first at 00:00, increasing starts, each at least 10 s."""
+    """Spec §9.1 and YouTube's R6 (`youtube_rules`): at least 3 chapters, the first at 00:00, increasing
+    starts, each at least 10 s."""
     ch = doc.get("chapters", [])
     starts = [float(c["start_s"]) for c in ch]
     ends = [float(c["end_s"]) for c in ch]
     ok = (
-        len(ch) >= 3
+        len(ch) >= CHAPTERS_MIN_COUNT.value
         and starts[0] == 0.0
         and ch[0]["timestamp"] in ("00:00", "0:00:00")
         and all(b > a for a, b in zip(starts, starts[1:], strict=False))
-        and all(e - s >= 10.0 for s, e in zip(starts, ends, strict=True))
+        and all(e - s >= CHAPTER_MIN_SECONDS.value for s, e in zip(starts, ends, strict=True))
     )
     return QcCheck(passed=ok, value=len(ch), limit=">= 3 chapters from 00:00, each >= 10 s")
 

@@ -90,7 +90,15 @@ def build_state(
     store = JobStore(db)
 
     def sweep_at_start(active_ids: set[str], part_statuses: dict[str, str]) -> None:
-        """Series parts without a live job settle; link-download folders without a live job are removed."""
+        """Series parts without a live job settle; link-download folders without a live job are removed; the
+        upload sheets still waiting to be posted are brought up to YouTube's rules (once per rules
+        version)."""
+        from ns_studio.media.outbox import sweep_sheets
+
+        try:
+            sweep_sheets(paths, db, log)
+        except Exception as e:  # never stops the worker from starting; the next start tries again
+            log.warn("sheet_sweep_failed", f"the upload sheets were not checked against YouTube's rules: {e}")
         try:
             live = {
                 str(rec.params.get("source_id"))
