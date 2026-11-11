@@ -17,7 +17,7 @@ its own:
 
 - `Host` must name 127.0.0.1, localhost or ::1 (any port, or none).
 - A request that carries none of `Origin`, `Referer`, `Sec-Fetch-*` is a program's (httpx, urllib,
-  PowerShell 5.1 `Invoke-RestMethod`): answered, unless its body is a form's (below).
+  PowerShell 5.1 `Invoke-RestMethod`): answered, unless it carries a body and that body is a form's (below).
 - A request that carries any of them is a browser's, and it is answered only when it comes from the server's
   OWN origin: scheme, host and port exactly as this request addressed the server (`own_origin`: the scheme of
   the connection and the `Host` header, which the browser sets from the address it connects to and a page
@@ -45,9 +45,19 @@ content type at all) is refused unless it carries the server's own `Origin` (the
 uploading a file; the engine and the voice service have no own origin, so never). Our programs send JSON, or
 no body.
 
+D-50: a request with NO browser header and NO body (`Content-Length: 0` or none, no `Transfer-Encoding`; the
+HTTP parser in front of us holds the request to that framing) is a program's whatever content type it
+states: an empty body carries no form. Windows PowerShell 5.1's `Invoke-RestMethod -Method Post` without
+`-Body` states `application/x-www-form-urlencoded` with `Content-Length: 0`. A page in a browser that says
+nothing could post an empty form the same way; what that reaches is what a body-less POST reaches, which
+such a browser could send already (`sendBeacon(url)`, `fetch` no-cors with no referrer, in Firefox before
+70; the D-45 review, point 2): a body-less POST cannot be refused without refusing our own programs'. With
+any browser header the rule above is unchanged.
+
 A refused request gets 403 with `NS-E207` and no route runs. The first refusal of a page is one WARN; a page
 that keeps trying (3 refusals within 10 minutes) is told to the owner once per local day through `tell`
-(the morning notes), off the request path. Standard library only.
+(the morning notes), off the request path. The note is written once and never changed, so it counts "at
+least" the refusals it had seen when it was written (`note_text`). Standard library only.
 """
 
 from __future__ import annotations
@@ -88,6 +98,9 @@ FORM_TYPES = frozenset({"application/x-www-form-urlencoded", "multipart/form-dat
 NOTES_WAITING_MAX = 8
 NULL_PAGE = "a page opened from a file or an embedded frame"
 FORM_SENDER = "a web form without a sender"
+#: D-50: a browser's request (Sec-Fetch-*) with neither Origin nor Referer names no page; the name it called
+#: is ours, never the page's.
+UNKNOWN_PAGE = "a web page whose address the browser did not give"
 
 
 @dataclass(frozen=True)
@@ -114,7 +127,8 @@ class Refusal:
     why: str
     host: str
     origin: str | None
-    page: str     # what the owner is told: the page's origin when the browser gave one, else the name called
+    page: str     # what the owner is told: the page's origin (or Referer site) when the browser gave one;
+    #               a browser's request without either: `UNKNOWN_PAGE` (D-50); a program's: the name it called
     browser: bool  # a browser mark was on the request (a page), not only a foreign name
 
 
@@ -245,13 +259,36 @@ def _has_body(seen: dict[str, list[str]]) -> bool:
 
 def is_form_like(seen: dict[str, list[str]], method: str) -> bool:
     """A request that is not a GET or HEAD and whose body a plain HTML form can send: one of `FORM_TYPES`
-    (media type only), or a body with no content type at all."""
+    (media type only), or a body with no content type at all. (`decide` lets a program's form-typed request
+    with NO body through: D-50.)"""
     if method.upper() in SAFE_METHODS:
         return False
     types = [media_type(v) for v in seen.get("content-type", [])]
     if any(kind in FORM_TYPES for kind in types):
         return True
     return not any(types) and _has_body(seen)
+
+
+def _page_of(
+    origins: Sequence[str] | None, referers: Sequence[str] | None, marks: Mapping[str, str],
+    hosts: Sequence[str], scheme: str,
+) -> str:
+    """Who sent the request, as the owner is told (`Refusal.page`): the Origin a browser stated, else the site
+    of its Referer. A browser that stated neither (Sec-Fetch-* only: an image, a script, a no-cors fetch, a
+    file page) gave no address: `UNKNOWN_PAGE`, never the name it called, which is ours (D-50). One exception
+    names it: `Sec-Fetch-Site: same-origin` to a name that is not this PC's, where the page IS at that name (a
+    rebinding page's own request). A program (no browser header): the name it called."""
+    host = _clean(hosts[-1]) if hosts else ""
+    if origins:
+        return _clean(origins[-1]) or "null"
+    if referers:
+        return _clean(_site_of(referers[-1]))
+    if marks:
+        same = own_origin(hosts, scheme) if marks.get("sec-fetch-site") == "same-origin" else None
+        if same is not None and hosts and not is_loopback_host(hosts[-1]):
+            return _clean(same)
+        return UNKNOWN_PAGE
+    return host or "(no name)"
 
 
 def decide(
@@ -276,13 +313,11 @@ def decide(
     host = _clean(hosts[-1]) if hosts else ""
     origin = _clean(origins[-1]) if origins else None
     browser = bool(origins or referers or marks)
-    if origins:
-        page = origin or "null"
-    elif referers:
-        page = _clean(_site_of(referers[-1]))
-    else:
-        page = host or "(no name)"
-    form = is_form_like(seen, method)
+    page = _page_of(origins, referers, marks, hosts, scheme)
+    # D-50: a program's request with no body carries no form, whatever its content type says (Windows
+    # PowerShell 5.1 posts `-Method Post` without `-Body` as an empty urlencoded form); a browser's is judged
+    # by its content type as before
+    form = is_form_like(seen, method) and (browser or _has_body(seen))
 
     def no(why: str) -> Refusal:
         sender = FORM_SENDER if why == "form" and not browser else page
@@ -313,10 +348,15 @@ def refusal_body(refusal: Refusal, rule: Rule) -> bytes:
     return json.dumps({"code": CODE, "message": message, "detail": refusal.why}).encode()
 
 
-MORE_PAGES = "Still more web pages or names tried to control Nightshift today"
-#: What a refusal note says of the requests it counts: they were refused, so none of them ran. True of
-#: every counted request (a refused request gets 403 before any route), and of nothing else.
-REFUSED_WORDS = "Nightshift refused those {count} requests, so none of them ran."
+#: The words of the day's last note (and how it is recognised; also in the notes of 0.1.15-rc4, which ended
+#: it with "today").
+MORE_PAGES = "Still more web pages or names tried to control Nightshift"
+#: What a refusal note says of the requests it counts: Nightshift refused every one of them, so none ran.
+#: True by construction of every request the note speaks of, whenever it is read: a request from that page
+#: (its Origin, its Referer, or no address: `UNKNOWN_PAGE`), to that name, or a form with a body and no
+#: sender, is refused by `decide` before any route, every time, counted or not (a page's top-level navigation
+#: that opens a page is not an attempt to control and is not counted).
+REFUSED_WORDS = "Nightshift refused every one of those requests, so none of them ran."
 
 
 def note_text(refusal: Refusal, count: int, at: datetime, *, more: bool = False) -> tuple[str, str]:
@@ -324,36 +364,46 @@ def note_text(refusal: Refusal, count: int, at: datetime, *, more: bool = False)
     already waits is recognised). True for a page and for a program that used another name; `more`: the
     notes that name a page are used up for today, this is the one that says there were others.
 
-    It says only what the guard knows: `count` is the requests it REFUSED (each got 403 before any route
-    ran). It never says what other requests did: a page's request that was answered is not counted here, so
-    no note may claim "every request" or "nothing was changed"."""
-    end = REFUSED_WORDS.format(count=count)
-    page, last = refusal.page, f"last at {at:%H:%M}"
+    D-50: a note is written ONCE (at the refusal that makes the page one that keeps trying, or at a later one
+    when it was held) and never changed, while the page may go on for hours, on both servers, after a
+    restart. So `count` (the refusals this guard had counted for this page today when the note was written)
+    is said as "at least", with the time it was counted by: both stay true whatever comes after. The day's
+    last note names a page as one "among them" and gives no count (its count may be of several pages). It
+    never says what other requests did, so no note may claim "every request" or "nothing was changed"."""
+    end = REFUSED_WORDS
+    page, by = refusal.page, f"by {at:%H:%M}"
     if more:
         text = (
-            f"{CODE}: {MORE_PAGES} (the latest: {page}, {count} times, {last}). {end} If you do not know "
+            f"{CODE}: {MORE_PAGES} on {at:%Y-%m-%d} (among them {page}, {by}). {end} If you do not know "
             "what sent them, close the web pages you have open."
         )
         return text, MORE_PAGES
     if refusal.why == "form" and not refusal.browser:
         mark = "sent Nightshift a web form "
         text = (
-            f"{CODE}: Something on this PC {mark}{count} times ({last}). {end} No program of Nightshift "
-            "does that; it is most likely a web page in an old browser or in Internet Explorer mode. Close "
-            "the web pages you do not know. A script of yours must send JSON."
+            f"{CODE}: Something on this PC {mark}at least {count} times ({by}). {end} No program of "
+            "Nightshift does that; it is most likely a web page in an old browser or in Internet Explorer "
+            "mode. Close the web pages you do not know. A script of yours must send JSON, or no body."
+        )
+        return text, mark
+    if refusal.browser and page == UNKNOWN_PAGE:
+        mark = f"{CODE}: A web page whose address the browser did not give tried "
+        text = (
+            f"{mark}at least {count} times to control Nightshift ({by}). {end} If you do not know which "
+            "page that is, close the web pages you have open."
         )
         return text, mark
     if refusal.browser:
         mark = f"(from {NULL_PAGE if page == 'null' else page}, "
         text = (
-            f"{CODE}: A web page open in your browser tried {count} times to control Nightshift "
-            f"{mark}{last}). {end} If you do not know that page, close it."
+            f"{CODE}: A web page open in your browser tried at least {count} times to control Nightshift "
+            f"{mark}{by}). {end} If you do not know that page, close it."
         )
         return text, mark
     mark = f"by the name {page} ("
     text = (
-        f"{CODE}: Nightshift was called {count} times {mark}{last}). {end} Nightshift answers only to "
-        "127.0.0.1 and localhost: a script of yours must use http://127.0.0.1 and the port. If you do not "
+        f"{CODE}: Nightshift was called at least {count} times {mark}{by}). {end} Nightshift answers only "
+        "to 127.0.0.1 and localhost: a script of yours must use http://127.0.0.1 and the port. If you do not "
         "know what sent it, close the web pages you have open."
     )
     return text, mark
