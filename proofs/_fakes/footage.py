@@ -499,24 +499,22 @@ class Api(BaseHTTPRequestHandler):
         path = self.url.path
         query = dict(self.qs)
         try:
-            pexels_paths = ("/videos/search", "/v1/videos/search", "/v1/search")
-            if self.host == "api.pexels.com" and path in pexels_paths:
-                if self.headers.get("Authorization") not in st.good_keys:
-                    return self.send(401, "Unauthorized", "text/plain")
+            # only the documented path (https://www.pexels.com/api/documentation/, read 2026-11-11): the old
+            # /videos/search and the photo /v1/search answer 404, so a product back on them fails the proof
+            if self.host == "api.pexels.com" and path == "/v1/videos/search":
+                if self.headers.get("Authorization") not in st.good_keys:  # Pexels' own answer, 2026-11-11
+                    body = {"status": 401, "code": "Unauthorized", "message": "Invalid API key"}
+                    return self.json(401, body)
                 if not self.gate_ok(pexels=True):
                     return None
-                if "videos" in path:
-                    return self.json(200, pexels_search(query))
-                photos = [{"id": 1, "width": 100, "height": 100}]
-                return self.json(200, {"page": 1, "per_page": 1, "total_results": 1, "photos": photos})
-            if self.host == "pixabay.com" and path in ("/api/videos/", "/api/videos", "/api/"):
-                if query.get("key") not in st.good_keys:
-                    return self.send(400, '[ERROR 400] "key" is invalid', "text/plain")
+                return self.json(200, pexels_search(query))
+            if self.host == "pixabay.com" and path in ("/api/videos/", "/api/videos"):
+                if query.get("key") not in st.good_keys:  # Pixabay's own answer to a wrong key, 2026-11-11
+                    return self.send(400, "[ERROR 400] Invalid or missing API key (https://pixabay.com/api/docs/).",
+                                     "text/html; charset=utf-8")
                 if not self.gate_ok(pexels=False):
                     return None
-                if path.startswith("/api/videos"):
-                    return self.json(200, pixabay_search(query))
-                return self.json(200, {"total": 1, "totalHits": 1, "hits": [{"id": 1, "tags": "nature"}]})
+                return self.json(200, pixabay_search(query))
             if self.host == "videos.pexels.com" and path.endswith(".mp4"):
                 m = re.search(r"_(\d+)_(\d+)\.mp4$", path)
                 return self.send_media(bool(m) and int(m.group(2)) > int(m.group(1)))

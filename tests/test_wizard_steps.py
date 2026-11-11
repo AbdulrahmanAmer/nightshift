@@ -34,13 +34,20 @@ GOOD_PEXELS, GOOD_PIXABAY = "good-pexels-key-123", "good-pixabay-key-456"
 def keyed_http():
     """Mock Pexels / Pixabay: only the two GOOD keys are accepted."""
 
+    # the bodies the sites gave on 2026-11-11 (runs/stock-check/live-output.txt), the documented search shape
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "api.pexels.com":
-            ok = request.headers.get("authorization") == GOOD_PEXELS
-            return httpx.Response(200 if ok else 401, json={"photos": []})
+            if request.headers.get("authorization") == GOOD_PEXELS:
+                return httpx.Response(200, json={"page": 1, "per_page": 1, "total_results": 0, "videos": []})
+            wrong = {"status": 401, "code": "Unauthorized", "message": "Invalid API key"}
+            return httpx.Response(401, json=wrong)
         if request.url.host == "pixabay.com":
-            ok = request.url.params.get("key") == GOOD_PIXABAY
-            return httpx.Response(200 if ok else 400, text="[]")
+            if request.url.params.get("key") == GOOD_PIXABAY:
+                return httpx.Response(200, json={"total": 0, "totalHits": 0, "hits": []})
+            return httpx.Response(
+                400, text="[ERROR 400] Invalid or missing API key (https://pixabay.com/api/docs/).",
+                headers={"content-type": "text/html; charset=utf-8"},
+            )
         return httpx.Response(404)
 
     return lambda: httpx.Client(transport=httpx.MockTransport(handler))
@@ -352,23 +359,28 @@ def test_s01_asks_for_missing_keys_and_retries_a_bad_paste(tmp_path: Path):
 
 
 def test_key_validators_map_status_codes(tmp_path: Path):
-    def client(status: int):
-        return httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(status)))
+    """Card stock-truth: only an answer that says the key is wrong raises; the others come back unchecked."""
+    from ns_common import stock_answer as sa
 
-    validate_pexels(client(200), "k")
-    validate_pexels(client(429), "k")                 # rate limited: the key was recognised
-    validate_pixabay(client(200), "k")
+    def client(status: int, **kw):
+        return httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(status, **kw)))
+
+    assert validate_pexels(client(200, json={"videos": []}), "k").kind == sa.OK
+    assert validate_pexels(client(429), "k").kind == sa.RATE_LIMITED      # busy: not checked, never refused
+    assert validate_pixabay(client(200, json={"hits": []}), "k").kind == sa.OK
+    assert validate_pexels(client(403), "k").kind == sa.UNEXPECTED       # Cloudflare's 403 is not the key
+    assert validate_pixabay(client(503), "k").kind == sa.FAILING
     with pytest.raises(NsError) as e1:
-        validate_pexels(client(403), "k")
+        validate_pexels(client(401), "k")
     with pytest.raises(NsError) as e2:
-        validate_pixabay(client(400), "k")
+        validate_pixabay(client(400, text="[ERROR 400] Invalid or missing API key (https://pixabay.com/api/docs/)."),
+                         "k")
 
     def boom(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("down", request=request)
 
-    with pytest.raises(NsError) as e3:
-        validate_pexels(httpx.Client(transport=httpx.MockTransport(boom)), "k")
-    assert (e1.value.code, e2.value.code, e3.value.code) == ("NS-E501", "NS-E502", "NS-E503")
+    assert validate_pexels(httpx.Client(transport=httpx.MockTransport(boom)), "k").kind == sa.NO_CONNECTION
+    assert (e1.value.code, e2.value.code) == ("NS-E501", "NS-E502")
 
 
 def test_s01_simulate_keeps_keys_out_of_files_but_in_the_store(tmp_path: Path):

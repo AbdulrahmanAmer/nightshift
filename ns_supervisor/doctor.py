@@ -32,6 +32,7 @@ from ns_common import (
     rollback_intent,
     testguard,
 )
+from ns_common import stock_answer as sa
 from ns_common.atomic import read_text_retry, retry_busy, write_zip_atomic
 from ns_common.config import load_install_state
 from ns_common.devmode import is_dev
@@ -282,9 +283,61 @@ def diagnose(
     rows.append(launch_reach.doctor_row(paths))
     rows.append(task_limit_row(paths))
     rows.append(commands_row(paths))
+    rows += stock_key_rows(paths)
     app = Path(st.app_path) if st.app_path else repo_root()
     rows.append(program_folders(paths, app, on_wait))
     rows.append(python_environments(paths, app))
+    return rows
+
+
+def _stored_stock_keys() -> dict[str, str]:
+    """The keys the studio reads (`ns_studio.jobs.load_keys`: Credential Manager, else `secrets.dpapi`)."""
+    from ns_studio.jobs import load_keys
+
+    return load_keys()
+
+
+def stock_key_rows(
+    paths: Paths,
+    *,
+    keys: Callable[[], dict[str, str]] | None = None,
+    ask: Callable[[str, str], sa.Answer] | None = None,
+) -> list[tuple[str, bool, str]]:
+    """One row per stock footage site (card stock-truth): ok, wrong, could not be checked now, or no key
+    stored, each by the one classifier through setup's own key check (`installer.stage2.web.keys.ask`). Never
+    the key's text, never a crash: a key store that cannot be read is a row that says so."""
+    if devmode.fake_footage(paths):  # a dev install or the engine test: placeholder footage, no key needed
+        said = "not needed (this install uses placeholder footage)"
+        return [(f"stock key {p}", True, said) for p in sa.PROVIDERS]
+    try:
+        stored = (keys or _stored_stock_keys)()
+    except Exception as e:  # noqa: BLE001 - a row, never a traceback
+        return [("stock keys", False, f"could not read the stored keys ({type(e).__name__})")]
+    if ask is None:
+        from installer.stage2.web.keys import ask as setup_ask
+
+        ask = setup_ask
+    rows: list[tuple[str, bool, str]] = []
+    for p in sa.PROVIDERS:
+        name, key = sa.NAMES[p], stored.get(p)
+        if not key:  # not a fault of the install (setup allows none); a video asks for one (NS-E502)
+            if any(stored.get(o) for o in sa.PROVIDERS):
+                how = "optional: the other site's key is enough"
+            else:
+                how = f"a video needs one: add a Pixabay key (free) in {sa.KEYS_PLACE}"
+            rows.append((f"stock key {p}", True, f"no key stored ({how})"))
+            continue
+        try:
+            a = ask(p, key)
+        except Exception as e:  # noqa: BLE001 - a row, never a traceback
+            rows.append((f"stock key {p}", False, f"could not be checked ({type(e).__name__})"))
+            continue
+        if a.ok:
+            rows.append((f"stock key {p}", True, f"{name} accepted the key"))
+        elif a.kind == sa.KEY_WRONG:
+            rows.append((f"stock key {p}", False, f"{a.code}: {a.sentence} {a.way_out}"))
+        else:
+            rows.append((f"stock key {p}", True, f"could not be checked now ({a.code}): {a.sentence}"))
     return rows
 
 

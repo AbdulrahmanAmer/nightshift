@@ -3,6 +3,7 @@
 This is the only studio module that talks to the stock APIs over HTTP (ENGINEERING.md section 8).
 Keys are passed in by the caller; they are never logged. Rate limits follow spec §7.4: a token bucket of
 180 requests/hour for Pexels and 90/minute for Pixabay, with `429` honoured via `Retry-After`/reset headers.
+Every answer (search, download, key check) is read by the one classifier, `ns_common.stock_answer`.
 """
 
 from __future__ import annotations
@@ -12,7 +13,8 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Callable, Sequence
+import urllib.request
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -20,13 +22,18 @@ from typing import Any, Literal, Protocol
 import httpx
 
 from ns_common import ffmpeg as ff
+from ns_common import stock_answer as sa
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_studio.media.diskfull import classify_ffmpeg_error, disk_full_error, is_disk_full, remove_partial
 
 Orientation = Literal["landscape", "portrait"]
-PEXELS_URL = "https://api.pexels.com"
-PIXABAY_URL = "https://pixabay.com/api/videos/"
+#: The documented bases (`stock_answer`): Pexels' search is `<PEXELS_URL>/videos/search`. Read when a source
+#: is made (a stand-in server in a test replaces them).
+PEXELS_URL = sa.PEXELS_BASE
+PIXABAY_URL = sa.PIXABAY_BASE
+#: The one bounded request of the check before a job (`footage_keys`): no retry, at most this long.
+KEY_CHECK_TIMEOUT_S = sa.TIMEOUT_S
 PIXABAY_CACHE_TTL_S = 24 * 3600
 OUTAGE_BACKOFF_S = (2.0, 5.0, 15.0)  # waits before the retries after a 5xx, a timeout or a reset connection
 
@@ -113,18 +120,26 @@ def give_log(sources: Sequence[ClipSource], log: NsLogger | None) -> None:
 
 def retry_wait_s(resp: httpx.Response, wall_now: float) -> float:
     """Seconds to wait after a 429: Retry-After, else the reset header (epoch or seconds); 1..3600."""
-    ra = resp.headers.get("Retry-After")
-    reset = resp.headers.get("X-RateLimit-Reset") or resp.headers.get("X-Ratelimit-Reset")
-    wait = 60.0
-    try:
-        if ra is not None:
-            wait = float(ra)
-        elif reset is not None:
-            v = float(reset)
-            wait = v - wall_now if v > 1e9 else v
-    except ValueError:
-        wait = 60.0
-    return min(3600.0, max(1.0, wait))
+    return sa.wait_s(resp.headers, wall_now)
+
+
+def httpx_fetch(client: httpx.Client, timeout: float = KEY_CHECK_TIMEOUT_S) -> sa.Fetch:
+    """`stock_answer.check_key`'s one request, sent through a source's own client (no answer: OSError with the
+    error's type only, as an httpx message can carry the address and a Pixabay address carries the key)."""
+
+    def fetch(req: urllib.request.Request) -> tuple[int, Mapping[str, str], bytes]:
+        try:
+            r = client.get(req.full_url, headers=dict(req.header_items()), timeout=timeout)
+        except httpx.HTTPError as e:
+            raise OSError(type(e).__name__) from None
+        return r.status_code, r.headers, r.content
+
+    return fetch
+
+
+def keyed(sources: Sequence[ClipSource]) -> list[_HttpSource]:
+    """The real stock sources among `sources` that have a key (the fake one has none)."""
+    return [s for s in sources if isinstance(s, _HttpSource) and s.has_key]
 
 
 class _HttpSource:
@@ -132,6 +147,7 @@ class _HttpSource:
 
     name = ""
     api_error = "NS-E501"
+    base_url = ""
 
     def __init__(
         self,
@@ -157,72 +173,98 @@ class _HttpSource:
         """The name the owner knows the host by ("Pexels", "Pixabay")."""
         return self.name.capitalize()
 
-    def _outage(self, reason: str) -> NsError:
-        """NS-E503 with outage wording: the host is down, the key is fine."""
-        return NsError(
-            "NS-E503", f"{self.host} is not answering right now; Nightshift will try again ({reason})"
-        )
+    @property
+    def has_key(self) -> bool:
+        """True when a key was given (the key itself is never handed out by name)."""
+        return bool(self._key)
+
+    @property
+    def key_id(self) -> str:
+        """A short hash that tells two keys apart (the check's cache); the key cannot be read back from it."""
+        from ns_studio.footage_keys import stock_key_id
+
+        return stock_key_id(self.name, self._key)
+
+    def check_key(self) -> sa.Answer:
+        """The check before a job (`footage_keys`): ONE request at this source's search endpoint, at most
+        `KEY_CHECK_TIMEOUT_S`, no retry, classified by `stock_answer`."""
+        return sa.check_key(self.name, self._key, fetch=httpx_fetch(self.client), base=self.base_url)
+
+    def _classify(self, r: httpx.Response | None = None, *, failed: Exception | None = None,
+                  expect: str | None = None, key_sent: bool = True) -> sa.Answer:
+        if isinstance(failed, httpx.TransportError):  # timeouts, refused or reset connections, DNS
+            return sa.classify(self.name, no_answer=type(failed).__name__)
+        if failed is not None or r is None:  # an answer that could not be read (decoding, redirects)
+            return sa.classify(self.name, unreadable=type(failed).__name__ if failed else "no answer")
+        body = r.content if r.status_code != 429 else b""
+        return sa.classify(self.name, status=r.status_code, headers=r.headers, body=body, expect=expect,
+                           key_sent=key_sent, wall_now=self._wall())
 
     def _get(
         self, url: str, *, params: dict[str, Any], headers: dict[str, str] | None = None
-    ) -> httpx.Response:
+    ) -> dict[str, Any]:
+        """The parsed answer of one search; every other answer is classified (`stock_answer`): a wrong key or
+        an answer not understood raise at once, a 429 is waited out (four times), a 5xx or no answer is tried
+        again after `OUTAGE_BACKOFF_S`."""
         if not self._key:
             raise NsError(self.api_error, f"{self.name} API key missing")
         rate_limited = 0
         outage_retries = 0
-        while rate_limited < 4:
+        while True:
             self.bucket.acquire()
-            reason = ""
+            r: httpx.Response | None = None
             try:
                 r = self.client.get(url, params=params, headers=headers)
-            except httpx.TransportError as e:  # timeouts, refused or reset connections, DNS
-                reason = type(e).__name__
+                answer = self._classify(r, expect=sa.EXPECT[self.name])
             except httpx.HTTPError as e:
-                raise NsError("NS-E503", f"{self.name}: {type(e).__name__}") from e
-            else:
-                if r.status_code == 429:
-                    wait = retry_wait_s(r, self._wall())
-                    rate_limited += 1
-                    if self.log:
-                        self.log.warn(
-                            "footage_rate_limited", source=self.name, wait_s=wait, attempt=rate_limited
-                        )
-                    self._sleep(wait)
-                    continue
-                if r.status_code >= 500:
-                    reason = f"HTTP {r.status_code}"
-                elif r.status_code >= 400:
-                    raise NsError(self.api_error, f"HTTP {r.status_code}")
-                else:
-                    return r
-            if outage_retries >= len(OUTAGE_BACKOFF_S):
+                answer = self._classify(failed=e)
+            if answer.ok:
+                return dict(answer.data)
+            if answer.kind == sa.KEY_WRONG:  # an "ok" kept by the check before the job is wrong now: fix it
+                from ns_studio.footage_keys import remember_refused
+
+                if remember_refused(self.cache_dir, self.name, self.key_id, answer.why) and self.log:
+                    self.log.warn("stock_key_refused_by_search", source=self.name, code=answer.code)
+            if answer.kind in (sa.KEY_WRONG, sa.UNEXPECTED):
+                raise answer.error()
+            if answer.kind == sa.RATE_LIMITED:
+                rate_limited += 1
+                wait = retry_wait_s(r, self._wall()) if r is not None else sa.DEFAULT_WAIT_S
                 if self.log:
-                    self.log.error("footage_host_down", source=self.name, reason=reason)
-                raise self._outage(f"{reason} after {outage_retries + 1} attempts")
+                    self.log.warn("footage_rate_limited", source=self.name, wait_s=wait, attempt=rate_limited)
+                self._sleep(wait)
+                if rate_limited >= 4:
+                    raise answer.error(f"Asked {rate_limited} times.", gave_up=True)
+                continue
+            if outage_retries >= len(OUTAGE_BACKOFF_S):  # FAILING or NO_CONNECTION
+                if self.log:
+                    self.log.error("footage_host_down", source=self.name, reason=answer.why)
+                raise answer.error(f"Tried {outage_retries + 1} times.", gave_up=True)
             wait = OUTAGE_BACKOFF_S[outage_retries]
             outage_retries += 1
             if self.log:
                 self.log.warn(
-                    "footage_host_retry", source=self.name, reason=reason, wait_s=wait, retry=outage_retries
+                    "footage_host_retry", source=self.name, reason=answer.why, wait_s=wait,
+                    retry=outage_retries,
                 )
             self._sleep(wait)
-        raise NsError(self.api_error, "rate limited (429) after 4 attempts")
 
     def _fetch_file(self, url: str, dest: Path) -> Path:
         part = dest.with_name(dest.name + ".part")
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             with self.client.stream("GET", url, follow_redirects=True) as r:
-                if r.status_code >= 500:
-                    raise self._outage(f"download HTTP {r.status_code}")
-                if r.status_code >= 400:
-                    raise NsError(self.api_error, f"download HTTP {r.status_code}")
+                if r.status_code >= 300:
+                    # a file link carries no key: no status of it says the key is wrong (`key_sent=False`);
+                    # a failing download stops at once, with no retry here (as before)
+                    r.read()
+                    raise self._classify(r, key_sent=False).error("The download stopped.", gave_up=True)
                 with part.open("wb") as fh:
                     for chunk in r.iter_bytes(1 << 16):
                         fh.write(chunk)
             part.replace(dest)
         except httpx.HTTPError as e:
-            raise NsError("NS-E503", f"{self.name} download: {type(e).__name__}") from e
+            raise self._classify(failed=e).error("The download stopped.", gave_up=True) from None
         except OSError as e:
             if is_disk_full(e):
                 raise disk_full_error(dest.parent, self.log) from e
@@ -293,24 +335,24 @@ class PexelsSource(_HttpSource):
         bucket: TokenBucket | None = None,
         sleep: Callable[[float], None] = time.sleep,
         wall: Callable[[], float] = time.time,
-        base_url: str = PEXELS_URL,
+        base_url: str | None = None,
         log: NsLogger | None = None,
     ) -> None:
         super().__init__(
             key, cache_dir, client=client, bucket=bucket or TokenBucket(180, 180 / 3600.0, sleep=sleep),
             sleep=sleep, wall=wall, log=log,
         )
-        self.base_url = base_url.rstrip("/")
+        self.base_url = (base_url or PEXELS_URL).rstrip("/")
 
     def search(self, keyword: str, *, orientation: Orientation, per_page: int = 80) -> list[ClipCandidate]:
-        """Search Pexels; `size=medium` asks for Full HD or better."""
-        r = self._get(
-            f"{self.base_url}/videos/search",
+        """Search Pexels at the documented `/v1/videos/search`; `size=medium` asks for Full HD or better."""
+        data = self._get(
+            sa.search_url(self.name, self.base_url),
             params={"query": keyword, "orientation": orientation, "size": "medium",
                     "per_page": min(80, per_page), "page": 1},
             headers={"Authorization": self._key},
         )
-        return parse_pexels(r.json(), orientation)
+        return parse_pexels(data, orientation)
 
     def download(self, cand: ClipCandidate, dest: Path) -> Path:
         """Stream the chosen mp4 to `dest` (the CDN link needs no Authorization header)."""
@@ -388,7 +430,7 @@ class PixabaySource(_HttpSource):
         bucket: TokenBucket | None = None,
         sleep: Callable[[float], None] = time.sleep,
         wall: Callable[[], float] = time.time,
-        base_url: str = PIXABAY_URL,
+        base_url: str | None = None,
         cache_ttl_s: float = PIXABAY_CACHE_TTL_S,
         log: NsLogger | None = None,
     ) -> None:
@@ -396,7 +438,7 @@ class PixabaySource(_HttpSource):
             key, cache_dir, client=client, bucket=bucket or TokenBucket(90, 90 / 60.0, sleep=sleep),
             sleep=sleep, wall=wall, log=log,
         )
-        self.base_url = base_url
+        self.base_url = base_url or PIXABAY_URL
         self.cache_ttl_s = cache_ttl_s
         self.api_calls = 0
 
@@ -417,13 +459,12 @@ class PixabaySource(_HttpSource):
             except (ValueError, KeyError, OSError):
                 data = None
         if data is None:
-            r = self._get(
-                self.base_url,
+            data = self._get(
+                sa.search_url(self.name, self.base_url),
                 params={"key": self._key, "q": keyword, "video_type": "film", "per_page": per_page,
                         "safesearch": "true", "page": 1},
             )
             self.api_calls += 1
-            data = r.json()
             cache.parent.mkdir(parents=True, exist_ok=True)
             cache.write_text(json.dumps({"fetched_at": self._wall(), "response": data}), encoding="utf-8")
         return parse_pixabay(data or {}, orientation)

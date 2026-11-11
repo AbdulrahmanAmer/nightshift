@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -31,6 +32,7 @@ from ns_dashboard.state import (
 )
 from ns_dashboard.svc_engine import EngineService
 from ns_dashboard.templates import load_templates
+from ns_supervisor import kitnights
 
 KeyCheck = Callable[[str, str], dict[str, Any]]
 
@@ -184,6 +186,8 @@ class SettingsService:
         if "notifications" in body:
             updates["notifications"] = body["notifications"]
         if "automatic_runs" in body:
+            if body.get("by") != kitnights.BY_KIT:  # the owner's own click: theirs, never undone by the kit
+                kitnights.owner_chose(self.s.paths, datetime.now().astimezone(), "Settings", self.s.log)
             # the switch (and the time with it): Windows first, and the answer is what Windows then has
             schedule_result = self.s.adapters.schedule.switch(body["automatic_runs"], updates.get("run_time"))
         elif "run_time" in updates:  # the task first: a time Windows refused must not be remembered as the schedule
@@ -256,8 +260,9 @@ class SettingsService:
         short = SHORT_NAMES.get(full, full)
         service = short[0].upper() + short[1:]
         verdict = self.key_check(short, secret) if self.key_check is not None else None
-        if verdict is not None and not verdict.get("ok") and verdict.get("code") != "NS-E503":
-            # the service answered and did not accept the key: not stored, so a working key is not replaced
+        if verdict is not None and not verdict.get("ok"):
+            # the site said the key is wrong (`keys.verdict`): not stored, so a working key is not replaced. A
+            # site that is busy, failing or out of reach is `ok` with a code: the key is saved below, unchecked
             raise ApiError(
                 422, str(verdict.get("code") or "bad_key"),
                 f"{service} did not accept this key. Paste it again from your {service} account page "
@@ -267,13 +272,16 @@ class SettingsService:
             self.s.adapters.keyring.set(full, secret)
         except AdapterUnavailable as e:
             raise ApiError(501, "keyring_unavailable", str(e)) from e
-        self.s.log.info("api_key_set", name=full, checked=bool(verdict and verdict.get("ok")))
+        checked = bool(verdict and verdict.get("ok") and not verdict.get("code"))
+        self.s.log.info("api_key_set", name=full, checked=checked, code=(verdict or {}).get("code"))
         out: dict[str, Any] = {"name": full, "set": True}
         if verdict is not None:
-            out["checked"] = bool(verdict.get("ok"))
+            out["checked"] = checked
+            # unchecked: the classifier's own sentence (busy, failing, out of reach, not understood) and that
+            # the check before the next video asks again (`installer.stage2.web.keys.verdict`)
             out["message"] = (
-                f"{service} accepted the key" if verdict.get("ok")
-                else f"Key saved, but {service} could not be reached to check it (no internet?)"
+                f"{service} accepted the key" if checked
+                else f"Key saved, but it could not be checked now. {verdict.get('message') or ''}".rstrip()
             )
         problem = self._key_problem(full)
         if problem:

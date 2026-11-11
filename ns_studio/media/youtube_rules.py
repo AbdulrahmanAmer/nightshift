@@ -110,6 +110,64 @@ RULES: tuple[Rule, ...] = (
 )
 #: Raised whenever a rule above changes: the dashboard's start sweep then rewrites the waiting sheets once.
 RULES_VERSION = 1
+
+
+@dataclass(frozen=True)
+class Credit:
+    """What a stock footage site asks of a video made with its API footage: its page, the day it was read, its
+    words, and whether a credit is REQUIRED (then it would be a Rule of the sheet's fields, not an offer)."""
+
+    site: str
+    source: str
+    checked: str
+    quote: str
+    required: bool
+
+
+#: Read 2026-11-11 (card stock-truth). Neither site requires a credit in the published video: Pixabay "kindly
+#: request[s]" one where search results are displayed; Pexels' guidelines ask for a link "when possible" and
+#: its licence says no credit is needed. So the sheet OFFERS one line the owner can paste or leave out.
+CREDITS: dict[str, Credit] = {
+    "pixabay": Credit(
+        "Pixabay", "https://pixabay.com/api/docs/", "2026-11-11",
+        "If you make use of the API, show your users where the images and videos are from, whenever search "
+        "results are displayed. That's the one thing we kindly request in return for free API usage.",
+        False,
+    ),
+    "pexels": Credit(
+        "Pexels", "https://www.pexels.com/api/documentation/", "2026-11-11",
+        "Whenever you are doing an API request make sure to show a prominent link to Pexels. ... Always "
+        "credit our photographers when possible | License (https://www.pexels.com/license/ and terms of "
+        "service): You do not need to credit Pexels or the contributor of Content when you use it",
+        False,
+    ),
+}
+#: Every credit line of a sheet starts with this (`bare_sheet` leaves it out: it is an offer, not a field).
+CREDIT_HEAD = "OPTIONAL CREDIT"
+CREDIT_PREFIX = f"{CREDIT_HEAD} (not required; paste it at the end of the description or leave it out): "
+
+
+def credit_text(sources: Sequence[str]) -> str | None:
+    """The credit itself for the stock sites a video's clips came from (`Metadata.clips[].source`), or None
+    when none did (fake footage, the clipper's own footage)."""
+    sites = [CREDITS[s].site for s in dict.fromkeys(sources) if s in CREDITS]
+    return f"Stock footage from {' and '.join(sites)}." if sites else None
+
+
+def credit_line(sources: Sequence[str], description: str, hashtags: Sequence[str]) -> str | None:
+    """The sheet's credit line, counted against R3 like every fixed line: the description as the sheet gives
+    it, its hashtag line and the credit pasted after them (a blank line between) must stay within
+    `DESCRIPTION_MAX_BYTES`. When they would not, the credit is NOT offered: the line says it was left out and
+    why, so the owner is never handed a paste YouTube refuses. None when no stock site supplied a clip."""
+    text = credit_text(sources)
+    if text is None:
+        return None
+    used = description_bytes(description.rstrip()) + hashtag_line_bytes(hashtags)
+    limit = int(DESCRIPTION_MAX_BYTES.value)
+    if used + description_bytes("\n\n" + text) <= limit:
+        return CREDIT_PREFIX + text
+    return (f"{CREDIT_HEAD} left out: the description and its hashtags already use {used:,} of YouTube's "
+            f"{limit:,} bytes, so the credit ({text}) would not fit.")
 #: Nightshift's own choice, well inside R5: at most five hashtags (YouTube shows three by the title).
 HASHTAGS_KEPT = 5
 
@@ -580,8 +638,8 @@ def bare_sheet(text: str) -> str:
             skip_note = False
             if ln.startswith("    "):
                 continue
-        if ln.startswith((WARNING_PREFIX, CHANGED_PREFIX, KEPT_PREFIX)):
-            continue
+        if ln.startswith((WARNING_PREFIX, CHANGED_PREFIX, KEPT_PREFIX, CREDIT_HEAD)):
+            continue  # the credit is an offer, not a field: a sheet written without it (rc4) is not "edited"
         if _DISCLOSURE_LINE.match(ln):
             out.append("  Altered or synthetic content:")
             skip_note = True

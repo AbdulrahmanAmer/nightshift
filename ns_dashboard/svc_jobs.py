@@ -28,7 +28,7 @@ from ns_dashboard.svc_channels import ChannelsService
 from ns_dashboard.templates import clipper_can_run, load_templates
 from ns_dashboard.uploads import ALLOWED_EXT, CHUNK, UploadInfo, UploadManager, find_source
 from ns_studio import diskroom
-from ns_studio.footage_keys import NO_FOOTAGE_KEY
+from ns_studio.footage_keys import NO_FOOTAGE_KEY, refused_sentence
 from ns_studio.series.plain import script_problem
 
 CLIP_PARAM_KEYS = ("channel", "template", "max_clips", "min_s", "max_s", "caption_style", "rights_confirmed")
@@ -293,7 +293,30 @@ class JobsService:
         slug, params = self._run_params(body)
         self._require_footage_key()
         self._story_room(slug, params["format"])
-        return self._enqueue("run", slug, params, self._schedule(body))
+        when = self._schedule(body)
+        out = self._enqueue("run", slug, params, when)
+        said = None if when is not None else self._refused_key_sentence()
+        if said:  # card stock-truth: what the kept key check already knows, on the card from the start
+            self.s.store.update_progress(out["job_id"], 0.0, said)
+            rec = self.s.store.get(out["job_id"])
+            if rec is not None:
+                out = rec.to_dict()
+        return out
+
+    def _refused_key_sentence(self) -> str | None:
+        """The sentence of a stored key the kept check (`footage_keys`) found refused, without asking the site
+        (the run's own check asks when the answer is old); None when nothing is known or with fakes."""
+        if self.s.fake_services or fake_footage(self.s.paths):
+            return None
+        keys: dict[str, str] = {}
+        for full, short in SHORT_NAMES.items():
+            try:
+                value = self.s.adapters.keyring.get(full)
+            except AdapterUnavailable:
+                return None
+            if value:
+                keys[short] = value
+        return refused_sentence(self.s.paths, keys)
 
     def check_run(self, body: dict[str, Any]) -> None:
         """Refuse a run request for what is wrong with it (channel, type, script) without queuing anything.

@@ -823,14 +823,17 @@ def test_every_sheet_read_at_run_time_goes_through_the_one_function(tmp_home: Pa
                     outside.append(str(p))
             return real_open(file, mode, *a, **kw)
 
-        monkeypatch.setattr(io, "open", watched)
-        monkeypatch.setattr(builtins, "open", watched)
-        outbox.sweep_sheets(paths, state.db, state.log)
-        queue.detail(f"{ctx.job_id}/s1")
-        outbox.retime_sheet(entry, "2026-11-05T19:00")
-        env: Any = SimpleNamespace(db=state.db)  # the slot count reads only the database and the sheets
-        daily.scheduled_shorts(env, "after-dark", datetime(2026, 11, 1).date(), set(), datetime(2026, 11, 2, tzinfo=UTC))
-        monkeypatch.undo()
+        # The watch ends with this block, before the assertion and the clean-up open anything. Only these two
+        # patches end there: `monkeypatch.undo()` would also drop the test's home (`tmp_home` sets it through
+        # this same fixture) and the session's fakes, which must stay for the whole test.
+        with monkeypatch.context() as watching:
+            watching.setattr(io, "open", watched)
+            watching.setattr(builtins, "open", watched)
+            outbox.sweep_sheets(paths, state.db, state.log)
+            queue.detail(f"{ctx.job_id}/s1")
+            outbox.retime_sheet(entry, "2026-11-05T19:00")
+            env: Any = SimpleNamespace(db=state.db)  # the slot count reads only the database and the sheets
+            daily.scheduled_shorts(env, "after-dark", datetime(2026, 11, 1).date(), set(), datetime(2026, 11, 2, tzinfo=UTC))
         assert outside == [], outside
     finally:
         state.db.close()

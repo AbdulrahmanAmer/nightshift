@@ -26,7 +26,7 @@ from ns_studio.channels.crud import broken_channels, get_channel
 from ns_studio.context import JobContext
 from ns_studio.diskroom import require_story_room
 from ns_studio.errors import OUT_OF_TIME, PAUSED, UNEXPECTED, StudioError, describe_unexpected
-from ns_studio.footage_keys import require_footage_key
+from ns_studio.footage_keys import precheck
 from ns_studio.media.outbox import retime_sheet
 from ns_studio.media.sheet_read import read_sheet_file
 from ns_studio.policy.regen import run_job_guarded
@@ -450,6 +450,8 @@ def _attempt(
     slug: str,
     *,
     run_id: str,
+    fmt: str,
+    resume_dir: Path | None = None,
     resumed: bool = False,
     night: nightclock.Night | None = None,
 ) -> str | None:
@@ -458,12 +460,16 @@ def _attempt(
 
     A failure (coded or not) ends this job and is listed in the report, never the night. A job the night
     stopped before a stage for lack of time (`OUT_OF_TIME`) is not a failure either: `_left_for_time`.
+    `fmt` is the job's format; `resume_dir` the folder of a job being continued (the check before it asks
+    whether that job still fetches stock footage).
     """
-    job_id = "(not created)"
+    job_id = "(not created)" if resume_dir is None else resume_dir.name
     raw = ""  # an NsError's own detail (NS-E208: the engine's words naming the programs)
     try:
-        # No stock-footage key: every story would fail at `clips` after an hour of GPU work (gap L3).
-        require_footage_key(env.services)
+        # A job that will still fetch stock footage, with no key or every stored key refused by its site,
+        # would fail at `clips` after an hour of GPU work (gap L3, card stock-truth): `footage_keys.precheck`
+        # asks the one question (`needs_stock`), then each site once, and keeps the answer.
+        precheck(env.services, env.paths, env.log, fmt=fmt, job_dir=resume_dir)
         ctx = make()
         job_id = ctx.job_id
         if night is not None:  # the night's clock, deadline and run id for every stage and wait of the job
@@ -943,7 +949,8 @@ def _resume_interrupted(
             ownership.write_record(env.paths, job_id, state="interrupted")
             continue
         reopen = partial(jobs.load_job, env, job_id)
-        code = _attempt(env, run, report, reopen, slug, run_id=run_id, resumed=True, night=night)
+        code = _attempt(env, run, report, reopen, slug, run_id=run_id, fmt=str(rec.get("fmt") or ""),
+                        resume_dir=env.paths.job_dir(job_id), resumed=True, night=night)
         has_card = ownership.has_card(rec)
         if code == BUSY:  # a Retry runs it: leave the job, its card and the report alone
             outcomes[job_id] = ("busy", None)
@@ -1063,7 +1070,7 @@ def _tonight(
                      "said": nightclock.marked(night.card, nightfit.say(d, channel=ch.slug, plan=dj.fmt))}
                 )
             make = partial(jobs.make_job, env, ch, dj.fmt, now=now, rng=rng, origin="daily", run_id=run_id)
-            code = _attempt(env, run, report, make, ch.slug, run_id=run_id, night=night)
+            code = _attempt(env, run, report, make, ch.slug, run_id=run_id, fmt=dj.fmt, night=night)
             if code == OUT_OF_TIME:  # S6/S7: left at a stage boundary; the rest of this channel waits too
                 rest = _ask_new(night, dj.fmt) if dj.count - n - 1 else None
                 if rest is not None and rest.answer != nightfit.BEGIN:

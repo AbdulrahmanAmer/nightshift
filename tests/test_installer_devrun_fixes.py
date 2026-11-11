@@ -15,6 +15,9 @@ from installer.stage2.steps.s00_welcome import S00Welcome
 from installer.stage2.testing import FakeUi, make_test_context
 from ns_common.paths import Paths
 
+#: Pixabay's own answer to a wrong key (2026-11-11, runs/stock-check): only this answer says the key is wrong.
+PIXABAY_WRONG = "[ERROR 400] Invalid or missing API key (https://pixabay.com/api/docs/)."
+
 
 def _eof_console() -> Console:
     return Console(file=io.StringIO(), width=100, force_terminal=False)
@@ -98,7 +101,7 @@ def test_a_stored_key_the_service_rejects_is_forgotten_and_setup_goes_on(tmp_pat
     from installer.stage2.testing import example_answers
 
     def http():
-        return httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(400)))
+        return httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(400, text=PIXABAY_WRONG)))
 
     raw = example_answers(home_path=str(tmp_path / "home"))
     ctx = make_test_context(tmp_path, raw_answers=raw, ui=FakeUi(interactive=False), simulate=False,
@@ -120,7 +123,7 @@ def test_a_key_given_in_answers_that_the_service_rejects_still_stops_setup(tmp_p
     from ns_common.errors import NsError
 
     def http():
-        return httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(400)))
+        return httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(400, text=PIXABAY_WRONG)))
 
     raw = example_answers(home_path=str(tmp_path / "home"), pixabay_api_key="typed-wrong")
     ctx = make_test_context(tmp_path, raw_answers=raw, ui=FakeUi(interactive=False), simulate=False,

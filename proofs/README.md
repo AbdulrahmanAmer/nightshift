@@ -36,7 +36,8 @@ with `_` are not proofs (`_lib/` holds shared helpers).
 PROOF = {
     "id": "f-b7-review-reject",  # unique, cited by the tick
     "boxes": ["F-B7"],  # the box ids this proof shows
-    "install": "dev",  # "dev" | "engine" | "any" (runtime.json of the home)
+    "install": "dev",  # "dev" | "engine" | "gpu" | "any" (runtime.json of the home; "gpu" is a real install,
+                       # where the GPU kit runs only "gpu" and "any" proofs: a proof that changes state is not "any")
     "window": False,  # True: drives a page (Playwright, Edge) or a native window (UI Automation)
     "needs": ["engine"],  # services expected up: "engine" = supervisor + dashboard; [] = none
     "timeout_s": 300,
@@ -54,7 +55,7 @@ skipped, which is never a pass.
 
 | Member | What it is |
 |---|---|
-| `ctx.home`, `ctx.version`, `ctx.kind` | the install's home `Path`, its `VERSION`, `"dev"` or `"engine"` |
+| `ctx.home`, `ctx.version`, `ctx.kind` | the install's home `Path`, its `VERSION`, `"dev"`, `"engine"` or `"gpu"` |
 | `ctx.ports` | `{"dashboard": 8100, "supervisor": 8099, ...}` from the install's config |
 | `ctx.scratch` | an empty folder `<runs>/proofs/<version>/<proof id>/` (never on C:) |
 | `ctx.api(method, path, body=None, timeout=120)` | dashboard HTTP with no proxy: `(status, json or text)` |

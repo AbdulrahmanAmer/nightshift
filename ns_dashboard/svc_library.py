@@ -40,7 +40,8 @@ if TYPE_CHECKING:
 FOOTAGE_SOURCES = ("auto", "pixabay", "pexels")
 FOOTAGE_ORIENTATIONS = ("landscape", "portrait")
 FOOTAGE_MAX = 5  # clips per request: a chat request must not become a bulk download
-_FOOTAGE_API_ERRORS = ("NS-E501", "NS-E502", "NS-E503")  # the codes the clip sources use (clips._API_ERRORS)
+# the codes the clip sources use (clips._API_ERRORS, `ns_common.stock_answer`)
+_FOOTAGE_API_ERRORS = ("NS-E501", "NS-E502", "NS-E503", "NS-E504", "NS-E505")
 _SAFE_CLIP_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")  # becomes a file name in the cache
 #: The update package the release carries (`Nightshift-Update-0.1.8.zip`; releases up to 0.1.1 named it `nightshift-app-...`).
 UPDATE_ZIP_RE = re.compile(r"^(?:Nightshift-Update|nightshift-app)-\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?\.zip$", re.IGNORECASE)

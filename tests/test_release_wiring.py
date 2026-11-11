@@ -204,6 +204,35 @@ def test_the_manifest_pins_the_v0_1_4_voice_engine_asset_under_its_new_name():
     assert pin["sha256"] == "dac3dbdd1cc4291aebb18a127eff71aab2d5595437f35213ef6f64176ae4e6f5"
 
 
+# ---- card gpu-kit: the one-command kit is in the Setup zip --------------------------------------------
+def test_the_setup_zip_carries_the_gpu_kit():
+    entries = re.search(r"(?m)^\$RequiredEntries = @\((.*)\)\s*$", read("dev/make_bundle.ps1"))
+    assert entries, "make_bundle.ps1 has no $RequiredEntries line"
+    required = re.findall(r"'([^']+)'", entries.group(1))
+    assert {"GPU-KIT.cmd", "dev/kit/gpukit.ps1", "dev/kit/gpukit.py"} <= set(required)
+    raw = (ROOT / "GPU-KIT.cmd").read_bytes()
+    raw.decode("ascii")
+    assert b"\r\n" in raw and b"\n" not in raw.replace(b"\r\n", b"")  # CRLF only
+    text = raw.decode("ascii")
+    assert r'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0dev\kit\gpukit.ps1" %*' in text
+    assert "pause" in text.lower()
+    from installer.stage2.web import appcopy
+
+    assert "gpu-kit.cmd" in appcopy.ROOT_ENTRIES  # setup copies it into <home>\app with dev\kit
+    exe = shutil.which("powershell.exe")  # Windows PowerShell 5.1, as GPU-KIT.cmd runs it
+    if exe is None:
+        pytest.skip("Windows PowerShell 5.1 not available")
+    check = ("$e = $null; $t = $null; "
+             "[void][System.Management.Automation.Language.Parser]::ParseFile($env:NS_PS1, "
+             "[ref]$t, [ref]$e); if ($e.Count) { $e | ForEach-Object { $_.Message }; exit 1 }; "
+             "$PSVersionTable.PSVersion.Major")  # fmt: skip
+    for rel in ("dev/kit/gpukit.ps1", "dev/kit/tools/nsup.ps1", "dev/kit/tools/nsproc.ps1"):
+        env = {**os.environ, "NS_PS1": str(ROOT / rel)}
+        done = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", check], capture_output=True,
+                              text=True, timeout=120, env=env, check=False)  # fmt: skip
+        assert done.returncode == 0 and done.stdout.strip() == "5", (rel, done.stdout, done.stderr)
+
+
 # ---- manifest.version follows VERSION at release build (install audit #8) -------------------------
 def test_the_bundle_script_rewrites_the_manifest_version_from_the_version_file():
     script = read("dev/make_bundle.ps1")
