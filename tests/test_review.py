@@ -1,4 +1,6 @@
+import errno
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -247,3 +249,140 @@ def test_cli_daily_dry_run_and_real(tmp_home: Path, monkeypatch: pytest.MonkeyPa
     assert "nothing due today" in again.output
     cfg = yaml.safe_load(paths.channel_file("after-dark").read_text(encoding="utf-8"))
     assert cfg["format"] == "shorts_only"
+
+
+# ---------------------------------------------------------------------------------------------- D-57
+# The install proof of block E: Reject while a page (or a player) had the video open. The move loop stopped
+# at WinError 32 with the sheet and thumbnails already in `rejected`, the video still in the Outbox (and,
+# through `shutil.move`'s copy-then-delete, a whole copy of it in `rejected` too) and the row unchanged.
+HELD = "The process cannot access the file because it is being used by another process"
+
+
+def _files(folder: Path) -> list[str]:
+    return sorted(p.name for p in folder.rglob("*") if p.is_file())
+
+
+def _hold(monkeypatch: pytest.MonkeyPatch, name: str, tried: list[str]) -> None:
+    """`os.replace` as Windows answers while another program holds `name` open in the Outbox: every other
+    file moves, and that one moves when it is put BACK (the holder has the Outbox file, not the moved one)."""
+    real = os.replace
+
+    def replace(a: Path, b: Path) -> None:
+        tried.append(Path(a).name)
+        if Path(a).name == name and "rejected" not in Path(a).parts:
+            raise PermissionError(13, HELD)
+        real(a, b)
+
+    monkeypatch.setattr(review.os, "replace", replace)
+    monkeypatch.setattr(review, "MOVE_WAIT_S", 0)
+
+
+def test_a_video_held_open_is_not_half_rejected_and_the_next_reject_takes_it(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    paths, db = _env(tmp_home)
+    oid = _output(paths, db, item="long")
+    long_dir = outbox_job(paths) / "long"
+    before = _files(long_dir)
+    assert before == ["master.json", "master.mp4", "master.txt", "thumb_1.jpg"]
+    tried: list[str] = []
+    with monkeypatch.context() as held:
+        _hold(held, "master.mp4", tried)
+        with pytest.raises(StudioError) as refused:
+            review.reject(paths, db, oid, "voice sounds robotic")
+    assert refused.value.code == "NS-E331"
+    assert "master.mp4 is held open" in refused.value.detail and "nothing was moved" in refused.value.detail
+    # the video is tried first, as often as the rule says, and no other file was touched
+    assert tried == ["master.mp4"] * review.MOVE_TRIES
+    assert _files(long_dir) == before and _files(paths.rejected) == [], "no file moved, no copy left behind"
+    row = db.one("select status, review_note, path from outputs where output_id=?", (oid,))
+    assert (row["status"], row["review_note"], row["path"]) == ("pending", None, str(long_dir / "master.mp4"))
+    # the player is closed: the same Reject now moves everything
+    dest = review.reject(paths, db, oid, "voice sounds robotic")
+    assert _files(dest.parent) == before and _files(long_dir) == []
+    assert db.one("select status from outputs where output_id=?", (oid,))["status"] == "rejected"
+
+
+def test_a_sheet_held_open_puts_the_video_back(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    paths, db = _env(tmp_home)
+    oid = _output(paths, db, item="long")
+    long_dir = outbox_job(paths) / "long"
+    before = _files(long_dir)
+    tried: list[str] = []
+    _hold(monkeypatch, "master.txt", tried)
+    with pytest.raises(StudioError) as refused:
+        review.reject(paths, db, oid, "off topic")
+    assert refused.value.code == "NS-E331" and "master.txt is held open" in refused.value.detail
+    assert "nothing was moved" in refused.value.detail
+    assert tried[0] == "master.mp4", "the video moved first, and was put back"
+    assert _files(long_dir) == before and _files(paths.rejected) == []
+    assert db.one("select status from outputs where output_id=?", (oid,))["status"] == "pending"
+
+
+def test_a_file_that_cannot_be_put_back_is_named(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """The sheet is held, and by the time the video is put back something holds the moved video too: it
+    stays in `rejected`, the message says so, and the next Reject moves the rest to it."""
+    paths, db = _env(tmp_home)
+    oid = _output(paths, db, item="long")
+    real = os.replace
+
+    def replace(a: Path, b: Path) -> None:
+        going_back = "rejected" in Path(a).parts
+        if Path(a).name == "master.txt" or (going_back and Path(a).name == "master.mp4"):
+            raise PermissionError(13, HELD)
+        real(a, b)
+
+    with monkeypatch.context() as held:
+        held.setattr(review.os, "replace", replace)
+        held.setattr(review, "MOVE_WAIT_S", 0)
+        with pytest.raises(StudioError) as refused:
+            review.reject(paths, db, oid, "off topic")
+    assert "master.mp4 could not be put back and stayed in the rejected folder" in refused.value.detail
+    assert "nothing was moved" not in refused.value.detail
+    assert db.one("select status from outputs where output_id=?", (oid,))["status"] == "pending"
+    long_dir = outbox_job(paths) / "long"
+    assert _files(long_dir) == ["master.json", "master.txt", "thumb_1.jpg"]
+    assert _files(paths.rejected) == ["master.mp4"]
+    # what the message promised: with nothing held any more, Reject again moves the rest to the video
+    dest = review.reject(paths, db, oid, "off topic")
+    assert dest.name == "master.mp4" and _files(long_dir) == []
+    assert _files(dest.parent) == ["master.json", "master.mp4", "master.txt", "thumb_1.jpg"]
+    row = db.one("select status, path from outputs where output_id=?", (oid,))
+    assert (row["status"], row["path"]) == ("rejected", str(dest))
+
+
+def test_one_file_moves_in_one_step_and_across_drives_as_a_whole_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    src, dst = tmp_path / "a" / "v.mp4", tmp_path / "b" / "v.mp4"
+    for folder in (src.parent, dst.parent):
+        folder.mkdir()
+    src.write_bytes(b"video")
+    real = os.replace
+    calls: list[tuple[str, str]] = []
+
+    def other_drive(a: Path, b: Path) -> None:
+        calls.append((Path(a).name, Path(b).name))
+        if Path(a).parent != Path(b).parent:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        real(a, b)
+
+    monkeypatch.setattr(review.os, "replace", other_drive)
+    monkeypatch.setattr(review, "MOVE_WAIT_S", 0)
+    review.move_one(src, dst)
+    assert dst.read_bytes() == b"video" and not src.exists() and _files(dst.parent) == ["v.mp4"]
+    assert calls == [("v.mp4", "v.mp4"), ("v.mp4.part", "v.mp4")], "copied under .part, renamed into place"
+    # the original cannot be removed (a player holds it): the copy is taken away again, the original is whole
+    src.write_bytes(b"video")
+    dst.unlink()
+    real_unlink = Path.unlink
+
+    def held(self: Path, missing_ok: bool = False) -> None:
+        if self == src:
+            raise PermissionError(13, HELD)
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", held)
+    with pytest.raises(PermissionError):
+        review.move_one(src, dst)
+    assert src.read_bytes() == b"video" and _files(dst.parent) == []

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -314,6 +313,8 @@ class OutputsService:
         cut short finishes the move. A video that is gone from `rejected` (and not already back in the
         Outbox), or an Outbox file that would be overwritten, is an `NsError` NS-E326 and nothing changes.
         """
+        from ns_studio import review
+
         paths = self.s.paths
         src = Path(row["path"])
         if not is_within(paths.rejected, src) or src.resolve() == paths.rejected.resolve():
@@ -342,8 +343,8 @@ class OutputsService:
                 target = dest.parent / p.name
                 if target.exists():  # the same file is already back (an earlier move was cut short)
                     p.unlink()
-                else:
-                    shutil.move(str(p), str(target))
+                else:  # one step, never a copy left behind by a file a player holds open (D-57)
+                    review.move_one(p, target)
             self.s.db.execute(
                 "UPDATE outputs SET status = 'approved', path = ? WHERE output_id = ?",
                 (str(dest), output_id),

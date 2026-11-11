@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
 import sqlite3
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -92,8 +94,107 @@ def _destination(paths: Paths, src: Path, row: sqlite3.Row) -> Path:
         return paths.rejected_dir(row["channel"], today, row["job_id"]) / src.name
 
 
+#: A file another program holds open is tried this often, this far apart, before the move is given up (an
+#: antivirus scan or the Explorer preview pane lets go within a moment; a player does not).
+MOVE_TRIES = 5
+MOVE_WAIT_S = 0.2
+
+
+def move_one(src: Path, dst: Path) -> None:
+    """Move one file, or leave it exactly where it was (D-57).
+
+    `os.replace` is one step on one drive and never copies. `shutil.move`, used here before, answered ANY
+    failed rename with copy-then-delete: a video held open by a player was copied whole into `rejected`, the
+    delete then failed, and the video was in both places. Only across drives (the Outbox on another drive
+    than the home) is the file copied here, under a `.part` name, and the copy is taken away again when the
+    original cannot be removed. A file held open (PermissionError: WinError 32 or 5) is tried `MOVE_TRIES`
+    times; every other failure is raised at once."""
+    held: OSError | None = None
+    for _ in range(MOVE_TRIES):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as e:
+            held = e
+            time.sleep(MOVE_WAIT_S)
+        except OSError as e:
+            if e.errno != errno.EXDEV and getattr(e, "winerror", None) != _ERROR_NOT_SAME_DEVICE:
+                raise
+            _copy_then_remove(src, dst)
+            return
+    assert held is not None  # MOVE_TRIES >= 1
+    raise held
+
+
+_ERROR_NOT_SAME_DEVICE = 17  # WinError 17: "The system cannot move the file to a different disk drive"
+
+
+def _copy_then_remove(src: Path, dst: Path) -> None:
+    """The move across drives: a whole copy under `<name>.part`, renamed into place, then the original is
+    removed. Whatever fails, exactly one complete file is left: the original (the copy is removed again)."""
+    part = dst.with_name(dst.name + ".part")
+    try:
+        shutil.copy2(src, part)
+        os.replace(part, dst)
+    except OSError:
+        part.unlink(missing_ok=True)
+        raise
+    held: OSError | None = None
+    for _ in range(MOVE_TRIES):
+        try:
+            src.unlink()
+            return
+        except PermissionError as e:
+            held = e
+            time.sleep(MOVE_WAIT_S)
+        except OSError as e:
+            held = e
+            break
+    try:
+        dst.unlink(missing_ok=True)
+    except OSError:
+        pass  # both files stay: the original is whole and still the row's path; the next Reject replaces dst
+    assert held is not None
+    raise held
+
+
+def _move_together(pairs: list[tuple[Path, Path]], output_id: str) -> None:
+    """Move every `(from, to)` pair, or none of them (D-57).
+
+    The files of one output (the video, its sheet, its thumbnails) are rejected together. Before, they were
+    moved one by one with nothing behind a failure: a video open in a player stopped the loop with its sheet
+    and thumbnails already in `rejected`, the video still in the Outbox and the row unchanged. Now a failure
+    puts back what was already moved and raises NS-E331 with the name of the file that is held; the row is
+    not touched by the caller. A file that could not be put back either is named in the message (the next
+    Reject moves the rest to it)."""
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for a, b in pairs:
+            move_one(a, b)
+            moved.append((a, b))
+    except OSError as e:
+        stuck: list[str] = []
+        for a, b in reversed(moved):
+            try:
+                move_one(b, a)
+            except OSError:
+                stuck.append(b.name)
+        held = pairs[len(moved)][0].name
+        if stuck:
+            state = (
+                f"{', '.join(stuck)} could not be put back and stayed in the rejected folder: Reject again "
+                "moves the rest there"
+            )
+        else:
+            state = "nothing was moved"
+        why = f"{output_id} was not rejected: {held} is held open ({e}); {state}"
+        raise StudioError("NS-E331", why) from e
+
+
 def reject(paths: Paths, db: Db, output_id: str, reason: str) -> Path:
-    """Reject an output: record the reason and move its files (same stem, thumbnails) to `rejected\\`."""
+    """Reject an output: record the reason and move its files (same stem, thumbnails) to `rejected\\`.
+
+    All of its files move or none does (`_move_together`); the row is changed only after they moved."""
     if not reason.strip():
         raise StudioError("NS-E326", "a rejection needs a reason")
     row = get_output(db, output_id)
@@ -101,14 +202,20 @@ def reject(paths: Paths, db: Db, output_id: str, reason: str) -> Path:
         raise StudioError("NS-E326", f"{output_id} is {row['status']} and cannot be rejected")
     src = Path(row["path"])
     new_path = src
-    if src.exists():
-        dest = _destination(paths, src, row)
+    dest = _destination(paths, src, row)
+    # `dest` there with `src` gone: an earlier Reject moved the video and could not put it back when a later
+    # file was held (its message said so). The row still names `src`; the rest follows the video now.
+    cut_short = not src.exists() and dest.is_file()
+    if src.exists() or cut_short:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        siblings = [p for p in src.parent.glob(f"{src.stem}.*") if p.is_file()]
+        # the video first: it is the file a player or a browser tab holds open, and when it cannot be moved
+        # nothing else has been
+        siblings = [p for p in src.parent.glob(f"{src.stem}.*") if p.is_file() and p != src]
+        if src.exists():
+            siblings.insert(0, src)
         if row["kind"] == "long":
-            siblings += [p for p in src.parent.glob("thumb_*.jpg") if p.is_file()]
-        for p in siblings:
-            shutil.move(str(p), str(dest.parent / p.name))
+            siblings += [p for p in src.parent.glob("thumb_*.jpg") if p.is_file() and p not in siblings]
+        _move_together([(p, dest.parent / p.name) for p in siblings], output_id)
         new_path = dest
     db.execute(
         "update outputs set status='rejected', review_note=?, path=? where output_id=?",
