@@ -932,7 +932,7 @@ def test_the_nights_are_read_from_the_runs_rows_and_the_ledger(world: World) -> 
     assert world.state()["nights"][1]["schedule"][0] == 0  # `ns schedule show`'s answer, kept
     with zipfile.ZipFile(world.zips()[0]) as z:
         names = set(z.namelist())
-        assert "logs/nightly-20261113.json" in names and "run/morning_note.json" in names
+        assert "logs/nightly-20261113.json" in names and "morning-notes.json" in names
         ledger = z.read("ledger/ledger-202611.jsonl").decode("utf-8")
         assert '"kind": "night_start"' in ledger and '"kind": "job_end"' in ledger
 
@@ -983,7 +983,7 @@ def test_the_collected_folder_and_zip_hold_every_part(world: World) -> None:
         "logs/nightly-20261113.json",
         "logs/nightly-20261114.json",
         "logs/verify-report.json",
-        "run/morning_note.json",
+        "morning-notes.json",
         "collected/windows-events-night1.txt",
         "collected/windows-events-night2.txt",
         "collected/doctor-bundle.txt",

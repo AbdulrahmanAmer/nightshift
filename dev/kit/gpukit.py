@@ -1999,6 +1999,16 @@ class Kit:
         day = self.at(self.state["started"]).strftime("%Y%m%d")
         return self.ev / f"nightshift-gpu-kit-{day}.zip"  # one zip whatever versions ran (README lists them)
 
+    def notes_copy(self) -> Path:
+        """The morning notes as their owner reads them (`ns_supervisor.notify.read_notes`), for the zip."""
+        out = self.ev / "morning-notes.json"
+        with contextlib.suppress(Exception):
+            from ns_common.paths import Paths
+            from ns_supervisor import notify
+
+            self.write_json(out.name, {"notes": notify.read_notes(Paths(self.home))})
+        return out
+
     def parts(self) -> list[tuple[str, Path, str]]:
         """(name in the zip, file, why it may be missing): the Head's checklist (card 4b.3)."""
         ev, home = self.ev, self.home
@@ -2030,7 +2040,7 @@ class Kit:
         out += [
             ("logs/verify-report.json", home / "logs" / "verify-report.json", "ns verify wrote none"),
             ("run/vram-need.json", home / "run" / "vram-need.json", "no model load was measured yet"),
-            ("run/morning_note.json", home / "run" / "morning_note.json", "no morning note waits"),
+            ("morning-notes.json", self.notes_copy(), "the morning notes could not be read"),
         ]
         nights = self.state.get("nights") or []
         if nights:
