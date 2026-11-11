@@ -6,8 +6,8 @@
 #   powershell -ExecutionPolicy Bypass -File dev\release_keys.ps1 -Create -BackupFolder E:\
 #
 # What it does, in this order, and what is true when it stops at each point:
-#   1. checks (nothing changed when one fails): the backup folder exists, is not inside this checkout and holds
-#      no backup key file yet; ns_common\release_keys.py pins no key yet; Python and gh are there; gh is signed in
+#   1. checks (nothing changed when one fails): ns_common\release_keys.py pins no key yet; the backup folder
+#      exists, is not inside this checkout and holds no backup key file yet; Python and gh are there; gh is signed in
 #   2. makes two Ed25519 private keys in memory (32 random bytes each) and asks dev\sign_release.py
 #      --public-key for their public halves (the private key goes to it on stdin, never as an argument)
 #   3. gives the PRIMARY private key to `gh secret set NS_RELEASE_SIGNING_KEY` on stdin: it is never written
@@ -67,6 +67,19 @@ if (-not $DryRun) {
 }
 
 # ---- 1. checks: nothing is made or changed before all of them pass
+# (the keys file first: a second run is answered with "the keys already exist", whatever else is true)
+if (-not (Test-Path -LiteralPath $KeysFile -PathType Leaf)) {
+    Stop-Here "$KeysFile is missing: run this from the Nightshift repository. $Unchanged"
+}
+$Utf8 = New-Object System.Text.UTF8Encoding $false
+$KeysText = [System.IO.File]::ReadAllText($KeysFile, $Utf8)
+$Block = [regex]::Match($KeysText, "(?s)(# BEGIN TRUSTED[^\n]*\n)(.*?)(# END TRUSTED)")
+if (-not $Block.Success) {
+    Stop-Here "$KeysFile has no BEGIN TRUSTED and END TRUSTED lines, so it is not the file this script writes. $Unchanged"
+}
+if ($Block.Groups[2].Value.Trim() -notmatch '^TRUSTED: dict\[str, str\] = \{\s*\}$') {
+    Stop-Here "The release keys already exist ($KeysFile pins them); to replace them see ""Lost key"" in OPERATOR.md. $Unchanged"
+}
 if (-not $BackupFolder) {
     Stop-Here "Name the folder for the backup key: -BackupFolder <a USB stick or other folder off this PC>. $Unchanged"
 }
@@ -82,18 +95,6 @@ $BackupFile = Join-Path $BackupFull $BackupName
 if (Test-Path -LiteralPath $BackupFile) {
     Stop-Here ("$BackupFile already exists, and this script never overwrites or deletes a key file. $Unchanged " +
         "If it is the backup key of an earlier run, the keys already exist; to replace them see ""Lost key"" in OPERATOR.md.")
-}
-if (-not (Test-Path -LiteralPath $KeysFile -PathType Leaf)) {
-    Stop-Here "$KeysFile is missing: run this from the Nightshift repository. $Unchanged"
-}
-$Utf8 = New-Object System.Text.UTF8Encoding $false
-$KeysText = [System.IO.File]::ReadAllText($KeysFile, $Utf8)
-$Block = [regex]::Match($KeysText, "(?s)(# BEGIN TRUSTED[^\n]*\n)(.*?)(# END TRUSTED)")
-if (-not $Block.Success) {
-    Stop-Here "$KeysFile has no BEGIN TRUSTED and END TRUSTED lines, so it is not the file this script writes. $Unchanged"
-}
-if ($Block.Groups[2].Value.Trim() -notmatch '^TRUSTED: dict\[str, str\] = \{\s*\}$') {
-    Stop-Here "The release keys already exist ($KeysFile pins them); to replace them see ""Lost key"" in OPERATOR.md. $Unchanged"
 }
 if (-not (Test-Path -LiteralPath $SignScript -PathType Leaf)) {
     Stop-Here "$SignScript is missing: run this from the Nightshift repository. $Unchanged"

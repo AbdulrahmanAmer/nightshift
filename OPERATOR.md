@@ -785,7 +785,8 @@ Windows PowerShell in the repository folder:
 It makes two key pairs. The **primary** private key goes straight into the repository's GitHub secret
 `NS_RELEASE_SIGNING_KEY` (it is never written to this PC and never shown); the release run signs with it. The
 **backup** private key is written to `<BackupFolder>\nightshift-release-backup-key.txt` and nowhere else. The two
-PUBLIC keys are written into `ns_common\release_keys.py`; commit that file. The script prints the two key ids and
+PUBLIC keys are written into `ns_common\release_keys.py`; commit that file before the next tag (a release run
+with the secret set fails in its step "Sign" for a commit that does not carry them). The script prints the two key ids and
 "Keep the backup file safe and off this PC; it is the only way to sign a release if the GitHub secret is lost."
 Run a second time it refuses: the keys already exist. If it stops halfway it says what is in place; running it
 again is always safe while `ns_common\release_keys.py` pins no key (it makes new keys and replaces the secret).
