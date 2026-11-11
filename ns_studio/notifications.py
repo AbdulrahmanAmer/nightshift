@@ -50,6 +50,22 @@ def nightly_notifier(paths: Paths, log: NsLogger) -> Notifier | None:
     return notifier
 
 
+def db_note(paths: Paths) -> Callable[[str], object]:
+    """The `note` of `ns_common.db.open_studio_db` and `open_assistant_db` (card db-integrity): a morning note
+    through the notes' one owner (`ns_supervisor.notify.leave_note`), left out while the same words already
+    wait (a restore finished by a second start, a refusal met by every window). Not gated by Settings >
+    Notifications, which is about the Windows notification of a run: what a restore lost, or why the database
+    cannot be used, is said in the Dashboard's bell whatever that switch says."""
+
+    def leave(message: str) -> object:
+        from ns_supervisor import notify
+
+        return notify.leave_note(paths, TITLE, message,
+                                 once=lambda notes: any(n["message"] == message for n in notes))
+
+    return leave
+
+
 def output_counts(db: Db, job_ids: Sequence[str]) -> tuple[int, int]:
     """(masters, Shorts) the given jobs put in the review queue."""
     if not job_ids:

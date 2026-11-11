@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -29,7 +30,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import NotModifiedResponse, StaticFiles
 from starlette.types import Scope
 
-from ns_common.errors import NsError
+from ns_common.db import UnusableDb
+from ns_common.dbrestore import BROKE_IN_DASHBOARD, is_damage_error, want_full_check
+from ns_common.dbrestore import DAMAGED_CODE as DB_DAMAGED
+from ns_common.errors import NsError, describe
 from ns_common.loopback import OWN_PAGE, Choose, LoopbackGuard, media_type
 from ns_common.paths import Paths
 from ns_dashboard import DEFAULT_PORT, media
@@ -243,9 +247,13 @@ def create_app(
     dash = Dashboard(st, heartbeat_s=heartbeat_s, llm_provider=llm_provider)
     relay = EventRelay(st.link, st.hub, st.log)
 
+    # db-integrity: a database this process could not put right (NS-E209) runs no job worker; its pages answer
+    # 503 with the sentence (below) until every window is closed and the Dashboard opened again
+    usable = not isinstance(st.db.db, UnusableDb)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        if start_worker:
+        if start_worker and usable:
             st.worker.start()
             relay.start()
         try:
@@ -269,7 +277,19 @@ def create_app(
     @app.exception_handler(NsError)
     async def _ns_error(_req: Request, exc: NsError) -> SafeJSONResponse:
         body = {"error": {"code": exc.code, "message": str(exc), "hint": hint_of(exc)}}
-        return ok(body, 500)
+        return ok(body, 503 if exc.code == DB_DAMAGED else 500)
+
+    @app.exception_handler(sqlite3.DatabaseError)
+    async def _db_error(_req: Request, exc: sqlite3.DatabaseError) -> SafeJSONResponse:
+        """db-integrity 4b.2: the database became damaged while this process uses it. It is never replaced
+        under a process that has it open: 503, and the way out is a fresh start of every window."""
+        if not is_damage_error(exc):
+            raise exc
+        st.log.error("db_damaged_in_use", str(exc), code=DB_DAMAGED)
+        want_full_check(st.paths, f"the dashboard: {exc}", st.log)  # the next start checks in full
+        body = {"error": {"code": DB_DAMAGED, "message": f"{DB_DAMAGED}: {BROKE_IN_DASHBOARD}",
+                          "hint": describe(DB_DAMAGED).hint}}
+        return ok(body, 503)
 
     @app.exception_handler(AdapterUnavailable)
     async def _unavailable(_req: Request, exc: AdapterUnavailable) -> SafeJSONResponse:

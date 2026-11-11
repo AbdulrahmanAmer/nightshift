@@ -370,3 +370,50 @@ def test_the_nvidia_smi_row_is_true_in_every_cell(
         assert rows["fake_gpu"][1].startswith(want), rows["fake_gpu"]
     if profile in ("notjson", "invalid"):
         assert rows["runtime.json"][0] is False and "NS-E125" in rows["runtime.json"][1], rows["runtime.json"]
+
+
+# ---------------------------------------------------------------------------------------------- db-integrity
+def test_doctor_shows_the_database_check(tmp_path: Path) -> None:
+    """Row "database": what the last check at a start found, with its time, and "restored from the backup of
+    <date> on <date>" while that restore is younger than 7 days. `ns doctor` never checks nor restores."""
+    import sqlite3
+    from datetime import UTC, timedelta
+
+    from ns_common import db as dbmod
+    from ns_common.db import Db
+
+    paths = seed(tmp_path)
+
+    def row() -> tuple[bool, str] | None:
+        rows = {name: (ok, detail) for name, ok, detail in doctor.diagnose(paths, Down())}  # type: ignore[arg-type]
+        return rows.get("database")
+
+    assert row() == (True, "not checked yet (it is checked when Nightshift starts)")
+    paths.backup_dir.mkdir(parents=True, exist_ok=True)
+    for target in (paths.db_path, paths.backup_dir / "studio-20261101.db"):
+        db = Db(target)
+        db.migrate()
+        db.close()
+    copy_made = datetime(2026, 11, 1, 4, 0).timestamp()
+    os.utime(paths.backup_dir / "studio-20261101.db", (copy_made, copy_made))
+    with paths.db_path.open("r+b") as fh:  # 4 KiB of 0xFF over page 3: SQLite's quick check fails
+        fh.seek(2 * 4096)
+        fh.write(b"\xff" * 4096)
+    opener = getattr(dbmod, "open_studio_db", None)
+    assert opener is not None, "the one opener of studio.db"
+    opener(paths, None, note=lambda message: None).close()
+
+    ok, said = row() or (False, "")
+    today = datetime.now().strftime("%Y-%m-%d")
+    assert ok and said.startswith(f"ok (checked {today} ") and said.endswith(
+        f"; restored from the backup of 2026-11-01 on {today}"
+    ), said
+    restored = paths.home / "run" / "db-restored.json"
+    info = json.loads(restored.read_text(encoding="utf-8"))
+    info["restored_at"] = (datetime.now(UTC) - timedelta(days=8)).isoformat(timespec="seconds")
+    restored.write_text(json.dumps(info), encoding="utf-8")
+    ok, said = row() or (False, "")
+    assert ok and "restored" not in said, "a restore older than 7 days is no longer shown"
+    conn = sqlite3.connect(paths.db_path)
+    assert conn.execute("PRAGMA quick_check").fetchall() == [("ok",)]
+    conn.close()

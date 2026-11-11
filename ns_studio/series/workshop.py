@@ -22,7 +22,7 @@ from pydantic import ValidationError
 import ns_studio.series.schemas as _schemas  # noqa: F401  (registers the workshop JSON schemas)
 from ns_common.atomic import write_text_atomic
 from ns_common.config import load_channel, load_runtime
-from ns_common.db import Db, claim_dir, claim_job_id
+from ns_common.db import Db, claim_dir, claim_job_id, open_studio_db
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import Channel, Combo, Runtime
@@ -33,6 +33,7 @@ from ns_studio.diskroom import require_series_part_room
 from ns_studio.errors import StudioError
 from ns_studio.media.formats import design_formats, ensure_allowed, formats_allowed
 from ns_studio.media.presets import PRESETS_DIR
+from ns_studio.notifications import db_note
 from ns_studio.series.importer import build_artifacts
 from ns_studio.series.policy import is_standalone, text_gate
 from ns_studio.series.store import (
@@ -1256,7 +1257,8 @@ def default_workshop(fake: Collection[str] = (), *, enqueue: EnqueueFn | None = 
     """A `Workshop` over `NIGHTSHIFT_HOME`; names in `fake` (subset of FAKEABLE) use in-process fakes."""
     paths = Paths.from_env()
     paths.ensure()
-    db = Db(paths.db_path)
+    log = NsLogger("studio", paths.logs, echo=False)
+    db = open_studio_db(paths, log, note=db_note(paths))  # db-integrity: checked once per process
     db.migrate()
     fakes = frozenset(fake) & FAKEABLE
     runtime = (
@@ -1265,7 +1267,6 @@ def default_workshop(fake: Collection[str] = (), *, enqueue: EnqueueFn | None = 
     if runtime.dev_mode:        # a dev install (docs/DEV_MODE.md) has no model: every service is its fake
         fakes = FAKEABLE
     services = build_services(runtime, fake=fakes, paths=paths)
-    log = NsLogger("studio", paths.logs, echo=False)
     return Workshop(paths, services, runtime, db, log, enqueue, fake=fakes)
 
 

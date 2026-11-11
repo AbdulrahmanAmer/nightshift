@@ -526,14 +526,16 @@ class RealLearnAdapter:
 
     def import_csv(self, ctl: JobControl, csv_path: Path) -> dict[str, Any]:
         """Match the rows to uploads, store them, update `pool_weights`; returns the plain-English counts."""
-        from ns_common.db import Db
+        from ns_common.db import open_studio_db
         from ns_studio.channels.crud import get_channel
         from ns_studio.errors import StudioError
         from ns_studio.learn.importer import import_rows, read_csv
         from ns_studio.learn.reweight import reweight, save_snapshot
 
         ctl.progress(0.1, "Reading the analytics file")
-        db = Db(self.paths.db_path)
+        from ns_studio.notifications import db_note
+
+        db = open_studio_db(self.paths, None, note=db_note(self.paths))  # checked once per process
         db.migrate()
         try:
             try:
