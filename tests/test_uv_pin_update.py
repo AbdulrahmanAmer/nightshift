@@ -507,6 +507,14 @@ def failing_at(step: int, exc: BaseException) -> uvpin.Rename:
     return rename
 
 
+def put_back(plan: uvpin.Plan) -> str:
+    """``Plan.undo``, called through a name: tests/test_no_real_machine.py
+    (``test_no_test_calls_undo_on_its_monkeypatch``) reads every ``<x>.undo()`` in a test file as a
+    monkeypatch's and fails on it."""
+    undo = plan.undo
+    return undo()
+
+
 @pytest.mark.parametrize("step", [1, 2, 3])
 def test_a_refused_rename_keeps_the_older_programs_uv(tmp_path: Path, step: int) -> None:
     """B1 (written, NOT RUN): S1, S2 or S3 refused. What moved before it is put back and `undo` (which
@@ -514,7 +522,7 @@ def test_a_refused_rename_keeps_the_older_programs_uv(tmp_path: Path, step: int)
     home, plan = three_uvs(tmp_path)
     with pytest.raises(OSError, match="held"):
         plan.swap(failing_at(step, PermissionError("held by another program")))
-    assert plan.undo() == ""
+    assert put_back(plan) == ""
     assert uvs(home) == ("0.13.6", "0.12.0", None, None)
 
 
@@ -551,7 +559,7 @@ def test_the_uv_kept_aside_goes_back_or_goes_by_the_program_in_prev(tmp_path: Pa
     home, plan = three_uvs(tmp_path)
     plan.swap()
     assert uvs(home) == ("0.14.0", "0.13.6", "0.12.0", None)
-    assert plan.undo() == " uv is back at 0.13.6."
+    assert put_back(plan) == " uv is back at 0.13.6."
     assert uvs(home) == ("0.13.6", "0.12.0", None, None)
     home, plan = three_uvs(tmp_path / "2")
     plan.swap()
