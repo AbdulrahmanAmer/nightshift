@@ -95,7 +95,31 @@ def nightly_message(report: dict[str, Any], masters: int, shorts: int) -> str | 
         parts.append(left)
     if report.get("vram"):
         parts.append(vram_part())
+    if report.get("model_damaged"):
+        parts.append(model_part())
     return "; ".join(parts) if parts else None
+
+
+def model_part() -> str:
+    """The toast's part of a night that met a damaged or missing model file (card model-file-damaged)."""
+    return ("a model file is damaged or missing (NS-E127): run INSTALL.cmd again and choose Repair; "
+            f"tonight's other videos wait for the next nightly run{IF_NIGHTLY_ON}")
+
+
+def model_note(report: dict[str, Any]) -> str | None:
+    """Card model-file-damaged, M7: the morning note of a night that met a damaged or missing model file: the
+    file and its size in the words of the check (the engine's NS-E127, or the night's pre-check), what became
+    of the night, and the way out. None when the night met none."""
+    found = report.get("model_damaged")
+    if not isinstance(found, dict):
+        return None
+    said = str(found.get("said") or "A model file is damaged").rstrip(".")
+    return (
+        f"{said}. Run INSTALL.cmd again from the Nightshift zip and choose Repair: it checks every model "
+        "file by hash and downloads a damaged one again; nothing else is changed. Tonight's videos were not "
+        f"made: they wait for the next nightly run{IF_NIGHTLY_ON} (a video that failed has Retry in the "
+        "Queue)."
+    )
 
 
 def vram_part() -> str:

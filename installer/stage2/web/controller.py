@@ -38,6 +38,7 @@ from installer.stage2.web import (
     labels,
     machine,
     modelcheck,
+    modelmarks,
     nightly_view,
     pathcheck,
     plan,
@@ -71,6 +72,7 @@ from ns_common.uv import bootstrap_uv, find_uv
 from ns_common.vcruntime import missing as vcruntime_missing
 
 LOG_KEEP = 50
+MODELS_STEP = "s03_download_models"     # the step that checks and fetches the model files
 SAMPLE_TEXT = "This is how your channel will sound at night."
 DEFAULT_SPEAKER = "Ryan"
 EXIT_BLOCKED = 10
@@ -479,6 +481,7 @@ class SetupController:
                             "run again.", "info")
         self._update_reset: list[str] = []
         self._reinstall = False
+        self._models_owed: list[str] = []
         self.store = SetupStore(self._initial_state(), self._finalize)
         self._settle_finished_install()
 
@@ -658,6 +661,18 @@ class SetupController:
             saved["started_at"] = None                  # the Done screen's duration starts from this run
             saved["completed_at"] = None
             reset_install_times(self.home)
+        if others_done and not self._program_differs():
+            # a Repair (card model-file-damaged): a model file recorded damaged, gone or changed since setup
+            # verified it, or a damaged copy a Repair set aside, is setup's work. Done would leave it so: the
+            # models step runs again (Continue), and on a run over a finished install it checks every model by
+            # hash (`model_repair`)
+            self._models_owed = modelmarks.repair_owed(self.home)
+            if self._models_owed:
+                others_done = False
+                for st in steps:
+                    if st["id"] == MODELS_STEP:
+                        st["status"], st["finishedAt"] = "pending", None
+                self._persist_step(MODELS_STEP, "pending", None)
         if others_done:
             for st in steps:                               # a console install made no samples: not unfinished
                 if st["id"] in WINDOW_ONLY_STEPS and st["status"] == "pending":
@@ -720,6 +735,10 @@ class SetupController:
         """
         if self._reinstall:
             self.log("info", f"No Nightshift program in {self.home}: setup installs again (answers kept)")
+        if self._models_owed:
+            self.log("warn", "A model file needs to be checked or downloaded again: "
+                     + "; ".join(self._models_owed[:5]) + ". Continue checks every model file by hash and "
+                     "downloads a damaged one again; nothing else is changed.")
         for sid in self._update_reset:
             self._persist_step(sid, "pending", None)
         if self._update_reset:

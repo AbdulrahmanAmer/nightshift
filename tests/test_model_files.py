@@ -538,4 +538,4 @@ def test_the_night_tells_a_damaged_model_once(tmp_home: Path, monkeypatch: pytes
 def test_the_check_reads_a_models_size_only_through_the_size_seam() -> None:
     """No test of this file can bring a model of a real size in as bytes: the checker asks `_size`."""
     src = inspect.getsource(vd.check_item)
-    assert "_size(dest)" in src and "st_size" not in src
+    assert "_size(dest)" in src and "dest.stat()" not in src

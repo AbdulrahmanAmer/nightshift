@@ -334,6 +334,7 @@ def _run_daily(
     _leave_time_note(env, report, clock, now)
     _leave_sleep_note(env, report, clock, now)
     _leave_vram_note(env, report, clock, now)
+    _leave_model_note(env, report, clock, now)
     notifications.send(env.paths, env.log, notifier, notifications.nightly_message(report, masters, shorts))
     finish = getattr(env.services.acquirer, "run_finished", None)
     if finish is not None:  # gap 25: the engine this run needed leaves once nobody else uses it
@@ -507,8 +508,8 @@ def _attempt(
             return SLEPT
     env.log.error("daily_job_failed", job_id=job_id, code=code, detail=detail)
     failure = {"job_id": job_id, "channel": slug, "code": code, "error": detail}
-    if code == VRAM:  # the engine's own words (programs, numbers, the wait), for the note and the card data
-        failure["said"] = raw
+    if code in (VRAM, MODEL_DAMAGED):  # the engine's own words (programs, numbers; the damaged file), for
+        failure["said"] = raw          # the note and the card data
     report["failures"].append(failure)
     return code
 
@@ -832,6 +833,27 @@ def _leave_vram_note(env: jobs.Env, report: dict, clock: nightclock.Clock, start
         env.log.warn("morning_note_failed", str(e))
 
 
+def _leave_model_note(env: jobs.Env, report: dict, clock: nightclock.Clock, started: datetime) -> None:
+    """Card model-file-damaged, M7: the one morning note of a night that met a damaged (or missing) model
+    file (`notifications.model_note`: which file, the way out), once per night, through the notes' one owner.
+    Settings > Notifications off leaves none; the Last night card still lists the failure and the skipped."""
+    message = notifications.model_note(report)
+    if not message or not notifications.notifications_enabled(env.paths):
+        return
+    since = started.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+
+    def said(notes: list[Any]) -> bool:
+        return any(n["message"] == message and str(n["at"]) >= since for n in notes)
+
+    try:
+        from ns_supervisor import notify
+
+        notify.leave_note(env.paths, notifications.TITLE, message, once=said,
+                          now=clock.now().astimezone().replace(tzinfo=None))
+    except Exception as e:  # noqa: BLE001 - a note never stops a night; the report and the card say it
+        env.log.warn("morning_note_failed", str(e))
+
+
 #: The engine's answers that mean the graphics card is not free for the night now: held by another task
 #: (NS-E201), or its memory held by other programs (NS-E208, card vram-busy). The ONE place a night turns
 #: them into "this job and the rest of tonight wait for the next nightly run" is `_card_busy` and the two
@@ -881,13 +903,52 @@ def _card_busy(
 
 
 def _skip_rest(report: dict, busy: str, slug: str, jobs_left: int) -> None:
-    """The jobs the night does not start after a busy card, under `skipped` (`reason: vram` for NS-E208)."""
+    """The jobs the night does not start after a busy card, under `skipped` (`reason: vram` for NS-E208), or
+    after a damaged model file (`reason: model_damaged` for NS-E127)."""
     if jobs_left <= 0:
         return
     entry: dict[str, Any] = {"channel": slug, "jobs": jobs_left}
     if busy == VRAM:
         entry["reason"] = VRAM_SKIPPED
+    elif busy == MODEL_DAMAGED:
+        entry["reason"] = MODEL_SKIPPED
     report.setdefault("skipped", []).append(entry)
+
+
+#: Card model-file-damaged: a model file of this install is damaged (NS-E127, from the engine's check after a
+#: failed load) or cannot be loaded (the night's pre-check). The night starts nothing more that would load
+#: it: what was due stays due and a half-made job stays where it is, for the next nightly run.
+MODEL_DAMAGED = "NS-E127"
+MODEL_SKIPPED = "model_damaged"
+
+
+def _model_precheck(env: jobs.Env, report: dict) -> str | None:
+    """M7's pre-check, its one owner: before the night's first job, the cheap check of the install's model
+    files (`ns_supervisor.modelcheck.precheck`: stat calls and the check record, no hash). A file that is
+    missing, of the wrong size or recorded damaged stops the night's work before any of it starts
+    (`MODEL_DAMAGED`); the morning note names it with the way out. A check that cannot run never stops a
+    night: it is logged and the night goes on (a failed load is then checked by the engine)."""
+    try:
+        from ns_supervisor import modelcheck
+
+        found = modelcheck.precheck(env.paths)
+    except Exception as e:  # noqa: BLE001 - a check that breaks never stops the night
+        env.log.warn("model_precheck_failed", str(e))
+        return None
+    if not found:
+        return None
+    env.log.error("daily_model_files", " ".join(found), code=MODEL_DAMAGED)
+    report["model_damaged"] = {"said": " ".join(found), "at": "start"}
+    return MODEL_DAMAGED
+
+
+def _model_damaged(report: dict, job_id: str, slug: str) -> None:
+    """M7: a job failed with NS-E127 (the engine named the damaged file): its failure stays (the Queue's
+    card, Retry after the Repair); the night keeps the engine's words for the one morning note."""
+    failed = next((f for f in reversed(report["failures"]) if f.get("code") == MODEL_DAMAGED), None)
+    if failed is not None and "model_damaged" not in report:
+        report["model_damaged"] = {"said": f"{MODEL_DAMAGED}: {failed.get('said') or ''}".rstrip(": "),
+                                   "job_id": job_id, "channel": slug}
 
 
 Outcomes = dict[str, tuple[str, str | None]]
@@ -989,6 +1050,9 @@ def _resume_interrupted(
             ownership.settle_failed(env.db, job_id, str(last["code"]), str(last["error"]))
             outcomes[job_id] = ("failed", str(last["code"]))
             failed_channels.add(slug)
+            if code == MODEL_DAMAGED:  # M7: nothing more loads that model tonight
+                _model_damaged(report, job_id, slug)
+                return code, failed_channels
     return None, failed_channels
 
 
@@ -1012,7 +1076,10 @@ def _tonight(
     outcomes: Outcomes = {}
     left_channels: dict[str, str] = {}
     try:
-        gpu_busy, failed_channels = _resume_interrupted(
+        # M7: a model file that cannot load stops the night's work before any of it starts (`gpu_busy`, the
+        # one variable that makes every later job wait for the next night, carries the code)
+        stopped = _model_precheck(env, report)
+        gpu_busy, failed_channels = (stopped, set[str]()) if stopped else _resume_interrupted(
             env, run, now, run_id, report, outcomes, night, left_channels
         )
     finally:
@@ -1082,6 +1149,12 @@ def _tonight(
             if code == PAUSED:  # paused while this job ran: it waits for the resume, the others do not start
                 if dj.count - n - 1:
                     _hold_for_pause(env, report, why, ch.slug, dj.count - n - 1)
+                break
+            if code == MODEL_DAMAGED:  # M7: one failure; nothing more that loads the model starts tonight
+                gpu_busy = code
+                failed = report["failures"][-1] if report["failures"] else {}
+                _model_damaged(report, str(failed.get("job_id") or ""), ch.slug)
+                _skip_rest(report, code, ch.slug, dj.count - n - 1)
                 break
             if code in CARD_BUSY:
                 gpu_busy = code

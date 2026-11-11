@@ -38,7 +38,8 @@ from ns_supervisor.core import Supervisor, SupervisorConfig
 from ns_supervisor.health_cfg import read_health_timeout
 from ns_supervisor.scheduled import overdue_scheduled_jobs
 
-_STATUS = {"NS-E201": 409, "NS-E202": 502, "NS-E203": 504, "NS-E208": 409}  # E208: the card's memory is held
+# E208: the card's memory is held; E127: the model file of a failed start is damaged (a failed start, as E202)
+_STATUS = {"NS-E201": 409, "NS-E202": 502, "NS-E203": 504, "NS-E208": 409, "NS-E127": 502}
 
 
 class AcquireBody(BaseModel):

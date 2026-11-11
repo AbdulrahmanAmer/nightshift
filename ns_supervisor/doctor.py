@@ -18,6 +18,7 @@ from collections.abc import Callable
 from datetime import datetime
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 import installer.stage2.commands as commands
 import installer.stage2.shortcut_owner as so
@@ -285,6 +286,7 @@ def diagnose(
     rows.append(commands_row(paths))
     rows += stock_key_rows(paths)
     app = Path(st.app_path) if st.app_path else repo_root()
+    rows += model_rows(paths, app)
     rows.append(program_folders(paths, app, on_wait))
     rows.append(python_environments(paths, app))
     return rows
@@ -339,6 +341,74 @@ def stock_key_rows(
         else:
             rows.append((f"stock key {p}", True, f"could not be checked now ({a.code}): {a.sentence}"))
     return rows
+
+
+#: The row that says when the model files were last read by hash (card model-file-damaged, M2).
+HASH_ROW = "model files last checked by hash"
+
+
+def model_rows(paths: Paths, app: Path) -> list[tuple[str, bool, str]]:
+    """M1, M2 (card model-file-damaged): one row per kind of model file of this install (language, story,
+    embed, voice, whisper, face finder), from stat calls and the check record only, so plain `ns doctor` stays
+    fast: missing, a stopped download (it continues), the wrong size, or recorded damaged are FAIL rows with
+    the way out; then when the files were last read by hash, with how long `ns verify --downloads` takes."""
+    from installer.stage2 import verify_downloads as vd
+    from installer.stage2.downloader import human_bytes
+    from installer.stage2.web import modelmarks
+
+    try:
+        items = vd.model_items(paths, app)
+    except Exception as e:  # noqa: BLE001 - a row, never a traceback (no answers yet, an unreadable manifest)
+        return [("model files", True, f"{WARN}not checked: {e}")]
+    damaged = modelmarks.recorded_damage(paths.home)
+    groups: dict[str, list[vd.DownloadItem]] = {}
+    for item in items:
+        groups.setdefault(vd.role(item, paths), []).append(item)
+    rows: list[tuple[str, bool, str]] = []
+    for label, group in groups.items():
+        bad: list[str] = []
+        notes: list[str] = []
+        size = present = 0
+        for item in group:
+            row = vd.check_item(item, quick=True)
+            present += row.size is not None
+            where = modelmarks.key_of(paths.home, Path(item.dest)).replace("/", "\\")
+            found = damaged.get(modelmarks.key_of(paths.home, Path(item.dest)))
+            if row.status in (vd.MISSING, vd.BAD):
+                bad.append(f"{row.status} ({where}{f': {row.detail}' if row.detail else ''}). {row.fix}")
+            elif found is not None:
+                bad.append(f"damaged ({where}: its SHA256 did not match at the check of "
+                           f"{found.get('checked_at')}). {vd.REPAIR.format(what=vd.what(item))}")
+            elif row.status == vd.NO_PIN and item.size:
+                notes.append(f"{Path(item.dest).name}: its size is right; it has no pinned SHA256, so it "
+                             "cannot be checked by hash (NS-W113)")
+            size += row.size or 0
+        ok = f"{present} file{'s' if present != 1 else ''} present, {human_bytes(size)}, sizes as downloaded"
+        rows.append((label, not bad, " ".join(bad) or "; ".join([ok, *notes])))
+    rows.append(hash_row(paths, items))
+    return rows
+
+
+def hash_row(paths: Paths, items: list[Any]) -> tuple[str, bool, str]:
+    """M2: when the model files were last read by hash (the oldest of them), or never, with the estimate of
+    a full check (the speed measured here, else 500 MB/s on an SSD, 120 MB/s on a hard disk)."""
+    from installer.stage2 import verify_downloads as vd
+    from installer.stage2.downloader import human_bytes, pinned_sha256
+
+    pinned = [i for i in items if pinned_sha256(i.sha256) and not i.stub and Path(i.dest).is_file()]
+    if not pinned:
+        return (HASH_ROW, True, "no model file with a pinned SHA256 here")
+    total = sum(vd._size(Path(i.dest)) for i in pinned)
+    bps, where = vd.default_speed(paths)
+    estimate = f"about {vd.duration_text(total / bps)} for {human_bytes(total)} here, at {vd.speed_text(bps)}"
+    seen = [vd.last_hashed(paths, i) for i in pinned]
+    never = sum(1 for s in seen if s is None)
+    if never:
+        part = "" if never == len(pinned) else f" for {never} of {len(pinned)} files"
+        return (HASH_ROW, True, f"{WARN}never{part}. Run 'ns verify --downloads' ({estimate}, {where}).")
+    oldest = min(s for s in seen if s)
+    return (HASH_ROW, True, f"{oldest} (the oldest of {len(pinned)} files); 'ns verify --downloads' checks "
+                            f"them again ({estimate}, {where})")
 
 
 def runtime_rows_of(paths: Paths) -> tuple[Runtime | None, list[tuple[str, bool, str]]]:

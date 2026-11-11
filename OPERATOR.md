@@ -109,9 +109,34 @@ or **Pause**, or you close the Nightshift setup window.
 - **The disk is full.** Setup stops with `NS-E104` and names the free space at the install folder. Free some space
   and press **Retry** (or run INSTALL.cmd again); the half file is still there and continues.
 - **Check everything later.** Open a terminal in the install folder and run `ns verify --downloads`. It re-reads
-  every model and program, compares it with `manifest.json` and prints one line per file: `ok`, `missing` or
-  `bad hash`, with what to do for each (almost always: run INSTALL.cmd again). It changes nothing and needs no
-  internet. It takes a few minutes because it reads about 20 GB.
+  every model and program, compares it with `manifest.json` and prints one line per file: `ok`, `missing`,
+  `bad hash` or `unreadable`, with what to do for each. It changes nothing and needs no internet. It says up front
+  how long it takes (it reads about 20 GB) and shows each file's progress, speed and time left.
+
+## If a model file is damaged
+
+A model file can be damaged after it was downloaded (a disk error, a copy that stopped half way) while its size and
+date stay the same, so the quick check of a rerun cannot see it. Nightshift finds it by its SHA256:
+
+- **When a model does not load.** The engine checks that model's files by hash (once per file while it runs, at
+  most 4 minutes). A file that does not match is named with `NS-E127`: in the error, in the Queue's failure card and
+  in the morning note. The night starts nothing more that would load it: the other videos wait for the next nightly
+  run (while Automatic runs are on). A file that matches is not damaged: the error says what else stopped the model
+  (too little graphics memory, `NS-E208` or `NS-E203`, else `NS-E202`). The next nights check the files quickly
+  before they start (size and the last check's result) and wait the same way until the file is repaired.
+- **`ns doctor`** shows one row per kind of model (language, story, embed, voice, whisper, face finder) with its
+  size, and the row *model files last checked by hash* with the date and how long a full check takes here.
+- **`ns verify --downloads`** reads every model by hash (see above) and writes `logs/model-check.json`. A file
+  another program holds open is `unreadable`, not damaged: Stop All, then run it again. Ctrl+C stops it at once and
+  changes nothing.
+- **The way out: Repair.** Run INSTALL.cmd again from the Nightshift zip and choose this install's folder. A setup
+  run over a finished install checks every model file by hash (about a minute for 20 GB on an SSD, three on a hard
+  disk, with each file's progress). A damaged file is renamed `<name>.bad`, downloaded again (continuing a `.part`
+  that is there), and the `.bad` is deleted once the new file passed its check: until then you always have one of
+  the two. Setup first checks that the drive has room for the new file beside the old one (`NS-E104` says how much
+  is needed). Offline or the site down: `NS-E105`, press Retry later. The setup window, opened over a finished
+  install with a damaged or missing model, opens on the models step instead of Done: press Continue.
+- A story model you named yourself has no published SHA256: only its size can be checked, and the rows say so.
 
 ## If GitHub is down on install day
 
