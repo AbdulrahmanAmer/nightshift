@@ -70,13 +70,48 @@ def design_only(item: DownloadItem) -> bool:
     return dest.parent.name == "tts" and DESIGN_KIND in dest.name.lower()
 
 
+#: The voice engines of ``runtime.json`` (``tts.engine``) that do not load the planned voice files of
+#: ``models\\tts``: the PyTorch fallback (``reference``, NS-W301: ``ns_tts.engine.select_engine`` gives it the
+#: weights under ``models\\tts\\hf``, which are in no manifest and no plan) and the fake engine.
+OTHER_VOICE_ENGINES = ("reference", "fake")
+OTHER_VOICE_NOTE = (
+    "the voice runs on the PyTorch engine (NS-W301), which loads its weights from models\\tts\\hf, not the "
+    "voice files of models\\tts; those weights are not among the files this check reads (OPERATOR.md, 'If a "
+    "model file is damaged')"
+)
+
+
+def voice_reads_plan(paths: Paths) -> bool:
+    """A night's start: False when ``runtime.json`` gives this install a voice that does not load the planned
+    voice files (``OTHER_VOICE_ENGINES``, or a dev install, whose voice is the fake:
+    ``ns_supervisor.services._tts`` decides the same way). True when ``runtime.json`` cannot be read: the
+    safe side, the files are looked at."""
+    from ns_common.config import load_runtime
+
+    try:
+        rt = load_runtime(paths)
+        return not (rt.dev_mode or rt.tts.engine in OTHER_VOICE_ENGINES)
+    except Exception:  # noqa: BLE001 - no usable runtime.json: the planned files count
+        return True
+
+
+def reference_voice(cmd: list[str]) -> bool:
+    """After a failed start: True when the voice service that failed was the PyTorch fallback, told by the
+    command it ran with, not by ``runtime.json`` (which may have changed since the engine read it): only that
+    engine runs from the ``tts`` environment (``ns_supervisor.services._tts``:
+    ``venvs\\tts\\Scripts\\python.exe``)."""
+    exe = Path(cmd[0]) if cmd else Path()
+    return exe.parent.name.lower() == "scripts" and exe.parent.parent.name.lower() == "tts"
+
+
 def night_files(paths: Paths, items: list[DownloadItem]) -> list[DownloadItem]:
     """The planned model files a night's jobs load, taken from where the stages take them: llama's ``-m``
     files as ``runtime.json`` names them (the language model and, with two models, the story model), the
     embed service's ``-m`` file (the stages that embed text and hold the ``embed`` lease,
     ``ns_studio.orchestrator.embed_lease``: ``ideas`` first in both nightly story plans, ``chapters_critic``,
     ``continuity``, ``critic_revise``, the text policy gate and the owner-script imports), the voice files a
-    synthesis uses (the talkers and the tokenizer, not the design talker) and whisper's files. Not among
+    synthesis uses (the talkers and the tokenizer, not the design talker; none of them when the voice runs on
+    another engine, ``voice_reads_plan``) and whisper's files. Not among
     them: the design talker (only "design a voice" loads it) and the face finder (only a Clipper job's
     ``clip_analyze`` reads it, and the nightly run plans and continues no Clipper job); should a job load one
     of those after all, the engine's check after the failed load names it (``FileCheck``). When
@@ -95,19 +130,23 @@ def night_files(paths: Paths, items: list[DownloadItem]) -> list[DownloadItem]:
         language = [i for i in items if Path(i.dest).parent.name == "llm"]
     if not embed:
         embed = [i for i in items if Path(i.dest).parent.name == "embed"]
-    return language + embed + files_for("tts", [], items) + files_for("whisper", [], items)
+    voice = files_for("tts", [], items) if voice_reads_plan(paths) else []
+    return language + embed + voice + files_for("whisper", [], items)
 
 
 def files_for(service: str, cmd: list[str], items: list[DownloadItem]) -> list[DownloadItem]:
     """The planned model files a service loads: the ``-m`` file of llama-server (llama, embed), the voice
-    models a start and a synthesis of a real voice engine use (tts: not the design talker, ``design_only``),
-    whisper's files (whisper). A file outside the plan is not checked."""
+    models a start and a synthesis of the qwentts engine use (tts: not the design talker, ``design_only``;
+    none for the fake engine or the PyTorch fallback, ``reference_voice``), whisper's files (whisper). A file
+    outside the plan is not checked."""
     if service in ("llama", "embed"):
         # runtime.json may spell the path with forward slashes or another case: compare normalised paths
         wanted = {os.path.normcase(str(Path(cmd[i + 1]))) for i, a in enumerate(cmd[:-1]) if a == "-m"}
         return [i for i in items if os.path.normcase(str(Path(i.dest))) in wanted]
     if service == "tts":
         if "--engine" in cmd and cmd[cmd.index("--engine") + 1:][:1] == ["fake"]:
+            return []
+        if reference_voice(cmd):        # the PyTorch fallback loads models\tts\hf, which is in no plan
             return []
         return [i for i in items if Path(i.dest).parent.name == "tts" and not design_only(i)]
     if service == "whisper":
@@ -158,6 +197,10 @@ class FileCheck:
         except vd.AnswersError:
             return Verdict()
         notes: list[str] = []
+        if service == "tts" and reference_voice(cmd):
+            # this voice never opened the planned voice files (`files_for` gives none): hashing them would
+            # prove nothing about its failed start, and a damaged one among them would be named as the cause
+            return Verdict(note=OTHER_VOICE_NOTE)
         for item in files_for(service, cmd, items):
             row = self._row(item)
             name = Path(item.dest).name
@@ -214,9 +257,9 @@ def precheck(paths: Paths, app: Path | None = None, *, others: list[str] | None 
     """A night's start: one sentence per model file a night's job loads (``night_files``) that cannot load
     (missing, the wrong size, or recorded damaged for its present size and date); the morning note adds the
     way out (Repair), a stopped download says that it continues. The same sentence about a file no night job
-    loads (the design talker, the face finder) goes to ``others``: it stops no night and is
-    said beside it. No hash. Nothing when setup never verified the models (its models step is not done: a
-    test home, an unfinished install)."""
+    loads (the design talker, the face finder, the voice files of ``models\\tts`` while the voice runs on
+    another engine) goes to ``others``: it stops no night and is said beside it. No hash. Nothing when setup
+    never verified the models (its models step is not done: a test home, an unfinished install)."""
     from installer.stage2 import verify_downloads as vd
     from installer.stage2.web import modelmarks
     from ns_common.config import load_install_state

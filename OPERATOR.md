@@ -142,6 +142,15 @@ date stay the same, so the quick check of a rerun cannot see it. Nightshift find
   date kept is known only once something has read it by hash. When you suspect one, run `ns verify --downloads`
   first (it names the file), then INSTALL.cmd. (An unattended INSTALL.cmd run, with an answers file, checks every
   model file by hash in any case.)
+- **With the PyTorch voice engine** (`NS-W301`, see "If the voice engine fell back") the voice does not load the
+  voice files of `models\tts` but the PyTorch weights in `models\tts\hf`. Those weights are in no list Nightshift
+  ships: `ns doctor`, `ns verify --downloads`, the check after a failed voice start (its error says so) and the
+  night's quick check do not read them, and a damaged voice file of `models\tts` stops no night while that engine
+  speaks (the morning note names it). A Repair does check the large weight files by hash and downloads a damaged
+  one again (it needs the internet to list them), but the setup window opens on the models step for them only when
+  one of them changed size or date or is gone while its `.ok` file is still there. When that voice fails and
+  nothing above names a file, run INSTALL.cmd without a window (an answers file beside it): that run checks them
+  in any case.
 - A story model you named yourself has no published SHA256: only its size can be checked, and the rows say so.
 
 ## If GitHub is down on install day

@@ -834,6 +834,45 @@ def test_a_file_no_night_job_loads_does_not_stop_the_night(tmp_path: Path) -> No
     assert len(stops) == 2 and any(talker.name in s for s in stops), stops
 
 
+def test_with_the_pytorch_voice_engine_the_voice_files_of_models_tts_stop_no_night(tmp_path: Path) -> None:
+    """Written by the final reviewer of the fix round, NOT RUN. `tts.engine: reference` (the PyTorch
+    fallback, NS-W301): the voice loads the weights under models\\tts\\hf, not the planned voice files of
+    models\\tts. A damaged or missing talker there is said beside the night, not as its stop; a failed start
+    of that voice hashes none of them, names none as the cause and says which files it does not read. With
+    the qwentts engine both still hold."""
+    from ns_common.config import load_runtime
+    from ns_supervisor import modelcheck
+
+    inst = make_install(tmp_path)
+    talker = inst.file("talker-1.7b-base")
+    qwentts = [str(inst.paths.venvs / "supervisor" / "Scripts" / "python.exe"), "-m", "ns_tts.server"]
+    pytorch = [str(inst.paths.venvs / "tts" / "Scripts" / "python.exe"), "-m", "ns_tts.server"]
+    assert talker in {Path(i.dest) for i in modelcheck.night_files(inst.paths, inst.items)}
+    assert len(modelcheck.files_for("tts", qwentts, inst.items)) == 3
+    assert modelcheck.files_for("tts", pytorch, inst.items) == []
+    rt = load_runtime(inst.paths)
+    rt.tts.engine = "reference"
+    save_runtime(inst.paths, rt)
+    tonight = {Path(i.dest) for i in modelcheck.night_files(inst.paths, inst.items)}
+    assert not [p for p in tonight if p.parent.name == "tts"], tonight
+    assert inst.file("Qwen3-") in tonight                       # the night's other files still count
+    flip(talker)
+    check = modelcheck.FileCheck(inst.paths, app=inst.app)
+    found = check.after_failure("tts", pytorch)
+    assert found.damaged is None and check.hashes == 0, found
+    assert "PyTorch" in found.note and "models\\tts\\hf" in found.note, found.note
+    talker.unlink()
+    aside: list[str] = []
+    assert modelcheck.precheck(inst.paths, inst.app, others=aside) == [], "the night was stopped"
+    assert len(aside) == 1 and talker.name in aside[0], aside
+    # the qwentts engine does load them: the same failed start names the missing talker ...
+    assert talker.name in modelcheck.FileCheck(inst.paths, app=inst.app).after_failure("tts", qwentts).note
+    rt.tts.engine = "qwentts"
+    save_runtime(inst.paths, rt)
+    stops = modelcheck.precheck(inst.paths, inst.app)           # ... and the night stops for it
+    assert len(stops) == 1 and talker.name in stops[0], stops
+
+
 def test_a_file_no_night_job_loads_is_told_in_the_morning_note_and_the_night_runs(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
