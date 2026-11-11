@@ -40,7 +40,7 @@ COVERED = {
             "test_f_b13_fails_when_a_fetched_clip_is_not_the_fakes_bytes",
             "test_f_b13_fails_when_library_does_not_list_a_fetched_clip",
             "test_f_b14_fails_when_a_fetch_ignores_retry_after",
-            "test_f_b14_fails_when_an_endless_429_does_not_end_in_ns_e501",
+            "test_f_b14_fails_when_an_endless_429_does_not_end_in_ns_e504",
         ],
     },
     "f-b18-studio-status": {

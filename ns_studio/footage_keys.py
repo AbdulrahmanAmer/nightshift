@@ -124,9 +124,11 @@ def wrong_key_note(wrong: list[sa.Answer], answers: list[sa.Answer]) -> str:
     first = (f"{names} did not accept the key stored on this PC: it is wrong or was revoked." if one
              else f"{names} did not accept the keys stored on this PC: they are wrong or were revoked.")
     if len(wrong) == len(answers):
+        from ns_studio.ownership import IF_NIGHTLY_ON  # " (while Automatic runs are on in Settings)"
+
         return (f"{first} No video that needs stock footage starts until it is fixed: paste the key again in "
-                f"{sa.KEYS_PLACE}. The next video you start, and the next nightly run (while Automatic runs "
-                "are on in Settings), check it again.")
+                f"{sa.KEYS_PLACE}. The next video you start, and the next nightly run{IF_NIGHTLY_ON}, check "
+                "it again.")
     others = " and ".join(a.name for a in answers if a.kind != sa.KEY_WRONG)
     return (f"{first} Videos use {others} footage only until you paste the key again in {sa.KEYS_PLACE} "
             "(or clear it there).")
