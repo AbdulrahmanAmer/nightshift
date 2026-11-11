@@ -253,7 +253,14 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
   the two times, and stop until you run it again after the second morning; (11) and (12) read night 1 and night
   2; (13) collect everything, put back what the kit changed and write the zip. After the steps it asks a few
   questions only you can answer (the posting sheet pasted into YouTube Studio, the video watched, the morning
-  note, the two hand checks in `dev/kit/night-task-end.txt`); "later" keeps a question for the next run. Step 5
+  note, the two hand checks in `dev/kit/night-task-end.txt`); "later" keeps a question for the next run.
+  `GPU-KIT.cmd -Unattended` is the same run for a program or an AI session that starts it without a person at
+  the window: it never reads the keyboard and never waits for a key, leaves those questions open and lists them
+  for the owner (a later double-click asks exactly the open ones), ends with a fixed exit code (0 done, 1 a step
+  failed, 2 refused, 3 waiting: run again later, 4 another kit run holds the lock, 5 blocked, 130 interrupted)
+  and prints one last line of JSON saying the step, the state, when to run again, the open questions and the
+  zip; every prompt of the attended run ends by time whatever the input is. `docs/GPU_PC_SESSION.md` is the
+  instruction file for such a session: the first real install on the GPU PC, the kit, and the report back. Step 5
   does not start when the video (the estimate and 30 minutes to spare) would not end before the nightly run: it
   says WAIT with the hours and the time to run it again. Resumable: close the window whenever you like, run
   `GPU-KIT.cmd` again and it goes on from the step it reached (its state is `kit\kit-state.json` in the install);
