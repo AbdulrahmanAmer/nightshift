@@ -703,26 +703,28 @@ def test_a_full_disk_stops_the_copy_and_the_next_start_finishes_it(tmp_home: Pat
     backups(paths, [1, 2])
     build_db(paths.db_path, "live")
     damage_page3(paths.db_path)
-    if dbrestore is not None:
-        def full(src: Path, dst: Path) -> None:
-            raise OSError(errno.ENOSPC, "No space left on device", str(dst))
+    def full(src: Path, dst: Path) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device", str(dst))
 
-        monkeypatch.setattr(dbrestore, "_copy_backup", full)
-    refused: NsError | None = None
-    try:
-        open_db(paths).migrate()
-    except NsError as e:
-        refused = e
-    except sqlite3.DatabaseError:
-        refused = None
-    assert refused is not None and refused.code == "NS-E209" and "disk is full" in str(refused)
-    assert "Free space" in str(refused.data.get("hint"))
-    assert (paths.home / "run" / "db-restore.json").is_file() and not paths.db_path.exists()
-    assert aside(paths) and not list(paths.data.glob("studio.db.restoring*"))
-    (said,) = notes(paths)
-    assert said.startswith("NS-E209") and "the disk is full" in said
+    # the full disk lasts for this block only: `monkeypatch.undo()` would also undo what `tmp_home` set
+    # (tests/test_no_real_machine.py::test_no_test_calls_undo_on_its_monkeypatch)
+    with monkeypatch.context() as m:
+        if dbrestore is not None:
+            m.setattr(dbrestore, "_copy_backup", full)
+        refused: NsError | None = None
+        try:
+            open_db(paths).migrate()
+        except NsError as e:
+            refused = e
+        except sqlite3.DatabaseError:
+            refused = None
+        assert refused is not None and refused.code == "NS-E209" and "disk is full" in str(refused)
+        assert "Free space" in str(refused.data.get("hint"))
+        assert (paths.home / "run" / "db-restore.json").is_file() and not paths.db_path.exists()
+        assert aside(paths) and not list(paths.data.glob("studio.db.restoring*"))
+        (said,) = notes(paths)
+        assert said.startswith("NS-E209") and "the disk is full" in said
 
-    monkeypatch.undo()
     db = open_db(paths)
     db.migrate()
     assert [r["run_id"] for r in db.query("select run_id from runs")] == ["day-2"]
