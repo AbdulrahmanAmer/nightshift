@@ -160,20 +160,13 @@ def release_source(env: Mapping[str, str] | None = None, paths: Paths | None = N
     return Source(raw, origin)
 
 
-def trusted_keys(env: Mapping[str, str] | None = None, paths: Paths | None = None) -> dict[str, str]:
-    """The release keys this install trusts now, `{key id: public key}`: `release_keys.TRUSTED`, plus the
-    TEST key only while `release_source` is a test source (a dev or engine-test install with
-    `NS_RELEASE_SOURCE` naming this PC). A variable that is refused (`NS-E704`: a real install, an
-    unreadable one, a bad address) is no test source, so the test key never counts there. Read at every
-    check, never cached. Empty: this version checks no signature yet (before the owner's key step)."""
-    keys = dict(release_keys.TRUSTED)
-    try:
-        test = release_source(env, paths).test
-    except NsError:
-        test = False
-    if test:
-        keys.update(release_keys.TEST_KEYS)
-    return keys
+def trusted_keys() -> dict[str, str]:
+    """The release keys this program trusts, `{key id: public key}`: `release_keys.TRUSTED` and nothing
+    else. It takes no argument on purpose: no environment variable (`NS_RELEASE_SOURCE` included), flag,
+    dev or engine-test mode and no file of the home adds or swaps a key; a test source decides only where
+    a release is DOWNLOADED from, never who may have made it. Read at every check, never cached. Empty:
+    this version checks no signature yet (before the owner's key step)."""
+    return dict(release_keys.TRUSTED)
 
 
 @dataclass(frozen=True)

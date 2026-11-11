@@ -1,9 +1,11 @@
 """Card update-signing: an update package installs only when the release key signed it.
 
 `<zip>.sig` (Ed25519 over the zip's name, its VERSION and its SHA256) is checked by `update.verify_package`
-against the keys the INSTALLED program trusts, before anything is stopped or changed, on every route. The
-key of these tests is the TEST key (`tests/fixtures/release_test_key.txt`), which an install trusts only
-while it reads its releases from a test release source; a foreign key is made here. New modules are looked up,
+against the keys the INSTALLED program pins, before anything is stopped or changed, on every route. The
+key of these tests is a THROWAWAY key made in memory for this run (`TEST_SEED`); a test puts its public half
+into `release_keys.TRUSTED` of its own process (`install_home`), the only way a key is ever trusted: the
+repository holds no key, and no variable, dev mode or file of a home adds one. A foreign key is made here
+too. New modules are looked up,
 and a base without the signer gets a `.sig` of the right shape, so on the base every test fails at an
 assertion (the old code installs what it should refuse).
 """
@@ -17,6 +19,7 @@ import base64
 import hashlib
 import importlib
 import json
+import os
 import runpy
 import shutil
 import sys
@@ -53,8 +56,7 @@ sigcheck = _module("ns_common.sigcheck")
 release_keys = _module("ns_common.release_keys")
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
-KEY_LINES = (FIXTURES / "release_test_key.txt").read_text(encoding="ascii").splitlines()
-TEST_SEED = base64.b64decode(next(ln for ln in KEY_LINES if ln and not ln.startswith("#")))
+TEST_SEED = os.urandom(32)  # the throwaway release key of this run: never written anywhere, gone with the run
 FOREIGN_SEED = hashlib.sha256(b"a foreign key, made in this test").digest()
 VAR = "NS_RELEASE_SOURCE"
 SOURCE = f"{ORIGIN}/repos/x/releases/latest"  # names this PC; nothing listens there (`Net` answers)
@@ -120,8 +122,12 @@ def install_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, runtime: dict[str, Any] | None = None,
     source: str | None = SOURCE, port: int | None = None,
 ) -> Paths:
-    """An install home. As made here (a dev install with the variable naming this PC) it reads its releases
-    from a test source, so it trusts the TEST key; `runtime` and `source` make the other installs."""
+    """An install home. As made here (no `runtime` given, `source` set) the program of this test pins the
+    throwaway key: its public half is patched into `release_keys.TRUSTED`. With `runtime` given or
+    `source=None` nothing is pinned (the autouse fixture's empty list stays) and the test pins what it means.
+    The home and the variable themselves decide nothing about keys."""
+    if release_keys is not None and sigcheck is not None and source is not None and (runtime is None or port is not None):
+        monkeypatch.setattr(release_keys, "TRUSTED", dict([key_of(TEST_SEED)]))
     paths = Paths(tmp_path / "home")
     paths.ensure()
     if port is None:
@@ -197,10 +203,10 @@ def test_the_verifier_passes_rfc8032_vectors() -> None:
 def test_the_key_lists_are_well_formed_and_the_verifier_needs_no_wheel(tmp_path: Path) -> None:
     assert sigcheck is not None and release_keys is not None, "the verifier or the key list is missing"
     listed = runpy.run_path(str(ROOT / "ns_common" / "release_keys.py"))  # the file, not this run's patch
-    for keys in (listed["TRUSTED"], listed["TEST_KEYS"]):
-        for key, public in keys.items():
-            assert sigcheck.key_id(base64.b64decode(public, validate=True)) == key
-    assert key_of(TEST_SEED)[0] in listed["TEST_KEYS"] and not set(listed["TEST_KEYS"]) & set(listed["TRUSTED"])
+    for key, public in listed["TRUSTED"].items():
+        assert sigcheck.key_id(base64.b64decode(public, validate=True)) == key
+    # the program lists no test key, and the repository holds no private key for one
+    assert "TEST_KEYS" not in listed and not (FIXTURES / "release_test_key.txt").exists()
     for name in ("sigcheck", "release_keys"):  # it runs in the OLD program's updater and in a bare release job
         tree = ast.parse((ROOT / "ns_common" / f"{name}.py").read_text(encoding="utf-8"))
         mods = [a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names]
@@ -234,7 +240,7 @@ def test_a_signed_package_is_accepted_and_the_message_binds_name_version_and_has
     err, e, said = attempt(z, app, paths)
     assert err is None and e.calls[0] == "stop" and version_in(app) == "0.1.16"
     told = [line for line in said if "signed with" in line]  # one line of the update log says who signed it
-    assert len(told) == 1 and "TEST key" in told[0] and key_of(TEST_SEED)[0] in told[0], said
+    assert len(told) == 1 and "release key this version trusts" in told[0] and key_of(TEST_SEED)[0] in told[0], said
     assert not any(NOTE in line for line in said)
 
 
@@ -439,8 +445,8 @@ def test_every_route_checks_the_signature(
 
     # --github, from the fake GitHub of the proofs over a real socket on this PC
     folder = tmp_path / "served"
-    served = package(folder)  # the zip and its .sha256: the fake signs a package once, with the TEST key
-    srv = github.serve(folder)
+    served = package(folder)  # the zip and its .sha256: the fake signs a package once, with the key it is handed
+    srv = github.serve(folder, seed=TEST_SEED)
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()
     try:
@@ -458,10 +464,10 @@ def test_every_route_checks_the_signature(
             (folder / name).write_bytes(data)
         r = ns("--github", "--worker")
         assert r.exit_code == 0 and "Now on 0.1.16 (was 0.1.0)." in r.output, r.output
-        assert "signed with the TEST key" in r.output  # the update log says who signed it
+        assert f"release key this version trusts (key {key_of(TEST_SEED)[0]})" in r.output  # the log says who signed it
         fetched = paths.data / "updates" / served.name
         assert sig_of(fetched).read_bytes() == kept[sig_of(served).name]  # written beside the zip
-        plain = github.serve(tmp_path / "plain", sign=False)  # `--unsigned`: a release from before the key
+        plain = github.serve(tmp_path / "plain")  # no key handed over (`--unsigned`): a release from before the key
         package(plain.folder)
         plain.sign_new()
         plain.server_close()
@@ -579,7 +585,7 @@ def test_a_key_listed_by_the_new_version_is_trusted_only_from_that_version(
     seed_a, seed_b = (hashlib.sha256(text).digest() for text in (b"release key A", b"release key B"))
     a, b = key_of(seed_a), key_of(seed_b)
     monkeypatch.setattr(release_keys, "TRUSTED", dict([a]))  # N trusts A
-    lists = f"TRUSTED = {dict([a, b])!r}\nTEST_KEYS = {{}}\n"
+    lists = f"TRUSTED = {dict([a, b])!r}\n"
     n1 = package(tmp_path / "dl", "0.1.17", members={"ns_common/release_keys.py": lists})
     sign(n1, seed_a)
     n2 = package(tmp_path / "dl", "0.1.18")
@@ -594,28 +600,29 @@ def test_a_key_listed_by_the_new_version_is_trusted_only_from_that_version(
     assert attempt(n2, app, paths)[0] is None and version_in(app) == "0.1.18"
 
 
-def test_the_test_key_is_trusted_only_with_a_test_release_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_no_variable_dev_mode_or_file_of_the_home_adds_a_trusted_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The one trust anchor is `release_keys.TRUSTED` of the running program (final review of update-signing:
+    the program used to list a TEST key whose private half was a file of the repository, trusted on a dev or
+    engine-test install with `NS_RELEASE_SOURCE` set)."""
     assert release_keys is not None and hasattr(releases, "trusted_keys"), "there is no key list yet"
-    test_id = key_of(TEST_SEED)[0]
-    for n, runtime in enumerate(({"dev_mode": True}, {"tiny_story": True}, {"tts": {"engine": "fake"}})):
-        paths = install_home(tmp_path / f"test{n}", monkeypatch, runtime=runtime)
-        assert test_id in releases.trusted_keys(paths=paths), runtime  # a dev or engine-test install with a source
-        assert releases.trusted_keys({}, paths) == {}  # the same install without the variable
-    real = install_home(tmp_path / "real", monkeypatch, runtime=REAL)  # the variable left behind on a real install
-    with pytest.raises(NsError) as ei:
-        releases.release_source(paths=real)
-    assert ei.value.code == "NS-E704" and releases.trusted_keys(paths=real) == {}
-    for n, source in enumerate(("http://example.com/releases/latest", "not an address")):
-        other = install_home(tmp_path / f"bad{n}", monkeypatch, source=source)  # a test install, a refused value
-        assert releases.trusted_keys(paths=other) == {}
-    # a file route on the real install: a package signed with the test key
-    install_home(tmp_path / "real", monkeypatch, runtime=REAL)
+    assert not hasattr(release_keys, "TEST_KEYS"), "the program lists a test key"
+    assert not (FIXTURES / "release_test_key.txt").exists(), "a private key is kept in the repository"
+    other_id, pinned = key_of(TEST_SEED)[0], dict([key_of(FOREIGN_SEED)])
     app = make_app(tmp_path)
     z = package(tmp_path / "dl")
-    sign(z)
-    monkeypatch.setattr(release_keys, "TRUSTED", dict([key_of(FOREIGN_SEED)]))  # it trusts a real key
-    err = refused(z, app, real)
-    assert "does not know" in err.detail and test_id in err.detail
+    sign(z)  # signed with a key the program does not pin
+    paths = None
+    kinds = ({"dev_mode": True}, {"tiny_story": True}, {"tts": {"engine": "fake"}}, REAL)
+    for n, runtime in enumerate(kinds):  # a dev install, two engine-test installs, a real one
+        for m, source in enumerate((SOURCE, "http://example.com/releases/latest", None)):  # the variable: set, refused, absent
+            paths = install_home(tmp_path / f"home{n}{m}", monkeypatch, runtime=runtime, source=source)
+            monkeypatch.setattr(release_keys, "TRUSTED", {})
+            assert releases.trusted_keys() == {}, (runtime, source)  # nothing pinned: nothing trusted, anywhere
+            monkeypatch.setattr(release_keys, "TRUSTED", pinned)
+            assert releases.trusted_keys() == pinned, (runtime, source)  # what is pinned, and only that
+            err = refused(z, app, paths)  # every route ends in this check: the other key is unknown here too
+            assert "does not know" in err.detail and other_id in err.detail, (runtime, source)
+    assert paths is not None
     monkeypatch.setattr(release_keys, "TRUSTED", {})  # before the owner's step: SHA256 only, and it says so
-    err, _e, said = attempt(z, app, real)
+    err, _e, said = attempt(z, app, paths)
     assert err is None and any(NOTE in line for line in said) and not any("signed with" in line for line in said)

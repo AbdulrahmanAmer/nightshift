@@ -1,7 +1,7 @@
 """Sign the packages of a release with the release key, and check what was signed (card update-signing).
 
     python dev/sign_release.py --release <tag> <zip> [<zip> ...]   the release run's "Sign" step
-    python dev/sign_release.py [--key-file <file> | --test-key] <zip> [<zip> ...]
+    python dev/sign_release.py [--key-file <file>] <zip> [<zip> ...]
     python dev/sign_release.py --check <zip> [<zip> ...]
     python dev/sign_release.py --public-key                        (a private key on stdin)
 
@@ -9,8 +9,8 @@ Signing writes `<zip>.sig` beside each zip (`ns_common.sigcheck`: the format, an
 key is base64 of 32 bytes: the variable `NS_RELEASE_SIGNING_KEY` (the GitHub secret, given to the Sign step
 only), or the first line of `--key-file` that is not a `#` comment (the owner's backup key, OPERATOR.md "Lost
 key"). It is never printed, and neither is anything derived from it but the public key's id. A release is
-signed with `cryptography` (`pip install --require-hashes -r dev/sign-requirements.txt`); `--test-key` signs
-with the repository's TEST key and the standard library's reference code, for proofs and tests.
+signed with `cryptography` (`pip install --require-hashes -r dev/sign-requirements.txt`). The repository
+holds no key of any kind: tests and proofs make a throwaway key and sign with `reference_signer`.
 
 `--release` is the whole step. It decides what a run without the key does (a candidate of a commit that pins
 no key is published unsigned, with a warning; a final tag, and any tag of a commit that pins keys, fails),
@@ -42,7 +42,6 @@ from ns_common import release_keys, sigcheck  # noqa: E402
 from ns_common.atomic import write_bytes_atomic  # noqa: E402
 
 KEY_ENV = "NS_RELEASE_SIGNING_KEY"
-TEST_KEY_FILE = ROOT / "tests" / "fixtures" / "release_test_key.txt"
 NO_KEY_FINAL = (
     'The release key is not set up: run dev\\release_keys.ps1 -Create once (OPERATOR.md, "The release key").'
 )
@@ -103,7 +102,7 @@ def real_signer(seed: bytes) -> Signer:
 
 
 def reference_signer(seed: bytes) -> Signer:
-    """The standard library's reference code (`sigcheck.sign`): for the TEST key and tests. Same bytes."""
+    """The standard library's reference code (`sigcheck.sign`): for throwaway keys in tests. Same bytes."""
     return Signer(sigcheck.public_key(seed), lambda message: sigcheck.sign(seed, message))
 
 
@@ -192,7 +191,6 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--check", action="store_true", help="verify <zip>.sig with the keys the checkout pins")
     mode.add_argument("--public-key", action="store_true", help="a private key on stdin: its id, public key")
     mode.add_argument("--key-file", type=Path, help="sign with the private key in this file (the backup)")
-    mode.add_argument("--test-key", action="store_true", help="sign with the TEST key (proofs, tests)")
     ap.add_argument("zips", nargs="*", type=Path)
     args = ap.parse_args(argv)
 
@@ -211,14 +209,12 @@ def main(argv: list[str] | None = None) -> int:
             for line in problems or [f"{z.name}: signed with a key this checkout pins." for z in args.zips]:
                 say(line)
             return 1 if problems else 0
-        if args.test_key:
-            signer = reference_signer(read_key(TEST_KEY_FILE.read_text(encoding="ascii")))
-        elif args.key_file is not None:
+        if args.key_file is not None:
             signer = real_signer(read_key(args.key_file.read_text(encoding="utf-8")))
         elif os.environ.get(KEY_ENV, "").strip():
             signer = real_signer(read_key(os.environ[KEY_ENV]))
         else:
-            raise Refused(f"No key: set {KEY_ENV}, or pass --key-file or --test-key. Nothing was signed.")
+            raise Refused(f"No key: set {KEY_ENV}, or pass --key-file. Nothing was signed.")
         for z in args.zips:
             say(f"Wrote {sign_zip(z, signer)} (key {sigcheck.key_id(signer.public)}).")
         return 0

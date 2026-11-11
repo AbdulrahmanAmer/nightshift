@@ -51,7 +51,6 @@ from ns_common import (
     config_compat,
     config_snapshot,
     first_start,
-    release_keys,
     rollback_intent,
     sigcheck,
 )
@@ -286,10 +285,6 @@ NO_KEY_NOTE = (
     f"{NO_KEY_SHORT}: the package matches its .sha256, which shows that it arrived whole, not who made it."
 )
 SIGNED_NOTE = "The package is signed with a Nightshift release key this version trusts (key {key})."
-SIGNED_TEST_NOTE = (
-    "The package is signed with the TEST key (key {key}), which this install trusts only because it reads "
-    "its releases from a test release source (NS_RELEASE_SOURCE)."
-)
 CHANGED_SINCE = (
     "{zip} was changed after Nightshift checked it, so it was not installed: the program and the Python "
     "environments are as they were. Do not install that file; download the package again from the release "
@@ -308,11 +303,12 @@ class _Checked:
     key: str
 
 
-def _check_package(zip_path: Path, paths: Paths | None, say: Callable[[str], None] | None) -> _Checked:
+def _check_package(zip_path: Path, say: Callable[[str], None] | None) -> _Checked:
     """The one check of an update package, read-only (card update-signing, G1 to G6).
 
     G1: the zip against the `.sha256` beside it, and its VERSION (`NS-E701`, as before). G2: the keys this
-    install trusts now (`releases.trusted_keys`); with none the package is accepted on its SHA256 and `say`
+    program pins (`releases.trusted_keys`: `release_keys.TRUSTED` only, whatever the install or its
+    environment says); with none the package is accepted on its SHA256 and `say`
     gets `NO_KEY_NOTE`. G3 to G5: `<zip>.sig` must be there, name a trusted key and be that key's signature
     of this file name, VERSION and SHA256 (`sigcheck.check_package`); otherwise `NS-E707` with the sentence
     of `SIGNATURE_REFUSALS`. G6: `say` gets the line that names the key. `say` is the worker's log; the
@@ -330,7 +326,7 @@ def _check_package(zip_path: Path, paths: Paths | None, say: Callable[[str], Non
     except ValueError as e:
         raise NsError("NS-E701", str(e)) from e
     told = say or (lambda line: None)
-    keys = releases.trusted_keys(paths=paths)
+    keys = releases.trusted_keys()
     if not keys:
         told(NO_KEY_NOTE)
         return _Checked(version, prefix, got, "")
@@ -341,16 +337,15 @@ def _check_package(zip_path: Path, paths: Paths | None, say: Callable[[str], Non
             zip=zip_path.name, sig=sigcheck.sig_path(zip_path).name, key=e.key, why=e.detail
         )
         raise NsError("NS-E707", words, reason=e.kind) from e
-    test_key = key in release_keys.TEST_KEYS and key not in release_keys.TRUSTED
-    told((SIGNED_TEST_NOTE if test_key else SIGNED_NOTE).format(key=key))
+    told(SIGNED_NOTE.format(key=key))
     return _Checked(version, prefix, got, key)
 
 
-def verify_package(zip_path: Path, paths: Paths | None = None) -> tuple[str, str]:
+def verify_package(zip_path: Path) -> tuple[str, str]:
     """Check the package before anything is started or changed: its `.sha256` and VERSION (`NS-E701`) and,
-    once this install trusts a release key, its signature (`NS-E707`). Returns (version, member prefix).
-    `paths`: the install whose keys count (None: the one the environment names). See `_check_package`."""
-    done = _check_package(zip_path, paths, None)
+    once this program pins a release key, its signature (`NS-E707`). Returns (version, member prefix).
+    The keys are the running program's own (`release_keys.TRUSTED`). See `_check_package`."""
+    done = _check_package(zip_path, None)
     return done.version, done.prefix
 
 
@@ -1351,7 +1346,7 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
     zip_path, app = zip_path.resolve(), app.absolute()
     log = NsLogger("update", paths.logs)
     try:    # W4 (card update-signing): the package is judged first, before anything below is settled,
-        checked = _check_package(zip_path, paths, env.say)      # recovered, stopped or written
+        checked = _check_package(zip_path, env.say)             # recovered, stopped or written
     except NsError as e:
         log.warn("update_package_refused", e.detail, code=e.code, zip=str(zip_path))
         raise

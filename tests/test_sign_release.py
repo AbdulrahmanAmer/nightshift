@@ -67,10 +67,11 @@ def test_the_sig_file_has_the_format_and_no_key_is_printed(
 ) -> None:
     assert zips, "dev/sign_release.py is missing"
     z = zips[0]
-    code, said = run(capsys, "--test-key", str(z))  # the key of tests and proofs: no wheel needed
+    sign_release.sign_zip(z, sign_release.reference_signer(TEST_SEED))  # a throwaway key: no wheel needed
     raw = sig_of(z).read_bytes()
-    assert code == 0 and re.fullmatch(rb"alg: ed25519\nkey: [0-9a-f]{16}\nsig: [A-Za-z0-9+/]{86}==\n", raw), raw
-    assert signed_by(z, release_keys.TEST_KEYS) == key_of(TEST_SEED)[0] and b64(TEST_SEED) not in said
+    assert re.fullmatch(rb"alg: ed25519\nkey: [0-9a-f]{16}\nsig: [A-Za-z0-9+/]{86}==\n", raw), raw
+    assert signed_by(z, dict([key_of(TEST_SEED)])) == key_of(TEST_SEED)[0]
+    assert not hasattr(sign_release, "TEST_KEY_FILE")  # the repository holds no key the script could sign with
     secret = os.urandom(32)
     monkeypatch.setenv(KEY_ENV, b64(secret) + "\r\n")  # as the release run gives it; a line end is dropped
     code, said = run(capsys, str(z))

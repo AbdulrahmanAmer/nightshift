@@ -534,7 +534,7 @@ class LibraryService:
         """True when this install trusts a release key, so `ns update` refuses a package without `.sig`."""
         from ns_supervisor import releases
 
-        return bool(releases.trusted_keys(paths=self.s.paths))
+        return bool(releases.trusted_keys())
 
     def update_apply(self) -> dict[str, Any]:
         """Install the newest version (`ns update --github`, rolls back on failure)."""

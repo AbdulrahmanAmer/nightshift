@@ -11,7 +11,7 @@ program trusts (`ns_common.release_keys`), and the release run calls it on what 
 arithmetic is RFC 8032's reference code (section 6) with `hashlib.sha512`: the check runs in the OLD
 program's updater and in a release job with nothing installed, so it must not need a wheel.
 
-`sign` and `public_key` are the same reference code. They are not constant time: they exist for the TEST key
+`sign` and `public_key` are the same reference code. They are not constant time: they exist for throwaway keys
 (tests, the fake GitHub of the proofs) and to derive a public key once on the owner's own PC
 (`dev/release_keys.ps1`). A release is signed with `cryptography` (`dev/sign_release.py`).
 """
@@ -121,7 +121,7 @@ def public_key(seed: bytes) -> bytes:
 
 def sign(seed: bytes, message: bytes) -> bytes:
     """The 64-byte signature of `message` with the private key `seed`. Reference code, not constant time:
-    for the TEST key and for a self-check on the owner's PC only (see the module text)."""
+    for throwaway test keys and for a self-check on the owner's PC only (see the module text)."""
     a, prefix = _expand(seed)
     public = _compress(_mul(a, _G))
     r = _hash(prefix, message)

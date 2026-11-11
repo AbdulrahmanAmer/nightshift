@@ -1,6 +1,6 @@
 """Fake GitHub releases for the update proofs (H-15.9): the standard library only, on 127.0.0.1 only.
 
-    python github.py --dir <folder> [--port 0] [--prerelease] [--unsigned]
+    python github.py --dir <folder> [--port 0] [--prerelease] [--key-file <file> | --unsigned]
 
 `<folder>` holds what `dev/make_bundle.ps1` makes: `Nightshift-Update-<version>.zip` and, when there is one,
 `Nightshift-Update-<version>.zip.sha256`. The fake serves the NEWEST version in the folder as the latest
@@ -9,12 +9,16 @@ published release, the way api.github.com does:
     GET /repos/<owner>/<repo>/releases/latest    the release as JSON (404 while the folder has no package)
     GET /download/<file>                         that zip, its .sha256 or its .sig, from the folder
 
-Who made it (card update-signing): the fake is the release run of the proofs, so it signs. Before it answers
-`/releases/latest` it writes `<zip>.sig` with the TEST key (`tests/fixtures/release_test_key.txt`, public on
-purpose; an install trusts it only while it reads its releases from a test source) for each package that has
+Who made it (card update-signing): the fake is the release run of the proofs, so it can sign, with a
+THROWAWAY key the proof or test made for this run and hands over with `--key-file <file>` (a file outside the
+repository: base64 of 32 bytes on its first line that is not a `#` comment). No key lives in the repository
+and the product trusts no test key: the program under test must itself pin that key's public half
+(`ns_common/release_keys.py` `TRUSTED` of the build the proof installs, or a test's patch of it). With a key,
+before it answers `/releases/latest` it writes `<zip>.sig` for each package that has
 none, ONCE per file name for as long as it runs: a zip that is changed afterwards keeps the signature of the
 old bytes (a forged release: refused, "does not match"), and a `.sig` that is deleted is not made again (a
-release without one: refused, "is missing"). `--unsigned` signs nothing (a release from before the key).
+release without one: refused, "is missing"). Without `--key-file` it signs nothing and says so when it starts
+(`--unsigned` states that on purpose: a release from before the key).
 
 The checksum is the folder's: with a `.sha256` beside the zip the release lists that file and gives no digest
 of its own, so a wrong file is served as it is; without one the answer carries `digest: "sha256:<of the zip>"`
@@ -47,27 +51,26 @@ LATEST = re.compile(r"^/repos/[^/]+/[^/]+/releases/latest$")
 PACKAGE = re.compile(r"^Nightshift-Update-(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.]+))?\.zip$")
 SERVED = re.compile(r"^Nightshift-Update-[0-9A-Za-z.-]+\.zip(\.sha256|\.sig)?$")
 ROOT = Path(__file__).resolve().parents[2]
-TEST_KEY_FILE = ROOT / "tests" / "fixtures" / "release_test_key.txt"
 
 
-def key_seed() -> bytes:
-    """The 32 bytes of the TEST key. `ValueError` or `OSError` when its file is not there or holds no key."""
-    lines = [ln.strip() for ln in TEST_KEY_FILE.read_text(encoding="ascii").splitlines()]
+def key_seed(key_file: Path) -> bytes:
+    """The 32 bytes of the throwaway key in `key_file`. `ValueError` or `OSError` when the file is not there
+    or holds no key."""
+    lines = [ln.strip() for ln in Path(key_file).read_text(encoding="ascii").splitlines()]
     keys = [ln for ln in lines if ln and not ln.startswith("#")]
     seed = base64.b64decode(keys[0], validate=True) if len(keys) == 1 else b""
     if len(seed) != 32:
-        raise ValueError(f"{TEST_KEY_FILE} does not hold one key of 32 bytes")
+        raise ValueError(f"{key_file} does not hold one key of 32 bytes")
     return seed
 
 
-def sign_with_test_key(zip_path: Path) -> Path:
-    """Write `<zip>.sig` made with the TEST key (whole, or not at all) and return it. `ValueError` or
-    `OSError` when the zip is not a readable package (one that is still being copied into the folder)."""
+def sign_with(seed: bytes, zip_path: Path) -> Path:
+    """Write `<zip>.sig` made with the private key `seed` (whole, or not at all) and return it. `ValueError`
+    or `OSError` when the zip is not a readable package (one that is still being copied into the folder)."""
     if str(ROOT) not in sys.path:  # started as a script: the checkout this file is in
         sys.path.insert(0, str(ROOT))
     from ns_common import sigcheck  # the standard library only
 
-    seed = key_seed()
     version, _prefix = sigcheck.package_version(zip_path)
     signed = sigcheck.message(zip_path.name, version, sigcheck.sha256_file(zip_path))
     text = sigcheck.sig_text(sigcheck.public_key(seed), sigcheck.sign(seed, signed))
@@ -179,17 +182,18 @@ class Server(ThreadingHTTPServer):
     folder: Path
     prerelease: bool
     seen: list[tuple[str, str]]
-    sign: bool
+    seed: bytes | None
     signed: set[str]
     _lock: threading.Lock
     _sign_lock: threading.Lock
 
     def sign_new(self) -> None:
-        """With signing on: `<zip>.sig` (the TEST key) for each package of the folder that this run has not
+        """With a key (`seed`): `<zip>.sig` for each package of the folder that this run has not
         met yet and that has none. A file name is met once: a zip changed later keeps the signature of the old
         bytes, and a `.sig` deleted later stays away (the module text says what each proves). A zip that
         cannot be read yet (still being copied in) is met again at the next request."""
-        if not self.sign:
+        seed = self.seed
+        if seed is None:
             return
         with self._sign_lock:
             try:
@@ -203,7 +207,7 @@ class Server(ThreadingHTTPServer):
                 if zip_path.with_name(zip_path.name + ".sig").exists():
                     continue
                 try:
-                    sign_with_test_key(zip_path)
+                    sign_with(seed, zip_path)
                 except (OSError, ValueError):
                     self.signed.discard(zip_path.name)
 
@@ -218,15 +222,16 @@ class Server(ThreadingHTTPServer):
                 pass  # the folder is being emptied by the proof: the list in memory still has the request
 
 
-def serve(folder: Path, port: int = 0, prerelease: bool = False, sign: bool = True) -> Server:
+def serve(folder: Path, port: int = 0, prerelease: bool = False, seed: bytes | None = None) -> Server:
     """A server for `folder`, bound to 127.0.0.1 (port 0: the system picks one) and not yet serving: call
-    `serve_forever()` in a thread, and `shutdown()` and `server_close()` when done. `sign=False` is
-    `--unsigned`: no `.sig` is made (`Server.sign_new`)."""
+    `serve_forever()` in a thread, and `shutdown()` and `server_close()` when done. `seed` is the throwaway
+    private key it signs with (32 bytes, the caller's own); None is `--unsigned`: no `.sig` is made
+    (`Server.sign_new`)."""
     srv = Server(("127.0.0.1", port), Handler)
     srv.folder = Path(folder).resolve()
     srv.prerelease = prerelease
     srv.seen = []
-    srv.sign = sign
+    srv.seed = seed
     srv.signed = set()
     srv._lock = threading.Lock()
     srv._sign_lock = threading.Lock()
@@ -238,20 +243,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dir", required=True, help="folder with Nightshift-Update-<version>.zip, its .sha256")
     ap.add_argument("--port", type=int, default=0, help="port on 127.0.0.1 (default: chosen by the system)")
     ap.add_argument("--prerelease", action="store_true", help="mark the release a prerelease")
-    ap.add_argument("--unsigned", action="store_true", help="make no .sig (a release from before the key)")
+    how = ap.add_mutually_exclusive_group()
+    how.add_argument("--key-file", type=Path, help="sign with the throwaway private key in this file")
+    how.add_argument("--unsigned", action="store_true", help="make no .sig (a release from before the key)")
     args = ap.parse_args(argv)
     folder = Path(args.dir).resolve()
     if not folder.is_dir():
         sys.stderr.write(f"github fake could not start: {folder} is not a folder\n")
         return 3
-    if not args.unsigned:  # a fake that cannot sign would serve every release without its .sig, silently
+    seed: bytes | None = None
+    if args.key_file is not None:  # told to sign and unable to: it would serve unsigned releases, silently
         try:
-            key_seed()
+            seed = key_seed(args.key_file)
         except (OSError, ValueError) as e:
-            sys.stderr.write(f"github fake could not start: the TEST key cannot be read ({e})\n")
+            sys.stderr.write(f"github fake could not start: the key file cannot be read ({e})\n")
             return 3
+    elif not args.unsigned:
+        sys.stderr.write("github fake: no --key-file, so its releases carry no .sig (as with --unsigned)\n")
     try:
-        srv = serve(folder, args.port, args.prerelease, sign=not args.unsigned)
+        srv = serve(folder, args.port, args.prerelease, seed=seed)
     except OSError as e:
         sys.stderr.write(f"github fake could not start: {e}\n")
         return 3
