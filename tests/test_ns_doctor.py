@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from installer.stage2.web import uvpin
 from ns_common import __version__
 from ns_common.config import save_runtime
 from ns_common.models import Runtime
@@ -370,3 +371,26 @@ def test_the_nvidia_smi_row_is_true_in_every_cell(
         assert rows["fake_gpu"][1].startswith(want), rows["fake_gpu"]
     if profile in ("notjson", "invalid"):
         assert rows["runtime.json"][0] is False and "NS-E125" in rows["runtime.json"][1], rows["runtime.json"]
+
+
+def test_doctor_compares_uv_with_the_pin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Item uv-pin-on-update (written, NOT RUN): the row "uv" names a uv that is not the one the program
+    pins, with the way out; a home with no uv of its own (this test home at first) is not a difference."""
+    paths = seed(tmp_path)
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "manifest.json").write_text('{"bins": {"uv": {"version": "0.13.6"}}}', encoding="utf-8")
+    name, ok, text = doctor.uv_row(paths, app)
+    assert (name, ok) == ("uv", True) and text.startswith("none at ") and "pins 0.13.6" in text
+    exe = paths.home / "bin" / "uv" / "uv.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(uvpin, "run_version", lambda path: (0, path.read_text(encoding="utf-8")))
+    exe.write_text("uv 0.14.0 (stand-in)\n", encoding="utf-8")
+    assert doctor.uv_row(paths, app) == (
+        "uv",
+        True,
+        doctor.WARN + "uv 0.14.0, but this program pins 0.13.6. "
+        "Run INSTALL.cmd again and choose Repair to put the pinned uv back.",
+    )
+    exe.write_text("uv 0.13.6 (stand-in)\n", encoding="utf-8")
+    assert doctor.uv_row(paths, app) == ("uv", True, "uv 0.13.6, the version this program pins")
