@@ -311,11 +311,11 @@ def prepare(
     """U1 to U4, before anything of the install is changed. ``NotHad`` when the pinned uv cannot be had or
     does not run; ``bin\\uv`` and ``bin\\uv.prev`` are untouched then and ``bin\\uv.next`` is removed."""
     plan = Plan(home)
+    settle(home)        # U0: a bin/uv.next or a cut swap that a killed run left goes first, pin or no pin
     want = pin.get("version", "")
     if not want:
         say("this program pins no uv version: the install's uv is kept")
         return plan
-    settle(home)
     uv, prev, nxt = (uv_dir(home, s) for s in ("", ".prev", ".next"))
     runs, have = report(uv / EXE)
     plan.want, plan.was = want, have

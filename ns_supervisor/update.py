@@ -1265,9 +1265,13 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
     replaced = current_version(prev) if prev.is_dir() else ""
     log.info("update_start", old=old_version, new=new_version, zip=str(zip_path))
     uv = uv_for(uvpin.pin_in_zip(zip_path, prefix), paths, log, env.say, zip_path=zip_path)  # NS-E708
-    env.stop()
-    update_job.step(paths, WAITING_FOR_PROGRAMS, update_job.unchanged_sentence(old_version))
-    wait_no_holders(paths, env.holder_wait_s, earlier=earlier, say=env.say)
+    try:
+        env.stop()
+        update_job.step(paths, WAITING_FOR_PROGRAMS, update_job.unchanged_sentence(old_version))
+        wait_no_holders(paths, env.holder_wait_s, earlier=earlier, say=env.say)
+    except BaseException:
+        uv_undo(uv, log)      # (a refusal here, NS-E706, leaves no bin\uv.next behind)
+        raise
     names = {"old": old_version, "new": new_version}
     saved: _UpdateCopy | None = None
     recorded = False
@@ -1510,7 +1514,6 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
         readable_as = config_snapshot.program_version(prev)
         if readable_as == "-":
             restored_version = UNKNOWN_VERSION
-        uv = uv_for(uvpin.pin_of(prev), paths, log, env.say, target=restored_version)  # U8: before any change
         left_fingerprint = app_fingerprint(app)  # the program that is about to become <app>.prev
         copy, why_not, slot = _read_settings_copy(app, prev)
         live, live_error = _live_settings(paths, log)
@@ -1565,7 +1568,10 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
                 "NS-E702",
                 f"could not record the rollback ({e}). {_undo_settings(app, paths, intent, log)}",
             ) from e
-        uv_swap(uv, paths, log, env.say, ROLLBACK_PREPARE_STOPPED, soft=True)  # U5: before the record
+        # U8: got and swapped in one go (a rollback is never refused for its uv, and no way out lies between
+        # the two, so no bin\uv.next is left); before the record, which names the uv
+        uv = uv_for(uvpin.pin_of(prev), paths, log, env.say, target=restored_version)
+        uv_swap(uv, paths, log, env.say, ROLLBACK_PREPARE_STOPPED, soft=True)
         try:        # W5: what the next start replays if the sync after the swap does not finish
             recorded = write_record(paths, prev, app, by="rollback", log=log)
         except OSError as e:

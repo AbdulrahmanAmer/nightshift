@@ -371,3 +371,33 @@ def test_a_uv_that_does_not_run_is_refused(tmp_path: Path, text: str, said: str)
     assert ei.value.code == "NS-E708" and said in ei.value.detail and "Nothing was changed" in ei.value.detail
     assert not (inst.bin / "uv.next").exists() and not (inst.bin / "uv.prev").exists()
     assert inst.uv() == "0.13.6" and inst.version() == "0.1.0" and e.calls == []
+
+
+def test_no_uv_next_is_left_when_the_update_is_refused_for_running_programs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NOT RUN. NS-E706 comes after the uv was unpacked and checked: `bin\\uv.next` goes with the refusal."""
+    inst, z = install(tmp_path), package(tmp_path)
+    at: list[bool] = []
+
+    def refuse(*a: object, **kw: object) -> None:
+        at.append((inst.bin / "uv.next" / "uv.exe").is_file())
+        raise NsError("NS-E706", "These programs still run from Nightshift's Python environments")
+
+    monkeypatch.setattr(update, "wait_no_holders", refuse)
+    with pytest.raises(NsError) as ei:
+        update.update_app(z, inst.app, Env().env(), paths=inst.paths)
+    assert ei.value.code == "NS-E706" and at == [True]  # it was there when the refusal came
+    assert inst.uv() == "0.13.6" and not list(inst.bin.glob("uv.*")) and inst.version() == "0.1.0"
+
+
+def test_a_left_over_uv_next_is_cleared_by_the_next_update_or_rollback(tmp_path: Path) -> None:
+    """NOT RUN. After a kill (no handler ran): the next update clears it even when its program pins no uv,
+    and so does the next rollback (`uvpin.prepare` settles first)."""
+    inst = install(tmp_path)
+    put_uv(inst.bin / "uv.next", "0.14.0")
+    update.update_app(make_zip(tmp_path), inst.app, Env().env(), paths=inst.paths)  # pins no uv
+    assert not (inst.bin / "uv.next").exists() and inst.uv() == "0.13.6"
+    put_uv(inst.bin / "uv.next", "0.14.0")
+    update.rollback_app(inst.app, Env().env(), paths=inst.paths)
+    assert not (inst.bin / "uv.next").exists() and inst.uv() == "0.13.6"
