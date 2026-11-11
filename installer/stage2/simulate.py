@@ -302,7 +302,7 @@ def simulated_fetch(
         dest.write_bytes(body)
         if progress:
             progress(len(body), len(body))
-        write_marker(dest, sha256)
+        write_marker(dest, sha256, hashed=False)    # the pin was given, not read from the file
         return dest
 
     return fetch

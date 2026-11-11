@@ -768,7 +768,10 @@ def test_an_update_way_out_names_this_installs_own_command_when_another_install_
     way = update.rollback_way_out(Paths(b), b / "app", "0.1.15", "0.1.14")
     assert "run 'ns update --rollback --detach'" in way
     assert "'ns update <zip> --detach'" in update.update_way_out(Paths(b), b / "app", "0.1.15", "0.1.14")
-    assert describe("NS-E202").hint == "Run 'ns doctor' and check logs\\supervisor-*.jsonl."
+    assert describe("NS-E202").hint == (     # (model-file-damaged: the hint names the model rows and Repair)
+        "Run 'ns doctor': it checks the model files and the logs. If it names a damaged or missing model, run "
+        "INSTALL.cmd again and choose Repair."
+    )
     err = NsError("NS-E702", "Run ns update --rollback again to go back.")
     assert err.detail == "Run ns update --rollback again to go back." and "Run 'ns doctor'" not in str(err)
     assert StudioError("NS-E324", "run 'studio calibrate' first").detail == "run 'studio calibrate' first"

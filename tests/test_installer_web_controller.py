@@ -482,8 +482,13 @@ def test_a_second_run_resumes_what_the_first_one_finished(tmp_path, monkeypatch)
 
 
 # ------------------------------------------------------------------- INSTALL.cmd over a finished install
-def finished_install(s, old_zip: Path) -> None:
-    """What a completed setup leaves behind: the program copy, the answers and every step done."""
+def finished_install(s, old_zip: Path, content=None) -> list:
+    """What a completed setup leaves behind: the program copy, the answers, every step done, and every model
+    file the wizard's own plan names (`verify_downloads.plan_for_install`, not the window's copy of it) as a
+    small stand-in file with setup's `.ok` marker for the manifest's pin. `content(item)` gives a file's bytes
+    (default: a few bytes naming it). Returns the planned model files (`DownloadItem`s)."""
+    from installer.stage2 import downloader as dl
+    from installer.stage2 import verify_downloads as vd
     from installer.stage2.web import appcopy
 
     appcopy.install_app(old_zip, s.home)
@@ -495,6 +500,15 @@ def finished_install(s, old_zip: Path) -> None:
         "started_at": "2026-11-02T21:00:00", "completed_at": "2026-11-02T22:05:00",
         "steps": {i: {"status": "done", "error": None, "finished_at": "2026-11-02T22:00:00"}
                   for i in STEP_ORDER}}), encoding="utf-8")
+    plan = vd.plan_for_install(Paths(s.home), s.home / "app")
+    items = [i for i in plan if i.kind == "file" and "models" in Path(i.dest).parts and not i.optional]
+    assert items, "the plan names no model file"
+    for i in items:
+        dest = Path(i.dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(content(i) if content else b"stand-in " + i.name.encode())
+        dl.write_marker(dest, dl.pinned_sha256(i.sha256))
+    return items
 
 
 def test_install_cmd_over_a_finished_install_of_the_same_program_shows_done(tmp_path, monkeypatch):

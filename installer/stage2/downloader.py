@@ -204,15 +204,21 @@ def hf_url(repo: str, revision: str, file: str) -> str:
     return f"{HF}/{repo}/resolve/{revision}/{file}"
 
 
-def sha256_file(path: Path, chunk: int = CHUNK) -> str:
-    """Hex SHA256 of a file."""
+def sha256_file(path: Path, chunk: int = CHUNK, *, progress: ProgressFn | None = None) -> str:
+    """Hex SHA256 of a file; ``progress(bytes read, total)`` after each chunk when given. The file is opened
+    for reading only (Python shares read and write on Windows, so a model an engine has open is read too)."""
     h = hashlib.sha256()
+    total = path.stat().st_size if progress is not None else None
+    done = 0
     with path.open("rb") as fh:
         while True:
             block = fh.read(chunk)
             if not block:
                 return h.hexdigest()
             h.update(block)
+            if progress is not None:
+                done += len(block)
+                progress(done, total)
 
 
 def _part(dest: Path) -> Path:
@@ -223,12 +229,30 @@ def _marker(dest: Path) -> Path:
     return dest.with_name(dest.name + ".ok")
 
 
-def write_marker(dest: Path, digest: str | None) -> None:
-    """Record that ``dest`` was verified (size + mtime), so reruns skip it without rehashing."""
+def write_marker(dest: Path, digest: str | None, *, hashed: bool = True) -> None:
+    """Record that ``dest`` was verified (size + mtime), so reruns skip it without rehashing.
+
+    ``hashed_at`` (UTC) says when its SHA256 was last read and matched: only when ``digest`` was really
+    computed from the file (``hashed``; a simulated fetch writes the pin it was given). A marker of 0.1.14 has
+    none and reads as never checked by hash (card model-file-damaged)."""
     st = dest.stat()
-    _marker(dest).write_text(
-        json.dumps({"size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": digest}), encoding="utf-8"
-    )
+    data: dict[str, Any] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": digest}
+    if digest is not None and hashed:
+        # compared with a Repair's start (`model_repair.begin`) at the same precision: a file hashed in the
+        # second the Repair began is not taken for one hashed by it
+        data["hashed_at"] = datetime.now(UTC).isoformat(timespec="microseconds")
+    _marker(dest).write_text(json.dumps(data), encoding="utf-8")
+
+
+def hashed_at(dest: Path) -> str | None:
+    """When the marker says ``dest`` was last hashed, while the marker still matches the file; else None."""
+    if not marker_matches(dest):
+        return None
+    try:
+        value = json.loads(_marker(dest).read_text(encoding="utf-8")).get("hashed_at")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if isinstance(value, str) else None
 
 
 def is_verified(dest: Path, sha256: str | None) -> bool:
