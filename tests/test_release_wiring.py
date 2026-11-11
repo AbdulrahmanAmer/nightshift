@@ -20,7 +20,7 @@ def read(rel: str) -> str:
 
 
 def test_changelog_has_a_heading_for_the_version_file():
-    # a release candidate (VERSION 0.1.15-rc4) uses the heading of the final version it previews (H-12)
+    # a release candidate (VERSION 0.1.15-rc5) uses the heading of the final version it previews (H-12)
     version = read("VERSION").strip().split("-rc", 1)[0]
     text = read("CHANGELOG.md")
     m = re.search(rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\s*$", text, re.MULTILINE)
@@ -215,7 +215,11 @@ def test_the_setup_zip_carries_the_gpu_kit():
     assert b"\r\n" in raw and b"\n" not in raw.replace(b"\r\n", b"")  # CRLF only
     text = raw.decode("ascii")
     assert r'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0dev\kit\gpukit.ps1" %*' in text
-    assert "pause" in text.lower()
+    # a person's window waits for a key, by time; `pause` (which reads its input and never ends on a pipe
+    # nobody writes to, as an agent's shell gives) is gone; unattended, or with no keyboard, nothing waits
+    assert '\r\n"%SystemRoot%\\System32\\timeout.exe" /t 99999 >nul 2>nul\r\n' in text
+    assert not re.search(r"(?im)^\s*pause\b", text)
+    assert 'if /i "%%~A"=="-Unattended" set "NS_UNATTENDED=1"' in text
     from installer.stage2.web import appcopy
 
     assert "gpu-kit.cmd" in appcopy.ROOT_ENTRIES  # setup copies it into <home>\app with dev\kit

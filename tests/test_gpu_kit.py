@@ -668,6 +668,7 @@ class World:
         self.windows = CannedWindows(self)
         self.answers: list[str | None] = []
         self.asked: list[str] = []
+        self.stand_in_for_the_person = True  # False: the kit gets no `ask` (it would read its own input)
         self.out: list[str] = []
         self.say_trap: str | None = None
 
@@ -808,9 +809,23 @@ class World:
         kit_here()
         self.out = []
         env = gpukit.KitEnv(
-            clock=self.clock, product=self.product, windows=self.windows, ask=self.ask, say=self.say
-        )
-        return gpukit.main(["--home", str(self.home), *extra], env=env)
+            clock=self.clock, product=self.product, windows=self.windows, say=self.say,
+            ask=self.ask if self.stand_in_for_the_person else None,
+        )  # fmt: skip
+        try:
+            return gpukit.main(["--home", str(self.home), *extra], env=env)
+        except SystemExit as e:  # an option this kit does not know: argparse's own exit, never a kit code
+            self.out.append(f"argparse exit {e.code}")
+            return 1000 + int(e.code or 0)
+
+    def last(self) -> dict[str, Any]:
+        """The last line of the last run as the JSON object an unattended run ends with ({} when it is
+        not one)."""
+        try:
+            got = json.loads(self.out[-1]) if self.out else {}
+        except ValueError:
+            return {}
+        return got if isinstance(got, dict) else {}
 
     def night(self, started: datetime, *, as_task: bool = True) -> dict[str, Any]:
         """One night of the product (`daily.run_daily`, fake services, the stub plan) started at `started`."""
@@ -2394,3 +2409,454 @@ def test_an_update_in_progress_keeps_the_kit_from_stopping_nightshift(nightshift
         assert w.said("Nightshift was left running because an update of Nightshift is in progress")
     finally:
         lock.release()
+
+
+# ------------------------------------------------------------------------------------------------ round 8
+# The kit is driven by an AGENT'S SHELL as well as by a person. Such a shell often gives a child process a
+# pipe nobody writes to as its input: every place the kit reads input or waits for a key ends by time
+# whatever the input is, and -Unattended reads none at all. The children below are REAL processes with that
+# kind of input, each ended by its recorded pid (its children too) on every path.
+def end_tree(proc: subprocess.Popen[bytes]) -> None:
+    """End the child (when it still runs) and what it started, by the recorded pid."""
+    import psutil
+
+    if proc.poll() is None:
+        family = []
+        try:
+            family = psutil.Process(proc.pid).children(recursive=True)
+        except psutil.Error:
+            pass
+        for p in family:
+            try:
+                p.kill()
+            except psutil.Error:
+                pass
+        proc.kill()
+    proc.wait(30)
+
+
+def child_with(
+    argv: list[str], give: str, tmp: Path, wait_s: float, env: dict[str, str] | None = None
+) -> tuple[bool, int | None, str]:
+    """Run `argv` as a real child whose input is `give`; (it ended by itself within `wait_s`, its exit code,
+    what it printed). A pipe that is not closed here stays OPEN and silent until the child has ended."""
+    out = tmp / "child-output.txt"
+    empty = tmp / "empty-input.txt"
+    empty.write_bytes(b"")
+    source: Any = subprocess.PIPE
+    opened = None
+    if give == "the NUL device":
+        source = subprocess.DEVNULL
+    elif give == "an empty file":
+        source = opened = empty.open("rb")
+    ended, code = False, None
+    with out.open("wb") as sink:
+        proc = subprocess.Popen(argv, stdin=source, stdout=sink, stderr=subprocess.STDOUT, env=env)
+        try:
+            if proc.stdin is not None:
+                if give == "a pipe with a whole line":
+                    proc.stdin.write(b"yes it does\r\n")
+                elif give == "a pipe with two lines at once":
+                    proc.stdin.write(b"a\ny\n")
+                elif give == "a pipe that closes in the middle of a line":
+                    proc.stdin.write(b"y")
+                if give in ("a pipe that closes in the middle of a line", "a pipe that is closed"):
+                    proc.stdin.close()
+                else:
+                    proc.stdin.flush()  # (and it stays open: "a pipe that stays silent" gets nothing)
+            try:
+                code = proc.wait(wait_s)
+                ended = True
+            except subprocess.TimeoutExpired:
+                pass
+        finally:
+            end_tree(proc)
+            if proc.stdin is not None and not proc.stdin.closed:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+            if opened is not None:
+                opened.close()
+    return ended, code, out.read_text(encoding="utf-8", errors="replace")
+
+
+ASK = ("import sys; sys.path.insert(0, sys.argv[1]); from dev.kit import gpukit\n"
+       "{before}\n"
+       "for _ in range({times}):\n"
+       "    print('ANSWER', repr(gpukit.timed_input('Q?', {bound})), flush=True)\n")  # fmt: skip
+#: (the child's input, what the child does first, prompts, each prompt's bound in seconds, the answers)
+INPUTS = [
+    ("a pipe that stays silent", "", 1, 2, ["None"]),  # ends by time, at its bound
+    ("a pipe that closes in the middle of a line", "", 1, 60, ["None"]),  # at once: a cut line is no answer
+    ("a pipe that is closed", "", 1, 60, ["None"]),
+    ("a pipe with a whole line", "", 1, 60, ["'yes it does'"]),
+    ("a pipe with two lines at once", "", 2, 60, ["'a'", "'y'"]),  # the second line is the next prompt's
+    ("an empty file", "", 1, 60, ["None"]),
+    ("the NUL device", "", 1, 60, ["None"]),  # at once: it is no keyboard, whatever isatty says
+    ("a closed handle", "import os; os.close(0)", 1, 60, ["None"]),
+    ("no input at all", "sys.stdin = None", 1, 60, ["None"]),
+]
+
+
+@pytest.mark.parametrize(("give", "before", "times", "bound", "answers"), INPUTS, ids=[i[0] for i in INPUTS])
+def test_every_prompt_ends_by_time_whatever_the_input_is(
+    tmp_path: Path, give: str, before: str, times: int, bound: int, answers: list[str]
+) -> None:
+    kit_here()
+    code = ASK.format(before=before, times=times, bound=bound)
+    pipe = give if give.startswith(("a pipe", "the NUL", "an empty")) else "a pipe that stays silent"
+    # (20 s: far more than a bound of 2 s needs, far less than a bound of 60 s: those must not wait at all)
+    ended, rc, out = child_with([sys.executable, "-c", code, str(ROOT)], pipe, tmp_path, 20)
+    assert ended, f"with {give} as its input the kit's prompt never ended (the child was ended by its pid)"
+    assert rc == 0 and re.findall(r"ANSWER (.+)", out) == answers, (rc, out)
+
+
+def test_at_a_keyboard_a_prompt_ends_at_its_bound_and_takes_what_is_typed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    kit_here()
+    assert hasattr(gpukit, "_keyboard"), "the kit has no seam for the console's keyboard"
+    keys = list("n too dark\r")
+    monkeypatch.setattr(gpukit, "_stdin_kind", lambda: "console")
+    monkeypatch.setattr(gpukit, "_keyboard", lambda: (lambda: bool(keys), lambda: keys.pop(0)))
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert gpukit.timed_input("Q?", 5) == "n too dark"
+    begun = time.monotonic()
+    assert gpukit.timed_input("Q?", 0.3) is None  # nobody types: it ends by time
+    assert 0.25 <= time.monotonic() - begun < 5
+    assert "(no answer: left for the next run)" in capsys.readouterr().out
+
+
+def test_what_the_kit_starts_never_gets_the_kits_own_input(tmp_path: Path) -> None:
+    """`opencode run`, `ns`, `studio`, the proof runner and the PowerShell tools are started through `_run`.
+    Under an agent's shell the kit's input is a pipe nobody writes to: a program that reads its input would
+    wait there for its whole bound. Each gets the NUL device instead."""
+    kit_here()
+    reads = "import sys; sys.stdin.read(); print('the end of its input')"
+    code = ("import sys; sys.path.insert(0, sys.argv[1]); from dev.kit import gpukit\n"
+            f"print(gpukit._run([sys.executable, '-c', {reads!r}], 8))\n")  # fmt: skip
+    argv = [sys.executable, "-c", code, str(ROOT)]
+    ended, rc, out = child_with(argv, "a pipe that stays silent", tmp_path, 60)
+    assert ended and rc == 0, out
+    assert out.startswith("(0, 'the end of its input"), out
+
+
+def test_a_line_the_kit_says_reaches_a_file_or_a_pipe_at_once(tmp_path: Path) -> None:
+    """An agent's shell reads the kit through a pipe or a file, for hours: a line must be there when it is
+    said, not when the kit ends (or never, when the shell ends the kit first). The child says one line and
+    then stays for a minute; its output is a file."""
+    kit_here()
+    code = ("import sys, time; sys.path.insert(0, sys.argv[1]); from dev.kit import gpukit\n"
+            "gpukit.KitEnv().say('Step 5 of 13 (make one story video): starting.')\n"
+            "time.sleep(60)\n")  # fmt: skip
+    out = tmp_path / "said.txt"
+    with out.open("wb") as sink:
+        child = subprocess.Popen([sys.executable, "-c", code, str(ROOT)], stdin=subprocess.DEVNULL,
+                                 stdout=sink, stderr=subprocess.STDOUT)  # fmt: skip
+        try:
+            end = time.monotonic() + 15
+            while time.monotonic() < end and child.poll() is None and not out.stat().st_size:
+                time.sleep(0.1)
+            said = out.read_text(encoding="utf-8", errors="replace")
+            running = child.poll() is None
+        finally:
+            end_tree(child)
+    assert running and said.strip() == "Step 5 of 13 (make one story video): starting.", (running, said)
+
+
+POWERSHELL = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe and Windows PowerShell")
+@pytest.mark.parametrize("switch", [[], ["-Unattended"]], ids=["as a person starts it", "unattended"])
+def test_gpu_kit_cmd_never_waits_for_a_key_nobody_can_press(tmp_path: Path, switch: list[str]) -> None:
+    """The real GPU-KIT.cmd beside a stand-in for dev\\kit\\gpukit.ps1 (it prints two lines and ends with 7),
+    started by cmd.exe with a pipe nobody writes to as its input."""
+    here = tmp_path / "zip"
+    (here / "dev" / "kit").mkdir(parents=True)
+    (here / "GPU-KIT.cmd").write_bytes((ROOT / "GPU-KIT.cmd").read_bytes())
+    stand_in = ("param([switch]$Unattended)\r\nWrite-Output 'the kit ran'\r\n"
+                "Write-Output '{\"state\": \"waiting\"}'\r\nexit 7\r\n")  # fmt: skip
+    (here / "dev" / "kit" / "gpukit.ps1").write_bytes(stand_in.encode("ascii"))
+    argv = ["cmd.exe", "/d", "/c", str(here / "GPU-KIT.cmd"), *switch]
+    ended, rc, out = child_with(argv, "a pipe that stays silent", tmp_path, 45)
+    assert ended, "GPU-KIT.cmd waited for a key on an input that is no keyboard (ended by its pid)"
+    assert rc == 7, (rc, out)  # the kit's own exit code
+    assert out.splitlines()[-1] == '{"state": "waiting"}', out  # nothing is printed after the kit's last line
+    text = (ROOT / "GPU-KIT.cmd").read_text(encoding="ascii")
+    assert not re.search(r"(?im)^\s*pause\b", text)  # (pause reads its input: it never ends on a silent pipe)
+    # a person's window still waits for a key: Windows' own timeout.exe, whatever else PATH calls timeout
+    assert '\n"%SystemRoot%\\System32\\timeout.exe" /t 99999 >nul 2>nul\n' in text
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe and a console window")
+def test_at_a_console_of_its_own_gpu_kit_cmd_waits_for_a_person_and_not_for_an_agent(tmp_path: Path) -> None:
+    """The real GPU-KIT.cmd (beside a stand-in for gpukit.ps1 that ends with 7) at a console of its own,
+    where nothing is typed (the console's window is hidden, so it never takes the keyboard from whoever
+    works at this PC, and no key of theirs can end the wait). As a person starts it, it stays (it waits for
+    a key); with -Unattended it ends by itself with the kit's exit code. Each is ended by its recorded pid."""
+    probe = tmp_path / "probe.cmd"
+    probe.write_bytes(b'@echo off\r\n"%SystemRoot%\\System32\\timeout.exe" /t 0 >nul 2>nul\r\n'
+                      b'echo %errorlevel% > "%~dp0probe.txt"\r\n')  # fmt: skip
+    own_console = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    hidden = subprocess.STARTUPINFO()
+    hidden.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    hidden.wShowWindow = subprocess.SW_HIDE
+    look = ["cmd.exe", "/d", "/c", str(probe)]
+    looked = subprocess.Popen(look, creationflags=own_console, startupinfo=hidden)
+    try:
+        looked.wait(60)
+    finally:
+        end_tree(looked)
+    said = tmp_path / "probe.txt"
+    answer = said.read_text(encoding="ascii").strip() if said.exists() else ""
+    if answer != "0":
+        pytest.skip(f"no console with a keyboard can be opened here (timeout.exe said {answer!r})")
+    here = tmp_path / "zip"
+    (here / "dev" / "kit").mkdir(parents=True)
+    (here / "GPU-KIT.cmd").write_bytes((ROOT / "GPU-KIT.cmd").read_bytes())
+    (here / "dev" / "kit" / "gpukit.ps1").write_bytes(b"param([switch]$Unattended)\r\nexit 7\r\n")
+    argv = ["cmd.exe", "/d", "/c", str(here / "GPU-KIT.cmd")]
+    agent = subprocess.Popen([*argv, "-Unattended"], creationflags=own_console, startupinfo=hidden)
+    try:
+        try:
+            code = agent.wait(60)
+        except subprocess.TimeoutExpired:
+            code = None
+    finally:
+        end_tree(agent)
+    assert code == 7, "unattended, GPU-KIT.cmd waited for a key at the end (ended by its pid)"
+    person = subprocess.Popen(argv, creationflags=own_console, startupinfo=hidden)
+    try:
+        try:
+            person.wait(12)
+            stayed = False
+        except subprocess.TimeoutExpired:
+            stayed = True
+    finally:
+        end_tree(person)
+    assert stayed, "a person's window closed by itself: its last lines could not be read"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell")
+def test_gpukit_ps1_asks_for_the_folder_only_at_a_keyboard_and_by_time(tmp_path: Path) -> None:
+    script = ROOT / "dev" / "kit" / "gpukit.ps1"
+    code = "\n".join(line.split("#", 1)[0] for line in script.read_text(encoding="ascii").splitlines())
+    assert "Read-Host" not in code  # (it reads the input whatever it is: on a silent pipe it never ends)
+    ask = ("$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:NS_PS1, [ref]$null, "
+           "[ref]$null); $fn = $ast.Find({ param($n) $n -is "
+           "[System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Read-KitLine' }, "
+           "$true); if ($null -eq $fn) { 'NO FUNCTION'; exit 3 }; Invoke-Expression $fn.Extent.Text; "
+           "$r = Read-KitLine -Question 'Which folder?' -Prompt 'Folder' -TimeoutSec 60; "
+           "if ($null -eq $r) { 'NO ANSWER' } else { 'ANSWER ' + $r }")  # fmt: skip
+    env = {**os.environ, "NS_PS1": str(script)}
+    ended, rc, out = child_with([*POWERSHELL, "-Command", ask], "a pipe that stays silent", tmp_path, 40, env)
+    assert ended and rc == 0 and out.split() == ["NO", "ANSWER"], (ended, rc, out)  # not asked, not read
+    # the whole script, unattended, with a folder that is no install: refused at once, the JSON line last
+    nothing = tmp_path / "not an install"
+    nothing.mkdir()
+    argv = [*POWERSHELL, "-File", str(script), "-Home", str(nothing), "-Unattended"]
+    ended, rc, out = child_with(argv, "a pipe that stays silent", tmp_path, 60)
+    assert ended and rc == 2, (ended, rc, out)
+    last = json.loads(out.splitlines()[-1])
+    assert (last["state"], last["exit_code"], last["step"]) == ("refused", 2, "K0")
+    assert last["open_questions"] == [] and last["zip"] is None
+    assert "is not a Nightshift install" in last["reason"] and out.startswith("REFUSED ")
+
+
+def test_the_kit_itself_unattended_reads_nothing_and_ends_with_the_json_line(tmp_path: Path) -> None:
+    """The real dev/kit/gpukit.py as a child with a pipe nobody writes to (a folder that is no install: it
+    refuses, which needs no product)."""
+    argv = [sys.executable, str(ROOT / "dev" / "kit" / "gpukit.py"), "--home", str(tmp_path / "none"),
+            "--unattended"]  # fmt: skip
+    ended, rc, out = child_with(argv, "a pipe that stays silent", tmp_path, 60)
+    lines = out.splitlines()
+    last = json.loads(lines[-1]) if lines and lines[-1].startswith("{") else {}
+    assert ended and rc == 2 and last.get("state") == "refused", (ended, rc, out)
+    assert lines[0].startswith("REFUSED ") and last["reason"] in lines[0] and last["zip"] is None
+    assert set(last) == {"kit", "step", "step_title", "state", "exit_code", "next_run_after",
+                         "open_questions", "zip", "failed_steps", "reason"}  # fmt: skip
+
+
+def test_the_help_says_what_unattended_does_and_what_its_exit_codes_mean() -> None:
+    kit_here()
+    text = gpukit.build_parser().format_help()
+    assert "--unattended" in text and "reads no input" in text and "waits for no key" in text
+    assert getattr(gpukit, "EXIT", None) == {"done": 0, "failed": 1, "refused": 2, "waiting": 3, "locked": 4,
+                                             "blocked": 5, "interrupted": 130}  # fmt: skip
+    for word, code in gpukit.EXIT.items():
+        assert re.search(rf"(?m)^\s+{code}  {word}", text), (word, code)
+    script = (ROOT / "dev" / "kit" / "gpukit.ps1").read_text(encoding="ascii")
+    assert ".PARAMETER Unattended" in script and "[switch]$Unattended" in script
+
+
+DAY_ONE = {"K0": "PASS", "K1": "PASS", "K2": "PASS", "KS": "PASS", "K3": "PASS", "KC": "PASS", "KV": "PASS",
+           "KN": "NOT RUN", "KA": "PASS", "K4": "PASS", "K5": "WAIT", "K6": "WAIT", "K7": "WAIT"}  # fmt: skip
+
+
+def test_an_unattended_run_asks_nothing_keeps_the_owners_questions_open_and_ends_with_one_json_line(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit_here()
+    read: list[str] = []
+    monkeypatch.setattr(gpukit, "timed_input", lambda prompt, timeout_s=0: read.append(prompt))
+    world.stand_in_for_the_person = False  # (the kit would read its own input, if it read any)
+    code = world.run("--unattended")
+    last = world.last()
+    assert code == 3 and last.get("state") == "waiting", (code, world.out[-3:])  # it waits for the nights
+    assert read == [] and world.asked == []  # nothing was asked, not even "Press Enter to start"
+    assert world.results() == DAY_ONE  # the same steps and results as a person's first run
+    state = world.state()
+    assert (last["step"], last["exit_code"], last["failed_steps"]) == ("K5", 3, [])
+    assert last["next_run_after"] == state["come_back"] == local(2026, 11, 14, 9, 0).isoformat()
+    assert last["zip"] == str(world.zips()[0])
+    assert world.out[-1] == json.dumps(last)  # the last line is that one object, and nothing else
+    # every question only a person can answer: open, with its exact words and the file to look at
+    video = json.loads((world.ev / "story" / "story.json").read_text(encoding="utf-8"))["video"]
+    asked = last["open_questions"]
+    assert len(asked) == 19 and state["owner_questions_open"] == asked
+    assert asked[0] == {"group": "watch", "id": "q1", "question": gpukit.QUESTIONS["watch"][0],
+                        "look_at": video}  # fmt: skip
+    assert {q["group"]: q["look_at"] for q in asked} == {
+        "watch": video, "paste": str(gpukit.KIT_DIR / "K8_PASTE_CHECK.md"),
+        "task_end": str(gpukit.KIT_DIR / "night-task-end.txt"),
+        "standby": str(gpukit.KIT_DIR / "night-task-end.txt")}  # fmt: skip
+    heading = world.out.index(world.said("For the owner: 19 question(s) only a person can answer are open."))
+    listed = world.out[heading + 1 : heading + 20]
+    assert listed[0] == f"  1. [the video] {gpukit.QUESTIONS['watch'][0]} Look at: {video}"
+    words = [line.split("] ", 1)[1].rsplit(" Look at: ", 1)[0] for line in listed]
+    assert words == [q["question"] for q in asked]
+    # not answered: no answer of any kind is recorded, and no group is PASS or FAIL
+    assert not state.get("answers") and {c["result"] for c in state["checklists"].values()} == {"WAIT"}
+    assert "later" not in json.dumps(state.get("answers", {}))
+    # the second morning, unattended again: done; the morning note's questions are the owner's too
+    world.nights_pass()
+    assert world.run("--unattended") == 0, world.out[-4:]
+    last = world.last()
+    assert (last["state"], last["step"], last["next_run_after"]) == ("done", "done", None)
+    assert last["failed_steps"] == []
+    assert len(last["open_questions"]) == 21 and last["open_questions"][-1]["group"] == "morning"
+    assert last["zip"] == str(world.zips()[0]) and world.said("Send this one file: ")
+    assert read == [] and world.asked == [] and not world.state().get("answers")
+    # a later run by a person (no switch) asks them, and what the person says is what is recorded
+    world.stand_in_for_the_person = True
+    world.answers = ["y"] * 21
+    assert world.run() == 0, world.out[-4:]
+    put = [a for a in world.asked if "[y/n/later]" in a or "(or later)" in a]
+    assert len(put) == 21 and put[0] == f"{gpukit.QUESTIONS['watch'][0]} [y/n/later]"
+    assert world.state()["answers"]["watch"]["q1"]["answer"] == "y"
+    assert world.state()["owner_questions_open"] == []
+
+
+def test_an_unattended_runs_exit_code_says_what_happened(world: World) -> None:
+    kit_here()
+    # 2 refused: nothing was started or changed
+    assert world.run("--unattended", "--night-now") == 2
+    last = world.last()
+    assert (last.get("state"), last.get("step"), last.get("zip")) == ("refused", "K0", None), world.out
+    assert "-NightNow and -Clock are for a dry run only" in last["reason"] and not world.ev.exists()
+    # 4 locked: another run of the kit holds the kit lock (an attended run says the same with code 2)
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    try:
+        world.ev.mkdir(parents=True)
+        now = datetime.now().astimezone().isoformat()
+        (world.ev / "kit.lock").write_text(f"kit | GPU kit pid {holder.pid} | {now}\n", "ascii")
+        assert world.run("--unattended") == 4 and world.last().get("state") == "locked"
+        assert f"Another GPU kit is running (pid {holder.pid})" in world.last()["reason"]
+        assert world.run() == 2
+    finally:
+        end_tree(holder)
+    # 5 blocked: a step could not start now (the owner's Nightshift Code holds the card); no time to wait for
+    world.supervisor.state.update({"gpu_owner": "opencode", "services": {"llama": {"state": "ready"}}})
+    assert world.run("--unattended") == 5, world.out[-4:]
+    last = world.last()
+    assert (last["state"], last["step"], last["next_run_after"]) == ("blocked", "K2", None)
+    assert last["failed_steps"] == []
+    world.supervisor.state.update({"gpu_owner": None, "services": {}})
+    # 1 failed: a step's result is FAIL; the kit still goes on with the nights, and says when
+    world.fail_at = "kit_story"
+    assert world.run("--unattended") == 1, world.out[-4:]
+    last = world.last()
+    assert (last["state"], last["failed_steps"], last["step"]) == ("failed", ["K3"], "K5")
+    assert last["next_run_after"] == local(2026, 11, 14, 9, 0).isoformat()
+
+
+def test_an_unattended_wait_always_names_the_time_to_run_it_again(world: World) -> None:
+    """A wait whose end the kit cannot know (a nightly run still at work) is looked at again in half an
+    hour: the exit code 'waiting' always comes with next_run_after, in the last line and in the state."""
+    assert world.run("--unattended") == 3
+    world.night(local(2026, 11, 13, 3, 0))
+    world.hold_at = "kit_story"
+    night2 = threading.Thread(target=world.night, args=(local(2026, 11, 14, 8, 55),), daemon=True)
+    night2.start()
+    try:
+        assert world.stage_held.wait(60)
+        world.clock.t = local(2026, 11, 14, 9, 30)
+        code = world.run("--unattended")
+        last = world.last()
+        assert code == 3 and (last["state"], last["step"]) == ("waiting", "K6"), (code, world.out[-4:])
+        assert last["next_run_after"] == world.state()["come_back"] == local(2026, 11, 14, 10, 0).isoformat()
+        assert world.out[-2] == "Run GPU-KIT.cmd again after Saturday 14 November 10:00."
+    finally:
+        world.hold_at = None
+        world.stage_may_go.set()
+        night2.join(120)
+
+
+# ============================================ the kit's output on a file (block E final review, blocker 1)
+MOON = "\U0001f319"
+
+
+def test_a_line_with_a_character_the_output_cannot_take_is_written_escaped_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An agent's `> log 2>&1` is a file in the PC's ANSI code page; step 5's PASS line prints the video's
+    path (its title, every character kept) and step 9's the Assistant's answer. One emoji must not turn a
+    finished step into "an error it did not expect": the line is written, the character escaped."""
+    log = tmp_path / "kit.log"
+    with log.open("w", encoding="cp1252", errors="strict", newline="\n") as ansi:
+        monkeypatch.setattr(sys, "stdout", ansi)
+        gpukit.say_line(f"PASS    step 5 (story video): D:/out/Night {MOON} story.mp4")
+        gpukit.say_line("plain")
+    escaped = "\\" + "U0001f319"   # the eight-digit escape Python writes for a character cp1252 cannot take
+    assert log.read_text(encoding="cp1252").splitlines() == [
+        f"PASS    step 5 (story video): D:/out/Night {escaped} story.mp4", "plain",
+    ]
+
+
+def test_the_kit_as_a_program_writes_utf8_to_a_file_whatever_the_code_page(tmp_path: Path) -> None:
+    """The program itself, as a child whose output is a file (what GPU-KIT.cmd > log gives it), with Python's
+    UTF-8 mode off as on a stock Windows: `utf8_output` makes the file UTF-8, so the line arrives whole and
+    `Get-Content -Encoding UTF8` reads it; without it Python writes ANSI, strictly, and the line raises."""
+    kit = Path(gpukit.__file__).resolve()
+    code = (
+        "import importlib.util, sys\n"
+        f"spec = importlib.util.spec_from_file_location('gpukit_child', {str(kit)!r})\n"
+        "kit = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['gpukit_child'] = kit\n"
+        "spec.loader.exec_module(kit)\n"
+        "kit.utf8_output()\n"
+        f"kit.say_line('Night {MOON} story.mp4')\n"
+        "print('err line \u2019', file=sys.stderr, flush=True)\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+    env["PYTHONUTF8"] = "0"
+    log = tmp_path / "child.log"
+    with log.open("wb") as out:
+        done = subprocess.run(  # noqa: S603 - this interpreter, a fixed script
+            [sys.executable, "-X", "utf8=0", "-c", code], stdout=out, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, env=env, cwd=str(tmp_path), timeout=120, check=False,
+        )
+    text = log.read_bytes().decode("utf-8")
+    assert done.returncode == 0, text
+    assert text.splitlines() == [f"Night {MOON} story.mp4", "err line \u2019"]
+
+
+def test_the_unattended_last_line_is_ascii_whatever_the_state_holds(world: World) -> None:
+    """The one line an agent parses is readable under any code page: `json.dumps` escapes every character
+    that is not ASCII (a zip path or a reason with the owner's own letters in it)."""
+    code = world.run("--unattended")
+    raw_last = world.out[-1]
+    assert code in gpukit.EXIT.values() and raw_last.isascii(), (code, raw_last)
+    assert json.loads(raw_last)["kit"] == "nightshift-gpu-kit"
