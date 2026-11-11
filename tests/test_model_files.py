@@ -126,6 +126,7 @@ def make_install(
         rt = Runtime.default("gpu")
         rt.llama.model_path = str(paths.models_llm / Path(gpu["llm"]["file"]).name)
         rt.llama.story_model_path = str(paths.models_llm / Path(gpu["story_llm"]["file"]).name)
+        rt.embed.model_path = str(paths.models_embed / Path(gpu["embed"]["file"]).name)
         save_runtime(paths, rt)
     plan = vd.plan_for_install(paths, app)
     story = paths.models_llm / Path(gpu["story_llm"]["file"]).name
@@ -182,9 +183,10 @@ def record(inst: Install) -> dict[str, Any]:
 def test_doctor_checks_every_model_file_and_its_size(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     inst = make_install(tmp_path, markers="old")
     res = doctor(inst, monkeypatch)
-    for name in ("language model", "story model", "embed model", "voice models", "whisper model"):
+    for name in ("language model files", "story model files", "embed model files", "voice model files",
+                 "whisper model files"):
         assert row(res.output, name).startswith("[ok]"), (name, res.output)
-    assert "4 files present" in row(res.output, "voice models")  # two talkers, the tokenizer, voice design
+    assert "4 files present" in row(res.output, "voice model files")  # 2 talkers, the tokenizer, voice design
     hashed = row(res.output, "model files last checked by hash")
     assert (
         hashed.startswith("[WARN]") and "never" in hashed and "Run 'ns verify --downloads' (about" in hashed
@@ -194,7 +196,7 @@ def test_doctor_checks_every_model_file_and_its_size(tmp_path: Path, monkeypatch
     model_bin = inst.file("whisper/model.bin")
     model_bin.write_bytes(model_bin.read_bytes() + b"x")
     res = doctor(inst, monkeypatch)
-    voice, whisper = row(res.output, "voice models"), row(res.output, "whisper model")
+    voice, whisper = row(res.output, "voice model files"), row(res.output, "whisper model files")
     assert voice.startswith("[FAIL]") and "missing" in voice and "choose Repair" in voice, voice
     assert whisper.startswith("[FAIL]") and "size 2049 bytes" in whisper and "choose Repair" in whisper, (
         whisper
@@ -206,7 +208,7 @@ def test_a_custom_model_has_no_hash_and_says_so(tmp_path: Path, monkeypatch: pyt
     custom = {"repo": "someone/Tiny-GGUF", "file": "tiny-custom.gguf", "size": SIZE}
     inst = make_install(tmp_path, custom=custom, runtime=False)
     res = doctor(inst, monkeypatch)
-    lang = row(res.output, "language model")
+    lang = row(res.output, "language model files")
     assert lang.startswith("[ok]") and "tiny-custom.gguf" in lang and "cannot be checked by hash" in lang, (
         lang
     )
@@ -439,7 +441,9 @@ def test_the_setup_window_over_a_finished_install_with_a_damaged_model_opens_the
     model.write_bytes(content("a.gguf"))
     dl.write_marker(model, sha(content("a.gguf")))
     model.write_bytes(content("a.gguf") + b"!")  # changed since setup verified it
-    state = app_setup(tmp_path, monkeypatch, zip_a).snap()
+    from tests.test_installer_web_controller import Setup
+
+    state = Setup(tmp_path, monkeypatch).snap()  # (one window: a second one finds the step already reopened)
     steps = {st["id"]: st["status"] for st in state["steps"]}
     assert state["run"] != "finished" and steps["s03_download_models"] == "pending", steps
     assert all(s in ("done", "skipped") for k, s in steps.items() if k != "s03_download_models"), steps
@@ -499,8 +503,10 @@ def test_the_night_tells_a_damaged_model_once(tmp_home: Path, monkeypatch: pytes
 
     paths, db = _setup(tmp_home)
     created = (datetime.now(UTC) - timedelta(weeks=11)).isoformat(timespec="seconds")
-    crud.add_channel(paths, db, make_channel(slug="tiny-mysteries", display_name="Tiny Mysteries",
-                                             format="master_first", created_at=created))  # fmt: skip
+    crud.add_channel(paths, db, make_channel(
+        slug="tiny-mysteries", display_name="Tiny Mysteries", format="master_first", created_at=created,
+        niche="small locked-room puzzles solved in under ten minutes", voice_notes="Dry, quick, amused.",
+    ))  # fmt: skip
     driver.install(monkeypatch)
     inst = make_install(tmp_home.parent / "inst", home=tmp_home, runtime=False)
     llm = inst.file("Qwen3-")

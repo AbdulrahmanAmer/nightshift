@@ -58,7 +58,7 @@ def begin(ctx: StepContext, *, was_complete: bool) -> None:
     """At the start of a wizard run: a run over a finished install is a Repair. An interrupted Repair keeps
     its first stamp (the files it already hashed are not hashed again)."""
     if was_complete and not ctx.flag(RECHECK_FLAG):
-        ctx.set_flag(RECHECK_FLAG, datetime.now(UTC).isoformat(timespec="seconds"))
+        ctx.set_flag(RECHECK_FLAG, datetime.now(UTC).isoformat(timespec="microseconds"))
         ctx.log.info("models_recheck", "a run over a finished install: every model file is checked by hash")
 
 

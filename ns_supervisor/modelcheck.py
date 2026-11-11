@@ -75,8 +75,8 @@ def damage_sentence(paths: Paths, item: DownloadItem, row: Row) -> str:
     """``The story model file is damaged (<path>, <name> (<size>)): <why>``."""
     from installer.stage2 import verify_downloads as vd
 
-    if row.size is not None and item.size and row.size != item.size:
-        why = f"its size is {row.size} bytes, the download was {item.size} bytes"
+    if row.detail.startswith("size "):   # "size N bytes, expected M" / "..., the download was M bytes"
+        why = f"its {row.detail}"
     else:
         why = "its SHA256 does not match the one Nightshift downloaded"
     return f"The {vd.role(item, paths)} file is damaged ({item.dest}, {vd.what(item)}): {why}"

@@ -362,8 +362,9 @@ def model_rows(paths: Paths, app: Path) -> list[tuple[str, bool, str]]:
         return [("model files", True, f"{WARN}not checked: {e}")]
     damaged = modelmarks.recorded_damage(paths.home)
     groups: dict[str, list[vd.DownloadItem]] = {}
-    for item in items:
-        groups.setdefault(vd.role(item, paths), []).append(item)
+    for item in items:  # "language model files", "voice model files" (not the runtime rows "llm/embed model")
+        kind = vd.role(item, paths)
+        groups.setdefault("voice model files" if kind == "voice models" else f"{kind} files", []).append(item)
     rows: list[tuple[str, bool, str]] = []
     for label, group in groups.items():
         bad: list[str] = []
@@ -406,7 +407,8 @@ def hash_row(paths: Paths, items: list[Any]) -> tuple[str, bool, str]:
     if never:
         part = "" if never == len(pinned) else f" for {never} of {len(pinned)} files"
         return (HASH_ROW, True, f"{WARN}never{part}. Run 'ns verify --downloads' ({estimate}, {where}).")
-    oldest = min(s for s in seen if s)
+    first = min(s for s in seen if s)
+    oldest = f"{first[:10]} {first[11:16]} UTC"
     return (HASH_ROW, True, f"{oldest} (the oldest of {len(pinned)} files); 'ns verify --downloads' checks "
                             f"them again ({estimate}, {where})")
 

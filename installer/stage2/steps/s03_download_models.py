@@ -87,8 +87,12 @@ class S03DownloadModels(Step):
         custom = ctx.llm_custom
         if custom is not None:
             ctx.warn("NS-W113", f"{custom.repo}/{custom.file}")
+        # optional side files the site does not publish are not asked for again (`_outstanding`): a run that
+        # fetches only other files (a Repair) keeps them in the list, or `verify` would want them
+        absent_before = {i.name for i in items if i.optional and not Path(i.dest).is_file()} & set(
+            ctx.flag("missing_optional", []))
         result = ctx.download(todo, models_source=source)
-        ctx.set_flag("missing_optional", sorted(result.missing_optional))
+        ctx.set_flag("missing_optional", sorted(absent_before | set(result.missing_optional)))
         if custom is not None:
             self._point_runtime_at(ctx, custom.file)
         ctx.log.info(

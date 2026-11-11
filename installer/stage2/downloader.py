@@ -238,7 +238,9 @@ def write_marker(dest: Path, digest: str | None, *, hashed: bool = True) -> None
     st = dest.stat()
     data: dict[str, Any] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": digest}
     if digest is not None and hashed:
-        data["hashed_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+        # compared with a Repair's start (`model_repair.begin`) at the same precision: a file hashed in the
+        # second the Repair began is not taken for one hashed by it
+        data["hashed_at"] = datetime.now(UTC).isoformat(timespec="microseconds")
     _marker(dest).write_text(json.dumps(data), encoding="utf-8")
 
 

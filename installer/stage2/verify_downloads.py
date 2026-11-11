@@ -24,6 +24,7 @@ damaged model file's fix is setup's Repair, which checks every model by hash and
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from collections.abc import Callable
@@ -116,6 +117,15 @@ def _now() -> float:
 def _size(path: Path) -> int:
     """A file's size (the seam a test gives a model's real size through, without writing gigabytes)."""
     return path.stat().st_size
+
+
+def _marker_size(dest: Path) -> int | None:
+    """The size setup's ``.ok`` marker recorded for ``dest`` (None: no marker, or not one setup can read)."""
+    try:
+        size = json.loads(_marker(dest).read_text(encoding="utf-8")).get("size")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return size if isinstance(size, int) else None
 
 
 def is_model(item: DownloadItem) -> bool:
@@ -218,6 +228,10 @@ def check_item(item: DownloadItem, *, hasher: Hasher | None = None, progress: Pr
     )
     if item.size and size != item.size:
         return Row(item.name, str(dest), BAD, f"size {size} bytes, expected {item.size}", cleanup, size=size)
+    was = None if item.size else _marker_size(dest)    # no size in the manifest: setup's marker kept it
+    if was is not None and size != was:
+        return Row(item.name, str(dest), BAD, f"size {size} bytes, the download was {was} bytes", cleanup,
+                   size=size)
     if pin is None:
         return Row(item.name, str(dest), NO_PIN,
                    f"{human_bytes(size)}, the manifest pins no hash for it, so it cannot be checked by hash",
