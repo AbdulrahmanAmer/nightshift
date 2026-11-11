@@ -147,3 +147,21 @@ def test_the_signing_requirements_are_pinned_from_the_lock() -> None:
     for name in ("cffi", "pycparser"):  # the lock's own hashes (it has cryptography's Linux wheels only)
         assert all(f"sha256:{h}" in lock for h in re.findall(r"[0-9a-f]{64}", hashed[name])), name
     assert "\n--only-binary :all:\n" in text and "win_amd64" in text  # never built from a source archive
+
+
+def test_a_byte_order_mark_before_the_key_is_not_part_of_the_key() -> None:
+    """Windows PowerShell 5.1 on a UTF-8 console (code page 65001) writes EF BB BF before what it pipes to a
+    program: `dev/release_keys.ps1 -Create` then got "not base64 of 32 bytes" from `--public-key` although the
+    key was whole (seen on the laptop, 2026-11-11). The same for a key file an editor saved with the mark."""
+    import subprocess
+    import sys
+
+    assert sign_release is not None, "dev/sign_release.py is missing"
+    key = b64(TEST_SEED).encode("ascii")
+    want = " ".join(key_of(TEST_SEED))
+    script = str(ROOT / "dev" / "sign_release.py")
+    for given in (key + b"\r\n", b"\xef\xbb\xbf" + key + b"\r\n"):
+        done = subprocess.run([sys.executable, script, "--public-key"], input=given, capture_output=True, timeout=120, check=False)
+        said = done.stdout.decode("ascii", errors="replace").strip()
+        assert (done.returncode, said) == (0, want), (given[:3], done.stdout, done.stderr)
+    assert sign_release.read_key("﻿# the backup key\n" + key.decode("ascii") + "\n") == TEST_SEED

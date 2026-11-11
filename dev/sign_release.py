@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import codecs
 import os
 import sys
 from collections.abc import Callable
@@ -75,7 +76,9 @@ class Signer:
 def read_key(text: str) -> bytes:
     """The 32 bytes of a private key given as base64 (a secret's value, or a key file with `#` comments).
     `Refused`, without the value, for anything else."""
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    # (a byte-order mark before the text is no part of it: an editor saved the key file with one)
+    given = text.lstrip("﻿").splitlines()
+    lines = [ln.strip() for ln in given if ln.strip() and not ln.lstrip().startswith("#")]
     try:
         seed = base64.b64decode(lines[0], validate=True) if len(lines) == 1 else b""
     except (binascii.Error, ValueError):
@@ -173,9 +176,20 @@ def release(tag: str, zips: list[Path], say: Callable[[str], None]) -> int:
     return 0
 
 
+def stdin_text() -> str:
+    """What stdin holds, as text, without a byte-order mark. Read as bytes: Windows PowerShell 5.1 on a UTF-8
+    console (code page 65001) writes EF BB BF before what it pipes to a program, and what those three bytes
+    become as text depends on the code page Python took for stdin. A key is ASCII; any other byte is replaced
+    and `read_key` refuses the text."""
+    raw = sys.stdin.buffer.read()
+    if raw.startswith(codecs.BOM_UTF8):
+        raw = raw[len(codecs.BOM_UTF8):]
+    return raw.decode("ascii", errors="replace")
+
+
 def _public_key(say: Callable[[str], None]) -> int:
     """`<key id> <public key>` of the private key on stdin, after a signature made with it has verified."""
-    seed = read_key(sys.stdin.read())
+    seed = read_key(stdin_text())
     public = sigcheck.public_key(seed)
     probe = sigcheck.message("probe.zip", "0", "0" * 64)
     if not sigcheck.verify(public, probe, sigcheck.sign(seed, probe)):

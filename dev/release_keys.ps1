@@ -31,7 +31,8 @@ param(
     [string]$Python = ""
 )
 
-$ErrorActionPreference = "Continue"
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 $OutputEncoding = New-Object System.Text.ASCIIEncoding
 $Repo = "AbdulrahmanAmer/nightshift"
 $SecretName = "NS_RELEASE_SIGNING_KEY"
@@ -39,9 +40,43 @@ $BackupName = "nightshift-release-backup-key.txt"
 $Unchanged = "Nothing was changed."
 $Root = Split-Path -Parent $PSScriptRoot
 $SignScript = Join-Path $PSScriptRoot "sign_release.py"
+# What this run has changed so far, in the owner's words ("" = nothing yet). Steps 3, 4 and 5 set it as they
+# finish, so an error nobody planned for (the trap below) still ends with the true state and the way out.
+$Changed = ""
+$Why = ""
 
 function Stop-Here([string]$Text) {
     Write-Output $Text
+    exit 1
+}
+
+function Invoke-Native([scriptblock]$Call) {
+    # gh and Python say what went wrong on stderr and with their exit code, which the caller reads: under
+    # 'Stop' Windows PowerShell 5.1 can turn such a line into an error of this script, so these calls, and
+    # only they, run as they always did
+    $ErrorActionPreference = 'Continue'
+    # A private key is piped to these programs. On a console whose input encoding is UTF-8 with a byte-order
+    # mark (code page 65001) Windows PowerShell 5.1 writes that mark before what it pipes, whatever
+    # $OutputEncoding says: Python then finds no key, and gh would store the mark as part of the secret. So for
+    # the length of the call the console's input encoding is one without a mark; with no console there is
+    # nothing to set and no mark either.
+    $Was = $null
+    try {
+        $Was = [Console]::InputEncoding
+        [Console]::InputEncoding = New-Object System.Text.ASCIIEncoding
+    } catch {
+        $Was = $null
+    }
+    try {
+        & $Call
+    } finally {
+        if ($Was) { try { [Console]::InputEncoding = $Was } catch { } }
+    }
+}
+
+trap {
+    Write-Output ("dev\release_keys.ps1 stopped on an error it did not plan for: " + $_.Exception.Message)
+    if ($Changed) { Write-Output $Changed } else { Write-Output $Unchanged }
     exit 1
 }
 
@@ -108,7 +143,7 @@ if (-not (Get-Command $Python -ErrorAction SilentlyContinue)) {
 if (-not (Get-Command $GhExe -ErrorAction SilentlyContinue)) {
     Stop-Here "The GitHub command line (gh) was not found. Install it from https://cli.github.com, run 'gh auth login', then run this again. $Unchanged"
 }
-& $GhExe auth status | Out-Null
+Invoke-Native { & $GhExe auth status } | Out-Null
 if ($LASTEXITCODE -ne 0) {
     Stop-Here "gh is not signed in to GitHub. Run 'gh auth login', then run this again. $Unchanged"
 }
@@ -126,9 +161,9 @@ function New-Seed {
 $Primary = New-Seed
 $Backup = New-Seed
 # (the private key is the pipe's input, never an argument: arguments can be read by other programs)
-$PrimaryPublic = [string]($Primary | & $Python $SignScript --public-key)
+$PrimaryPublic = [string](Invoke-Native { $Primary | & $Python $SignScript --public-key })
 $CodeA = $LASTEXITCODE
-$BackupPublic = [string]($Backup | & $Python $SignScript --public-key)
+$BackupPublic = [string](Invoke-Native { $Backup | & $Python $SignScript --public-key })
 $CodeB = $LASTEXITCODE
 $Shape = '^([0-9a-f]{16}) ([A-Za-z0-9+/]{43}=)$'
 if (($CodeA -ne 0) -or ($CodeB -ne 0) -or ($PrimaryPublic.Trim() -notmatch $Shape) -or ($BackupPublic.Trim() -notmatch $Shape)) {
@@ -143,7 +178,7 @@ if (($Primary -eq $Backup) -or ($PrimaryId -eq $BackupId)) {
 }
 
 # ---- 3. the primary private key goes to the GitHub secret, on stdin
-$Primary | & $GhExe secret set $SecretName --repo $Repo | Out-Null
+Invoke-Native { $Primary | & $GhExe secret set $SecretName --repo $Repo } | Out-Null
 $Code = $LASTEXITCODE
 $Primary = $null
 if ($Code -ne 0) {
@@ -151,6 +186,9 @@ if ($Code -ne 0) {
     Stop-Here ("gh could not set the secret $SecretName of $Repo (it ended with code $Code; its own message is above). " +
         "$Unchanged Check that this GitHub account may change the repository's secrets, then run this again.")
 }
+$Changed = "The GitHub secret $SecretName of $Repo was set, but to a key that no file and no version of Nightshift " +
+    "knows, so it must not be used: run this again (it makes new keys and replaces the secret). " +
+    "ns_common\release_keys.py was not changed."
 
 # ---- 4. the backup private key goes to the folder named, and nowhere else (never over an existing file)
 $Day = (Get-Date).ToString("yyyy-MM-dd")
@@ -179,6 +217,9 @@ if (-not $Wrote) {
         "to a key that no file and no version of Nightshift knows, so it must not be used: run this again with a " +
         "folder that can be written to (it makes new keys and replaces the secret). ns_common\release_keys.py was not changed.")
 }
+$Changed = "The GitHub secret $SecretName of $Repo was set and the backup key was written to $BackupFile, but " +
+    "ns_common\release_keys.py was not changed, so no version of Nightshift knows these keys and they must not " +
+    "be used: move that backup file away, then run this again (it makes new keys and replaces the secret)."
 
 # ---- 5. the two public keys go into the checkout (public halves only)
 $NewBlock = $Block.Groups[1].Value +
@@ -200,6 +241,8 @@ try {
         "again; the GitHub secret $SecretName was set to a key no version of Nightshift knows, so it must not be " +
         "used: close whatever has that file open and run this again (it makes new keys and replaces the secret).")
 }
+$Changed = "The release keys WERE made before this error: the GitHub secret $SecretName is set, the backup key is " +
+    "in $BackupFile and the two public keys are in $KeysFile (commit that file). Do not run this again."
 
 # ---- 6. what the owner reads
 Write-Output "The release keys were made."
