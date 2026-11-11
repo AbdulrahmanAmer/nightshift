@@ -100,7 +100,7 @@ def sentence(v: Verdict, command: str = "") -> str:
     program = words[0] if words and words[0] in ("ns", "studio") else "ns"
     asked = " ".join(words) if words and words[0] == program else program
     there = f"version {v.there}" if v.there else (
-        f"its version could not be read: {v.target / 'app' / 'VERSION'} is missing or empty"
+        f"its version could not be read: {v.target / 'app' / 'VERSION'} is missing, empty or cannot be read"
     )
     other = commandline.by_full_path(v.target, asked)
     own = commandline.by_full_path(v.place, program) if v.place is not None else program
