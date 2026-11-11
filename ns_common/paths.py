@@ -145,6 +145,14 @@ def _say_place(place: Path, named: str, kind: str) -> None:
             f"default), and this program is in the install at {place}. If you did not set it, this window "
             "was opened before the default changed: open a new one."
         )
+        from ns_common import homeguard  # here, not at the top: homeguard imports this module
+
+        versions = homeguard.notice(Path(named))    # "" unless that install is another version
+        if versions:
+            line += (
+                f" {versions}: commands that change that install are refused from this program (NS-E128); "
+                "looking still works."
+            )
     else:
         why = (
             "which is this PC's default and was not set in this window" if kind == DEFAULT

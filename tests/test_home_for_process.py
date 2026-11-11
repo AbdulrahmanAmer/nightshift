@@ -246,6 +246,9 @@ def ns_backup(pc: SimpleNamespace, out: Path, **env: str) -> tuple[subprocess.Co
     return done, names
 
 
+from ns_common import __version__ as _program_version  # noqa: E402
+
+
 def test_an_owner_who_sets_the_variable_in_a_window_gets_that_install_and_is_told(pc: SimpleNamespace, tmp_path: Path):
     """`$env:NIGHTSHIFT_HOME = '<B>'` in a terminal, then install A's own `ns backup`, on a PC whose default
     is A: the backup is B's."""
@@ -257,6 +260,9 @@ def test_an_owner_who_sets_the_variable_in_a_window_gets_that_install_and_is_tol
         f"Nightshift: using {pc.b}: NIGHTSHIFT_HOME names it in this window (it is not this PC's default), "
         f"and this program is in the install at {pc.a}. If you did not set it, this window was opened before "
         "the default changed: open a new one."
+        # card version-mismatch-writes: B's app\VERSION (0.1.15, `install_at`) is not this program's version
+        f" (Nightshift 0.1.15 there, {_program_version} here): commands that change that install are refused "
+        "from this program (NS-E128); looking still works."
     ]
 
 

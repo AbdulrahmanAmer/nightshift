@@ -14,7 +14,7 @@ import typer
 from pydantic import ValidationError
 from typer.core import TyperGroup
 
-from ns_common import __version__
+from ns_common import __version__, homeguard
 from ns_common.commandline import render
 from ns_common.errors import NsError
 from ns_common.keepawake import keep_awake
@@ -147,6 +147,12 @@ def guarded() -> Iterator[None]:
         raise typer.Exit(1) from e
 
 
+def own_home(command: str) -> None:
+    """Inside `guarded()`, before a command changes settings or starts work: NS-E128 when this program is
+    another version than the install the window's NIGHTSHIFT_HOME names (`ns_common.homeguard`)."""
+    homeguard.require_own(Paths.from_env().home, command)
+
+
 def fake_set(value: str | None) -> frozenset[str]:
     """Parse the `--fake-services` option value, mapping bad names to a usage error."""
     try:
@@ -192,6 +198,7 @@ def run_cmd(
     script_text = _script_text(script, title, count, daily=daily, resume=resume, fmt=fmt, channel=channel)
     with guarded():
         if not dry_run:
+            own_home("studio run")   # before the gate, a job id or a job folder
             job_gate()      # D-48: before the voice, the job folder, job.json, the owner file and the ledger
         jobs.load_stage_modules()
         if dry_run and resume is None and not daily:
@@ -468,6 +475,7 @@ def channel_add(
 ) -> None:
     """Add a channel (pool minimums and cross-channel distinctness are enforced)."""
     with guarded():
+        own_home("studio channel add")
         env = jobs.open_env(light=True)
         if from_yaml is not None:
             ch = crud.load_channel_yaml(from_yaml)
@@ -520,6 +528,7 @@ def channel_edit(
 ) -> None:
     """Change channel fields; the result is re-validated before it is saved."""
     with guarded():
+        own_home("studio channel edit")
         updates: dict[str, Any] = {}
         for item in sets or []:
             if "=" not in item:
@@ -607,6 +616,7 @@ def voice_design(
 ) -> None:
     """Design a voice from a description (needs the VoiceDesign model) and store it in the library."""
     with guarded():
+        own_home("studio voice design")
         job_gate()
         env = jobs.open_env(fake_set(fake_services))
         folder = voice_setup.design_voice(env, name, description, language=language)
@@ -626,6 +636,7 @@ def voice_clone(
 ) -> None:
     """Clone a voice from a recording and store it in the library."""
     with guarded():
+        own_home("studio voice clone")
         job_gate()
         env = jobs.open_env(fake_set(fake_services))
         folder = voice_setup.clone_voice(
@@ -638,6 +649,7 @@ def voice_clone(
 def voice_apply_pending(fake_services: FakeOpt = None) -> None:
     """Create the voice chosen during setup (queued in config/pending_voice.json), if it is not there yet."""
     with guarded():
+        own_home("studio voice apply-pending")
         job_gate()
         env = jobs.open_env(fake_set(fake_services))
         made = voice_setup.apply_pending_report(env)
@@ -739,6 +751,7 @@ def pause_cmd(
 ) -> None:
     """Pause a channel after a YouTube warning, strike or monetization notice."""
     with guarded():
+        own_home("studio pause")
         env = jobs.open_env(light=True)
         review.pause(env.paths, env.db, slug, reason)
         echo(f"channel {slug} paused; nightly runs skip it")
@@ -751,6 +764,7 @@ def resume_cmd(
 ) -> None:
     """Resume a paused channel after reviewing its last 10 outputs."""
     with guarded():
+        own_home("studio resume")
         env = jobs.open_env(light=True)
         for r in review.last_outputs(env.db, slug):
             echo(f"{r['output_id']}\t{r['status']}\t{r['title']}\t{r['review_note'] or ''}")

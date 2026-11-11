@@ -8,7 +8,7 @@ from typing import Annotated, Any
 
 import typer
 
-from ns_common import __version__
+from ns_common import __version__, homeguard
 from ns_common.commandline import render
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
@@ -58,6 +58,15 @@ def _die(e: NsError | str, code: int = 1) -> typer.Exit:
     else:
         echo(e, err=True)
     return typer.Exit(code)
+
+
+def _own(paths: Paths, command: str) -> None:
+    """Before a command changes settings, the nightly task or starts work: refuse (NS-E128, exit 1) when
+    this program is another version than the install the window's NIGHTSHIFT_HOME names (`homeguard`)."""
+    try:
+        homeguard.require_own(paths.home, command)
+    except NsError as e:
+        raise _die(e) from e
 
 
 def _client(paths: Paths) -> SupervisorClient:
@@ -191,6 +200,8 @@ def cmd_tune(
 ) -> None:
     """Find the fastest llama-server flags for this PC and save them to runtime.json."""
     paths = Paths.from_env()
+    if not dry_run:         # --dry-run only reads
+        _own(paths, "ns tune")
     try:
         rt = control.read_runtime(paths)
     except NsError as e:
@@ -476,6 +487,7 @@ def cmd_restore(
 ) -> None:
     """Restore a backup (what it overwrites is kept in data\\backup\\pre-restore-*)."""
     paths = Paths.from_env()
+    _own(paths, "ns restore")
     if _client(paths).is_up():
         # the running engine holds data\studio.db open: the restore used to fail halfway (WinError 32) and
         # put everything back; now it says what to do before touching anything
@@ -570,6 +582,7 @@ def schedule_install(
     """
     if enable and disabled:
         raise _die(NsError("NS-E204", "schedule install: --enable and --disabled cannot be used together"))
+    _own(Paths.from_env(), "ns schedule install")      # before the kit's record and before schtasks
     if setup is not None:
         if enable or disabled:
             usage = "schedule install: --setup cannot be used with --enable or --disabled"
@@ -588,6 +601,7 @@ def schedule_install(
 @schedule_app.command("remove")
 def schedule_remove() -> None:
     """Unregister the daily task."""
+    _own(Paths.from_env(), "ns schedule remove")
     _schedule_call("remove")
 
 
@@ -618,6 +632,7 @@ def models_get_cmd(
     if what not in models_get.KINDS:
         raise _die(f"unknown model {what!r}; choose one of: {', '.join(models_get.KINDS)}", 2)
     paths = Paths.from_env()
+    _own(paths, "ns models get")
     try:
         result = models_get.get_model(what, paths, control.app_path(paths), echo, everything=everything)
     except NsError as e:
