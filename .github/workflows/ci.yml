@@ -103,8 +103,8 @@ jobs:
         if: needs.changes.outputs.docs_only != 'true'
 
   # The unit tests run as a matrix of shards (H-3, H-3b): dev/ci_shards.py gives each shard whole test files, split
-  # by measured seconds (dev/ci_shard_weights.json, refreshed from real JUnit timings), so each shard runs about 8.5
-  # minutes of a suite of about 97 (SHARDS in dev/ci_shards.py is the count). The required check `test` further
+  # by measured seconds (dev/ci_shard_weights.json, refreshed from real JUnit timings), so each shard runs about 9
+  # minutes of a suite of about 107 (SHARDS in dev/ci_shards.py is the count). The required check `test` further
   # down is the job that says whether all of them passed. On a docs-only change they do not run (`test` then
   # gathers `test-docs` instead).
   test-shard:
@@ -112,7 +112,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: windows-latest
-    # Predicted: about 8.5 minutes of tests plus about 3 of setup (the slowest shard, dev/ci_shards.py plan), 11.5 in
+    # Predicted: about 9 minutes of tests plus about 3 of setup (the slowest shard, dev/ci_shards.py plan), 12 in
     # all; tests/test_ci_workflow.py keeps the timeout at least twice the prediction of every shard, with room for
     # NEW_FILE_ROOM test files that have no measured weight yet (at 25 minutes one new test file turned every pull
     # request red, three times on 2026-11-09 and 2026-11-10).
