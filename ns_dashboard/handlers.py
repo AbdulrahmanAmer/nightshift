@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+from ns_common import homeguard
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_dashboard import studio_bridge
@@ -73,8 +74,12 @@ def build_state(
     link: SupervisorLink | None = None,
     fake_services: bool = False,
 ) -> AppState:
-    """Wire DB, logger, event hub, supervisor link, adapters, job store and worker (thread not started)."""
+    """Wire DB, logger, event hub, supervisor link, adapters, job store and worker (thread not started).
+
+    Every dashboard (the server, `studio ask`) starts here: NS-E128 before anything is made when the window's
+    NIGHTSHIFT_HOME names an install of another version (card version-mismatch-writes)."""
     paths = paths or Paths.from_env()
+    homeguard.require_own(paths.home, "studio dashboard")
     paths.ensure()
     db = open_db(paths)
     log = NsLogger("dashboard", paths.logs)

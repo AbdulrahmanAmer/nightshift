@@ -20,6 +20,7 @@ import yaml
 from pydantic import ValidationError
 
 import ns_studio.series.schemas as _schemas  # noqa: F401  (registers the workshop JSON schemas)
+from ns_common import homeguard
 from ns_common.atomic import write_text_atomic
 from ns_common.config import load_channel, load_runtime
 from ns_common.db import Db, claim_dir, claim_job_id, open_studio_db
@@ -1256,7 +1257,8 @@ def make_db_enqueue(db: Db) -> EnqueueFn:
 def default_workshop(fake: Collection[str] = (), *, enqueue: EnqueueFn | None = None) -> Workshop:
     """A `Workshop` over `NIGHTSHIFT_HOME`; names in `fake` (subset of FAKEABLE) use in-process fakes."""
     paths = Paths.from_env()
-    paths.ensure()
+    if homeguard.may_write(paths.home):   # another version's install: a reader makes no folder (NS-E128 else)
+        paths.ensure()
     log = NsLogger("studio", paths.logs, echo=False)
     db = open_studio_db(paths, log, note=db_note(paths))  # db-integrity: checked once per process
     db.migrate()

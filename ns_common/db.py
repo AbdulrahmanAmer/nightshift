@@ -196,6 +196,63 @@ class UnusableDb(Db):
         raise self.error
 
 
+class ReadingDb(Db):
+    r"""A reading command's database in an install of ANOTHER version (card version-mismatch-writes,
+    `homeguard.may_write` said False): opened read-only, never migrated, never checked or replaced
+    (`ensure_sound` writes). Any failure, a write included, is NS-E128 with the reading sentence: nothing in
+    that install was changed. `migrate` only opens it, so a file that cannot be read is said where a migrate
+    would have failed, before the command prints anything."""
+
+    def __init__(self, path: Path, home: Path) -> None:
+        super().__init__(path)
+        self.home = home
+
+    def _refused(self, e: sqlite3.Error) -> Exception:
+        from ns_common import homeguard
+
+        return homeguard.read_refusal(self.home, self.path, e)
+
+    def connect(self) -> sqlite3.Connection:
+        if self._conn is None:
+            try:
+                uri = Path(self.path).resolve().as_uri() + "?mode=ro"
+                conn = sqlite3.connect(uri, uri=True, isolation_level=None, check_same_thread=False)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA busy_timeout = 5000")
+                conn.execute("SELECT count(*) FROM sqlite_master").fetchone()  # the open is lazy: fail here
+            except sqlite3.Error as e:
+                raise self._refused(e) from e
+            self._conn = conn
+        return self._conn
+
+    def migrate(self) -> None:
+        self.connect()
+
+    def execute(self, sql: str, params: Sequence | Mapping = ()) -> sqlite3.Cursor:
+        try:
+            return super().execute(sql, params)
+        except sqlite3.Error as e:
+            raise self._refused(e) from e
+
+    def executemany(self, sql: str, rows: Iterable[Sequence]) -> None:
+        try:
+            super().executemany(sql, rows)
+        except sqlite3.Error as e:
+            raise self._refused(e) from e
+
+    def query(self, sql: str, params: Sequence | Mapping = ()) -> list[sqlite3.Row]:
+        try:
+            return super().query(sql, params)
+        except sqlite3.Error as e:
+            raise self._refused(e) from e
+
+    def one(self, sql: str, params: Sequence | Mapping = ()) -> sqlite3.Row | None:
+        try:
+            return super().one(sql, params)
+        except sqlite3.Error as e:
+            raise self._refused(e) from e
+
+
 #: The files this process has already checked (`open_studio_db`): once per process and file.
 _checked: set[str] = set()
 _checked_lock = threading.Lock()
@@ -208,9 +265,15 @@ def open_studio_db(paths: Paths, log: NsLogger | None, *, note: Callable[[str], 
     put back in the Queue, and `note` leaves the owner's morning note NS-W213
     (`ns_common.dbrestore.ensure_sound`); NS-E209 when it cannot be replaced (another process has it open, a
     full disk). A file held by another program, or written by a newer program, is not damage: it is opened as
-    before. Returns the `Db`, not yet connected; the caller migrates it as before."""
+    before. Returns the `Db`, not yet connected; the caller migrates it as before.
+
+    In an install of another version (card version-mismatch-writes): a `ReadingDb` for a reading command, not
+    checked; NS-E128 for any other caller, before anything is opened (`homeguard.may_write`)."""
+    from ns_common import homeguard
     from ns_common.dbrestore import ensure_sound
 
+    if not homeguard.may_write(paths.home):
+        return ReadingDb(paths.db_path, paths.home)
     key = os.path.normcase(os.path.abspath(paths.db_path))
     with _checked_lock:
         if key not in _checked:
@@ -221,9 +284,13 @@ def open_studio_db(paths: Paths, log: NsLogger | None, *, note: Callable[[str], 
 
 def open_assistant_db(paths: Paths, log: NsLogger | None, *, note: Callable[[str], object]) -> Db:
     """The opener of `assistant.db`: a damaged one is set aside in data/damaged and a new one starts (no copy
-    of it is kept: its loss is the conversation history only), with a morning note."""
+    of it is kept: its loss is the conversation history only), with a morning note. Another version's install:
+    as `open_studio_db`."""
+    from ns_common import homeguard
     from ns_common.dbrestore import ensure_assistant_sound
 
+    if not homeguard.may_write(paths.home):
+        return ReadingDb(paths.assistant_db, paths.home)
     key = os.path.normcase(os.path.abspath(paths.assistant_db))
     with _checked_lock:
         if key not in _checked:

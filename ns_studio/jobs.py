@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 import ns_common.testguard as testguard
+from ns_common import homeguard
 from ns_common.config import load_runtime
 from ns_common.db import Db, claim_dir, claim_job_id, open_studio_db
 from ns_common.logging import NsLogger
@@ -192,9 +193,15 @@ def open_env(fake: frozenset[str] = frozenset(), *, light: bool = False) -> Env:
     `dev_mode`, docs/DEV_MODE.md). A runtime.json that is there but cannot be used is NS-E125 naming it
     (`ns_common.runtime_read`, the reading setup and `ns doctor` share), and a database that cannot be opened
     is NS-E327 naming it: a line and exit 1 through the CLI's `guarded`, never a traceback.
+
+    Card version-mismatch-writes: asked first, before a folder is made or the database opened
+    (`homeguard.may_write`). In an install of another version a reading command (`studio status`, the lists)
+    opens it without writing (no folders made, the database read-only and not migrated); anything else is
+    refused there with NS-E128 (the CLI's table refused the writing commands before this).
     """
     paths = Paths.from_env()
-    paths.ensure()
+    if homeguard.may_write(paths.home):
+        paths.ensure()
     log = NsLogger("studio", paths.logs)
     # db-integrity: checked once per process; a damaged file is replaced by the newest good copy (NS-W213),
     # or NS-E209 when it cannot be (the CLI's `guarded` prints it; the owner also finds it in the bell)

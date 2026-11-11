@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse, StreamingResponse  # pyright: ignore
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 
 from installer.stage2.web import venvrepair
-from ns_common import first_start
+from ns_common import first_start, homeguard
 from ns_common.atomic import sweep_stale_tmp
 from ns_common.config import load_install_state, load_runtime
 from ns_common.errors import NsError, describe
@@ -257,6 +257,11 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     paths = Paths.from_env()
+    try:    # version-mismatch-writes: an engine of another version never starts on this home (NS-E128)
+        homeguard.require_own(paths.home, "studio dashboard")
+    except NsError as e:     # before the logs folder, the lock and the sweeps: nothing was changed
+        sys.stderr.write(f"{e}\nHint: {e.definition.hint}\n")
+        return 1
     paths.logs.mkdir(parents=True, exist_ok=True)
     refused = refuse_unfinished(paths)
     if refused:
