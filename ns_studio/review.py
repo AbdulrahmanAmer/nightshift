@@ -164,9 +164,11 @@ def _move_together(pairs: list[tuple[Path, Path]], output_id: str) -> None:
     The files of one output (the video, its sheet, its thumbnails) are rejected together. Before, they were
     moved one by one with nothing behind a failure: a video open in a player stopped the loop with its sheet
     and thumbnails already in `rejected`, the video still in the Outbox and the row unchanged. Now a failure
-    puts back what was already moved and raises NS-E331 with the name of the file that is held; the row is
-    not touched by the caller. A file that could not be put back either is named in the message (the next
-    Reject moves the rest to it)."""
+    puts back what was already moved, and the row is not touched by the caller. A file that is held open
+    (PermissionError) raises NS-E331 with its name; a file that could not be put back either is named in
+    that message (the next Reject moves the rest to it). Any other failure (a file that vanished, a full or
+    refused drive) is raised as itself after the put-back: NS-E331 would send the owner to close a program
+    that has nothing open."""
     moved: list[tuple[Path, Path]] = []
     try:
         for a, b in pairs:
