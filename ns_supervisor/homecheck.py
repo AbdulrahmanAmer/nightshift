@@ -178,21 +178,58 @@ def command_path(program: str, name: str | None, command: Any, rest: list[str]) 
     return " ".join(w for w in words if w), args
 
 
+def options_given(command: Any, rest: list[str]) -> list[str]:
+    """The words of `rest` that Click reads as OPTIONS, through every group down to the command: never the
+    value of an option that takes one (`studio run --channel --dry-run` names a channel `--dry-run` and is no
+    dry run; `studio pause s --reason --help` pauses), and nothing after `--`. `check_home` looks for
+    `--help`, `--home` and the options that turn a command's access (`--dry-run`, `--check`) in these only."""
+    found: list[str] = []
+    args = list(rest)
+    while command is not None:
+        subs = getattr(command, "commands", None)       # duck-typed, as `_only_asks_for_help`
+        i, sub = 0, None
+        while i < len(args):
+            word = args[i]
+            if word == "--":
+                return found
+            if word.startswith("-") and len(word) > 1:
+                found.append(word)
+                i += 2 if _takes_value(command, word) else 1
+                continue
+            if subs and word in subs:
+                sub = word
+                break
+            i += 1                                      # a positional word of the command itself
+        if sub is None or not subs:
+            break
+        command, args = subs[sub], args[i + 1:]
+    return found
+
+
 def check_home(ctx: typer.Context, program: str) -> None:
     """Call in the root callback after `check_root` (card version-mismatch-writes): NS-E128 when the window's
     NIGHTSHIFT_HOME names an install of another version and the command writes (`homeguard.enter`, the one
     table). Before any command runs; nothing for the bare root, `--help`, a group named alone, or a command
-    that names its home on its own command line (`ns update --home`: its starter vouched for it)."""
+    that names its home on its own command line (`ns update --home`: its starter vouched for it).
+
+    `--help`, `--home` and the options of the table count only where Click reads them as options
+    (`options_given`): as the VALUE of another option the command would run, and write, unasked."""
     if ctx.invoked_subcommand is None:
         return
     name, command, rest = ctx.meta.get(_META, (ctx.invoked_subcommand, None, []))
-    if _only_asks_for_help(command, rest):
+    given = options_given(command, rest)
+    named_alone = (
+        hasattr(command, "commands") and not getattr(command, "invoke_without_command", False) and not rest
+    )
+    if "--help" in given or named_alone:
         return
-    if name in HOME_OPTION_COMMANDS and _names_home(rest):
+    names = {word.split("=", 1)[0] for word in given}
+    if name in HOME_OPTION_COMMANDS and HOME_OPTION in names and _names_home(rest):
         return
     from ns_common import homeguard
 
-    homeguard.enter(*command_path(program, name, command, rest))
+    words, _args = command_path(program, name, command, rest)
+    homeguard.enter(words, given)
 
 
 def check_root(ctx: typer.Context, env: Mapping[str, str] | None = None) -> None:

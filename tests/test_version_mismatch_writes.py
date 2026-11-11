@@ -399,6 +399,42 @@ def test_the_command_words_are_found_through_options_and_their_values(
     assert command_path(program, argv[0], first, argv[1:]) == (words, rest)
 
 
+@pytest.mark.parametrize(
+    ("program", "argv", "options"),
+    [
+        ("ns", ["tune", "--dry-run"], ["--dry-run"]),
+        ("ns", ["tune", "--help"], ["--help"]),
+        ("ns", ["schedule", "install", "--time", "--help"], ["--time"]),          # the time is "--help"
+        ("ns", ["update", "x.zip", "--log", "--check"], ["--log"]),               # the log file is "--check"
+        ("ns", ["update", "--log", "--home", "x.zip"], ["--log"]),                # no home was named
+        ("ns", ["update", "x.zip", "--worker", "--home=D:/h", "--wait-pid", "7"],
+         ["--worker", "--home=D:/h", "--wait-pid"]),
+        ("studio", ["run", "--channel", "--dry-run"], ["--channel"]),             # the channel is "--dry-run"
+        ("studio", ["run", "--dry-run", "--channel", "s"], ["--dry-run", "--channel"]),
+        ("studio", ["run", "--", "--dry-run"], []),
+        ("studio", ["pause", "s", "--reason", "--help"], ["--reason"]),
+        ("studio", ["review", "--channel", "s", "show", "o1", "--play"], ["--channel", "--play"]),
+        ("studio", ["clip", "v.mp4", "--channel", "s", "--confirm-rights"],
+         ["--channel", "--confirm-rights"]),
+        ("studio", ["series", "design", "s", "--voice", "--help"], ["--voice"]),
+    ],
+)
+def test_an_option_counts_only_where_click_reads_it_as_one(
+    program: str, argv: list[str], options: list[str]
+) -> None:
+    """Fresh review of 5d9d1db9: `--help`, `--dry-run`, `--check` and `--home` given as the VALUE of another
+    option are no option: the command runs (and writes), so the root must not take them for one."""
+    from typer.main import get_command
+
+    from ns_studio import cli as studio_cli
+    from ns_supervisor import cli as ns_cli
+    from ns_supervisor.homecheck import options_given
+
+    root = get_command(ns_cli.app if program == "ns" else studio_cli.app)
+    first = root.commands[argv[0]]  # type: ignore[attr-defined]
+    assert options_given(first, argv[1:]) == options
+
+
 # ---------------------------------------------------------------------------------------------------------
 # C1 / C2: the two roots, before any command runs
 # ---------------------------------------------------------------------------------------------------------
@@ -415,6 +451,9 @@ NS_REFUSED = [
     ["restore", "nightshift-backup-x.zip"], ["restore", "b.zip", "--all"],
     ["schedule", "install"], ["schedule", "install", "--time", "03:00", "--enable"], ["schedule", "remove"],
     ["notify", "t", "m"], ["models", "get", "voicedesign"],
+    # an option word that is the VALUE of another option is no option: these run, so they are refused
+    ["schedule", "install", "--time", "--help"], ["update", "x.zip", "--log", "--check"],
+    ["update", "--log", "--home", "x.zip"],
 ]
 
 
@@ -456,6 +495,8 @@ STUDIO_REFUSED = [
     ["clip", "v.mp4", "--channel", "s", "--confirm-rights"],
     ["series", "start", "s"], ["series", "produce", "slug"], ["series", "design", "slug", "--format", "f"],
     ["ask", "hello"],
+    # an option word that is the VALUE of another option is no option: these run, so they are refused
+    ["run", "--channel", "--dry-run"], ["pause", "s", "--reason", "--help"],
 ]
 
 
