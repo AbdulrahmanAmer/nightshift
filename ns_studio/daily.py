@@ -1063,14 +1063,21 @@ def _tonight(
             if d.answer != nightfit.BEGIN:
                 _left_entry(report, night, d, channel=ch.slug, plan=dj.fmt, fmt=dj.fmt, jobs=dj.count - n)
                 break
+            long_job: dict[str, Any] | None = None
             if d.reason in (nightfit.FIRST_WORK, nightfit.FIRST_WORK_LONG):  # made over several nights
-                report.setdefault("long_jobs", []).append(
-                    {"channel": ch.slug, "fmt": dj.fmt, "need_s": _seconds(d.need_s), "nights": d.nights,
-                     "reason": d.reason,
-                     "said": nightclock.marked(night.card, nightfit.say(d, channel=ch.slug, plan=dj.fmt))}
-                )
+                long_job = {
+                    "channel": ch.slug, "fmt": dj.fmt, "need_s": _seconds(d.need_s), "nights": d.nights,
+                    "reason": d.reason,
+                    "said": nightclock.marked(night.card, nightfit.say(d, channel=ch.slug, plan=dj.fmt)),
+                }  # fmt: skip
             make = partial(jobs.make_job, env, ch, dj.fmt, now=now, rng=rng, origin="daily", run_id=run_id)
             code = _attempt(env, run, report, make, ch.slug, run_id=run_id, fmt=dj.fmt, night=night)
+            # "Begun as the night's first work and made over about N nights: each nightly run after this one
+            # continues it" is said only of a job this night really left half made for time. Said before the
+            # attempt, it stood in the note beside the failure of a job that was never made (a stock key
+            # refused before any job: block E final review), or of one that failed, or that finished tonight.
+            if long_job is not None and code == OUT_OF_TIME:
+                report.setdefault("long_jobs", []).append(long_job)
             if code == OUT_OF_TIME:  # S6/S7: left at a stage boundary; the rest of this channel waits too
                 rest = _ask_new(night, dj.fmt) if dj.count - n - 1 else None
                 if rest is not None and rest.answer != nightfit.BEGIN:
