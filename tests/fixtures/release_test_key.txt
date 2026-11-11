@@ -1,0 +1,4 @@
+# The Nightshift release TEST key (Ed25519 private key, base64 of 32 bytes). PUBLIC ON PURPOSE: never a secret.
+# It is SHA-256 of the text "Nightshift release TEST key: public on purpose, never a secret". Its public half is
+# ns_common/release_keys.py TEST_KEYS, which counts only on a dev or engine-test install with NS_RELEASE_SOURCE set.
+NatPix4RlqqpCA4LL+DwtSa6fBfHMk2BQr8hnIjMjj0=
