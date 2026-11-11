@@ -20,7 +20,7 @@ import psutil
 import pytest
 
 from installer.stage2.web import venvrepair
-from ns_common.config import save_install_state, save_runtime
+from ns_common.config import load_runtime, save_install_state, save_runtime
 from ns_common.models import InstallState, Runtime
 from ns_common.paths import Paths
 
@@ -35,15 +35,30 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def own_ports(rt: Runtime) -> Runtime:
+    """`rt` with a free port of this test's own for every service a home names: the engine, the story model,
+    the embedding service and the voice service. Each entry below is a process of its own, where no conftest
+    refuses a connection, and it asks the ports its HOME names: `ns verify --quick` asks the engine before it
+    refuses (an engine that answers lets it through, by design). With the default 8099 it asked the real
+    engine of this PC whenever one ran, got its answer, and went on to verify with it."""
+    return rt.model_copy(update={
+        "supervisor_port": _free_port(),
+        "llama": rt.llama.model_copy(update={"port": _free_port()}),
+        "embed": rt.embed.model_copy(update={"port": _free_port()}),
+        "tts": rt.tts.model_copy(update={"port": _free_port()}),
+    })
+
+
 def pending_home(tmp_path: Path) -> tuple[Paths, Path]:
-    """A dev install whose program is 0.2.0 and whose repair record waits for that program."""
+    """A dev install whose program is 0.2.0 and whose repair record waits for that program. Its settings name
+    no port another program of this PC listens on (`own_ports`)."""
     app = tmp_path / "app"
     app.mkdir()
     (app / "VERSION").write_text("0.2.0\n", encoding="utf-8")
     (app / venvrepair.MARKER).write_text("fp-0.2.0", encoding="utf-8")
     paths = Paths(tmp_path / "home")
     save_install_state(paths, InstallState(version="0.2.0", app_path=str(app)))
-    save_runtime(paths, Runtime.default("cpu-dev").model_copy(update={"dev_mode": True}))
+    save_runtime(paths, own_ports(Runtime.default("cpu-dev").model_copy(update={"dev_mode": True})))
     venvrepair.write(paths.home, app=app, for_app="fp-0.2.0", version="0.2.0", uv="uv", env={},
                      commands=[("studio", ["uv", "pip", "sync"]), ("supervisor", ["uv", "pip", "sync"])],
                      by="update")
@@ -88,6 +103,9 @@ def entries(tmp_path: Path) -> list[tuple[str, list[str]]]:
 @pytest.mark.skipif(sys.platform != "win32", reason="the product's routes are Windows routes")
 def test_every_job_or_engine_entry_refuses_through_python_m_and_writes_nothing(tmp_path: Path) -> None:
     paths, _app = pending_home(tmp_path)
+    mine, default = load_runtime(paths), Runtime()      # what each entry will read, by the product's reader
+    assert not ({mine.supervisor_port, mine.llama.port, mine.embed.port, mine.tts.port}
+                & {default.supervisor_port, default.llama.port, default.embed.port, default.tts.port})
     env = {**os.environ, "NIGHTSHIFT_HOME": str(paths.home), "PYTHONPATH": str(ROOT), "PYTHONUTF8": "1",
            "NS_UNDER_TEST": "1"}
     failures: list[str] = []
