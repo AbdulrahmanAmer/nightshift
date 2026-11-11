@@ -943,7 +943,7 @@ def test_copies_that_cannot_be_read_stop_the_restore_and_change_nothing(tmp_home
     damage_page3(paths.db_path)
     before = sha(paths.db_path)
     copies_before = {p.name: sha(p) for p in paths.backup_dir.iterdir()}
-    real_pragma = dbrestore._pragma
+    real_pragma, real_backups = dbrestore._pragma, dbrestore._backups
     if how == "unlistable":
         def denied(p: Paths) -> Any:
             raise PermissionError(13, "Access is denied", str(p.backup_dir))
@@ -967,8 +967,7 @@ def test_copies_that_cannot_be_read_stop_the_restore_and_change_nothing(tmp_home
     assert "data\\backup" in said and "Stop All" in said and "gone" not in said
 
     monkeypatch.setattr(dbrestore, "_pragma", real_pragma)
-    if how == "unlistable":
-        monkeypatch.undo()
+    monkeypatch.setattr(dbrestore, "_backups", real_backups)  # not undo(): that would also undo the home's own patches
     start(paths)  # the tool let go: the NEWEST copy is used
     assert runs_of(paths.db_path) == ["day-3"]
     assert len([n for n in notes(paths) if n.startswith("NS-W213")]) == 1
@@ -1147,6 +1146,34 @@ def test_a_full_check_that_passes_after_a_stop_in_use_is_said_once(tmp_home: Pat
     (said,) = notes(paths)
     assert "full check" in said and "nothing was replaced" in said and "ns doctor --bundle" in said
     assert start(paths).verdict == "ok" and len(notes(paths)) == 1
+
+
+def test_a_mark_left_while_the_quick_check_ran_waits_for_a_full_check(tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Written, NOT RUN (final review of the fix). Another process (the night stopping) leaves the mark while this
+    start's QUICK check runs: that check did not answer it, so the mark stays, no "passed a full check" is said,
+    and the next start checks in full."""
+    paths = home()
+    backups(paths, [1])
+    build_db(paths.db_path, "live")
+    mark = paths.home / "run" / "db-full-check.json"
+    real = dbrestore.assess
+
+    def assess(p: Paths, *, full: bool = False) -> Any:
+        found = real(p, full=full)
+        if not full:
+            dbrestore.want_full_check(p, "the night stopped: database disk image is malformed")
+        return found
+
+    monkeypatch.setattr(dbrestore, "assess", assess)
+    assert start(paths).verdict == "ok"
+    assert mark.is_file(), "a quick check does not answer the mark"
+    assert notes(paths) == [], "nothing claims a full check that was not made"
+
+    monkeypatch.setattr(dbrestore, "assess", real)
+    assert start(paths).verdict == "ok"
+    assert not mark.exists()
+    (said,) = notes(paths)
+    assert "full check" in said and "nothing was replaced" in said
 
 
 # blocker 4 ---------------------------------------------------------------------------------------------------
