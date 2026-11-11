@@ -289,11 +289,15 @@ def test_outputs_list_filters_and_detail(tmp_home: Path):
     )
     d = dash.outputs.detail(a)
     assert d["description"].startswith("Seeded short 1") and d["tags"] == ["story", "fiction"]
-    assert d["hashtags"] == ["#Shorts"] and d["sheet_text"].startswith("Seeded short 1")
+    # the sheet as posting-sheet-true writes it: the file's name, then TITLE:, DESCRIPTION: and the rest
+    assert d["hashtags"] == ["#Shorts"] and d["sheet_text"].startswith("FILE: Seeded short 1")
+    assert "TITLE: Seeded short 1" in d["sheet_text"].splitlines()
     assert d["ai_disclosure"] == "yes" and d["made_for_kids"] is False and d["age_restrict_suggested"] is True
     assert d["policy_notes"] == ["Problem: misleading claims - says true story", "OK: metadata spam"]
     assert d["story_excerpt"] == "Once upon a night."
-    assert d["publish_after"] is None and d["chapters"] is None and d["upload"] is None
+    # the seeded sheet is a whole one (as the product writes it): its suggested publish time is a day ahead
+    assert d["publish_after"] and d["publish_after"][:4].isdigit() and "T" in d["publish_after"]
+    assert d["chapters"] is None and d["upload"] is None
     assert d["file_exists"] is True and d["folder"].endswith("shorts")
     assert code_of(dash.outputs.detail, "nope/s9") == "not_found"
 

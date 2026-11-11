@@ -22,6 +22,7 @@ import random
 import re
 import sqlite3
 import sys
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,22 @@ from tests.helpers import make_channel
 
 ROOT = Path(__file__).resolve().parents[1]
 CH = "after-dark"
+
+
+class ClockAt:
+    """The night's clock for a test that says what time it is: the wall time starts at `at` and then runs
+    with the PC's own counter. A job's age counts from the ledger's line of its last finished stage, which
+    the night writes in its clock's time: a night given only `now` would write the PC's date there and be
+    asked a day later, in the test's time, about a job that looks older than the 3 days a night continues."""
+
+    def __init__(self, at: datetime) -> None:
+        self.at, self.t0 = at, time.monotonic()
+
+    def now(self) -> datetime:
+        return self.at + timedelta(seconds=time.monotonic() - self.t0)
+
+    def monotonic(self) -> float:
+        return time.monotonic()
 OTHER = "tiny-mysteries"
 PAUSED_CODE = "NS-E330"  # the code a paused channel's refusal carries (contracts/errors.json)
 
@@ -769,7 +786,7 @@ def test_a_nightly_job_paused_between_two_stages_waits_and_the_first_night_after
 
     def night(at: datetime) -> dict[str, Any]:
         return daily.run_daily(env, now=at, rng=random.Random(1), run_fn=run_job_guarded,
-                               awake=contextlib.nullcontext)
+                               awake=contextlib.nullcontext, clock=ClockAt(at))
 
     report = night(now)
     (first,) = {c.split(":", 1)[1] for c in JOB_CALLS}
@@ -943,7 +960,7 @@ def test_a_nightly_job_paused_again_while_the_night_continues_it_waits_again_and
 
     def night(at: datetime) -> dict[str, Any]:
         return daily.run_daily(env, now=at, rng=random.Random(1), run_fn=run_job_guarded,
-                               awake=contextlib.nullcontext)
+                               awake=contextlib.nullcontext, clock=ClockAt(at))
 
     def card_message() -> str:
         (row,) = db.query("select message from dashboard_jobs where params_json like ?", (f"%{first}%",))
