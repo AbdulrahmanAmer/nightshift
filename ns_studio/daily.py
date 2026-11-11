@@ -322,6 +322,7 @@ def _run_daily(
             # the words for the morning note only: the run's summary keeps the failure entry, which the Last
             # night card reads (`failures`), and no key the dashboard does not declare
             model_found = report.pop("model_damaged", None)
+            model_aside = report.pop("model_aside", None)  # a file no night job loads: said, stops nothing
         report["timing"] = _close_night(env, night, report)
         finished = clock.now()
         report["finished_at"] = finished.isoformat(timespec="seconds")
@@ -338,6 +339,7 @@ def _run_daily(
     _leave_sleep_note(env, report, clock, now)
     _leave_vram_note(env, report, clock, now)
     _leave_model_note(env, model_found, clock, now)
+    _leave_model_note(env, model_aside, clock, now, aside=True)
     notifications.send(env.paths, env.log, notifier, notifications.nightly_message(report, masters, shorts))
     finish = getattr(env.services.acquirer, "run_finished", None)
     if finish is not None:  # gap 25: the engine this run needed leaves once nobody else uses it
@@ -837,12 +839,15 @@ def _leave_vram_note(env: jobs.Env, report: dict, clock: nightclock.Clock, start
 
 
 def _leave_model_note(
-    env: jobs.Env, found: dict[str, Any] | None, clock: nightclock.Clock, started: datetime
+    env: jobs.Env, found: dict[str, Any] | None, clock: nightclock.Clock, started: datetime, *,
+    aside: bool = False,
 ) -> None:
     """Card model-file-damaged, M7: the one morning note of a night that met a damaged (or missing) model
     file (`notifications.model_note`: which file, the way out), once per night, through the notes' one owner.
-    Settings > Notifications off leaves none; the Last night card still lists the failure and the skipped."""
-    message = notifications.model_note(found)
+    Settings > Notifications off leaves none; the Last night card still lists the failure and the skipped.
+    `aside`: the note about a file no night job loads (`notifications.model_aside_note`): it stopped
+    nothing."""
+    message = notifications.model_aside_note(found) if aside else notifications.model_note(found)
     if not message or not notifications.notifications_enabled(env.paths):
         return
     since = started.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
@@ -936,10 +941,14 @@ def _model_precheck(env: jobs.Env, report: dict) -> str | None:
     try:
         from ns_supervisor import modelcheck
 
-        found = modelcheck.precheck(env.paths)
+        aside: list[str] = []
+        found = modelcheck.precheck(env.paths, others=aside)
     except Exception as e:  # noqa: BLE001 - a check that breaks never stops the night
         env.log.warn("model_precheck_failed", str(e))
         return None
+    if aside:   # a file no night job loads (the design talker, the embed model, the face finder): the night
+        env.log.warn("daily_model_files_aside", " ".join(aside))    # runs; the morning note names it
+        report["model_aside"] = {"said": " ".join(aside)}
     if not found:
         return None
     said = " ".join(found)

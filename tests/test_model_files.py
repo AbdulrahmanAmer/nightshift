@@ -541,6 +541,41 @@ def test_the_night_tells_a_damaged_model_once(tmp_home: Path, monkeypatch: pytes
     assert len(notes) == 2 and llm.name in notes[1], notes
 
 
+def test_a_file_no_night_job_loads_does_not_stop_the_night(tmp_path: Path) -> None:
+    """Written by the final reviewer, NOT RUN. The pre-check stops a night only for the files its jobs load
+    (the language and story model, the talkers and tokenizer of a synthesis, whisper); the design talker
+    and the embed model are said beside it. A failed voice start does not look at the design talker."""
+    from ns_studio import notifications
+    from ns_supervisor import modelcheck
+    from ns_tts import engine as tts_engine
+
+    assert modelcheck.DESIGN_KIND == tts_engine.TALKER_KIND["design"]  # the word in the talker's file name
+    inst = make_install(tmp_path)
+    design = next(Path(i.dest) for i in inst.items if modelcheck.design_only(i))
+    embed = next(Path(i.dest) for i in inst.items if Path(i.dest).parent.name == "embed")
+    voice = [Path(i.dest) for i in modelcheck.files_for("tts", [], inst.items)]
+    assert design not in voice and inst.file("talker-1.7b-base") in voice and len(voice) == 3, voice
+    design.unlink()
+    flip(embed)
+    check = modelcheck.FileCheck(inst.paths, app=inst.app)
+    assert check.after_failure("embed", ["llama-server.exe", "-m", str(embed)]).damaged is not None
+    aside: list[str] = []
+    assert modelcheck.precheck(inst.paths, inst.app, others=aside) == [], "the night was stopped"
+    assert len(aside) == 2 and any(design.name in s for s in aside), aside
+    assert any(s.startswith("NS-E127") and embed.name in s for s in aside), aside
+    note = notifications.model_aside_note({"said": " ".join(aside)}) or ""
+    assert "stopped no video" in note and "choose Repair" in note and design.name in note, note
+    assert notifications.model_aside_note(None) is None
+    # a failed voice start with the design talker gone: the files of that start are there, nothing is named
+    found = check.after_failure("tts", ["python.exe", "-m", "ns_tts.server"])
+    assert found.damaged is None and design.name not in found.note, found
+    # a file the night does load still stops it
+    talker = inst.file("talker-1.7b-base")
+    talker.unlink()
+    stops = modelcheck.precheck(inst.paths, inst.app)
+    assert len(stops) == 1 and talker.name in stops[0], stops
+
+
 # --------------------------------------------------------------------------------- the seams themselves
 def test_the_check_reads_a_models_size_only_through_the_size_seam() -> None:
     """No test of this file can bring a model of a real size in as bytes: the checker asks `_size`."""

@@ -121,6 +121,20 @@ def model_note(found: dict[str, Any] | None) -> str | None:
     )
 
 
+def model_aside_note(found: dict[str, Any] | None) -> str | None:
+    """Card model-file-damaged: the morning note about a damaged or missing model file that no nightly video
+    loads (the voice design model, the embed model, the face finder; ``found``: the night's ``model_aside``).
+    It stopped nothing, and says so; the way out is the same Repair. None when there is none."""
+    if not isinstance(found, dict) or not found.get("said"):
+        return None
+    said = str(found["said"]).rstrip(".")
+    return (
+        f"{said}. The nightly videos do not load this file, so it stopped no video; what does use it fails "
+        "until it is fixed. Run INSTALL.cmd again from the Nightshift zip and choose Repair: it checks every "
+        "model file by hash and downloads a damaged or missing one again; nothing else is changed."
+    )
+
+
 def vram_part() -> str:
     """The toast's part of a night whose model could not load for the card's memory (card vram-busy)."""
     return (

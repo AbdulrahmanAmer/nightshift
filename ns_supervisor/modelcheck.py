@@ -57,9 +57,43 @@ class _OutOfTime(Exception):
     pass
 
 
+#: The talker that only "design a voice" loads (``ns_tts.engine.TALKER_KIND["design"]``, the word in its file
+#: name by ``TALKER_TEMPLATE``; a test holds the two together). The voice service's start and every
+#: synthesis work without it (``ns_tts.voices``: a designed voice is stored as a Base prompt), so it is no
+#: file of a failed voice start and no file of a night.
+DESIGN_KIND = "voicedesign"
+
+
+def design_only(item: DownloadItem) -> bool:
+    """True for the VoiceDesign talker: loaded when a voice is designed, never by a start or a synthesis."""
+    dest = Path(item.dest)
+    return dest.parent.name == "tts" and DESIGN_KIND in dest.name.lower()
+
+
+def night_files(paths: Paths, items: list[DownloadItem]) -> list[DownloadItem]:
+    """The planned model files a night's jobs load, taken from where the stages take them: llama's ``-m``
+    files as ``runtime.json`` names them (the language model and, with two models, the story model), the
+    voice files a synthesis uses (the talkers and the tokenizer, not the design talker) and whisper's files.
+    Not among them: the design talker, the embed model and the face finder; should a job load one of those
+    after all, the engine's check after the failed load names it (``FileCheck``). When ``runtime.json``
+    cannot be read or names no planned file, every file of ``models\\llm`` counts."""
+    from ns_common.config import load_runtime
+
+    try:
+        llama = load_runtime(paths).llama
+        cmd = [x for p in (llama.model_path, llama.story_model_path) if p for x in ("-m", str(p))]
+        language = files_for("llama", cmd, items)
+    except Exception:  # noqa: BLE001 - no usable runtime.json: the folder decides
+        language = []
+    if not language:    # runtime.json names no planned file (or cannot be read): the safe side, every one
+        language = [i for i in items if Path(i.dest).parent.name == "llm"]
+    return language + files_for("tts", [], items) + files_for("whisper", [], items)
+
+
 def files_for(service: str, cmd: list[str], items: list[DownloadItem]) -> list[DownloadItem]:
-    """The planned model files a service loads: the ``-m`` file of llama-server (llama, embed), every voice
-    model of a real voice engine (tts), whisper's files (whisper). A file outside the plan is not checked."""
+    """The planned model files a service loads: the ``-m`` file of llama-server (llama, embed), the voice
+    models a start and a synthesis of a real voice engine use (tts: not the design talker, ``design_only``),
+    whisper's files (whisper). A file outside the plan is not checked."""
     if service in ("llama", "embed"):
         # runtime.json may spell the path with forward slashes or another case: compare normalised paths
         wanted = {os.path.normcase(str(Path(cmd[i + 1]))) for i, a in enumerate(cmd[:-1]) if a == "-m"}
@@ -67,7 +101,7 @@ def files_for(service: str, cmd: list[str], items: list[DownloadItem]) -> list[D
     if service == "tts":
         if "--engine" in cmd and cmd[cmd.index("--engine") + 1:][:1] == ["fake"]:
             return []
-        return [i for i in items if Path(i.dest).parent.name == "tts"]
+        return [i for i in items if Path(i.dest).parent.name == "tts" and not design_only(i)]
     if service == "whisper":
         return [i for i in items if "whisper" in Path(i.dest).parts]
     return []
@@ -168,11 +202,13 @@ class FileCheck:
         return row
 
 
-def precheck(paths: Paths, app: Path | None = None) -> list[str]:
-    """A night's start: one sentence per model file of this install that cannot load (missing, the wrong
-    size, or recorded damaged for its present size and date); the morning note adds the way out (Repair), a
-    stopped download says that it continues. No hash. Nothing when setup never verified the models (its
-    models step is not done: a test home, an unfinished install)."""
+def precheck(paths: Paths, app: Path | None = None, *, others: list[str] | None = None) -> list[str]:
+    """A night's start: one sentence per model file a night's job loads (``night_files``) that cannot load
+    (missing, the wrong size, or recorded damaged for its present size and date); the morning note adds the
+    way out (Repair), a stopped download says that it continues. The same sentence about a file no night job
+    loads (the design talker, the embed model, the face finder) goes to ``others``: it stops no night and is
+    said beside it. No hash. Nothing when setup never verified the models (its models step is not done: a
+    test home, an unfinished install)."""
     from installer.stage2 import verify_downloads as vd
     from installer.stage2.web import modelmarks
     from ns_common.config import load_install_state
@@ -189,15 +225,18 @@ def precheck(paths: Paths, app: Path | None = None) -> list[str]:
     except vd.AnswersError:
         return []
     damaged = modelmarks.recorded_damage(paths.home)
+    tonight = {str(i.dest) for i in night_files(paths, items)}
     out: list[str] = []
+    aside: list[str] = [] if others is None else others
     for item in items:
         row = vd.check_item(item, quick=True)
         found = damaged.get(modelmarks.key_of(paths.home, Path(item.dest)))
+        said = out if str(item.dest) in tonight else aside
         if row.status == vd.BAD or (found is not None and row.status == vd.OK):
             recorded = found is not None and row.status == vd.OK
             when = f" (found at {found.get('checked_at')})" if found is not None and recorded else ""
-            out.append(f"{CODE}: {damage_sentence(paths, item, row)}{when}.")
+            said.append(f"{CODE}: {damage_sentence(paths, item, row)}{when}.")
         elif row.status == vd.MISSING:      # a stopped download says that it continues; the rest is Repair
-            out.append(f"The {vd.role(item, paths)} file {item.dest} is missing"
-                       + (f" ({row.detail}). {row.fix}" if row.detail else "."))
+            said.append(f"The {vd.role(item, paths)} file {item.dest} is missing"
+                        + (f" ({row.detail}). {row.fix}" if row.detail else "."))
     return out
