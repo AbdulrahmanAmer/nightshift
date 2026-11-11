@@ -20,6 +20,7 @@ from ns_common.errors import NsError, describe
 from ns_common.keepawake import keep_awake
 from ns_common.models import Channel
 from ns_studio import jobs, nightclock, nightfit, notifications, ownership
+from ns_studio.acquirer import StudioAcquirer
 from ns_studio.channels import cadence
 from ns_studio.channels.crud import broken_channels, get_channel
 from ns_studio.context import JobContext
@@ -297,6 +298,9 @@ def _run_daily(
             (run_id, now.isoformat(timespec="seconds"), "daily"),
         )
         night = _open_night(env, run_id, clock, os.environ if environ is None else environ, process)
+        acquirer = env.services.acquirer
+        if isinstance(acquirer, StudioAcquirer):  # vram-busy: a run nobody watches waits for the memory
+            acquirer.vram_wait = True
         try:
             _tonight(env, run, rng, now, run_id, report, recovered, night)
             done = [j["job_id"] for j in report["jobs"]]
@@ -311,6 +315,9 @@ def _run_daily(
                 (clock.now().isoformat(timespec="seconds"), json.dumps(report), run_id),
             )
             raise
+        finally:
+            if isinstance(acquirer, StudioAcquirer):
+                acquirer.vram_wait = False
         report["timing"] = _close_night(env, night, report)
         finished = clock.now()
         report["finished_at"] = finished.isoformat(timespec="seconds")
@@ -324,6 +331,7 @@ def _run_daily(
     env.log.info("daily_done", run_id=run_id, jobs=len(done), failures=len(report["failures"]))
     masters, shorts = notifications.output_counts(env.db, done)
     _leave_time_note(env, report, clock, now)
+    _leave_vram_note(env, report, clock, now)
     notifications.send(env.paths, env.log, notifier, notifications.nightly_message(report, masters, shorts))
     finish = getattr(env.services.acquirer, "run_finished", None)
     if finish is not None:  # gap 25: the engine this run needed leaves once nobody else uses it
@@ -450,6 +458,7 @@ def _attempt(
     stopped before a stage for lack of time (`OUT_OF_TIME`) is not a failure either: `_left_for_time`.
     """
     job_id = "(not created)"
+    raw = ""  # an NsError's own detail (NS-E208: the engine's words naming the programs)
     try:
         # No stock-footage key: every story would fail at `clips` after an hour of GPU work (gap L3).
         require_footage_key(env.services)
@@ -471,7 +480,7 @@ def _attempt(
         env.log.info("daily_job_busy", job_id=job_id, detail=str(e))
         return BUSY
     except (NsError, StudioError) as e:
-        code, detail = e.code, str(e)
+        code, detail, raw = e.code, str(e), str(getattr(e, "detail", "") or "")
         if code == PAUSED and job_id != "(not created)":  # stopped between two stages by a pause (P47)
             _paused_mid_job(env, report, job_id, slug, resumed=resumed)
             return PAUSED
@@ -483,7 +492,10 @@ def _attempt(
         code, detail = UNEXPECTED, f"{UNEXPECTED}: {describe_unexpected(e)}"
         env.log.error("daily_job_crashed", job_id=job_id, traceback=traceback.format_exc())
     env.log.error("daily_job_failed", job_id=job_id, code=code, detail=detail)
-    report["failures"].append({"job_id": job_id, "channel": slug, "code": code, "error": detail})
+    failure = {"job_id": job_id, "channel": slug, "code": code, "error": detail}
+    if code == VRAM:  # the engine's own words (programs, numbers, the wait), for the note and the card data
+        failure["said"] = raw
+    report["failures"].append(failure)
     return code
 
 
@@ -702,6 +714,85 @@ def _leave_time_note(env: jobs.Env, report: dict, clock: nightclock.Clock, start
         env.log.warn("morning_note_failed", str(e))
 
 
+def _leave_vram_note(env: jobs.Env, report: dict, clock: nightclock.Clock, started: datetime) -> None:
+    """Card vram-busy, V8: the one morning note of a night whose model could not load because other programs
+    held the graphics card's memory (`notifications.vram_note`, the engine's words), once per night, through
+    the notes' one owner. Settings > Notifications off leaves none; the Last night card still says it."""
+    message = notifications.vram_note(report)
+    if not message or not notifications.notifications_enabled(env.paths):
+        return
+    since = started.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+
+    def said(notes: list[Any]) -> bool:
+        return any(n["message"] == message and str(n["at"]) >= since for n in notes)
+
+    try:
+        from ns_supervisor import notify
+
+        notify.leave_note(env.paths, notifications.TITLE, message, once=said,
+                          now=clock.now().astimezone().replace(tzinfo=None))
+    except Exception as e:  # noqa: BLE001 - a note never stops a night; the report and the card say it
+        env.log.warn("morning_note_failed", str(e))
+
+
+#: The engine's answers that mean the graphics card is not free for the night now: held by another task
+#: (NS-E201), or its memory held by other programs (NS-E208, card vram-busy). The ONE place a night turns
+#: them into "this job and the rest of tonight wait for the next nightly run" is `_card_busy` and the two
+#: loops that call it; neither code is a time decision (`nightfit` gave the wait its time before it began).
+VRAM = ownership.VRAM_CODE
+CARD_BUSY = ("NS-E201", VRAM)
+#: The `reason` of a `skipped` entry when the card's memory was held (an NS-E201 night's has none).
+VRAM_SKIPPED = "vram"
+
+
+def _card_busy(
+    env: jobs.Env, report: dict, night: nightclock.Night, job_id: str, slug: str, stage: str | None,
+    *, resumed: bool, has_card: bool,
+) -> None:
+    """A job met a busy card (`CARD_BUSY`): it waits for the next nightly run, it has not failed. `_attempt`'s
+    failure entry is taken out (no red line beside "waiting" on the card, no failure in the toast), the job is
+    left interrupted at its stage, and its `interrupted_jobs` entry says `waiting` (with the engine's words
+    naming the programs, for NS-E208). A NEW job that met NS-E208 is closed the way a killed one is (its Queue
+    card first, then the record, owner `VRAM_OWNER`), so the next night continues it; a new job that met
+    NS-E201 stays a failure, as before. The first NS-E208 of the night is kept as `report["vram"]` for the
+    morning note and the toast."""
+    mine = [f for f in report["failures"] if f["job_id"] == job_id and f["code"] in CARD_BUSY]
+    vram = next((f for f in mine if f["code"] == VRAM), None)
+    if not resumed and vram is None:
+        return
+    report["failures"] = [f for f in report["failures"] if f not in mine]
+    said = str(vram.get("said") or "") if vram is not None else None
+    if resumed:
+        ownership.write_record(env.paths, job_id, state="interrupted")
+    else:
+        rec = ownership.read_record(env.paths, job_id) or {}
+        try:
+            closed = ownership._close_job(env.paths, env.db, {**rec, "id": job_id}, night.clock.now(),
+                                          ownership.VRAM_OWNER)  # fmt: skip
+        except Exception as e:  # noqa: BLE001 - the record says failed; Retry and `studio run --resume` remain
+            env.log.warn("vram_job_not_closed", str(e), job_id=job_id)
+            report["failures"].extend(mine)
+            return
+        stage = closed.stage if closed is not None else stage
+        has_card = closed is not None and closed.card_id is not None
+    report["interrupted_jobs"].append(
+        ownership.interrupted_entry(job_id, slug, stage, "waiting", has_card=has_card, said=said or None)
+    )
+    if vram is not None and "vram" not in report:
+        at = night.clock.now().astimezone().strftime("%H:%M")
+        report["vram"] = {"job_id": job_id, "channel": slug, "at": at, "said": said or ""}
+
+
+def _skip_rest(report: dict, busy: str, slug: str, jobs_left: int) -> None:
+    """The jobs the night does not start after a busy card, under `skipped` (`reason: vram` for NS-E208)."""
+    if jobs_left <= 0:
+        return
+    entry: dict[str, Any] = {"channel": slug, "jobs": jobs_left}
+    if busy == VRAM:
+        entry["reason"] = VRAM_SKIPPED
+    report.setdefault("skipped", []).append(entry)
+
+
 Outcomes = dict[str, tuple[str, str | None]]
 #: What `_attempt` returns for a job another process is running (a Retry from the Queue): not an error code.
 BUSY = "busy"
@@ -718,11 +809,12 @@ def _resume_interrupted(
     outcomes: Outcomes,
     night: nightclock.Night,
     left_channels: dict[str, str],
-) -> tuple[bool, set[str]]:
+) -> tuple[str | None, set[str]]:
     """Continue the jobs an earlier night left half made: the same job from its stage, not a new idea.
 
-    Returns `(gpu_busy, failed_channels)`: True when the GPU stayed busy (the rest of the night waits, as for
-    any job), and the channels whose continued job failed again tonight (they get no second job from ideas
+    Returns `(busy, failed_channels)`: the code (`CARD_BUSY`) when the card stayed busy (the rest of the
+    night waits, as for any job), else None, and the channels whose continued job failed again tonight
+    (they get no second job from ideas
     tonight: a failure at a late stage would only cost another full run). `outcomes` receives what became of
     each job, for the morning note. The night's time decision (`nightfit`, S3) is asked for each job first:
     not BEGIN, it is not continued tonight (or given up with its card), and its channel goes into
@@ -733,7 +825,7 @@ def _resume_interrupted(
         pending = _resume_order(env, ownership.pending_resumes(env.paths, env.db, now))
     except Exception as e:  # noqa: BLE001 - see _close_dead_work
         env.log.warn("resume_scan_failed", str(e))
-        return False, failed_channels
+        return None, failed_channels
     for rec in pending:
         job_id, slug = str(rec["id"]), str(rec.get("channel") or "")
         stage = rec.get("interrupted_at_stage")
@@ -772,18 +864,10 @@ def _resume_interrupted(
             outcomes[job_id] = ("gave_up" if gave_up else "out_of_time", str(left["said"]))
             left_channels[slug] = str(left["said"])
             continue
-        if code == "NS-E201":  # the GPU is busy: it stays interrupted, the next night tries again
-            ownership.write_record(env.paths, job_id, state="interrupted")
-            # It is waiting, not failed and not skipped: `_attempt` listed the NS-E201 as a failure, which the
-            # card and the toast must not repeat. Its interrupted entry says "waiting" instead.
-            report["failures"] = [
-                f for f in report["failures"] if not (f["job_id"] == job_id and f["code"] == "NS-E201")
-            ]
-            report["interrupted_jobs"].append(
-                ownership.interrupted_entry(job_id, slug, stage, "waiting", has_card=has_card)
-            )
+        if code in CARD_BUSY:  # the card is busy: it stays interrupted, the next night tries again
+            _card_busy(env, report, night, job_id, slug, stage, resumed=True, has_card=has_card)
             outcomes[job_id] = ("waiting", None)
-            return True, failed_channels
+            return code, failed_channels
         fate = "resumed" if code is None else "failed_again"
         # A job the last night left for time was not interrupted by anything: when it finishes now, the
         # morning says so through `jobs` (`resumed`), not as an interrupted night that was resumed.
@@ -800,7 +884,7 @@ def _resume_interrupted(
             ownership.settle_failed(env.db, job_id, str(last["code"]), str(last["error"]))
             outcomes[job_id] = ("failed", str(last["code"]))
             failed_channels.add(slug)
-    return False, failed_channels
+    return None, failed_channels
 
 
 def _tonight(
@@ -846,8 +930,8 @@ def _tonight(
         if _paused_now(env, dj.channel.slug):  # paused after the plan was made: nothing of it starts
             _hold_for_pause(env, report, why, dj.channel.slug, dj.count)  # also when the GPU stayed busy
             continue
-        if gpu_busy:  # J7: the GPU stayed busy for the whole wait; the other jobs wait for the next night
-            report.setdefault("skipped", []).append({"channel": dj.channel.slug, "jobs": dj.count})
+        if gpu_busy:  # J7: the card stayed busy for the whole wait; the other jobs wait for the next night
+            _skip_rest(report, gpu_busy, dj.channel.slug, dj.count)
             continue
         ch = dj.channel
         bar = cadence.apply_quality_drop(env.paths, env.db, ch, dj.plan, now)
@@ -889,9 +973,15 @@ def _tonight(
                 if dj.count - n - 1:
                     _hold_for_pause(env, report, why, ch.slug, dj.count - n - 1)
                 break
-            if code == "NS-E201":
-                gpu_busy = True
-                report.setdefault("skipped", []).append({"channel": ch.slug, "jobs": dj.count - n})
+            if code in CARD_BUSY:
+                gpu_busy = code
+                failed = report["failures"][-1] if report["failures"] else {}
+                if code == VRAM and failed.get("code") == VRAM:  # the job waits too: not counted as skipped
+                    _card_busy(env, report, night, str(failed["job_id"]), ch.slug, None, resumed=False,
+                               has_card=False)  # fmt: skip
+                    _skip_rest(report, code, ch.slug, dj.count - n - 1)
+                else:
+                    _skip_rest(report, code, ch.slug, dj.count - n)
                 break
 
 

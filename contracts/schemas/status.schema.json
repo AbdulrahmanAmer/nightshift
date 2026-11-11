@@ -325,9 +325,130 @@
           ],
           "default": null,
           "title": "Vram Gb"
+        },
+        "gpu_wait": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StatusGpuWait"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "title": "StatusEngine",
+      "type": "object"
+    },
+    "StatusGpuWait": {
+      "additionalProperties": false,
+      "description": "A nightly model load waiting for the graphics card's memory (card vram-busy): the engine's `/status`\n`gpu_wait`, passed on only while it waits. `said` is the sentence the Queue shows (programs by process\nname as Windows lists them, numbers marked when the card is simulated).",
+      "properties": {
+        "service": {
+          "title": "Service",
+          "type": "string"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owner"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        },
+        "waited_s": {
+          "default": 0,
+          "title": "Waited S",
+          "type": "integer"
+        },
+        "said": {
+          "default": "",
+          "title": "Said",
+          "type": "string"
+        },
+        "need_mb": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Need Mb"
+        },
+        "need_measured": {
+          "default": false,
+          "title": "Need Measured",
+          "type": "boolean"
+        },
+        "free_mb": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Free Mb"
+        },
+        "others_mb": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Others Mb"
+        },
+        "total_mb": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Mb"
+        },
+        "names": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Names",
+          "type": "array"
+        }
+      },
+      "required": [
+        "service"
+      ],
+      "title": "StatusGpuWait",
       "type": "object"
     },
     "StatusLastError": {

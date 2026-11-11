@@ -140,6 +140,10 @@ PAUSED_REASON = "its channel is paused"  # `resume_problem` of a job whose chann
 #: nightly task (card night-fits, S6), and the `reason` that record carries: its card says so, with NS-W211.
 OUT_OF_TIME_OWNER = "it was left for time"
 OUT_OF_TIME_REASON = "out_of_time"
+#: The `owner` of a record the nightly closed because other programs held the graphics card's memory when its
+#: model was to load (card vram-busy, NS-E208): its card says so, with NS-E208, and the nightly continues it.
+VRAM_OWNER = "other programs held the graphics card's memory"
+VRAM_CODE = "NS-E208"
 
 Liveness = Literal["live", "dead", "interrupted", "ended", "unknown"]
 
@@ -773,12 +777,20 @@ FATES = ("open", "resumed", "failed_again", "waiting")
 
 
 def interrupted_entry(
-    job_id: str, channel: str | None, stage: str | None, fate: str = "open", *, has_card: bool | None = None
+    job_id: str,
+    channel: str | None,
+    stage: str | None,
+    fate: str = "open",
+    *,
+    has_card: bool | None = None,
+    said: str | None = None,
 ) -> dict[str, Any]:
     """One `interrupted_jobs` entry of a run summary: which job, where it stopped and what became of it.
 
     `state` is the fate (one of `FATES`); `resumed` is `state == "resumed"` (the key older readers know);
-    `has_card` says whether a Retry card in the Queue stands for the job (omitted when not known).
+    `has_card` says whether a Retry card in the Queue stands for the job (omitted when not known); `said`
+    is why a `waiting` job waits when that was the graphics card's memory (the engine's NS-E208 words, which
+    name the programs Windows reported; omitted otherwise).
     """
     if fate not in FATES:
         raise ValueError(f"unknown fate {fate!r}")
@@ -791,6 +803,8 @@ def interrupted_entry(
     }
     if has_card is not None:
         item["has_card"] = has_card
+    if said:
+        item["said"] = said
     return item
 
 
@@ -915,6 +929,8 @@ def _card_text(
     """
     at = f"Interrupted at {stage}" if stage else "Interrupted"
     cause = "its channel was paused" if owner == PAUSED_OWNER else "the PC or Nightshift stopped"
+    if owner == VRAM_OWNER:
+        cause = "other programs were using the graphics card's memory"
     nightly = origin == NIGHTLY_ORIGIN
     during = "during the night's run" if nightly else "while this job ran"
     stopped = f"{at}: {cause} {during}."
@@ -971,6 +987,8 @@ def _card_error(
         return {"code": PAUSED, "hint": describe(PAUSED).hint, "stage": stage}
     if owner == OUT_OF_TIME_OWNER:
         return {"code": OUT_OF_TIME, "hint": describe(OUT_OF_TIME).hint, "stage": stage}
+    if owner == VRAM_OWNER:
+        return {"code": VRAM_CODE, "hint": describe(VRAM_CODE).hint, "stage": stage}
     hint = INTERRUPTED_HINT if origin == NIGHTLY_ORIGIN else INTERRUPTED_HINT_BY_HAND
     return {"code": INTERRUPTED_CODE, "hint": hint, "stage": stage}
 

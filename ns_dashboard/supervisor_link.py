@@ -179,6 +179,15 @@ class EventRelay:
             self._stop.wait(self.retry_s)
 
 
+def _code(r: httpx.Response) -> str | None:
+    """The `code` of an engine error answer, None when it has none."""
+    try:
+        data = r.json()
+    except ValueError:
+        return None
+    return str(data["code"]) if isinstance(data, dict) and data.get("code") else None
+
+
 def _detail(r: httpx.Response) -> str:
     """The `detail` of an engine error answer (`{code, message, detail}`), else its first 200 characters."""
     try:
@@ -207,8 +216,10 @@ class HttpAcquirer:
         try:
             r = self._client.post(f"{self.base_url}/acquire", json=body, timeout=timeout_s + 30)
             if r.status_code == 409:
-                # the engine's NS-E201 (the graphics card is held by another task): not a crashed service
-                raise NsError("NS-E201", f"acquire {service}: {_detail(r)}")
+                # the engine's NS-E201 (the graphics card is held by another task) or NS-E208 (other programs
+                # hold its memory): not a crashed service
+                code = "NS-E208" if _code(r) == "NS-E208" else "NS-E201"
+                raise NsError(code, f"acquire {service}: {_detail(r)}")
             r.raise_for_status()
             data = r.json()
         except httpx.TimeoutException as e:

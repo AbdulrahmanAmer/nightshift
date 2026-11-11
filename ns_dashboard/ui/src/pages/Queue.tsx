@@ -378,7 +378,7 @@ function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; st
   return (
     <Card as="section" aria-labelledby="q-plan" className={cx("self-stretch", className)}>
       <CardHeader id="q-plan" title="Tonight's plan" actions={<Button variant="ghost" size="sm" leadingIcon="edit" onClick={() => go("#/channels")}>Edit</Button>} />
-      {status?.engine?.vram_owner && <p role="status" className="mb-3 flex flex-wrap items-center gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2 text-ds-xs"><StatusDot tone="accent" />GPU held by <strong className="font-semibold" title={status.engine.vram_owner}>{ownerWords(status.engine.vram_owner)}</strong>. {nightComes(status) ? "Tonight's run waits for it." : "Jobs that need it wait."}{!status.job && <Button size="sm" variant="soft" onClick={() => releaseGpu(status.engine.vram_owner!)}>Release</Button>}</p>}
+      {status?.engine?.gpu_wait ? <p role="status" className="mb-3 flex flex-wrap items-center gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2 text-ds-xs"><StatusDot tone="attention" />{status.engine.gpu_wait.said}</p> : status?.engine?.vram_owner && <p role="status" className="mb-3 flex flex-wrap items-center gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2 text-ds-xs"><StatusDot tone="accent" />GPU held by <strong className="font-semibold" title={status.engine.vram_owner}>{ownerWords(status.engine.vram_owner)}</strong>. {nightComes(status) ? "Tonight's run waits for it." : "Jobs that need it wait."}{!status.job && <Button size="sm" variant="soft" onClick={() => releaseGpu(status.engine.vram_owner!)}>Release</Button>}</p>}
       <div className="flex flex-col gap-4">
         {plan.length ? plan.map((c) => (
           <AssignmentCard key={c.slug} categories={[c.display_name]} moreLabel={`Options for ${c.display_name}`} menu={[{ icon: "edit", label: "Edit channel", onSelect: () => go(`#/channels?edit=${encodeURIComponent(c.slug)}`) }, { icon: "pause", label: "Skip tonight and pause", onSelect: () => pause(c) }]}
@@ -488,6 +488,7 @@ function interruptedWords(u: InterruptedJob, status: ReturnType<typeof useApp>["
     case "resumed": return `interrupted${at}, then continued and finished`;
     case "failed_again": return `interrupted${at}, continued but stopped again`;
     case "waiting": {
+      if (u.said) return `interrupted${at}, waiting for the graphics card's memory (${u.said})${nightComes(status) ? ": the next night continues it" : ""}`;
       if (nightComes(status)) return `interrupted${at}, waiting for the GPU: the next night continues it`;
       // No night is coming, or the status is not known yet (then no cause is named). The Studio shortcut puts `studio` in front of what is typed.
       const way = `once the GPU is free, open the Nightshift Studio shortcut and type run --resume ${u.job_id}${u.has_card === false ? "" : ", or press Retry from where it stopped on its card in Create, under Earlier, while it is listed there"}`;
@@ -554,7 +555,7 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
       {noRoom.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{noRoom.map((x, i) => <li key={i}>{channelName(x.channel)}: {plural(x.jobs, "job")} not started, not enough disk space ({x.short || x.message || "free some space"})</li>)}</ul>}
       {held.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{held.map((x, i) => <li key={i}>{x.job_id ? `${channelName(x.channel)} is paused: its half-made job waits for the resume` : `${plural(x.jobs, "job")} not started: ${channelName(x.channel)} is paused`}</li>)}</ul>}
       {left.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{left.map((x, i) => <li key={i}>{leftWords(x, channelName, status)}</li>)}</ul>}
-      {skipped.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{skipped.map((x) => <li key={x.channel}>{channelName(x.channel)}: {plural(x.jobs, "job")} skipped because an earlier one stopped</li>)}</ul>}
+      {skipped.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{skipped.map((x) => <li key={x.channel}>{channelName(x.channel)}: {plural(x.jobs, "job")} skipped because {x.reason === "vram" ? "other programs held the graphics card's memory (NS-E208)" : "an earlier one stopped"}</li>)}</ul>}
       {failed.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{failed.slice(0, 3).map((f) => <li key={f.job_id}>{channelName(f.channel)}: {f.code ? `${f.code}. ` : ""}{f.error || "stopped"}</li>)}</ul>}
     </Card>
   );

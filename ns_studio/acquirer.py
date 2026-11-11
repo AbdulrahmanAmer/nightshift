@@ -16,6 +16,7 @@ section 2.2); the client and the spawn helper are injectable so tests never star
 from __future__ import annotations
 
 import importlib
+import os
 import threading
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -37,7 +38,8 @@ class SupervisorApi(Protocol):
     """The part of `ns_supervisor.client.SupervisorClient` the studio uses."""
 
     def acquire(
-        self, service: Service, owner: str, *, model_alias: str | None = None, timeout_s: int = 7200
+        self, service: Service, owner: str, *, model_alias: str | None = None, timeout_s: int = 7200,
+        **night: Any,
     ) -> Endpoint: ...
 
     def release(self, service: Service, owner: str) -> None: ...
@@ -82,6 +84,12 @@ class StudioAcquirer:
         self._client: SupervisorApi | None = client
         self._ensure = ensure
         self._ready = False
+        # vram-busy: set by the nightly (`daily.run_daily`), a run nobody watches. Its loads may then wait for
+        # the graphics card's memory inside the acquire's own time, and it names this process, so the engine
+        # never counts the studio's own memory (whisper) as another program's and frees the card at once if
+        # this process dies during that wait. Every other run (a dashboard job, `studio run` by hand) is
+        # told at once (NS-E208).
+        self.vram_wait = False
 
     # ------------------------------------------------------------------ connection
     def _connect(self) -> SupervisorApi:
@@ -120,7 +128,7 @@ class StudioAcquirer:
         client = self._connect()
         wait = max(1, min(int(timeout_s), self.wait_cap_s))
         try:
-            ep = self._acquire_once(client, service, owner, model_alias, wait)
+            ep = self._acquire_once(client, service, owner, model_alias, wait, self.vram_wait)
         except NsError as e:
             if not self._unreachable(e):
                 self.log.warn(
@@ -133,7 +141,7 @@ class StudioAcquirer:
             self._ready = False
             client = self._connect()
             try:
-                ep = self._acquire_once(client, service, owner, model_alias, wait)
+                ep = self._acquire_once(client, service, owner, model_alias, wait, self.vram_wait)
             except NsError as e2:
                 self.log.warn(
                     "acquire_failed", str(e2), service=service, owner=owner, code=e2.code, wait_s=wait
@@ -153,8 +161,11 @@ class StudioAcquirer:
 
     @staticmethod
     def _acquire_once(
-        client: SupervisorApi, service: Service, owner: str, model_alias: str | None, wait: int
+        client: SupervisorApi, service: Service, owner: str, model_alias: str | None, wait: int, night: bool
     ) -> Endpoint:
+        if night:  # (an older client without the keywords is never given them by a run that is not a night)
+            return client.acquire(service, owner, model_alias=model_alias, timeout_s=wait, vram_wait=True,
+                                  pid=os.getpid())  # fmt: skip
         return client.acquire(service, owner, model_alias=model_alias, timeout_s=wait)
 
     @staticmethod

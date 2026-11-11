@@ -113,6 +113,7 @@ def fast_config(**over: Any) -> SupervisorConfig:
         "term_grace_s": 5.0,
         "monitor_interval_s": 0.05,
         "auto_exit_idle_s": 3600.0,
+        "vram_poll_s": 0.02,  # a load waiting for the card's memory looks again at once (the clock decides)
     }
     base.update(over)
     return SupervisorConfig(**base)

@@ -7,6 +7,7 @@ Plain asyncio, no web framework: `app.py` wraps it for HTTP (spec 15.3). Timers 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import os
@@ -27,7 +28,7 @@ from ns_common.errors import NsError, describe
 from ns_common.logging import NsLogger
 from ns_common.models import Runtime
 from ns_common.paths import Paths
-from ns_supervisor import notify, presence, procs
+from ns_supervisor import notify, presence, procs, vram
 from ns_supervisor.gpu import GpuProbe, NullGpuProbe, SmiSource, simulated_mark, smi_source, source_probe
 from ns_supervisor.lock import GpuLock
 from ns_supervisor.schedule_cfg import read_run_time, seconds_until_next_run
@@ -55,6 +56,7 @@ class SupervisorConfig:
     lease_expiry_s: float = 600.0  # a `studio:` or Assistant GPU lease silent for this long is reclaimed
     suspend_gap_s: float = 60.0  # a monitor pass this late means the PC slept: leases start over
     release_alive_s: float = 90.0  # the dashboard's Release is refused while the holder beat this recently
+    vram_poll_s: float = vram.VRAM_POLL_S  # a nightly load waiting for the card's memory looks again then
 
 
 #: Owners that must heartbeat while they hold the GPU (the studio does, see `ns_studio.acquirer`; so does the
@@ -195,6 +197,18 @@ class Supervisor:
         self._last_tick: float | None = None
         self._update_task: asyncio.Task[None] | None = None
         self._subs: set[asyncio.Queue[dict[str, Any]]] = set()
+        # vram-busy: the memory check before every load (`_vram_room`). How long a nightly load may wait for
+        # memory (a proof shortens it on a test install only), what each acquire in progress may wait
+        # (owner -> (may wait, the acquire's own deadline on `clock`)), the wait in progress (`/status`
+        # `gpu_wait`) and what ends it early (Stop All, Release, shutdown).
+        self.vram_wait_s, why = vram.test_wait_s(os.environ, lambda: devmode.test_install(paths))
+        if why is not None:
+            self.log.warn("vram_wait_ignored", why, variable=vram.WAIT_ENV)
+        self._vram_plan: dict[str, tuple[bool, float]] = {}
+        self._vram_wait: dict[str, Any] | None = None
+        self._vram_since = 0.0
+        self._vram_wake: asyncio.Event | None = None
+        self._vram_unchecked_told = False
 
     # ------------------------------------------------------------------ events
     def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
@@ -348,6 +362,8 @@ class Supervisor:
 
     async def _start_locked(self, rt: ServiceRuntime, d: ServiceDef, owner: str | None = None) -> None:
         await self._guard(owner, rt.name, "start")  # nothing is spawned for an acquire that lost the GPU
+        # vram-busy: no model process starts on the card without room for it (waits only for a nightly)
+        before = await self._vram_room(rt, d, owner) if d.gpu else None
         rt.definition = d
         rt.state = "starting"
         rt.abort = False
@@ -396,10 +412,17 @@ class Supervisor:
                 rt.starting_since = None
                 self.write_state()
                 self._emit(rt, "stopped")
+            failed = isinstance(e, NsError) and e.code in ("NS-E202", "NS-E203")
+            if isinstance(e, NsError) and failed and not rt.abort and before is not None:
+                busy = await self._vram_after_failure(rt, d, e)  # V7: others took the memory during the load
+                if busy is not None:
+                    raise busy from e
             raise
         rt.state = "ready"
         rt.starting_since = None
         rt.vram_mb = await asyncio.to_thread(procs.vram_mb, proc.pid, self.smi)
+        if before is not None:
+            await self._vram_measure(d, before)
         self.write_state()
         mark = simulated_mark(self.smi)  # a simulated card's number says so wherever it is written (H-10)
         card = {} if mark is None else {"card": mark}
@@ -441,6 +464,111 @@ class Supervisor:
         await self._guard(owner, service, "bring up")
         if service != "whisper":
             await self._ensure(self.services[service], d, owner)
+
+    # ------------------------------------------------------------------ the card's memory (vram-busy)
+    async def _vram_check(self, d: ServiceDef) -> vram.Verdict | None:
+        """`vram.check` off the event loop. Ours, never named nor held against a load: every process this
+        engine runs and the GPU holder's own process (the studio holding whisper)."""
+        ours = {r.proc.pid for r in list(self.services.values()) if r.proc is not None}
+        holder = self._current_holder()
+        if holder is not None:
+            ours.add(holder.pid)
+        model_dir = self.runtime.tts.model_dir if d.name == "tts" else None
+        return await asyncio.to_thread(
+            vram.check, self.smi, self.paths, d, ours, mark=simulated_mark(self.smi), model_dir=model_dir
+        )
+
+    def _vram_not_checked(self, why: str) -> None:
+        """V0: no reading; the load goes ahead as before, said once per engine start."""
+        if not self._vram_unchecked_told:
+            self._vram_unchecked_told = True
+            self.log.info("vram_not_checked", f"graphics memory not checked: {why}")
+
+    def _wake_vram(self) -> None:
+        if self._vram_wake is not None:
+            self._vram_wake.set()
+
+    async def _vram_room(self, rt: ServiceRuntime, d: ServiceDef, owner: str | None) -> int | None:
+        """V0 to V6 of card vram-busy, right before `d`'s process would start. Room (free >= need + 512 MiB):
+        the memory used now, where the measurement starts (None: no reading). No room: NS-E208 at once,
+        unless the acquire said it may wait (`vram_wait`, the nightly): then it waits up to `vram_wait_s`,
+        never past the acquire's own `timeout_s` (the night's time decision gave it), looking again every
+        `vram_poll_s` with `_guard` before each look. Stop All, Release, a gone holder and shutdown end the
+        wait at once (`_wake_vram`)."""
+        if self.runtime.profile != "gpu" and not self.fake_gpu:
+            self._vram_not_checked("the cpu-dev profile has no graphics card to read (fake_gpu is off)")
+            return None
+        v = await self._vram_check(d)
+        if v is None:
+            self._vram_not_checked(
+                f"nvidia-smi gave no answer within {vram.READ_TIMEOUT_S:.0f} s (not installed, failing or "
+                "too slow)"
+            )
+            return None
+        if v.ok:
+            return v.reading.used_mb
+        may_wait, until = self._vram_plan.get(owner, (False, 0.0)) if owner is not None else (False, 0.0)
+        bound = min(self.vram_wait_s, until - self.clock()) if may_wait else 0.0
+        if bound <= 0:  # V4: an interactive owner (or a warmup) is refused at once
+            self.log.warn("vram_busy", v.detail(), code="NS-E208", owner=owner, service=rt.name,
+                          **v.numbers())  # fmt: skip
+            raise NsError("NS-E208", v.detail())
+        rt.abort = False
+        self._vram_since, self._vram_wake = self.clock(), asyncio.Event()
+        wake = self._vram_wake
+        since = self.now().isoformat(timespec="seconds")
+        said = v.waiting()
+        info: dict[str, Any] = {"service": rt.name, "owner": owner, "since": since}
+        self._vram_wait = {**info, "said": said, **v.numbers()}
+        self.log.info("vram_wait", said, owner=owner, service=rt.name, bound_s=round(bound), **v.numbers())
+        self.publish("service", {"event": "vram_wait", "service": rt.name, "owner": owner, "said": said,
+                                 "bound_s": round(bound), **v.numbers()})  # fmt: skip
+        try:
+            while True:
+                waited = self.clock() - self._vram_since
+                if waited >= bound:  # V6: the bound passed
+                    detail = v.detail(waited)
+                    self.log.warn("vram_busy", detail, code="NS-E208", owner=owner, service=rt.name,
+                                  waited_s=round(waited), **v.numbers())  # fmt: skip
+                    raise NsError("NS-E208", detail)
+                wake.clear()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(wake.wait(), min(self.cfg.vram_poll_s, bound - waited))
+                if self.shutting_down:
+                    raise NsError("NS-E202", "supervisor is shutting down")
+                if rt.abort:
+                    raise NsError("NS-E202", f"the wait of {rt.name} for the card's memory was stopped")
+                await self._guard(owner, rt.name, "memory wait")
+                again = await self._vram_check(d)
+                if again is None or again.ok:
+                    waited = self.clock() - self._vram_since
+                    self.log.info("vram_wait_ended", f"the memory came free after {waited:.0f} s",
+                                  owner=owner, service=rt.name, waited_s=round(waited))  # fmt: skip
+                    return again.reading.used_mb if again is not None else None
+                v = again
+                self._vram_wait = {**info, "said": v.waiting(), **v.numbers()}
+        finally:
+            self._vram_wait, self._vram_wake = None, None
+
+    async def _vram_after_failure(self, rt: ServiceRuntime, d: ServiceDef, e: NsError) -> NsError | None:
+        """V7: a load that failed at startup while other programs now hold the memory is NS-E208 (the original
+        error in its detail); otherwise None and the original stands."""
+        v = await self._vram_check(d)
+        if v is None or v.ok:
+            return None
+        detail = f"{v.detail()}; the start failed: {e.detail}"
+        self.log.warn("vram_busy", detail, code="NS-E208", service=rt.name, original=e.code, **v.numbers())
+        return NsError("NS-E208", detail)
+
+    async def _vram_measure(self, d: ServiceDef, before: int) -> None:
+        """What the load took: total used now minus total used just before the spawn (works under WDDM)."""
+        mem = await asyncio.to_thread(vram.read_memory, self.smi)
+        if mem is None:
+            return
+        try:
+            vram.record(self.paths, d, mem[0] - before, simulated_mark(self.smi), self.now())
+        except OSError as e:  # the next load measures again; the estimate or older numbers stand meanwhile
+            self.log.warn("vram_need_not_written", str(e))
 
     async def _guard(self, owner: str | None, service: str, step: str) -> None:
         """The GPU handover invariant: an acquire acts on the GPU only while it is the lock's recorded owner,
@@ -507,15 +635,20 @@ class Supervisor:
         wait: bool = True,
         timeout_s: float = 7200,
         pid: int | None = None,
+        vram_wait: bool = False,
     ) -> dict[str, Any]:
         """Hand `owner` the service. GPU services queue FIFO behind the GPU lock (`NS-E201` on timeout),
         stop any other GPU tenant, and start/health-poll the process (`NS-E203`, `NS-E202`).
 
         `pid`: the owner's own process. When the GPU lock is granted, its pid and creation time are recorded,
         and the monitor frees the lock once that process is gone (`_release_gone_holder`). No pid: no probe.
+        `vram_wait`: the caller is a run nobody watches (the nightly): when other programs hold the card's
+        memory, its load waits for it (`_vram_room`) inside this same `timeout_s`; anyone else gets NS-E208
+        at once.
         """
         if self.shutting_down:
             raise NsError("NS-E202", "supervisor is shutting down")
+        t0 = self.clock()
         self._touch()
         self.run_finished_at = None  # somebody is working again: back to the plain idle rule
         fresh = self.lock.state.owner != owner  # False: the holder re-acquires (a swap), it keeps its record
@@ -552,6 +685,7 @@ class Supervisor:
         self._leave_if_shutting_down(owner)
         self._record_holder(owner, pid, fresh)
         rt.idle_since = None
+        self._vram_plan[owner] = (vram_wait, t0 + timeout_s)  # the wait for memory ends inside `timeout_s`
         try:
             await self._guard(owner, service, "granted")  # a console closed while it waited in the queue
             await self._swap_to(service, d, owner)
@@ -559,6 +693,8 @@ class Supervisor:
         except BaseException:
             self.lock.release(owner)  # changes nothing when the lock is no longer `owner`'s
             raise
+        finally:
+            self._vram_plan.pop(owner, None)
         self.publish("service", {"service": service, "event": "acquired", "owner": owner})
         return self._endpoint(service, d, alias)
 
@@ -608,6 +744,7 @@ class Supervisor:
                     rt.idle_since = self.clock()
                 freed = True
         if freed:
+            self._wake_vram()  # a load waiting for memory for `owner` stops at its guard now
             why: dict[str, Any] = {} if reason is None else {"reason": reason}
             msg = f"released everything held by {owner}" + ("" if reason is None else f" ({reason})")
             self.log.warn("owner_released", msg, owner=owner, **why)
@@ -669,7 +806,8 @@ class Supervisor:
             return
         if owner is None or not owner.startswith(LEASED_PREFIXES):
             return
-        if any(r.state == "starting" for r in self.services.values()):  # a model load is not silence
+        if any(r.state == "starting" for r in self.services.values()) or self._vram_wait is not None:
+            # a model load is not silence, nor the bounded wait for the card's memory before one
             self._lease_beat = now
             return
         silent = now - self._lease_beat
@@ -723,6 +861,9 @@ class Supervisor:
         for r in targets:
             if r.state == "starting":
                 r.abort = True
+        if self._vram_wait is not None:  # a load waiting for memory: it ends now, nothing is started
+            self.services[self._vram_wait["service"]].abort = True
+            self._wake_vram()
         for r in targets:
             await self._stop(r)
             r.crashes.clear()
@@ -739,6 +880,7 @@ class Supervisor:
     async def shutdown(self, grace_s: float = 30) -> None:
         """Refuse new work, give holders `grace_s` to release, stop everything, request exit."""
         self.shutting_down = True
+        self._wake_vram()  # a load waiting for memory gives the card back now
         self.publish("service", {"event": "shutdown", "grace_s": grace_s})
         deadline = self.clock() + grace_s
         while self.clock() < deadline and (
@@ -771,6 +913,9 @@ class Supervisor:
             return rt.state
         try:
             await self._swap_to(service, d)
+        except NsError as e:
+            if e.code != "NS-E208":  # no room: the check logged it (`vram_busy`); a warmup never waits
+                raise
         finally:
             self.lock.release("warmup")
             rt.idle_since = self.clock()
@@ -813,7 +958,11 @@ class Supervisor:
             "ctx": None,
         }
         holder = self._current_holder()
+        extra: dict[str, Any] = {}
+        if self._vram_wait is not None:  # only while a load waits for the card's memory (vram-busy)
+            extra["gpu_wait"] = {**self._vram_wait, "waited_s": round(now - self._vram_since)}
         return {
+            **extra,
             "gpu_owner": st.owner,
             "gpu_service": st.service,
             "holder_pid": holder.pid if holder is not None else None,  # the holder's own process (F-H47)
