@@ -195,6 +195,19 @@ class StudioProc:
         self.rc = -9
 
 
+PROOF_THAT_READS = """
+PROOF = {"id": "kit-reads-status", "boxes": ["F-X99"], "install": "any", "window": False, "needs": []}
+
+
+def run(ctx):
+    ctx.check((ctx.home / "config" / "runtime.json").is_file(), "the install's runtime.json is there")
+"""
+
+
+def nothing_runs(script: Path, args: list[str], timeout: float) -> tuple[int, str]:
+    return 0, "CLEAN: no process of this install runs"
+
+
 def no_freeze(paths: Paths, venv: str) -> str | None:
     return None  # (no venv in a test home)
 
@@ -232,7 +245,13 @@ class LocalProduct:
         self.calls.append(("cli", program, *args))
         self.world.traps.hit(f"{program} {' '.join(args[:2])}")
         if program == "ns" and args[:2] == ["verify", "--downloads"]:
-            return 0, "every downloaded file matches manifest.json"
+            if self.world.real_downloads:  # the product's own checker of the downloads on this home
+                return self.real_downloads()
+            # The one stand-in: `ns verify --downloads` (installer/stage2/verify_downloads.run) hashes the
+            # install's whole model set (about 20 GB) against manifest.json; a test home cannot hold it, so
+            # the product's only true answer here is a failure (test_a_home_without_its_models_fails_k1_on_
+            # the_products_own_check). The kit reads nothing of it but the exit code.
+            return 0, "(stand-in: every downloaded file matches manifest.json)"
         if program == "ns" and args == ["verify"]:  # the report through the product's writer and lines
             report = GateReport(
                 slice="verify",
@@ -272,9 +291,33 @@ class LocalProduct:
         return 1.0
 
     def prove(self, args: list[str], timeout: float) -> tuple[int | None, str]:
+        """The REAL proof runner (`dev/prove.py:main`) with the kit's arguments, its lock and runs folder, on
+        one proof of its own that only reads (install `any`, no engine). Only the process listing of the
+        kit's nsproc.ps1 is answered here (no PowerShell in a unit test)."""
+        import contextlib
+        import io
+
+        from dev import prove
+
         self.calls.append(("prove", *args))
         self.world.traps.hit("prove")
-        return 0, "PASS    f-c1-status-events [F-C1] 3.1s\n1 passed, 0 failed, 0 skipped; evidence in x"
+        folder = self.world.home.parent / "kitproofs"
+        if not folder.is_dir():
+            folder.mkdir()
+            (folder / "__init__.py").write_text("", encoding="utf-8")
+            (folder / "kit_reads_status.py").write_text(PROOF_THAT_READS, encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            rc = prove.main([*args, "--proofs-dir", str(folder)],
+                            runner_options={"commit": "test", "ps": nothing_runs})  # fmt: skip
+        return rc, out.getvalue()
+
+    def real_downloads(self) -> tuple[int | None, str]:
+        from installer.stage2 import verify_downloads
+
+        lines: list[str] = []
+        rc = verify_downloads.run(self.world.paths, ROOT, lines.append)
+        return rc, "\n".join(lines)
 
     def start_engine(self, timeout: float) -> tuple[bool, str]:
         self.calls.append(("start_engine",))
@@ -353,6 +396,7 @@ class World:
         )
         self.kill_at: str | None = None
         self.fail_at: str | None = None
+        self.real_downloads = False
         prev: tuple[str, ...] = ()
         for name in STUBS:
             monkeypatch.setitem(
@@ -785,6 +829,18 @@ def test_the_collected_folder_and_zip_hold_every_part(world: World) -> None:
     assert "K7 collect everything and put Automatic runs back: PASS" in readme
     assert json.loads(old.read_text(encoding="utf-8")) == {"version": "0.1.15-rc3"}  # left alone
     assert not [p for p in world.ev.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_a_home_without_its_models_fails_k1_on_the_products_own_check(world: World) -> None:
+    world.real_downloads = True  # installer/stage2/verify_downloads.run on a home with no model set
+    assert world.run() == 1
+    assert (
+        world.results()["K1"] == "FAIL"
+        and "a model file is missing or damaged" in world.state()["steps"]["K1"]["line"]
+    )
+    machine = json.loads((world.ev / "machine.json").read_text(encoding="utf-8"))
+    assert machine["models"][0] != 0 and "INSTALL.cmd" in machine["models"][1]  # the product's own words
+    assert world.product.count("studio") == 0 and len(world.zips()) == 1
 
 
 def test_a_failing_step_still_yields_the_bundle(world: World) -> None:
