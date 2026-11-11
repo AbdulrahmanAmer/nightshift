@@ -1644,76 +1644,86 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
         readable_as = config_snapshot.program_version(prev)
         if readable_as == "-":
             restored_version = UNKNOWN_VERSION
-        left_fingerprint = app_fingerprint(app)  # the program that is about to become <app>.prev
-        copy, why_not, slot = _read_settings_copy(app, prev)
-        live, live_error = _live_settings(paths, log)
-        forward: bytes | None = None  # the settings now: kept for undoing, then the copy for going forward
-        live_problem = f"they could not be read: {live_error}" if live is None else ""
-        if live is not None:
-            try:
-                forward = config_snapshot.build(
-                    live, version=old_version, fingerprint=left_fingerprint, taken_by="rollback"
-                )
-            except config_snapshot.SnapshotError as e:
-                log.warn("settings_copy_failed", str(e))
-                notes.append(f"could not keep a copy of the current settings for going forward again: {e}")
-                live_problem = f"they were read, but a copy of them could not be made: {e}"
-        intent = rollback_intent.Intent(
-            old_version,
-            left_fingerprint,
-            restored_version,
-            app_fingerprint(prev),
-            forward,
-            from_stamp=config_snapshot.install_stamp(app),
-            live_problem=live_problem,
-        )
-        try:
-            rollback_intent.write(app, intent)  # FIRST: nothing has changed yet
-        except OSError as e:
-            log.error("rollback_record_failed", str(e))
-            raise NsError(
-                "NS-E702", f"could not record the rollback before starting it ({e}). {SETTINGS_REFUSED}"
-            ) from e
-        update_job.step(
-            paths, f"Preparing your settings files for {restored_version}.", ROLLBACK_PREPARE_STOPPED
-        )
-        prepared = _prepare_settings(
-            paths, copy, why_not, live, live_error,
-            slot=slot, zip_path=zip_path, restored_version=restored_version, left_version=old_version,
-            left_fingerprint=left_fingerprint, can_go_forward=forward is not None, log=log,
-            readable_as=readable_as, prev_name=prev.name,
-        )
-        intent.stage, intent.after = rollback_intent.PREPARED, prepared.after
-        try:
-            intent.prepared_digest = rollback_intent.settings_digest(paths.config)
-        except config_snapshot.SnapshotError as e:  # (only a sentence of a later undo uses it)
-            log.warn("settings_read_failed", str(e))
-        write_app_marker(prev, log)  # (it becomes <app>: a later INSTALL.cmd trusts it)
-        intent.to_stamp = config_snapshot.install_stamp(prev)  # (the marker just written: this install)
-        try:
-            rollback_intent.write(app, intent)
-        except OSError as e:
-            log.error("rollback_record_failed", str(e))
-            raise NsError(
-                "NS-E702",
-                f"could not record the rollback ({e}). {_undo_settings(app, paths, intent, log)}",
-            ) from e
-        # U8: got and swapped in one go (a rollback is never refused for its uv, and no way out lies between
-        # the two, so no bin\uv.next is left); before the record, which names the uv
+        # U8 (B2): U1 to U4 (a check, maybe a download) BEFORE the rollback record and before the settings
+        # are prepared, so that every failure in it leaves nothing changed; only the swap (U5) stays below,
+        # before the venv record, which names the uv. From here to the program swap every way out puts the
+        # uv back (`uv_undo`: no bin\uv.next is left, and a swapped uv goes back with the program that stays)
         uv = uv_for(
             uvpin.pin_of(prev), paths, log, env.say, target=restored_version, older=uvpin.pin_of(prev)
         )
-        uv_swap(uv, paths, log, env.say, ROLLBACK_PREPARE_STOPPED, soft=True)
-        try:        # W5: what the next start replays if the sync after the swap does not finish
-            recorded = write_record(paths, prev, app, by="rollback", log=log)
-        except OSError as e:
-            log.error("venv_record_failed", str(e))
-            raise NsError(
-                "NS-E702",
-                f"could not record the rollback before starting it ({e}). "
-                f"{_undo_settings(app, paths, intent, log)}",
-            ) from e
-        update_job.step(paths, f"Putting {restored_version}'s program in place.", ROLLBACK_SWAP_STOPPED)
+        try:
+            left_fingerprint = app_fingerprint(app)  # the program that is about to become <app>.prev
+            copy, why_not, slot = _read_settings_copy(app, prev)
+            live, live_error = _live_settings(paths, log)
+            forward: bytes | None = None  # the settings now: kept for undoing, then the copy to go forward
+            live_problem = f"they could not be read: {live_error}" if live is None else ""
+            if live is not None:
+                try:
+                    forward = config_snapshot.build(
+                        live, version=old_version, fingerprint=left_fingerprint, taken_by="rollback"
+                    )
+                except config_snapshot.SnapshotError as e:
+                    log.warn("settings_copy_failed", str(e))
+                    notes.append(
+                        f"could not keep a copy of the current settings for going forward again: {e}"
+                    )
+                    live_problem = f"they were read, but a copy of them could not be made: {e}"
+            intent = rollback_intent.Intent(
+                old_version,
+                left_fingerprint,
+                restored_version,
+                app_fingerprint(prev),
+                forward,
+                from_stamp=config_snapshot.install_stamp(app),
+                live_problem=live_problem,
+            )
+            try:
+                rollback_intent.write(app, intent)  # FIRST: nothing has changed yet
+            except OSError as e:
+                log.error("rollback_record_failed", str(e))
+                raise NsError(
+                    "NS-E702", f"could not record the rollback before starting it ({e}). {SETTINGS_REFUSED}"
+                ) from e
+            update_job.step(
+                paths, f"Preparing your settings files for {restored_version}.", ROLLBACK_PREPARE_STOPPED
+            )
+            prepared = _prepare_settings(
+                paths, copy, why_not, live, live_error,
+                slot=slot, zip_path=zip_path, restored_version=restored_version, left_version=old_version,
+                left_fingerprint=left_fingerprint, can_go_forward=forward is not None, log=log,
+                readable_as=readable_as, prev_name=prev.name,
+            )
+            intent.stage, intent.after = rollback_intent.PREPARED, prepared.after
+            try:
+                intent.prepared_digest = rollback_intent.settings_digest(paths.config)
+            except config_snapshot.SnapshotError as e:  # (only a sentence of a later undo uses it)
+                log.warn("settings_read_failed", str(e))
+            write_app_marker(prev, log)  # (it becomes <app>: a later INSTALL.cmd trusts it)
+            intent.to_stamp = config_snapshot.install_stamp(prev)  # (the marker just written: this install)
+            try:
+                rollback_intent.write(app, intent)
+            except OSError as e:
+                log.error("rollback_record_failed", str(e))
+                raise NsError(
+                    "NS-E702",
+                    f"could not record the rollback ({e}). {_undo_settings(app, paths, intent, log)}",
+                ) from e
+            uv_swap(uv, paths, log, env.say, ROLLBACK_PREPARE_STOPPED, soft=True)  # U5
+            try:        # W5: what the next start replays if the sync after the swap does not finish
+                recorded = write_record(paths, prev, app, by="rollback", log=log)
+            except OSError as e:
+                log.error("venv_record_failed", str(e))
+                raise NsError(
+                    "NS-E702",
+                    f"could not record the rollback before starting it ({e}). "
+                    f"{_undo_settings(app, paths, intent, log)}",
+                ) from e
+            update_job.step(
+                paths, f"Putting {restored_version}'s program in place.", ROLLBACK_SWAP_STOPPED
+            )
+        except BaseException:
+            uv_undo(uv, log)    # (the older program did not get to <app>: the uv of the one there goes back)
+            raise
         try:
             _swap_programs(app, prev, tmp)
         except OSError as e:
@@ -1866,9 +1876,9 @@ def uv_for(
 ) -> uvpin.Plan:
     """U1 to U4: the uv that the program about to be in `<app>` pins, checked and ready to swap in, before
     anything is changed. An update (`zip_path`) that cannot have it is refused with NS-E708, before Nightshift
-    is stopped; a rollback keeps the uv there is and says so in its last sentence (`Plan.stays`). Every way
-    out leaves no `bin\\uv.next`. `older`: the pin of the program in `<app>.prev` (`uvpin.settle` keeps the
-    uv it needs)."""
+    is stopped; a rollback keeps the uv there is and says so in its last sentence (`Plan.stays`), also for an
+    error nobody foresaw (a rollback is never refused for its uv). Every way out leaves no `bin\\uv.next`.
+    `older`: the pin of the program in `<app>.prev` (`uvpin.settle` keeps the uv it needs)."""
     want = pin.get("version", "")
     try:
         return _uv_plan(pin, paths, say, zip_path=zip_path, older=older)
@@ -1887,6 +1897,13 @@ def uv_for(
             raise NsError("NS-E708", " ".join([*earlier, said])) from e
         now = uvpin.report(home_uv(paths.home))[1] or "the version it has"
         why = f"{target} pins {want} and it could not be had"
+        return uvpin.Plan(paths.home, stays=f" uv stays at {now} ({why}); {target} runs with it.")
+    except Exception as e:      # (psutil inside `holders`, an OSError outside `prepare`'s own handlers)
+        if zip_path is not None:
+            raise               # (an update: before Nightshift is stopped and before any change)
+        log.warn("uv_check_failed", f"{type(e).__name__}: {e}")
+        now = uvpin.report(home_uv(paths.home))[1] or "the version it has"
+        why = f"{target} pins {want or 'no version'}, and looking for it failed: {type(e).__name__}: {e}"
         return uvpin.Plan(paths.home, stays=f" uv stays at {now} ({why}); {target} runs with it.")
 
 

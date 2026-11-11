@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from installer.stage2.web import uvpin, venvrepair
+from ns_common import rollback_intent
 from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_supervisor import doctor, update
@@ -298,6 +299,90 @@ def test_a_rollback_without_the_older_uv_fetches_it_or_says_that_uv_stays(tmp_pa
     net.serve[url("0.13.6")] = (tmp_path / "served" / LEAF).read_bytes()
     res = update.rollback_app(inst.app, Env().env(), paths=inst.paths)  # fetched like an update's
     assert (inst.uv(), inst.uv(".prev")) == ("0.13.6", "0.14.0") and "uv stays" not in res.settings
+
+
+def rolled_forward(tmp_path: Path, *, cached: bool) -> Install:
+    """0.1.0 (pins 0.13.6) updated to 0.2.0 (pins 0.14.0), then bin\\uv.prev removed, so a rollback has to get
+    0.13.6 again; with `cached` its checked zip is in the install's cache (no network needed)."""
+    old_sha = uv_zip(tmp_path / "served" / LEAF, "0.13.6")
+    inst = install(tmp_path, old_sha=old_sha)
+    update.update_app(package(tmp_path), inst.app, Env().env(), paths=inst.paths)
+    shutil.rmtree(inst.bin / "uv.prev")
+    if cached:
+        shutil.copyfile(tmp_path / "served" / LEAF, inst.paths.home / "cache" / "uv-0.13.6.zip")
+    return inst
+
+
+def test_a_rollback_gets_its_uv_before_the_record_and_the_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B2 (written, NOT RUN): U1 to U4 of a rollback run while nothing is changed yet: no rollback record on
+    disk and the settings not prepared; the swap itself (U5) comes after both."""
+    inst = rolled_forward(tmp_path, cached=True)
+    real_for, real_swap = update.uv_for, update.uv_swap
+    seen: list[tuple[str, bool]] = []
+    record = rollback_intent.path_for(inst.app)
+
+    def spy_for(*a: object, **kw: object) -> uvpin.Plan:
+        seen.append(("uv_for", record.exists()))
+        return real_for(*a, **kw)  # type: ignore[arg-type]
+
+    def spy_swap(*a: object, **kw: object) -> None:
+        seen.append(("uv_swap", record.exists()))
+        real_swap(*a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(update, "uv_for", spy_for)
+    monkeypatch.setattr(update, "uv_swap", spy_swap)
+    res = update.rollback_app(inst.app, Env().env(), paths=inst.paths)
+    assert seen == [("uv_for", False), ("uv_swap", True)]
+    assert res.new_version == "0.1.0" and (inst.uv(), inst.uv(".prev")) == ("0.13.6", "0.14.0")
+
+
+@pytest.mark.parametrize("where", ["the rollback record", "the venv record"])
+def test_a_refusal_after_the_rollbacks_uv_was_got_puts_it_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """B2 (written, NOT RUN): a way out between U4 and the program swap, before the uv swap (the rollback
+    record cannot be written) or after it (the venv record cannot be written): no bin\\uv.next is left, the
+    newer program's uv is in bin\\uv again, and 0.2.0 is still the program."""
+    inst = rolled_forward(tmp_path, cached=True)
+
+    def refused(*a: object, **kw: object) -> bool:
+        raise OSError("disk full")
+
+    with monkeypatch.context() as m:
+        if where == "the rollback record":
+            m.setattr(rollback_intent, "write", refused)
+        else:
+            m.setattr(update, "write_record", refused)
+        with pytest.raises(NsError) as ei:
+            update.rollback_app(inst.app, Env().env(), paths=inst.paths)
+    assert ei.value.code == "NS-E702" and "could not record the rollback" in ei.value.detail
+    assert inst.uv() == "0.14.0" and inst.version() == "0.2.0"
+    assert not (inst.bin / "uv.next").exists() and not (inst.bin / "uv.prev").exists()
+    assert not (inst.bin / "uv.swap").exists()
+
+
+def test_an_unforeseen_error_while_getting_the_rollbacks_uv_keeps_the_uv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B2 (written, NOT RUN): an error that is neither NotHad nor Held (psutil failing in the holder check of
+    bin\\uv) leaves no bin\\uv.next and changes nothing; the rollback then goes on with the uv there is and
+    says so, as for a uv that could not be had."""
+    inst = rolled_forward(tmp_path, cached=True)
+    real = update.holders
+
+    def broken(paths: Paths, venv: str | None = None, *, root: Path | None = None) -> list[update.Holder]:
+        if root is not None:
+            raise RuntimeError("access denied")
+        return real(paths, venv)
+
+    monkeypatch.setattr(update, "holders", broken)
+    res = update.rollback_app(inst.app, Env().env(), paths=inst.paths)
+    assert res.new_version == "0.1.0" and inst.uv() == "0.14.0"
+    said = "uv stays at 0.14.0 (0.1.0 pins 0.13.6, and looking for it failed: RuntimeError: access denied)"
+    assert said in res.settings
+    assert not (inst.bin / "uv.next").exists() and not rollback_intent.path_for(inst.app).exists()
 
 
 def test_the_repair_record_names_the_uv_that_matches_the_program(tmp_path: Path) -> None:
