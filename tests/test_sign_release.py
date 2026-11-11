@@ -141,5 +141,8 @@ def test_the_signing_requirements_are_pinned_from_the_lock() -> None:
     assert set(pins) == {"cryptography", "cffi", "pycparser"}  # the package and all it needs, nothing unpinned
     for name, version in pins.items():
         assert f'name = "{name}"\nversion = "{version}"' in lock, name  # the versions the project's lock holds
-    hashes = re.findall(r"--hash=sha256:([0-9a-f]{64})", text)
-    assert len(hashes) >= 3 and all(f"sha256:{h}" in lock for h in hashes)  # every hash is one PyPI published
+    hashed = dict(re.findall(r"(?m)^([a-z0-9-]+)==\S+ \\\n((?:\s+--hash=sha256:[0-9a-f]{64}(?: \\)?\n)+)", text))
+    assert set(hashed) == set(pins)  # each pin carries a hash: pip refuses the file otherwise
+    for name in ("cffi", "pycparser"):  # the lock's own hashes (it has cryptography's Linux wheels only)
+        assert all(f"sha256:{h}" in lock for h in re.findall(r"[0-9a-f]{64}", hashed[name])), name
+    assert "\n--only-binary :all:\n" in text and "win_amd64" in text  # never built from a source archive

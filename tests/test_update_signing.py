@@ -338,9 +338,9 @@ def test_the_check_comes_before_an_interrupted_rollback_is_touched(
         assert record.read_text(encoding="utf-8") == "{ not a record", code  # a refused package changed nothing
 
 
-@pytest.mark.parametrize(("source", "code"), [(SOURCE, "NS-E707"), (None, "NS-E701")])
+@pytest.mark.parametrize("source", [SOURCE, None])  # a version that checks the signature, and one with no key yet
 def test_a_package_replaced_after_the_check_is_not_installed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str | None, code: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str | None
 ) -> None:
     paths, app = install_home(tmp_path, monkeypatch, source=source), make_app(tmp_path)
     z = package(tmp_path / "dl")
@@ -353,8 +353,9 @@ def test_a_package_replaced_after_the_check_is_not_installed(
             package(z.parent, payload="FORGED")  # (with a .sha256 of their own; the .sig stays)
 
     err, e, _said = attempt(z, app, paths, Swaps())
-    assert err is not None and err.code == code, "the bytes that were not checked were installed"
+    assert err is not None and err.code == "NS-E702", "the bytes that were not checked were installed"
     assert f"{z.name} was changed after Nightshift checked it" in err.detail and "run the update again" in err.detail
+    assert "0.1.0" in err.detail.split("run the update again.")[1]  # it ends with what is in place
     assert e.calls == ["stop"] and on_disk(app, paths) == before  # stopped, and nothing of it installed
 
 

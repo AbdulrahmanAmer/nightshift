@@ -95,7 +95,9 @@ export default function Settings() {
   // (Nightshift not started again, a power cut), and its message carries the way out.
   // `updated`: the program was changed and only the restart did not happen, which is not "did not complete".
   const failedNote = (u: UpdateState) => `${u.updated ? "The last update or rollback was applied, but Nightshift did not start again by itself" : "The last update or rollback did not complete"}${u.updated_at ? ` (${u.updated_at.replace("T", " ")})` : ""}. ${u.message || "See the newest update log in the logs folder."}`;
-  useEffect(() => { api.get<UpdateState>("/update/state").then((u) => { if (u.state === "running") follow(false); else if (u.state === "failed") setUpdateNote(failedNote(u)); else if (u.state === "done" && u.release_notes) setWhatsNew({ version: u.new, text: u.release_notes }); }).catch(() => undefined); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // undefined until /update/state answers; then the sentence of a version that trusts no release key yet, or null (it checks the .sig)
+  const [unsignedNote, setUnsignedNote] = useState<string | null | undefined>(undefined);
+  useEffect(() => { api.get<UpdateState>("/update/state").then((u) => { setUnsignedNote(u.unsigned_note ?? null); if (u.state === "running") follow(false); else if (u.state === "failed") setUpdateNote(failedNote(u)); else if (u.state === "done" && u.release_notes) setWhatsNew({ version: u.new, text: u.release_notes }); }).catch(() => undefined); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const apply = async () => {
     const ok = await confirm({ title: "Install the update?", body: "Nightshift stops the engine, installs the new version and starts again. If anything fails it goes back to this version", ok: "Install" });
     if (!ok) return;
@@ -103,16 +105,18 @@ export default function Settings() {
     catch (e: any) { if (e instanceof ApiError) { toast(e.message, "bad"); return; } /* no answer: the updater has already stopped this service, which is the update starting */ }
     follow(true);
   };
-  /** "From a file": the release's Nightshift-Update-<version>.zip and its .sha256, picked together. The updater refuses a zip without its checksum. */
+  /** "From a file": the release's Nightshift-Update-<version>.zip, its .sha256 and its .sig, picked together. The updater refuses a zip without its checksum and, once this version trusts a release key, without its signature. */
   const installFile = async (picked: FileList | null) => {
     const files = Array.from(picked || []);
-    const zip = files.find((f) => /\.zip$/i.test(f.name)); const sum = files.find((f) => /\.sha256$/i.test(f.name));
+    const zip = files.find((f) => /\.zip$/i.test(f.name)); const sum = files.find((f) => /\.sha256$/i.test(f.name)); const sig = files.find((f) => /\.sig$/i.test(f.name));
     if (!zip) { toast("Choose the file named Nightshift-Update-<version>.zip", "warn"); return; }
     if (!/^(Nightshift-Update|nightshift-app)-\d+\.\d+\.\d+.*\.zip$/i.test(zip.name)) { toast("That is not the update file. It is named Nightshift-Update-<version>.zip (the Setup zip is for a first install)", "warn"); return; }
-    if (!sum) { toast(`Also choose ${zip.name}.sha256. Pick both files at once (hold Ctrl). The update is refused without it`, "warn"); return; }
+    if (!sum) { toast(`Also choose ${zip.name}.sha256. Pick the files of the release at once (hold Ctrl). The update is refused without it`, "warn"); return; }
+    // (the server refuses too, with the same words: it is the one that knows which keys this version trusts)
+    if (!sig && unsignedNote === null) { toast(`Also choose ${zip.name}.sig. Pick the three files of the release at once (hold Ctrl). Nightshift installs an update only when the release key signed it`, "warn"); return; }
     const ok = await confirm({ title: "Install this update?", body: `${zip.name} replaces the program files. Nightshift stops the engine, installs and starts again. If anything fails it goes back to this version`, ok: "Install" });
     if (!ok) return;
-    const fd = new FormData(); fd.append("file", zip); fd.append("checksum", sum);
+    const fd = new FormData(); fd.append("file", zip); fd.append("checksum", sum); if (sig) fd.append("signature", sig);
     try { await api.upload("/update/file", fd, () => {}); }
     catch (e: any) { if (!/^Upload failed/.test(String(e?.message))) { toast(e.message, "bad"); return; } /* no answer: the updater has stopped this service, which is the update starting */ }
     follow(true);
@@ -241,10 +245,12 @@ export default function Settings() {
               </section>
             )}
             {updateNote && <p role="alert" className="mx-1 mb-2 rounded-ds-md bg-ds-danger-soft px-3 py-2 text-ds-sm">{updateNote}</p>}
-            <SettingRow title="From a file" sub="A Nightshift-Update zip you were given (some updates still need the internet). Choose Nightshift-Update-<version>.zip and its .sha256 file together (hold Ctrl); the update is refused without the checksum file">
+            <SettingRow title="From a file" sub={unsignedNote
+              ? `A Nightshift-Update zip you were given (some updates still need the internet). Choose Nightshift-Update-<version>.zip and its .sha256 file together (hold Ctrl), with its .sig file when the release has one; the update is refused without the checksum file. ${unsignedNote}`
+              : "A Nightshift-Update zip you were given (some updates still need the internet). Choose Nightshift-Update-<version>.zip with its .sha256 and .sig files, all three together (hold Ctrl); the update is refused without the checksum file or without the signature of the release key"}>
               <label className="ds-focus inline-flex h-9 cursor-pointer items-center gap-2 rounded-ds-md bg-ds-accent-soft px-4 text-ds-sm font-semibold shadow-ds-control hover:bg-ds-soft-hover focus-within:shadow-ds-focus">
                 <Icon name="archive" size={15} />
-                Choose files<input type="file" multiple accept=".zip,.sha256" className="sr-only" onChange={(e) => { installFile(e.target.files); e.target.value = ""; }} />
+                Choose files<input type="file" multiple accept=".zip,.sha256,.sig" className="sr-only" onChange={(e) => { installFile(e.target.files); e.target.value = ""; }} />
               </label>
             </SettingRow>
             <SettingRow title="Diagnostics report" sub={report?.path ? <>Saved as <span className="font-mono break-all">{report.path}</span></> : "A zip on your Desktop with logs and settings, without keys, to send for help"}>

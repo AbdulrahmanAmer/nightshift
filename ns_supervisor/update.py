@@ -1,6 +1,8 @@
 """C2 `ns update <zip> | --rollback` (spec J8, ENGINEERING 10): verified, swappable, reversible.
 
-Order: verify VERSION + `.sha256` sidecar (`NS-E701`, nothing touched) -> stop the engine -> extract to
+Order: verify VERSION + `.sha256` sidecar (`NS-E701`, nothing touched) and, once this version trusts a
+release key, the signature in `<zip>.sig` (`NS-E707`, nothing touched; `_check_package`, card
+update-signing) -> stop the engine -> the zip is still the file that was checked -> extract to
 `<app>.new` -> carry over `.git`, `config`, `answers.json` and untracked data -> copy the settings files
 (`config_snapshot`, F-10a; `NS-E702` and nothing changed when that cannot be done) -> swap with
 `<app>.prev` -> the venvs are filled again (`resync_venvs`) -> `ns verify --quick` -> re-register the
@@ -44,7 +46,15 @@ import yaml
 # import made then would load that release's module into this updater)
 from installer.stage2 import shortcut_owner
 from installer.stage2.web import deplock, venvrepair
-from ns_common import __version__, config_compat, config_snapshot, first_start, rollback_intent
+from ns_common import (
+    __version__,
+    config_compat,
+    config_snapshot,
+    first_start,
+    release_keys,
+    rollback_intent,
+    sigcheck,
+)
 from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.devmode import is_dev
 from ns_common.errors import NsError
@@ -53,7 +63,7 @@ from ns_common.models import Channel, InstallState, Runtime
 from ns_common.paths import Paths
 from ns_common.uv import find_uv, home_uv, uv_env
 from ns_common.venv_extras import DEV_VENV_EXTRAS, NO_DEPS, VENV_EXTRAS, extras_suffix
-from ns_supervisor import stopping, update_job
+from ns_supervisor import releases, stopping, update_job
 from ns_supervisor.childenv import child_env, window_flags
 
 PRESERVE = (".git", "config", "answers.json")
@@ -238,8 +248,75 @@ def read_sidecar(zip_path: Path) -> str | None:
     return token if len(token) == 64 and all(c in "0123456789abcdef" for c in token) else None
 
 
-def verify_package(zip_path: Path) -> tuple[str, str]:
-    """Check sidecar digest and VERSION; returns (version, member prefix). Raises `NS-E701`."""
+#: Card update-signing: what a refusal says for each reason a package is not one a trusted key signed
+#: (`sigcheck.BadSignature.kind`): which it is, that nothing was changed, and what to download. `{zip}` is
+#: the package's file name, `{sig}` its `.sig`, `{key}` the key id the `.sig` names.
+_THREE = "the .zip, .sha256 and .sig of the same release from the release page"
+SIGNATURE_REFUSALS: dict[str, str] = {
+    "missing": (
+        "{sig} is missing, so Nightshift cannot tell who made this package. Nothing was changed. Download "
+        f"{_THREE}, all three, into one folder (in Settings > Updates > From a file, choose all three)."
+    ),
+    "unreadable": (
+        "{sig} cannot be read ({why}), so Nightshift cannot tell who made this package. Nothing was "
+        f"changed. Close any program that has that file open, or download {_THREE} again, all three, into "
+        "one folder."
+    ),
+    "format": (
+        "{sig} is not a Nightshift signature file, so Nightshift cannot tell who made this package. Nothing "
+        f"was changed. Download {_THREE} again, all three, into one folder."
+    ),
+    "unknown_key": (
+        "{zip} is signed with a key this version of Nightshift does not know ({key}). Nothing was changed. "
+        "Do not install it; download the package from the release page again. If that one is refused too "
+        "and the release notes say that the release key was replaced, update with the Setup zip of that "
+        "release instead: run its INSTALL.cmd and choose this folder (it keeps your settings, models and "
+        "videos)."
+    ),
+    "mismatch": (
+        "The signature of {zip} does not match the file: it was renamed or changed after it was signed, or "
+        "it is not a Nightshift release. Nothing was changed. Do not install it; download it again from the "
+        "release page, with its .sha256 and .sig, and do not rename the files."
+    ),
+}
+#: What Settings > Updates says for as long as the running version trusts no key (before the owner's one key
+#: step), and the line the worker writes to the update log, once per update, when it accepts such a package.
+NO_KEY_SHORT = "This version of Nightshift does not check who made an update yet"
+NO_KEY_NOTE = (
+    f"{NO_KEY_SHORT}: the package matches its .sha256, which shows that it arrived whole, not who made it."
+)
+SIGNED_NOTE = "The package is signed with a Nightshift release key this version trusts (key {key})."
+SIGNED_TEST_NOTE = (
+    "The package is signed with the TEST key (key {key}), which this install trusts only because it reads "
+    "its releases from a test release source (NS_RELEASE_SOURCE)."
+)
+CHANGED_SINCE = (
+    "{zip} was changed after Nightshift checked it, so it was not installed: the program and the Python "
+    "environments are as they were. Do not install that file; download the package again from the release "
+    "page and run the update again."
+)
+
+
+@dataclass(frozen=True)
+class _Checked:
+    """A package that passed the check: its VERSION, member prefix and SHA256, and the id of the key that
+    signed it (empty: this version trusts no key yet, so only the SHA256 was checked)."""
+
+    version: str
+    prefix: str
+    sha256: str
+    key: str
+
+
+def _check_package(zip_path: Path, paths: Paths | None, say: Callable[[str], None] | None) -> _Checked:
+    """The one check of an update package, read-only (card update-signing, G1 to G6).
+
+    G1: the zip against the `.sha256` beside it, and its VERSION (`NS-E701`, as before). G2: the keys this
+    install trusts now (`releases.trusted_keys`); with none the package is accepted on its SHA256 and `say`
+    gets `NO_KEY_NOTE`. G3 to G5: `<zip>.sig` must be there, name a trusted key and be that key's signature
+    of this file name, VERSION and SHA256 (`sigcheck.check_package`); otherwise `NS-E707` with the sentence
+    of `SIGNATURE_REFUSALS`. G6: `say` gets the line that names the key. `say` is the worker's log; the
+    terminal's own first check passes none, so each update says it once."""
     if not zip_path.is_file():
         raise NsError("NS-E701", f"{zip_path} does not exist")
     want = read_sidecar(zip_path)
@@ -249,21 +326,42 @@ def verify_package(zip_path: Path) -> tuple[str, str]:
     if got != want:
         raise NsError("NS-E701", f"SHA256 mismatch for {zip_path.name}: expected {want[:12]}, got {got[:12]}")
     try:
-        with zipfile.ZipFile(zip_path) as z:
-            names = [n for n in z.namelist() if not n.endswith("/")]
-            prefix = ""
-            if "VERSION" not in names:
-                tops = {n.split("/", 1)[0] for n in names if "/" in n}
-                if len(tops) == 1 and f"{next(iter(tops))}/VERSION" in names:
-                    prefix = next(iter(tops)) + "/"
-                else:
-                    raise NsError("NS-E701", "the zip has no VERSION file at its root")
-            version = z.read(prefix + "VERSION").decode("utf-8").strip()
-    except zipfile.BadZipFile as e:
-        raise NsError("NS-E701", f"{zip_path.name} is not a valid zip: {e}") from e
-    if not version:
-        raise NsError("NS-E701", "VERSION is empty")
-    return version, prefix
+        version, prefix = sigcheck.package_version(zip_path)
+    except ValueError as e:
+        raise NsError("NS-E701", str(e)) from e
+    told = say or (lambda line: None)
+    keys = releases.trusted_keys(paths=paths)
+    if not keys:
+        told(NO_KEY_NOTE)
+        return _Checked(version, prefix, got, "")
+    try:
+        key = sigcheck.check_package(zip_path, version, got, keys)
+    except sigcheck.BadSignature as e:
+        words = SIGNATURE_REFUSALS[e.kind].format(
+            zip=zip_path.name, sig=sigcheck.sig_path(zip_path).name, key=e.key, why=e.detail
+        )
+        raise NsError("NS-E707", words, reason=e.kind) from e
+    test_key = key in release_keys.TEST_KEYS and key not in release_keys.TRUSTED
+    told((SIGNED_TEST_NOTE if test_key else SIGNED_NOTE).format(key=key))
+    return _Checked(version, prefix, got, key)
+
+
+def verify_package(zip_path: Path, paths: Paths | None = None) -> tuple[str, str]:
+    """Check the package before anything is started or changed: its `.sha256` and VERSION (`NS-E701`) and,
+    once this install trusts a release key, its signature (`NS-E707`). Returns (version, member prefix).
+    `paths`: the install whose keys count (None: the one the environment names). See `_check_package`."""
+    done = _check_package(zip_path, paths, None)
+    return done.version, done.prefix
+
+
+def _still_checked(zip_path: Path, checked: _Checked) -> bool:
+    """W4b: the file is still the one `_check_package` judged (same SHA256). False when it was replaced,
+    changed or removed since: between the check and the extraction Nightshift is being stopped, and for
+    those seconds the dashboard still takes an upload under the same name."""
+    try:
+        return sha256_file(zip_path) == checked.sha256
+    except OSError:
+        return False
 
 
 def safe_extract(zip_path: Path, dest: Path, prefix: str) -> None:
@@ -1243,14 +1341,21 @@ def rollback_refusal(app: Path) -> str | None:
 
 
 def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
-    """Apply a release zip to `app`. `NS-E701` before any change; `NS-E706` when a program still runs from
-    the Python environments (nothing changed); `NS-E702` after, ending with what is in place."""
+    """Apply a release zip to `app`. `NS-E701` (damaged) or `NS-E707` (not signed by a key this version
+    trusts) before any change; `NS-E706` when a program still runs from the Python environments (nothing
+    changed); `NS-E702` after, ending with what is in place."""
     return _closed(lambda: _update_app(zip_path, app, env, paths=paths), paths, app)
 
 
 def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     zip_path, app = zip_path.resolve(), app.absolute()
     log = NsLogger("update", paths.logs)
+    try:    # W4 (card update-signing): the package is judged first, before anything below is settled,
+        checked = _check_package(zip_path, paths, env.say)      # recovered, stopped or written
+    except NsError as e:
+        log.warn("update_package_refused", e.detail, code=e.code, zip=str(zip_path))
+        raise
+    new_version, prefix = checked.version, checked.prefix
     first_start.settled(paths.config)  # this process makes the settings copy itself
     leave_app(app, paths)
     earlier = _recover_rollback(app, paths, log)  # an interrupted rollback goes first (rollback_intent)
@@ -1259,11 +1364,11 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
         # program backup to make room and then fail: the last program folder would be gone.)
         why = f"there is no program folder at {app}: the update did not start. {NO_APP_HINT}"
         raise NsError("NS-E702", " ".join([*earlier, why]))
-    new_version, prefix = verify_package(zip_path)
     old_version = current_version(app)
     new, prev = _sibling(app, ".new"), _sibling(app, ".prev")
     replaced = current_version(prev) if prev.is_dir() else ""
-    log.info("update_start", old=old_version, new=new_version, zip=str(zip_path))
+    signed = checked.key or "no key trusted yet: sha256 only"
+    log.info("update_start", old=old_version, new=new_version, zip=str(zip_path), signed_by=signed)
     env.stop()
     update_job.step(paths, WAITING_FOR_PROGRAMS, update_job.unchanged_sentence(old_version))
     wait_no_holders(paths, env.holder_wait_s, earlier=earlier, say=env.say)
@@ -1278,6 +1383,10 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
             drop_record(paths, log)
 
     try:
+        if not _still_checked(zip_path, checked):   # W4b: the bytes installed are the bytes that were checked
+            # (NS-E702, not NS-E707: Nightshift was stopped by now, so "nothing was changed" would be untrue;
+            # `_closed` ends the sentence with what is in place)
+            raise NsError("NS-E702", " ".join([*earlier, CHANGED_SINCE.format(zip=zip_path.name)]))
         shutil.rmtree(new, ignore_errors=True)
         new.mkdir(parents=True)
         safe_extract(zip_path, new, prefix)
