@@ -50,6 +50,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -196,12 +197,14 @@ def check(path: Path, *, full: bool = False, fixed: bool = False) -> Check:
     """
     started = time.monotonic()
     try:
-        size = path.stat().st_size
+        st = path.stat()
     except FileNotFoundError:
         return Check(NEW, "no file")
     except OSError as e:
         return Check(HELD, f"{type(e).__name__}: {e}")
-    if size == 0:
+    if not stat.S_ISREG(st.st_mode):  # a folder of that name: opened as before, which says so (NS-E327)
+        return Check(HELD, "not a file")
+    if st.st_size == 0:
         return Check(NEW, "zero bytes")
     pragma = "integrity_check" if full else "quick_check"
     mode = "immutable=1" if fixed else "mode=ro"
