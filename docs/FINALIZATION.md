@@ -118,7 +118,7 @@ the first-run checklist with every line still open until the first real night; s
   1. Make a throwaway key: 32 random bytes as base64 on one line in `$S\throwaway-key.txt` (`New-Object byte[] 32`, `RNGCryptoServiceProvider.GetBytes`, `[Convert]::ToBase64String`, `[System.IO.File]::WriteAllText`). Seen: one line of 44 characters. Never the owner's key.
   2. `Get-Content "$S\throwaway-key.txt" | python dev\sign_release.py --public-key` (a Python with `cryptography`). Seen: `<16 hex digits> <base64>`.
   3. `git clone . "$S\tree"`; in the clone put `TRUSTED: dict[str, str] = {"<id>": "<base64>"}` between the markers of `ns_common\release_keys.py`; commit it in the clone. Seen: the clone's commit changes only that file; the repository's `git status` is clean.
-  4. In `$S\tree`: `powershell -File dev\make_bundle.ps1 -OutDir "$S\from"`; install that Update zip as an engine-test install. Seen: the zip and its `.sha256`.
+  4. In `$S\tree`: `powershell -File dev\make_bundle.ps1 -OutDir "$S\from"`; install its Setup zip as a dev install (`INSTALL.cmd -Answers <file> -NoUi -Dev`; the release source of step 6 is honoured on a dev or engine-test install). Seen: both zips and their `.sha256`.
   5. In the clone raise `VERSION` by one candidate number, commit, build into `$S\serve`. Never rename a zip: the signature covers its name, its VERSION and its SHA256.
   6. `python proofs\_fakes\github.py --dir "$S\serve" --key-file "$S\throwaway-key.txt"` in the background; set `NS_RELEASE_SOURCE` to the `url` in `$S\serve\ready.json`. Seen: no "no --key-file" line on its stderr.
   7. `ns update --check`. Seen: "Version <higher> is available"; the fake wrote the `.sig`. Copy zip, `.sha256` and `.sig` to `$S\pristine`.
