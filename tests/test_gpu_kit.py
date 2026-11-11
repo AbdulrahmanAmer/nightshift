@@ -51,7 +51,7 @@ from ns_studio.context import FAKEABLE
 from ns_studio.media import outbox, qc
 from ns_studio.media.audio import Loudness
 from ns_studio.stages import REGISTRY
-from ns_supervisor import gpu, kitnights, pwsh, verify
+from ns_supervisor import gpu, pwsh, verify
 from ns_supervisor.cli import app as ns_app
 from tests.helpers import make_channel
 from tests.proofhome import _Server
@@ -59,11 +59,13 @@ from tests.test_nightly_optional import FakeWindows
 
 if TYPE_CHECKING:
     from dev.kit import gpukit
+    from ns_supervisor import kitnights
 else:
     try:
         from dev.kit import gpukit
+        from ns_supervisor import kitnights
     except ImportError:  # a base without the kit: every test then fails in its body, at `kit_here()`
-        gpukit = None
+        gpukit = kitnights = None
 
 
 def kit_here() -> None:
