@@ -783,7 +783,13 @@ it and no program does it for you: the private key never passes through an assis
 On the laptop with the repository, signed in to GitHub (`gh auth login`), with a USB stick plugged in, in
 Windows PowerShell in the repository folder:
 
-    powershell -ExecutionPolicy Bypass -File dev\release_keys.ps1 -Create -BackupFolder <the USB stick, for example E:\>
+    powershell -ExecutionPolicy Bypass -File dev\release_keys.ps1 -Create -BackupFolder <a folder on the USB stick, for example E:\nightshift-keys>
+
+Your one step, in short: make the folder on the stick first, run this command once, then commit
+`ns_common\release_keys.py`. The folder must be one only you can read, because the script gives the backup file no
+access rule of its own: it gets the folder's. Name a folder ON the drive (`E:\nightshift-keys`), not the drive root
+(`E:\`): the root is unproven (the script was read, never run on one). The folder must exist, must not be inside
+the repository, and must hold no backup file yet (the script never overwrites one).
 
 It makes two key pairs. The **primary** private key goes straight into the repository's GitHub secret
 `NS_RELEASE_SIGNING_KEY` (it is never written to this PC and never shown); the release run signs with it. The
