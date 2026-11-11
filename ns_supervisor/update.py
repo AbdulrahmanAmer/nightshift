@@ -1775,8 +1775,9 @@ def uv_swap(
     soft: bool = False,
 ) -> None:
     """U5: the prepared uv into `bin\\uv`, before the repair record and the program swap. `stopped` is the
-    sentence in force, which stays true with `UV_STOPPED` added. A rename that stays refused is an `OSError`
-    for an update (nothing changed yet: its caller says so) and, with `soft` (a rollback), leaves the uv."""
+    sentence in force, which stays true with `UV_STOPPED` added. A rename that stays refused is `NS-E702`
+    with its own words for an update (program and settings unchanged) and, with `soft` (a rollback), leaves
+    the uv."""
     if not plan.how:
         return
     was = plan.was or "none"
@@ -1788,7 +1789,14 @@ def uv_swap(
         back = plan.undo()
         log.warn("uv_swap_refused", f"{e}{back}")
         if not soft:
-            raise
+            # NS-E702, not NS-E706: Nightshift was stopped by now, so "was not stopped" would be untrue; the
+            # caller drops what this update wrote and `_closed` ends the sentence with what is in place
+            raise NsError(
+                "NS-E702",
+                f"uv {plan.want} could not be put in place: Windows refused to rename a folder of "
+                f"{uvpin.uv_dir(paths.home).parent} ({e}), so a program probably still holds it.{back} "
+                f"The program and your settings were not changed. {UV_HELD_WAY_OUT}",
+            ) from e
         plan.stays = f" uv stays at {was} (uv {plan.want} could not be put in place: {e})."
         return
     say(said)
