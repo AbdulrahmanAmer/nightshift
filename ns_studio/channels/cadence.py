@@ -301,8 +301,18 @@ def _kit_night_job(paths: Paths, db: Db, now: datetime) -> DailyJob | None:
     `ns_supervisor.kitnights`, read by its one reader), one full story video on it, once a night, never after
     the record's end. Anything unusual (no record, an unreadable one, no channel file): None."""
     def made_tonight(lo: datetime, hi: datetime) -> bool:
+        """A kit job was made in this night's window, or one was worked on in it (night 1's job continued by
+        this night's resume): either is the night's one kit video, never both."""
         rows = db.query("select created_at from combos where channel = ?", (KIT_CHANNEL,))
-        return any(lo <= _aware(r["created_at"]) < hi for r in rows)
+        if any(lo <= _aware(r["created_at"]) < hi for r in rows):
+            return True
+        from ns_studio import ledger
+
+        return any(
+            line.get("channel") == KIT_CHANNEL and line.get("kind") in ("job_end", "stage", "acquire")
+            and lo <= _aware(str(line.get("at"))) < hi
+            for line in ledger.read(paths, months=1)
+        )  # fmt: skip
 
     try:
         night = importlib.import_module("ns_supervisor.kitnights").kit_night(paths, now, made_tonight)

@@ -22,6 +22,7 @@ to Automatic runs (Settings, `ns schedule install`, setup's nightly answer: `own
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -61,6 +62,16 @@ class Nights:
     @property
     def armed(self) -> bool:
         return self.kind in ("valid", "expired")
+
+
+#: Said once in the morning notes when a night cannot read the record: no night can then switch Automatic runs
+#: off again, so the owner is told where the file is and what to do.
+UNREADABLE_NOTE = (
+    "The GPU kit's record of its two test nights cannot be read ({file}). Nightshift runs as if the kit "
+    "had not switched anything on. If you did not switch Automatic runs on yourself, switch them off in "
+    "Settings, "
+    "or run GPU-KIT.cmd again: it puts back what it changed."
+)
 
 
 def record_file(paths: Paths) -> Path:
@@ -162,6 +173,9 @@ def night_start(paths: Paths, now: datetime, log: NsLogger | None = None) -> Nig
         log.warn(
             "gpu_kit_nights_unreadable", f"{nights.reason}: tonight runs as if the GPU kit had not armed it"
         )
+    if nights.kind == "unreadable":
+        with contextlib.suppress(Exception):  # a note never stops a night
+            _note_once(paths, UNREADABLE_NOTE.format(file=record_file(paths)))
     if log is not None and nights.kind == "valid":
         log.info("gpu_kit_night", night=nights.night, makes=KIT_NIGHT_MAKES if nights.night else None)
     if nights.kind == "expired":

@@ -760,8 +760,19 @@ class Kit:
                             "DELETE", f"/api/library/footage/{c['source']}/{c['clip_id']}"
                         )
                         ch["put_back"] = st in (200, 404)
+                elif what.startswith("stock_clip_") and ch.get("trying"):
+                    # killed during the download: the kit's clip is what the cache holds for the kit's
+                    # query now and did not hold before it (its clip ids, recorded before the request)
+                    if self.product.api("GET", "/api/health", timeout=10)[0] == 200:
+                        source = what.removeprefix("stock_clip_")
+                        new = [c for c in self.cached_ids(str(ch["trying"]), source)
+                               if c not in set(ch.get("before") or [])]  # fmt: skip
+                        gone = [
+                            self.product.api("DELETE", f"/api/library/footage/{source}/{c}")[0] for c in new
+                        ]
+                        ch.update({"removed_after_kill": new, "put_back": all(s in (200, 404) for s in gone)})
                 elif what.startswith("stock_clip_"):
-                    ch["put_back"] = True  # nothing was downloaded
+                    ch["put_back"] = True  # nothing was asked for
                 elif what.startswith("voice_") and ch.get("name"):
                     ch["put_back"] = self.remove_voice(str(ch["name"]))
                 elif what == "code_window" and ch.get("pid"):
@@ -908,8 +919,15 @@ class Kit:
 
     # -------------------------------------------------------------------------------------- K2 checks
     def k2(self) -> Result:
+        asked = time.time()  # (the file's own clock: the report must be written by THIS run of ns verify)
         rc, text = self.product.cli("ns", ["verify"], 40 * 60)
         self.write_json("verify.json", {"exit": rc, "output": text})
+        report = self.home / "logs" / "verify-report.json"
+        fresh = report.is_file() and report.stat().st_mtime >= asked - 2
+        vreport = "logs\\verify-report.json written by this run" if fresh else "no report of this run"
+        if rc == 0 and not fresh:
+            return Result("FAIL", "ns verify ended 0 but wrote no logs\\verify-report.json in this run. What "
+                          "to do: send the zip.", done=False, stop=True)  # fmt: skip
         if rc != 0:
             return Result("FAIL", "a model did not answer its short test (ns verify; its report "
                           "logs\\verify-report.json is in the zip). What to do: send the zip.",
@@ -922,35 +940,38 @@ class Kit:
         summary = next((ln for ln in reversed(tail) if " passed, " in ln), tail[-1] if tail else "no output")
         if prc == 2 and "no proofs to run" in (out or ""):
             self.write_json("proofs.json", {"exit": prc, "output": out})
-            return Result("PASS", "every model answered its short test; no proof fits this install")
-        skipped = [
-            m.groups() for m in re.finditer(r"(?m)^SKIPPED (\S+) \[([^\]]*)\] \S+s(?:  (.*))?$", out or "")
-        ]
-        # proofs/README.md: F-B13/F-B14 never replace a real key, so on a real install with a stored key they
-        # skip by design; they are NOT RUN there, with that reason. Any other skip or failure still fails.
-        designed = [s for s in skipped if self.kind == "gpu" and {"F-B13", "F-B14"} & set(s[1].split(","))
-                    and "a stock footage key is already stored" in (s[2] or "")]  # fmt: skip
-        others = [s for s in skipped if s not in designed]
+            return Result("PASS", f"ns verify exit 0 ({vreport}); no proof fits this install (prove.py --all "
+                          "selected none)")  # fmt: skip
+        # `--all` selects only the proofs of this install's kind (prove.py: a wrong kind is left out quietly),
+        # so F-B13/F-B14 (install "dev") are never selected on a real install; any skip of a selected proof
+        # is a FAIL here (`--strict`, exit 3), as on the release rule
+        evidence = re.search(r"evidence in (.+)$", summary)
+        folder = Path(evidence.group(1).strip()) if evidence else None
         self.write_json(
-            "proofs.json", {"exit": prc, "output": out, "not_run_by_design": [s[0] for s in designed]}
+            "proofs.json", {"exit": prc, "output": out, "evidence": str(folder) if folder else None}
         )
-        line = f"every model answered its short test; proofs: {summary}"
-        if designed:
-            line += (f"; NOT RUN by design: {', '.join(s[0] for s in designed)} (a real stock-footage key is "
-                     "stored, and that proof never replaces a real key: proofs/README.md)")  # fmt: skip
+        verified = f"ns verify exit 0 ({vreport})"
+        if folder is None or not folder.is_dir() or (self.ev / "proofs") not in folder.parents:
+            return Result("FAIL", f"{verified}; the proof runner named no evidence folder of this run "
+                          f"({summary})")  # fmt: skip
         # a failed proof is a fact for the Head: the kit goes on
-        word = "PASS" if prc == 0 or (prc == 3 and designed and not others) else "FAIL"
-        return Result(word, line)
+        return Result("PASS" if prc == 0 else "FAIL", f"{verified}; proofs: {summary}")
 
     # -------------------------------------------------------------------------------------- K3 story video
-    def kit_jobs(self) -> list[dict[str, Any]]:
-        """The jobs of the kit's channel (`data/jobs/*/job.json`): the kit's own, oldest first."""
+    def kit_jobs(self, mine_only: bool = True) -> list[dict[str, Any]]:
+        """The jobs of the kit's channel (`data/jobs/*/job.json`), oldest first. `mine_only`: only one the kit
+        can have made, that is not one of the ids that existed before it started its studio (`before`)."""
         out = []
         for f in (self.home / "data" / "jobs").glob("*/job.json"):
             with contextlib.suppress(OSError, ValueError):
                 data = json.loads(f.read_text(encoding="utf-8"))
                 if isinstance(data, dict) and data.get("channel") == CHANNEL:
                     out.append(data)
+        before = set((self.state.get("job") or {}).get("before") or [])
+        if mine_only:
+            if "before" not in (self.state.get("job") or {}):
+                return []  # the kit has not started its studio yet: no job of the channel is its own
+            out = [d for d in out if d.get("job_id") not in before]
         return sorted(out, key=lambda d: str(d.get("created_at")))
 
     def long_rows(self, job_id: str | None) -> list[dict[str, Any]]:
@@ -959,8 +980,8 @@ class Kit:
 
     def estimate_s(self) -> float:
         """The worst of this PC's last five full videos (the ledger), else night-fits' default (3 h)."""
-        done = [float(x.get("seconds") or 0) for x in self.ledger() if x.get("kind") == "job_end"
-                and x.get("plan") == "master_first" and x.get("outcome") == "done"]  # fmt: skip
+        done = [float(led.get("seconds") or 0) for led in self.ledger() if led.get("kind") == "job_end"
+                and led.get("plan") == "master_first" and led.get("outcome") == "done"]  # fmt: skip
         if done:
             return max(done[-5:])
         try:
@@ -1049,6 +1070,8 @@ class Kit:
         est = self.estimate_s()
         why = self.engine()
         held = None if why else self.guard(est)
+        if held is None and not why and not job.get("id"):
+            held = self.card_taken()
         if held is not None:
             return held
         why = why or self.channel()
@@ -1057,6 +1080,8 @@ class Kit:
         found = self.kit_jobs()
         if not job.get("id") and found:  # made by a run killed before it wrote the id: that job is ours
             job["id"] = found[-1]["job_id"]
+        if not job.get("id"):
+            job["before"] = [j["job_id"] for j in self.kit_jobs(mine_only=False)]  # not ours, whatever comes
         args = ["run", "--resume", job["id"]] if job.get("id") else \
             ["run", "--channel", CHANNEL, "--count", "1", "--format", "master_first"]  # fmt: skip
         job.setdefault("started", self.iso())
@@ -1090,8 +1115,9 @@ class Kit:
                 job.update({"outcome": "failed", "code": "not finished in three times its estimate"})
                 break
             self.clock.sleep(POLL_S)
-            stages = [str(x.get("stage")) for x in self.ledger() if x.get("kind") == "stage"
-                      and x.get("job_id") == job.get("id") and x.get("outcome") == "done"]  # fmt: skip
+            stages = [str(led.get("stage")) for led in self.ledger() if job.get("id")
+                      and led.get("kind") == "stage" and led.get("job_id") == job.get("id")
+                      and led.get("outcome") == "done"]  # fmt: skip
             self.say(f"  still making the video: {_span(begun, self.now())}; stages done: "
                      f"{', '.join(stages) or 'none yet'}")  # fmt: skip
         if not job.get("id") and self.kit_jobs():  # a studio that ended before the first look
@@ -1122,8 +1148,10 @@ class Kit:
         story = self.ev / "story"
         story.mkdir(parents=True, exist_ok=True)
         rows = self.long_rows(job.get("id"))
-        stages = [{k: x.get(k) for k in ("stage", "seconds", "outcome", "at")} for x in self.ledger()
-                  if x.get("kind") == "stage" and x.get("job_id") == job.get("id")]  # fmt: skip
+        stages = [{"stage": led.get("stage"), "seconds": led.get("seconds"), "outcome": led.get("outcome"),
+                   "at": led.get("at")} for led in self.ledger()
+                  if job.get("id") and led.get("kind") == "stage"
+                  and led.get("job_id") == job.get("id")]  # fmt: skip
         facts: dict[str, Any] = {**job, "simulated": self.mark, "stages": stages}
         took = _span(job.get("started"), job.get("ended"))
         if job.get("outcome") != "done" or not rows:
@@ -1170,11 +1198,31 @@ class Kit:
                       f"and the nightly run starts at {self.when(nxt)}. Run GPU-KIT.cmd again after "
                       f"{self.when(back)}.", done=False, stop=True)  # fmt: skip
 
-    def engine_status(self) -> dict[str, Any]:
-        """The Dashboard's engine object (`GET /api/status` -> engine: state, vram_owner)."""
-        _st, body = self.product.api("GET", "/api/status", timeout=30)
-        engine = body.get("engine") if isinstance(body, dict) else None
-        return engine if isinstance(engine, dict) else {}
+    def engine_status(self) -> dict[str, Any] | None:
+        """The Dashboard's engine object (`GET /api/status` -> engine: state, vram_owner, reachable); None
+        when the Dashboard or the engine did not answer (never read as "nobody holds the card")."""
+        st, body = self.product.api("GET", "/api/status", timeout=30)
+        engine = body.get("engine") if st == 200 and isinstance(body, dict) else None
+        if not isinstance(engine, dict) or engine.get("reachable") is False:
+            return None
+        return engine
+
+    def card_taken(self) -> Result | None:
+        """Before a step that takes the graphics card: who holds it now (the engine's own answer). Anything
+        the kit did not start (Nightshift Code the owner opened, a job, the nightly run): the step is NOT RUN
+        and nothing is started or ended. None: the card is free."""
+        st = self.engine_status()
+        if st is None:
+            return Result("NOT RUN", "the engine did not say who holds the graphics card, so nothing was "
+                          "started. What to do: run GPU-KIT.cmd again.", done=False, stop=True)  # fmt: skip
+        owner = st.get("vram_owner")
+        if not owner:
+            return None
+        if str(owner).startswith("opencode"):
+            why = "Nightshift Code is open: close it and run the kit again"
+        else:
+            why = f"the graphics card is held by {owner}: run the kit again when that has finished"
+        return Result("NOT RUN", f"{why} (nothing was started or ended)", done=False, stop=True)
 
     def vram_used(self) -> int | None:
         """The card's memory in use now, MiB (nvidia-smi through the install's source)."""
@@ -1209,12 +1257,14 @@ class Kit:
     # -------------------------------------------------------------------------------------- KS stock keys
     def ks(self) -> Result:
         """One real search and one real download of one clip per provider whose key is stored, through the
-        product's own route (`POST /api/library/footage/fetch`, count 1); the clip leaves the cache again."""
+        product's own route (`POST /api/library/footage/fetch`, count 1); the clip leaves the cache again.
+        PASS names the clip (source, clip id) the product's answer gave for the kit's own request."""
         why = self.engine()
         settings = None if why else self.settings()
         if settings is None:
             return Result("FAIL", f"the Dashboard did not answer ({why}). What to do: send the zip.",
                           done=False, stop=True)  # fmt: skip
+        self.put_back_extras()  # a clip a killed run downloaded leaves the cache first
         keys = settings.get("keys") or {}
         rec = self.state.setdefault("stock", {})
         lines, failed = [], False
@@ -1230,22 +1280,33 @@ class Kit:
         self.write_json("stock.json", rec)
         if not any(keys.get(n) for n in ("pixabay", "pexels")):
             return Result("NOT RUN", "no stock-footage key is stored (Settings > Stock footage keys): "
-                          "nothing "
-                          "to try; " + "; ".join(lines))  # fmt: skip
+                          "nothing to try; " + "; ".join(lines))  # fmt: skip
         if failed:  # the video needs footage: it does not start on a key that does not work
             return Result("FAIL", self.marked("; ".join(lines)), done=False, stop=True)
         return Result("PASS", self.marked("; ".join(lines)))
 
+    def cached_ids(self, query: str, source: str) -> list[str]:
+        """The clip ids of `source` the footage cache holds for `query` (`GET /api/library/footage`)."""
+        from urllib.parse import quote
+
+        st, rows = self.product.api("GET", f"/api/library/footage?q={quote(query)}&limit=200")
+        if st != 200 or not isinstance(rows, list):
+            return []
+        return [str(r.get("clip_id")) for r in rows if isinstance(r, dict) and r.get("source") == source]
+
     def try_stock(self, name: str) -> dict[str, Any]:
         title = name.capitalize()
-        self.change(
-            f"stock_clip_{name}", "not in the cache", "one clip, removed from the cache after the check"
-        )
+        what = f"stock_clip_{name}"
+        self.change(what, "not in the cache", "one clip, removed from the cache after the check")
         for q in STOCK_QUERIES:
+            # before the request: what the cache held for it, so a kill mid-download finds the kit's clip
+            self.state["changes"][what].update({"trying": q, "before": self.cached_ids(q, name)})
+            self.save()
             status, body = self.product.api("POST", "/api/library/footage/fetch",
                                             {"q": q, "orientation": "landscape", "count": 1, "source": name},
                                             timeout=600)  # fmt: skip
             if status != 200 or not isinstance(body, dict):
+                self.state["changes"][what].pop("trying", None)
                 return {"result": "FAIL", "line": f"{title}: {_stock_refusal(title, status, body)}",
                         "status": status, "answer": body}  # fmt: skip
             fresh = [c for c in body.get("clips") or [] if isinstance(c, dict) and c.get("new")]
@@ -1255,7 +1316,7 @@ class Kit:
             path = Path(str(c.get("path")))
             size = path.stat().st_size if path.is_file() else None
             clip = {"source": c.get("source"), "clip_id": c.get("clip_id"), "size_bytes": size, "query": q}
-            self.state["changes"][f"stock_clip_{name}"]["clip"] = clip
+            self.state["changes"][what]["clip"] = clip
             self.save()
             self.put_back_extras()  # the clip leaves the cache again
             got = f"{size / 1e6:.1f} MB" if size else "an empty file"
@@ -1266,39 +1327,48 @@ class Kit:
             if c.get("source") != name:
                 line += f" from the install's {c.get('source')} source, not {title}"
             return {"result": "PASS" if ok else "FAIL", "line": line, **clip}
+        self.state["changes"][what].pop("trying", None)
         return {"result": "FAIL", "line": f"{title}: {len(STOCK_QUERIES)} searches found no clip that is not "
                 "already in the cache. What to do: send the zip."}  # fmt: skip
 
     # -------------------------------------------------------------------------------------- KC clip
     def kc(self) -> Result:
         """Create > Clips with its input made by the kit: about 3 minutes cut from the kit's story video, one
-        clip asked for, judged from the job's records and QC."""
+        clip asked for. PASS names the clip job the kit posted (its job id, found again by its input path
+        after a kill) and that job's own outputs rows and QC report."""
         video = self.story_video()
         if video is None:
             return Result("NOT RUN", "the story video was not made (step 5), so the clip has no input")
         rec = self.state.setdefault("clip", {})
+        src = self.ev / "clip" / "input-3min.mp4"
+        if not rec.get("job_id") and rec.get("posting"):
+            found = self.kc_find(src)  # a run killed between the POST and saving the id: that job is ours
+            if found:
+                rec.update({"job_id": found["job_id"], "started": rec["posting"], "found_again": True})
+                self.save()
         if not rec.get("job_id"):
-            held = self.room(CLIP_BOUND_S, "the clip")
+            held = self.room(CLIP_BOUND_S, "the clip") or self.card_taken()
             if held is not None:
                 return held
             why = self.engine()
             if why:
                 return Result("FAIL", f"{why}. What to do: send the zip.")
-            src = self.ev / "clip" / "input-3min.mp4"
             if not src.is_file():
                 problem = self.product.cut(video, src, 60, 180, False)
                 if problem:
-                    return Result(
-                        "NOT RUN", f"its input could not be cut from the story video ({problem[:300]})"
-                    )
+                    return Result("NOT RUN", f"its input could not be cut from the story video "
+                                  f"({problem[:300]})")  # fmt: skip
             self.change("clip_job", "none", "one clip job on the kit's channel (its clip waits in the Queue)")
+            rec["posting"] = self.iso()
+            self.save()  # the intent first: a kill after the POST finds the job by its input path
             body = {"channel": CHANNEL, "path": str(src), "rights_confirmed": True, "max_clips": 1}
             status, answer = self.product.api("POST", "/api/jobs/clip", body)
             if status != 201 or not isinstance(answer, dict) or not answer.get("job_id"):
-                return Result(
-                    "FAIL", self.marked(f"the clip job was refused (HTTP {status}: {str(answer)[:300]})")
-                )
-            rec.update({"job_id": answer["job_id"], "started": self.iso()})
+                rec.pop("posting", None)
+                self.save()
+                return Result("FAIL", self.marked(f"the clip job was refused (HTTP {status}: "
+                                                  f"{str(answer)[:300]})"))  # fmt: skip
+            rec.update({"job_id": answer["job_id"], "started": rec["posting"]})
             self.save()
         begun = self.at(rec["started"])
         job: dict[str, Any] = {}
@@ -1308,48 +1378,76 @@ class Kit:
             if job.get("status") in ("done", "failed", "cancelled"):
                 break
             if (self.now() - begun).total_seconds() > CLIP_BOUND_S:
+                # at its bound the job is cancelled through the product's own route, not left running
+                self.product.api("POST", f"/api/jobs/{rec['job_id']}/cancel", {})
+                rec["cancelled_at_bound"] = True
                 break
-            self.say(
-                f"  the clip job: {job.get('status')}, {job.get('message') or ''} "
-                f"({_span(begun, self.now())})"
-            )
+            self.say(f"  the clip job: {job.get('status')}, {job.get('message') or ''} "
+                     f"({_span(begun, self.now())})")  # fmt: skip
             self.clock.sleep(POLL_S)
         return self.kc_judge(rec, job, begun)
+
+    def kc_find(self, src: Path) -> dict[str, Any] | None:
+        """The kit's clip job, found by its input path (the clip jobs of the kit's channel, newest first)."""
+        st, rows = self.product.api("GET", "/api/jobs?kind=clip&limit=50")
+        for r in rows if st == 200 and isinstance(rows, list) else []:
+            params = r.get("params") if isinstance(r, dict) else None
+            if isinstance(params, dict) and params.get("channel") == CHANNEL \
+                    and params.get("source_path") == str(src):  # fmt: skip
+                return r
+        return None
 
     def kc_judge(self, rec: dict[str, Any], job: dict[str, Any], begun: datetime) -> Result:
         got = job.get("result")
         result: dict[str, Any] = got if isinstance(got, dict) else {}
-        sids = [str(s) for s in result.get("studio_job_ids") or []]
-        sql = "select output_id, path, kind, duration_s from outputs where "
-        outs = [r for s in sids for r in self.db(sql +
-                                                 "job_id = ?", (s,))]  # fmt: skip
+        sids = [str(s) for s in result.get("studio_job_ids") or [] if s]
+        sql = "select output_id, path, kind, duration_s from outputs where job_id = ?"
+        outs = [r for s in sids for r in self.db(sql, (s,))]
         qc: dict[str, Any] = {}
         for s in sids:
             with contextlib.suppress(OSError, ValueError):
                 qc.update(
                     json.loads((self.home / "data" / "jobs" / s / "qc" / "report.json").read_text("utf-8"))
                 )
-        # since the job was queued, by the Dashboard's own clock (the logs' clock)
+        params = job.get("params") if isinstance(job.get("params"), dict) else {}
+        source_id = str((params or {}).get("source_id") or "")
+        imported = [r["path"] for r in self.db("select path from sources where source_id = ?", (source_id,))]
+        left = [f"the clip {o['path']} (in the Queue on the kit's channel)" for o in outs] + [
+            f"the imported input {p}" for p in imported]  # fmt: skip
+        self.state["left_on_pc"] = left
+        # since the job was queued, by the Dashboard's own clock (the logs' clock): listed, not proof
         since = _when(job.get("created_at")) if job.get("created_at") else begun
         warns = self.log_codes(("NS-W404", "NS-W401"), since)
         rec.update({"status": job.get("status"), "message": job.get("message"), "studio_job_ids": sids,
-                    "outputs": outs, "qc": qc, "warnings": warns, "ended": self.iso()})  # fmt: skip
+                    "outputs": outs, "qc": qc, "warnings": warns, "left_on_pc": left,
+                    "ended": self.iso()})  # fmt: skip
         self.write_json("clip/clip.json", rec)
         self.save()
-        said = f"; logged: {', '.join(warns)}" if warns else ""
-        if job.get("status") not in ("done", "failed", "cancelled"):
-            return Result("FAIL", self.marked(f"the clip job did not finish in {_secs(CLIP_BOUND_S)} (it was "
-                          f"{job.get('status')}: {job.get('message')}){said}"))  # fmt: skip
+        said = f"; logged since it was queued: {', '.join(warns)}" if warns else ""
+        stays = f"; left on the PC: {'; '.join(left)}" if left else ""
+        jid = rec.get("job_id")
+        if job.get("status") not in ("done", "failed", "cancelled") or rec.get("cancelled_at_bound"):
+            return Result(
+                "FAIL",
+                self.marked(
+                    f"the clip job {jid} did not finish in {_secs(CLIP_BOUND_S)} "
+                    f"(it was {job.get('status')}: {job.get('message')}); it was cancelled{said}"
+                ),
+            )
         if job.get("status") != "done":
-            return Result("FAIL", self.marked(f"the clip job ended {job.get('status')}: {job.get('message')}"
-                                              f"{said}"))  # fmt: skip
+            return Result("FAIL", self.marked(f"the clip job {jid} ended {job.get('status')}: "
+                                              f"{job.get('message')}{said}{stays}"))  # fmt: skip
         passed = [k for k, v in qc.items() if isinstance(v, dict) and v.get("passed")]
-        if not outs or not passed:
-            return Result("FAIL", self.marked(f"the clip job ended done with {len(outs)} clip(s) and QC "
-                                              f"{len(passed)} of {len(qc)} passed{said}"))  # fmt: skip
-        return Result("PASS", self.marked(f"one clip from 3 minutes of the story video: {len(outs)} clip(s) "
-                                          f"made, QC {len(passed)} of {len(qc)} passed, in "
-                                          f"{_span(begun, self.now())}{said}"))  # fmt: skip
+        if not sids or not outs or not passed:
+            return Result("FAIL", self.marked(f"the clip job {jid} ended done, but its own records show "
+                                              f"{len(outs)} clip(s) and QC {len(passed)} of {len(qc)} passed "
+                                              f"(studio job(s): {', '.join(sids) or 'none'})"
+                                              f"{said}"))  # fmt: skip
+        studio = ", ".join(sids)
+        return Result("PASS", self.marked(f"clip job {jid} (studio job {studio}) cut 3 minutes of the "
+                                          f"story video into {len(outs)} clip(s), QC {len(passed)} of "
+                                          f"{len(qc)} "
+                                          f"passed, in {_span(begun, self.now())}{said}{stays}"))  # fmt: skip
 
     # -------------------------------------------------------------------------------------- KV voices
     def kv(self) -> Result:
@@ -1363,6 +1461,10 @@ class Kit:
         if why:
             return Result("FAIL", f"{why}. What to do: send the zip.")
         rec = self.state.setdefault("voices", {})
+        if any((rec.get(k) or {}).get("result") is None for k in ("design", "clone")):
+            taken = self.card_taken()
+            if taken is not None:
+                return taken
         day = self.now().strftime("%Y%m%d")
         parts = []
         for kind in ("design", "clone"):
@@ -1395,6 +1497,13 @@ class Kit:
         if status != 200 or not isinstance(answer, dict) or not answer.get("preview_wav_path"):
             return {"result": "FAIL", "line": f"refused (HTTP {status}: {str(answer)[:240]})"}
         wav = Path(str(answer["preview_wav_path"]))
+        from ns_common.paths import Paths
+
+        mine = Paths(self.home).models_tts_voices / name / "preview.wav"
+        if answer.get("voice_id") != name or wav.resolve() != mine.resolve():
+            named = answer.get("voice_id")
+            return {"result": "FAIL", "line": f"the answer named another voice or file ({named}, "
+                    f"{wav}), not the kit's {name}"}  # fmt: skip
         keep = self.ev / "voices" / f"{kind}-preview.wav"
         with contextlib.suppress(OSError):
             keep.parent.mkdir(parents=True, exist_ok=True)
@@ -1402,7 +1511,7 @@ class Kit:
         audible, measured = _audible(wav)
         word = "PASS" if audible else "FAIL"
         what = "spoke the sentence" if audible else "is silent or unreadable"
-        return {"result": word, "line": f"{what}: {measured}, made in {took}", "measured": measured}
+        return {"result": word, "line": f"{name} {what}: {measured}, made in {took}", "measured": measured}
 
     def narration_sample(self) -> Path | None:
         """A few seconds of the kit's own narration: a narration file of its job (4 to 30 s), else 12 s of the
@@ -1446,6 +1555,9 @@ class Kit:
         if why:
             return Result("FAIL", f"{why}. What to do: send the zip.")
         self.put_back_extras()  # a window left open by a killed run is closed first
+        taken = self.card_taken()  # the owner's own Nightshift Code (or a job) holds it: not touched
+        if taken is not None:
+            return taken
         rec: dict[str, Any] = {"vram_before": self.vram_used(), "started": self.iso()}
         self.state["code"] = rec
         self.change("code_window", "closed", "opened by the kit and closed again")
@@ -1455,7 +1567,7 @@ class Kit:
         self.save()  # the pid first: a kill from here on still closes the window
         begun, loaded = self.now(), None
         while (self.now() - begun).total_seconds() < CODE_LOAD_S:
-            st = self.engine_status()
+            st = self.engine_status() or {}
             if st.get("vram_owner") == "opencode" and st.get("state") in ("ready", "working"):
                 loaded = self.now()
                 break
@@ -1482,7 +1594,8 @@ class Kit:
         self.save()
         freed = None
         while (self.now() - closed).total_seconds() <= FREED_WITHIN_S + 10:
-            if not self.engine_status().get("vram_owner"):
+            st = self.engine_status()  # an engine that does not answer is never read as "freed"
+            if st is not None and not st.get("vram_owner"):
                 freed = round((self.now() - closed).total_seconds(), 1)
                 break
             self.clock.sleep(1)
@@ -1516,6 +1629,9 @@ class Kit:
         why = self.engine()
         if why:
             return Result("FAIL", f"{why}. What to do: send the zip.")
+        taken = self.card_taken()
+        if taken is not None:
+            return taken
         begun = self.now()
         status, body = self.product.api("POST", "/api/assistant/chat", {"message": ASSISTANT_QUESTION},
                                         timeout=ASK_BOUND_S)  # fmt: skip
@@ -1527,6 +1643,8 @@ class Kit:
         self.write_json("assistant.json", {"question": ASSISTANT_QUESTION, "status": status, "events": kinds,
                                            "answer": text, "frames": frames[-20:]})  # fmt: skip
         took = _span(begun, self.now())
+        cid = next((str((f.get("payload") or {}).get("conversation_id")) for f in frames
+                    if f.get("kind") == "conversation"), None)  # fmt: skip
         error = next((f.get("payload") or {} for f in frames if f.get("kind") in ("error", "busy")), None)
         if status != 200:
             return Result("FAIL", self.marked(f"the Assistant did not answer (HTTP {status})"))
@@ -1540,8 +1658,12 @@ class Kit:
                                               f"{error.get('message')})"))  # fmt: skip
         if not text.strip():
             return Result("FAIL", self.marked(f"the Assistant's answer was empty (after {took})"))
+        if not cid or "done" not in kinds:
+            return Result("FAIL", self.marked("the answer did not come as one finished conversation of the "
+                                              "kit's "
+                                              "question (no conversation id or no done frame)"))  # fmt: skip
         short = " ".join(text.split())[:160]
-        return Result("PASS", self.marked(f'answered in {took}: "{short}"'))
+        return Result("PASS", self.marked(f'conversation {cid} answered in {took}: "{short}"'))
 
     # -------------------------------------------------------------------------------------- K4 arm
     def nights_record(self) -> Any:
@@ -1732,6 +1854,18 @@ class Kit:
             self.save()
             return Result("WAIT", f"Night {i + 1}: not yet (come back after {self.when(back)})",
                           done=False, stop=True)  # fmt: skip
+        kit_rows = [r for r in rows if _kit_entries(_loads(r.get("summary_json")))]
+        if (
+            len(kit_rows) > 1
+        ):  # two runs in one night each worked on the kit's channel: not one night's record
+            night.update(
+                {"status": "ambiguous", "run_ids": [r["run_id"] for r in kit_rows], "verdict": "FAIL"}
+            )
+            self.save()
+            return Result("FAIL", self.marked(f"Night {i + 1}: {len(kit_rows)} runs of this night worked "
+                                              "on the "
+                                              f"kit's channel ({', '.join(r['run_id'] for r in kit_rows)}): "
+                                              "no one record of the night"))  # fmt: skip
         if not rows:
             task = self.product.cli("ns", ["schedule", "show"], 60)
             night.update({"status": "did not run", "schedule": task, "verdict": "FAIL"})
@@ -1739,73 +1873,70 @@ class Kit:
             return Result("FAIL", self.marked(f"Night {i + 1}: did not run, so it made nothing (Windows' "
                                               "answer "
                                               "for the task is in the zip)"))  # fmt: skip
-        word, line = self.judge_night(i, lo, hi, rows[0])
+        word, line = self.judge_night(i, (kit_rows or rows)[0])
         night["verdict"] = word
         self.save()
         return Result(word, self.marked(f"Night {i + 1}: {line}"))
 
-    def judge_night(self, i: int, lo: datetime, hi: datetime, row: dict[str, Any]) -> tuple[str, str]:
-        """PASS only when the night's own records show the kit's video begun and finished inside the task's
-        limit, or stopped by the night's time rule (`nightfit`) with its reason (the finding); every other
-        night is a FAIL with the reason its records give."""
+    def judge_night(self, i: int, row: dict[str, Any]) -> tuple[str, str]:
+        """The night's ONE record is its run row (`runs`, its `run_id`) and that run's own summary. PASS only
+        when the summary lists the kit's job as made tonight AND the ledger has that job's `job_end` with
+        outcome done under this `run_id`, inside a known limit; or when the summary's own `out_of_time`
+        entry for the kit's channel says the night's time rule did not begin or finish it (the finding).
+        Everything else (no limit known, a failure, nothing for the kit) is a FAIL with the reason."""
         night = self.state["nights"][i]
         summary = _loads(row.get("summary_json"))
         summary = summary if isinstance(summary, dict) else {}
         timing = summary.get("timing") or {}
         used, limit = timing.get("used_s"), timing.get("limit_s")
-        rows = self.db(
-            "select job_id, created_at from combos where channel = ? order by created_at", (CHANNEL,)
-        )
-        kit_jobs = list(dict.fromkeys(r["job_id"] for r in rows if lo <= _when(r["created_at"]) < hi))
-        lines = self.ledger()
-        jid = kit_jobs[0] if kit_jobs else None
-        ends = [x for x in lines if x.get("kind") == "job_end" and x.get("job_id") == jid]
-        decided = [d for d in lines if d.get("kind") == "decision" and d.get("job_id") == jid
-                   and d.get("answer") not in (None, "begin")]  # nightfit.BEGIN is no stop  # fmt: skip
+        mine = _kit_entries(summary)
+        made = [e for e in mine.get("jobs", []) if e.get("job_id")]
+        jid = str(made[0]["job_id"]) if made else None
+        ends = [led for led in self.ledger() if jid and led.get("kind") == "job_end"
+                and led.get("job_id") == jid and led.get("run_id") == row["run_id"]]  # fmt: skip
         owners = len([j for j in summary.get("jobs") or [] if j.get("channel") != CHANNEL])
         night.update({"status": "ran", "run_id": row["run_id"], "start": row["started_at"],
-                      "end": row["finished_at"],
-                      "summary": summary, "kit_job": jid, "used_s": used, "limit_s": limit})  # fmt: skip
+                      "end": row["finished_at"], "summary": summary, "kit_job": jid, "used_s": used,
+                      "limit_s": limit})  # fmt: skip
         hhmm = lambda raw: self.at(raw).strftime("%H:%M") if raw else "?"  # noqa: E731 - local time
-        ran = f"ran {hhmm(row['started_at'])} to {hhmm(row['finished_at'])}"
+        ran = f"run {row['run_id']} ran {hhmm(row['started_at'])} to {hhmm(row['finished_at'])}"
         if not row["finished_at"]:
-            return "FAIL", f"started {hhmm(row['started_at'])}; its run was never closed (ended from outside)"
-        if isinstance(used, int | float) and isinstance(limit, int | float) and used > limit:
+            return "FAIL", f"run {row['run_id']} started {hhmm(row['started_at'])} and was never closed"
+        if not isinstance(limit, int | float) or not isinstance(used, int | float):
+            return "FAIL", (f"{ran}, but it knew no time limit (it was not started as the nightly task), so "
+                            "'inside the limit' cannot be shown")  # fmt: skip
+        if used > limit:
             return "FAIL", f"{ran}: {_secs(used - limit)} past the {_secs(limit)} limit"
-        if any(x.get("outcome") == "done" for x in ends):
-            took = sum(float(x.get("seconds") or 0) for x in ends)
-            inside = (f", the night used {_secs(used)} of its {_secs(limit)} limit" if used and limit
-                      else ", the night knew no time limit")  # fmt: skip
-            return (
-                "PASS",
-                f"{ran}: made the kit's video in {_secs(took)}{inside}; {owners} job(s) of yours",
-            )
-        if decided:
-            d = decided[-1]
-            return "PASS", (f"{ran}: the night's time rule did not finish the kit's video "
-                            f"({d.get('answer')}: "
-                            f"{d.get('reason')}): that is the finding; {owners} job(s) of yours")  # fmt: skip
+        inside = f"the night used {_secs(used)} of its {_secs(limit)} limit; {owners} job(s) of yours"
+        if jid and any(led.get("outcome") == "done" for led in ends):
+            took = sum(float(led.get("seconds") or 0) for led in ends)
+            again = " (continued from the night before)" if made[0].get("resumed") else ""
+            return "PASS", f"{ran}: made the kit's video, job {jid}{again}, in {_secs(took)}; {inside}"
         if jid:
-            code = next((str(x.get("outcome")) for x in reversed(ends)), None) or next(
-                (str(f.get("code")) for f in summary.get("failures") or [] if f.get("job_id") == jid),
-                "no end",
+            return "FAIL", (f"{ran}: its summary lists the kit's job {jid}, but the ledger has no job_end "
+                            f"'done' of it in this run")  # fmt: skip
+        left = mine.get("out_of_time", [])
+        if left:
+            e = left[-1]
+            rule = f"{e.get('answer')}, {e.get('reason')}: {e.get('said')}"
+            said = (
+                f"{ran}: the night's time rule did not finish the kit's video ({rule}): that is the finding"
             )
-            return "FAIL", f"{ran}: the kit's video stopped ({code})"
+            return "PASS", f"{said}; {inside}"
+        failed = mine.get("failures", [])
+        if failed:
+            f = failed[-1]
+            return "FAIL", f"{ran}: the kit's video stopped ({f.get('code')}: {str(f.get('error'))[:200]})"
+        other = [f"{k}: {json.dumps(v, default=str)[:160]}" for k, v in mine.items() if v and k != "channels"]
+        if other:
+            return "FAIL", f"{ran}: the kit's video was not made ({'; '.join(other)})"
         why = (
             self.night_log_reason(row)
             or summary.get("failed")
-            or "; ".join(
-                [
-                    f"{k}: {json.dumps(summary[k], default=str)[:160]}"
-                    for k in ("no_room", "paused", "unreadable_profiles", "not_due")
-                    if summary.get(k)
-                ]
-            )
-            or (
-                "the night did not plan the kit's video (see its log: gpu_kit_night, "
-                "gpu_kit_nights_unreadable)"
-            )
-        )
+            or "; ".join([f"{k}: {json.dumps(summary[k], default=str)[:160]}"
+                          for k in ("no_room", "paused", "unreadable_profiles", "not_due") if summary.get(k)])
+            or "the night did not plan the kit's video (its log: gpu_kit_night, gpu_kit_nights_unreadable)"
+        )  # fmt: skip
         return "FAIL", f"{ran}: made nothing for the kit ({why}); {owners} job(s) of yours"
 
     def night_log_reason(self, row: dict[str, Any]) -> str | None:
@@ -1901,7 +2032,13 @@ class Kit:
         self.save()
         verdicts = [str(n.get("verdict") or "NOT RUN") for n in self.state.get("nights") or []]
         word = "PASS" if verdicts and all(v == "PASS" for v in verdicts) else "FAIL"
-        nights_said = ", ".join(f"night {n} {v}" for n, v in enumerate(verdicts, 1))
+        nights_said = ", ".join(
+            f"night {n} {v} ({x.get('run_id') or 'no run'})"
+            for n, (v, x) in enumerate(zip(verdicts, self.state.get("nights") or [], strict=False), 1)
+        )
+        stays = self.state.get("left_on_pc") or []
+        if stays:
+            said += "; left on the PC: " + "; ".join(stays)
         return Result(word, f"the nights: {nights_said}; collected the nights' records; {said}; the kit's "
                       "channel "
                       "is paused")  # fmt: skip
@@ -1931,8 +2068,8 @@ class Kit:
         """What the kit sees itself for the hand checks: the sleep states, the nights' "slept" lines and
         Windows' sleep (42) and wake (1) events, and the files saved in hand-checks."""
         armed = self.at(self.state["armed_at"]) if self.state.get("armed_at") else None
-        slept = [x for x in self.ledger() if x.get("kind") == "slept" and (armed is None or _when(x.get("at"))
-                                                                           >= armed)]  # fmt: skip
+        slept = [led for led in self.ledger() if led.get("kind") == "slept"
+                 and (armed is None or _when(led.get("at")) >= armed)]  # fmt: skip
         machine = {}
         with contextlib.suppress(OSError, ValueError):
             machine = json.loads((self.ev / "machine.json").read_text(encoding="utf-8"))
@@ -2091,6 +2228,12 @@ class Kit:
             lines.append(f"{s} {TITLES[s]}: {rec.get('result', 'NOT RUN')}  {rec.get('line', 'not reached')}")
         lines += [
             "",
+            "Left on the PC on purpose (the person can remove them):",
+            "- the kit's story video, the two night videos and the clip, in the Queue on the kit's channel",
+            "- the clip job's imported 3-minute input (Library > Sources), named in step 6's line",
+            "- one Assistant conversation (the kit's question), in the Assistant's history",
+            "- one OpenCode session (the kit's prompt), in OpenCode's own folder of the user's profile",
+            "",
             "Masked in every text file:",
             *(f"- {m}" for m in MASKED),
             "",
@@ -2211,6 +2354,29 @@ def _qc(job_dir: Path) -> dict[str, Any]:
         if m:
             out.update({"lufs": float(m.group(1)), "true_peak_dbtp": float(m.group(2))})
     return out
+
+
+#: The lists of a night's summary (`daily.run_daily`'s report) whose entries carry a `channel`.
+KIT_SUMMARY_LISTS = (
+    "channels",
+    "jobs",
+    "out_of_time",
+    "failures",
+    "interrupted_jobs",
+    "slept",
+    "no_room",
+    "long_jobs",
+)
+
+
+def _kit_entries(summary: Any) -> dict[str, list[dict[str, Any]]]:
+    """The entries of a night's summary for the kit's channel, by list; empty when the night did nothing
+    for it."""
+    if not isinstance(summary, dict):
+        return {}
+    out = {k: [e for e in summary.get(k) or [] if isinstance(e, dict) and e.get("channel") == CHANNEL]
+           for k in KIT_SUMMARY_LISTS}  # fmt: skip
+    return {k: v for k, v in out.items() if v}
 
 
 def _stock_refusal(title: str, status: int | None, body: Any) -> str:

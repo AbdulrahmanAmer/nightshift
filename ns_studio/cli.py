@@ -363,10 +363,11 @@ def _kit_nights(env: jobs.Env, now: datetime) -> Any:
         return None
 
 
-def _kit_nights_over(env: jobs.Env, kit: Any, now: datetime) -> None:
-    """After a night that found the kit's nights over: put back what the kit switched on (`end_nights`)."""
+def _kit_nights_over(env: jobs.Env, kit: Any, now: datetime) -> str | None:
+    """A night that found the kit's nights over: put back what the kit switched on (`end_nights`). The
+    sentence said when Automatic runs were switched off (they were the kit's), else None."""
     if kit is None or getattr(kit, "kind", None) != "expired":
-        return
+        return None
     try:
         said = importlib.import_module("ns_supervisor.kitnights").end_nights(env.paths, kit, now, env.log)
     except Exception as e:  # noqa: BLE001
@@ -374,6 +375,7 @@ def _kit_nights_over(env: jobs.Env, kit: Any, now: datetime) -> None:
         said = None
     if said:
         echo(said)
+    return said
 
 
 def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
@@ -388,6 +390,14 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
             echo(f"{dj.channel.slug}: {dj.count} x {dj.fmt} ({dj.plan.describe()})")
         return
     kit = _kit_nights(env, now)  # the GPU kit's record (never raises; read again by the planner)
+    if kit is not None and getattr(kit, "kind", None) == "expired":
+        # the night after the kit's two: what the kit switched on is put back BEFORE the night. When the runs
+        # were the kit's (off before it, nobody chose them since), they are off now and this night makes
+        # nothing: the owner never asked for it. When they are the owner's, the night runs as usual.
+        said = _kit_nights_over(env, kit, now)
+        kit = None
+        if said:
+            return
     notifier = notifications.nightly_notifier(env.paths, env.log)
     try:
         report = run_daily(env, now=now, notifier=notifier)

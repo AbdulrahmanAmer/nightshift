@@ -189,6 +189,12 @@ class KitStage:
             raise KeyboardInterrupt("the window was closed during " + self.name)
         if w.fail_at == self.name:
             raise NsError("NS-E303", "the story failed its checks")
+        if w.out_of_time_at == self.name and ctx.channel.slug == "gpu-kit" and getattr(ctx, "run_id", None):
+            from ns_studio import nightclock, nightfit  # the night's own time rule stops the kit's video here
+
+            raise nightclock.OutOfTime(nightfit.Decision(
+                answer=nightfit.STOP, reason=nightfit.STOP_NO_ROOM, where=nightfit.STAGE, stage=self.name,
+                need_s=3600.0, left_s=60.0, basis=nightfit.HISTORY))  # fmt: skip
         ctx.write_json(self.outputs[0], {"stage": self.name})
         if self.name == "kit_story":  # the narration, as the voice stage writes it (audio/<segment>.wav)
             tone_bursts(Path(ctx.file("audio/s001.wav")))
@@ -295,6 +301,7 @@ class LocalProduct:
             self.world.traps.hit("settings applied")
         if method == "POST" and path == "/api/jobs/clip" and out[0] == 201:
             self.world.finish_clip(out[1]["job_id"])
+        self.world.traps.hit(f"after api {method} {path}")
         return out
 
     def cli(self, program: str, args: list[str], timeout: float) -> tuple[int | None, str]:
@@ -498,6 +505,8 @@ class World:
         )
         self.kill_at: str | None = None
         self.fail_at: str | None = None
+        self.out_of_time_at: str | None = None
+        self.say_hooks: dict[str, Any] = {}
         self.real_downloads = False
         prev: tuple[str, ...] = ()
         for name in STUBS:
@@ -550,6 +559,8 @@ class World:
         from ns_common.logging import NsLogger
 
         sid = f"clip-{job_id[-6:]}"
+        if self.clip_status == "running":  # the worker never ends it (the kit's bound)
+            return
         if self.clip_status == "done":
             report = self.home / "data" / "jobs" / sid / "qc" / "report.json"
             report.parent.mkdir(parents=True, exist_ok=True)
@@ -583,6 +594,10 @@ class World:
 
     def say(self, line: str) -> None:
         self.out.append(line)
+        for prefix, hook in list(self.say_hooks.items()):
+            if line.startswith(prefix):
+                del self.say_hooks[prefix]
+                hook()
         if self.say_trap and line.startswith(self.say_trap):
             self.say_trap = None
             raise KeyboardInterrupt(line)
@@ -595,7 +610,7 @@ class World:
         )
         return gpukit.main(["--home", str(self.home), *extra], env=env)
 
-    def night(self, started: datetime) -> dict[str, Any]:
+    def night(self, started: datetime, *, as_task: bool = True) -> dict[str, Any]:
         """One night of the product (`daily.run_daily`, fake services, the stub plan) started at `started`."""
         clock = NightClock(started)
         env = jobs.open_env(frozenset(FAKEABLE))
@@ -603,7 +618,12 @@ class World:
 
         kit = studio_cli._kit_nights(env, clock.now())  # what `studio run --daily` does around the night
         report = daily.run_daily(
-            env, now=clock.now(), rng=random.Random(1), notifier=None, clock=clock, environ={}
+            env,
+            now=clock.now(),
+            rng=random.Random(1),
+            notifier=None,
+            clock=clock,
+            environ={} if not as_task else {"NS_NIGHT_STARTED": started.astimezone(UTC).isoformat()},
         )
         studio_cli._kit_nights_over(env, kit, clock.now())
         from ns_studio import notifications
@@ -785,9 +805,10 @@ def test_the_kit_reads_what_the_product_writes(world: World) -> None:
              for x in f.read_text(encoding="utf-8").splitlines() if x.strip()]  # fmt: skip
     written = set().union(*(line.keys() for line in lines))
     source = (ROOT / "dev" / "kit" / "gpukit.py").read_text(encoding="utf-8")
-    read = set(re.findall(r'\bx\.get\("(\w+)"\)', source))
+    assert not re.search(r"for (?!led\b)\w+ in (?:self\.ledger\(\)|lines\b)", source)  # one name for them
+    read = set(re.findall(r'\bled\.get\("(\w+)"\)', source))
     assert read and read <= written, f"the kit reads ledger keys the product never writes: {read - written}"
-    kinds = set(re.findall(r'x\.get\("kind"\) == "(\w+)"', source))
+    kinds = set(re.findall(r'led\.get\("kind"\) == "(\w+)"', source))
     assert kinds - {"slept", "decision"} <= {line["kind"] for line in lines}, (
         kinds
     )  # ("slept": written only after a sleep)
@@ -868,30 +889,34 @@ def test_automatic_runs_are_put_back_as_they_were(tmp_path: Path, monkeypatch: p
                 w.close()
 
 
-def test_the_night_after_the_two_runs_as_if_no_record_and_puts_everything_back(world: World) -> None:
-    """The kit is never run again: the first night past the record's end runs the owner's channels exactly as
-    without a record, and puts back what the kit changed (the channel first, Automatic runs after it)."""
+@pytest.mark.parametrize("owners", [False, True])
+def test_the_night_after_the_two_puts_back_first_and_makes_nothing_unless_the_runs_are_the_owners(
+    world: World, owners: bool
+) -> None:
+    """The kit is never run again. Its runs (off before it, nobody chose them since): the night after the two
+    switches them off and pauses the kit's channel BEFORE it plans, and makes nothing. The owner's runs (they
+    chose them after the kit armed): the night runs their channels as usual, with no kit video."""
     assert world.run() == 0
-    assert (
-        world.task.has == ("Ready", "03:00") and world.channel()["status"] == "active"
-    )  # armed for the nights
+    assert world.task.has == ("Ready", "03:00") and world.channel()["status"] == "active"  # armed
     now = datetime.now().astimezone()  # (the nightly reads the PC's clock)
     rec = kitnights.read(world.paths, START).record
+    if owners:
+        rec = {**rec, "owner_chose_at": now.isoformat(), "owner_route": "Settings"}
     kitnights.write(world.paths, {**rec, "until": (now - timedelta(hours=1)).isoformat(),
                                   "nights": [{**n, "from": (now - timedelta(days=3 - i)).isoformat(),
                                               "to": (now - timedelta(days=2 - i)).isoformat()}
                                              for i, n in enumerate(rec["nights"])]})  # fmt: skip
     res = CliRunner().invoke(_studio_app(), ["run", "--daily", "--fake-services"])
-    assert res.exit_code == 0 and kitnights.EXPIRED_NOTE in res.output, res.output
+    assert res.exit_code == 0, res.output
     runs = Db(world.paths.db_path).query("select summary_json from runs")
-    assert (
-        len(runs) == 1 and "after-dark" in runs[0]["summary_json"]
-    )  # the owner's night, as without a record
-    assert '"channel": "gpu-kit"' not in runs[0]["summary_json"]
-    assert world.task.has is None and world.channel()["status"] == "paused"
-    assert kitnights.read(world.paths, now).kind == "none"
-    notes = (world.home / "run" / "morning_note.json").read_text(encoding="utf-8")
-    assert kitnights.EXPIRED_NOTE in notes
+    assert world.channel()["status"] == "paused" and kitnights.read(world.paths, now).kind == "none"
+    if owners:
+        assert len(runs) == 1 and "after-dark" in runs[0]["summary_json"]  # their night, as without a record
+        assert '"channel": "gpu-kit"' not in runs[0]["summary_json"] and world.task.has == ("Ready", "03:00")
+    else:
+        assert kitnights.EXPIRED_NOTE in res.output and runs == [] and world.task.has is None  # nothing made
+        notes = (world.home / "run" / "morning_note.json").read_text(encoding="utf-8")
+        assert kitnights.EXPIRED_NOTE in notes
 
 
 # ------------------------------------------------------------------------------------------------ 6
@@ -918,8 +943,9 @@ def test_the_nights_are_read_from_the_runs_rows_and_the_ledger(world: World) -> 
     world.clock.t = local(2026, 11, 13, 12, 0)  # a third run before night 2 ended: it waits
     assert world.run() == 0
     assert world.results()["K5"] == "PASS" and world.results()["K6"] == "WAIT"
-    assert world.state()["steps"]["K5"]["line"].startswith("Night 1: ran ")
-    assert "made the kit's video in " in world.state()["steps"]["K5"]["line"]
+    assert world.state()["steps"]["K5"]["line"].startswith("Night 1: run daily-")
+    assert "made the kit's video, job gpu-kit-" in world.state()["steps"]["K5"]["line"]
+    assert "the night used " in world.state()["steps"]["K5"]["line"]
     assert world.out[-1] == "Run GPU-KIT.cmd again after Saturday 14 November 09:00."
     world.clock.t = local(2026, 11, 14, 9, 1)  # night 2 has no row after its run time + 6 h
     assert world.run() == 1  # a night that made nothing is a FAIL; the kit still collects
@@ -927,7 +953,8 @@ def test_the_nights_are_read_from_the_runs_rows_and_the_ledger(world: World) -> 
     assert "Night 2: did not run, so it made nothing" in world.state()["steps"]["K6"]["line"]
     assert (
         world.results()["K7"] == "FAIL"
-        and "night 1 PASS, night 2 FAIL" in world.state()["steps"]["K7"]["line"]
+        and "night 1 PASS (daily-20261113-" in world.state()["steps"]["K7"]["line"]
+        and "night 2 FAIL (no run)" in world.state()["steps"]["K7"]["line"]
     )
     assert world.state()["nights"][1]["schedule"][0] == 0  # `ns schedule show`'s answer, kept
     with zipfile.ZipFile(world.zips()[0]) as z:
@@ -1258,7 +1285,9 @@ def test_a_dry_run_on_the_simulated_card_is_marked_and_runs_both_nights_at_once(
             "is evidence of the GPU PC."  # fmt: skip
         assert all(w.state()["steps"][k]["line"].startswith(mark) for k in ("K3", "K5", "K6"))
         for k in ("K5", "K6"):  # each dry-run night MADE the kit's video (fake services)
-            assert "made the kit's video in " in w.state()["steps"][k]["line"], w.state()["steps"][k]
+            assert "made the kit's video, job gpu-kit-" in w.state()["steps"][k]["line"], w.state()["steps"][
+                k
+            ]
         with zipfile.ZipFile(w.zips()[0]) as z:
             assert z.read("README.txt").decode().startswith(f"SIMULATED GRAPHICS CARD ({mark})")
             assert json.loads(z.read("machine.json"))["simulated"] == mark
@@ -1327,6 +1356,8 @@ def test_a_night_that_makes_nothing_for_the_kit_is_a_fail_with_its_reason(world:
     line = world.state()["steps"]["K5"]["line"]
     assert "made nothing for the kit (the night could not read the kit's record of its nights: " in line, line
     assert world.results()["K7"] == "FAIL" and world.out[-1].startswith("Send this one file: ")
+    notes = (world.home / "run" / "morning_note.json").read_text(encoding="utf-8")  # once, naming the file
+    assert notes.count("The GPU kit's record of its two test nights cannot be read") == 1
 
 
 def test_the_owners_own_routes_to_automatic_runs_are_theirs(world: World) -> None:
@@ -1410,13 +1441,14 @@ def test_the_one_reader_of_the_nights_record(world: World, kind: str, reader: st
     if reader == "nightly":  # the owner's ordinary night, with whatever record is there
         res = CliRunner().invoke(_studio_app(), ["run", "--daily", "--fake-services"])
         assert res.exit_code == 0, res.output
-        summary = db.query("select summary_json from runs")[0]["summary_json"]
-        assert "after-dark" in summary  # the owner's channel ran in every case
-        assert ('"channel": "gpu-kit"' in summary) is valid  # the kit's video only on an armed night
-        if kind == "past until":
-            assert world.task.has is None and world.channel()["status"] == "paused"
+        rows = db.query("select summary_json from runs")
+        if kind == "past until":  # the kit's runs: put back BEFORE the night, which then makes nothing
+            assert rows == [] and world.task.has is None and world.channel()["status"] == "paused"
             assert not kitnights.record_file(world.paths).exists()
         else:
+            summary = rows[0]["summary_json"]
+            assert "after-dark" in summary  # the owner's channel ran
+            assert ('"channel": "gpu-kit"' in summary) is valid  # the kit's video only on an armed night
             assert world.task.has == ("Ready", "03:00")
         if planted is not None and not valid and kind != "past until":
             assert kitnights.record_file(world.paths).read_bytes() == planted  # unreadable: left as it is
@@ -1497,32 +1529,41 @@ def test_no_key_stored_is_not_run_and_the_video_goes_on(world: World) -> None:
     assert "no stock-footage key is stored" in world.state()["steps"]["KS"]["line"]
 
 
-DESIGNED_SKIP = (
-    "PASS    kit-reads-status [F-X99] 0.1s\n"
-    "SKIPPED f-b13-b14-footage-429 [F-B13,F-B14] 2.0s  a stock footage key is already stored ({'pexels': "
-    "False, 'pixabay': True}); the proof never replaces a real key\n"
-    "1 passed, 0 failed, 1 skipped; evidence in x\n"
-    "1 skipped: a skip is not a pass (--strict). Skipped, and why:\n"
-)
+def test_prove_all_never_selects_the_footage_proofs_on_a_real_install(world: World) -> None:
+    """Where the exit-3 claim came from: `prove.py --all` on a DEV home selects f-b13-b14 (install "dev"),
+    which skips when a real key is stored. On this real (gpu) install `--all` leaves it out quietly
+    (prove.py: a wrong kind is not selected), so the kit never sees that skip: no branch for it."""
+    import contextlib
+    import io
+    import shutil
+
+    from dev import prove
+
+    folder = world.home.parent / "only-footage-proof"
+    folder.mkdir()
+    (folder / "__init__.py").write_text("", encoding="utf-8")
+    shutil.copy(ROOT / "proofs" / "f_b13_b14_footage_429.py", folder / "f_b13_b14_footage_429.py")
+    if (ROOT / "proofs" / "_lib").is_dir():
+        shutil.copytree(ROOT / "proofs" / "_lib", folder / "_lib")
+    lock = world.home.parent / "kit.lock"  # the lock the kit itself holds when it runs prove.py
+    lock.write_text(f"kit | GPU kit pid 1 | {datetime.now().astimezone().isoformat()}\n", encoding="utf-8")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+        rc = prove.main(["--home", str(world.home), "--dept", "kit", "--all", "--strict", "--no-window",
+                         "--lock-file", str(lock),
+                         "--runs", str(world.home.parent / "runs"), "--proofs-dir", str(folder)],
+                        runner_options={"commit": "test", "ps": nothing_runs})  # fmt: skip
+    said = out.getvalue()  # nothing selected, so nothing skipped: --strict does not exit 3
+    assert rc == 0 and "0 passed, 0 failed, 0 skipped" in said and "f-b13" not in said, said
 
 
-@pytest.mark.parametrize(("output", "word"), [
-    (DESIGNED_SKIP, "PASS"),
-    (DESIGNED_SKIP.replace("PASS    kit-reads-status [F-X99] 0.1s",
-                           "SKIPPED other-proof [F-X98] 0.1s  no FFmpeg"),
-     "FAIL"),
-])  # fmt: skip
-def test_the_designed_skips_of_a_real_install_are_not_run_and_any_other_skip_fails(
-    world: World, monkeypatch: pytest.MonkeyPatch, output: str, word: str
-) -> None:
-    """proofs/README.md: F-B13/F-B14 skip by design when a real key is stored; `--strict` then exits 3."""
+def test_a_skip_of_a_selected_proof_fails_k2(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    output = ("SKIPPED kit-reads-status [F-X99] 0.1s  no FFmpeg\n"
+              "0 passed, 0 failed, 1 skipped; evidence in x\n"
+              "1 skipped: a skip is not a pass (--strict). Skipped, and why:\n")  # fmt: skip
     monkeypatch.setattr(world.product, "prove", lambda args, timeout: (3, output))
-    assert world.run() == (0 if word == "PASS" else 1), world.out
-    line = world.state()["steps"]["K2"]["line"]
-    assert world.results()["K2"] == word, line
-    assert "NOT RUN by design: f-b13-b14-footage-429 (a real stock-footage key is stored" in line
-    proofs = json.loads((world.ev / "proofs.json").read_text(encoding="utf-8"))
-    assert proofs["not_run_by_design"] == ["f-b13-b14-footage-429"]
+    assert world.run() == 1, world.out
+    assert world.results()["K2"] == "FAIL"
 
 
 def test_the_stored_values_are_masked_whatever_their_shape(world: World) -> None:
@@ -1572,13 +1613,18 @@ def test_the_day_one_features_each_have_their_own_result(world: World) -> None:
     assert world.run() == 0, world.out
     steps = world.state()["steps"]
     clip = steps["KC"]["line"]
-    assert "one clip from 3 minutes of the story video: 1 clip(s) made, QC 1 of 1 passed" in clip
-    assert "logged: NS-W404 (whisper_cpu)" in clip
+    assert re.search(
+        r"clip job \S+ \(studio job clip-[\w-]+\) cut 3 minutes of the story video into 1 clip\(s\), "
+        r"QC 1 of 1 passed",
+        clip,
+    ), clip
+    assert "logged since it was queued: NS-W404 (whisper_cpu)" in clip and "left on the PC: the clip " in clip
     assert world.product.count("cut", "The House That Waited.mp4", 60, 180, False) == 1
     voices = steps["KV"]["line"]
     assert (
-        voices.startswith("design: PASS (spoke the sentence: ")
-        and "clone: PASS (spoke the sentence: " in voices
+        voices.startswith("design: PASS (gpukit-design-")
+        and "clone: PASS (gpukit-clone-" in voices
+        and "spoke the sentence: " in voices
     )
     assert voices.endswith("both test voices removed") and not list(
         world.paths.models_tts_voices.glob("gpukit-*")
@@ -1587,7 +1633,9 @@ def test_the_day_one_features_each_have_their_own_result(world: World) -> None:
     assert body["consent"] is True and body["sample_path"].endswith("sample.wav")  # the kit's own narration
     assert (world.ev / "voices" / "design-preview.wav").is_file()
     assert steps["KN"]["line"].startswith("Nightshift Code is not installed on this PC")
-    assert steps["KA"]["line"].startswith('answered in 0 min 0 s: "The Outbox holds your finished videos')
+    assert re.match(
+        r'conversation \S+ answered in 0 min 0 s: "The Outbox holds your finished videos', steps["KA"]["line"]
+    ), steps["KA"]["line"]
     asked = json.loads((world.ev / "assistant.json").read_text(encoding="utf-8"))
     assert "confirm" not in asked["events"] and asked["events"][-1] == "done"
 
@@ -1596,7 +1644,9 @@ def test_a_clip_job_that_fails_is_a_fail_and_the_kit_goes_on(world: World) -> No
     world.clip_status = "failed"
     assert world.run() == 1, world.out
     assert world.results()["KC"] == "FAIL" and world.results()["K4"] == "PASS"
-    assert "the clip job ended failed: NS-E404: every clip failed QC" in world.state()["steps"]["KC"]["line"]
+    assert re.search(
+        r"the clip job \S+ ended failed: NS-E404: every clip failed QC", world.state()["steps"]["KC"]["line"]
+    )
 
 
 @pytest.mark.parametrize("frees", [True, False])
@@ -1631,3 +1681,113 @@ def test_a_code_window_left_by_a_closed_kit_is_closed_on_the_next_run(world: Wor
     assert world.state()["changes"]["code_window"]["put_back"] is True
     first = world.code
     assert first is not None and first.rc is not None  # its window was closed on the way out
+
+
+# ------------------------------------------------------------------------------------------------ round 4
+def _kit_combos(world: World) -> list[str]:
+    return [r["job_id"] for r in Db(world.paths.db_path).query(
+        "select distinct job_id from combos where channel = 'gpu-kit' order by created_at")]  # fmt: skip
+
+
+def test_a_night_whose_time_rule_stops_the_kit_video_passes_with_the_summarys_own_reason(
+    world: World,
+) -> None:
+    assert world.run() == 0
+    world.out_of_time_at = "kit_qc"  # night 1: the night's time rule stops the kit's video at a stage
+    world.night(local(2026, 11, 13, 3, 0))
+    world.out_of_time_at = None  # night 2 continues that job (and makes no second one)
+    world.night(local(2026, 11, 14, 3, 0))
+    world.clock.t = local(2026, 11, 14, 9, 30)
+    assert world.run() == 0, world.out
+    one, two = world.state()["steps"]["K5"]["line"], world.state()["steps"]["K6"]["line"]
+    assert (
+        world.results()["K5"] == "PASS"
+        and "time rule did not finish the kit's video (stop, stop_no_room" in one
+    )
+    assert world.results()["K6"] == "PASS" and "(continued from the night before)" in two, two
+    nightly = [j for j in _kit_combos(world) if j != world.state()["job"]["id"]]
+    assert len(nightly) == 1  # night 2 resumed night 1's kit job: one kit video, never two
+
+
+def test_an_old_decision_of_another_night_never_passes_a_night_that_made_nothing(world: World) -> None:
+    from ns_studio import ledger
+
+    assert world.run() == 0
+    old = datetime(2026, 11, 1, 2, 0, tzinfo=UTC)  # a decision line of an older night, no job id, no channel
+    line = {"kind": "decision", "at": old.isoformat(), "run_id": "daily-old", "job_id": None,
+            "answer": "stop", "reason": "new_no_room", "where": "new"}  # fmt: skip
+    ledger.write(world.paths, line, when=old)
+    kitnights.record_file(world.paths).write_text(
+        "{torn", encoding="utf-8"
+    )  # the kit's video is never planned
+    world.nights_pass()
+    assert world.run() == 1
+    assert (
+        world.results()["K5"] == "FAIL" and "made nothing for the kit" in world.state()["steps"]["K5"]["line"]
+    )
+
+
+def test_a_night_that_knew_no_time_limit_is_a_fail(world: World) -> None:
+    assert world.run() == 0
+    world.night(local(2026, 11, 13, 3, 0), as_task=False)  # run by hand: no task start, no deadline
+    world.night(local(2026, 11, 14, 3, 0))
+    world.clock.t = local(2026, 11, 14, 9, 30)
+    assert world.run() == 1
+    assert world.results()["K5"] == "FAIL" and world.results()["K6"] == "PASS"
+    assert "it knew no time limit" in world.state()["steps"]["K5"]["line"]
+
+
+def test_once_a_night_two_runs_in_one_armed_night_make_one_kit_video(world: World) -> None:
+    assert world.run() == 0
+    world.night(local(2026, 11, 13, 3, 0))
+    world.night(local(2026, 11, 13, 4, 0))  # `studio run --daily` again, inside the same armed night
+    nightly = [j for j in _kit_combos(world) if j != world.state()["job"]["id"]]
+    assert len(nightly) == 1
+
+
+def test_the_owners_open_code_window_is_never_touched(world: World) -> None:
+    exe = world.home / "bin" / "opencode" / "opencode.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"MZ")
+
+    def owner_opens_code() -> None:  # the owner opened Nightshift Code before the kit's Code step
+        world.supervisor.state.update({"gpu_owner": "opencode", "services": {"llama": {"state": "ready"}}})
+
+    world.say_hooks["Step 8 of 13 (Nightshift Code"] = owner_opens_code
+    world.run()
+    line = world.state()["steps"]["KN"]["line"]
+    assert world.results()["KN"] == "NOT RUN" and line.startswith("Nightshift Code is open: close it and run "
+                                                                  "the kit again"), line  # fmt: skip
+    assert world.product.count("start_code") == 0 and world.product.count("kill_tree") == 0
+    assert world.supervisor.state["gpu_owner"] == "opencode"  # the owner's session holds the card still
+    assert not world.state()["steps"]["KN"]["done"]  # asked again on the next run
+    world.supervisor.state.update({"gpu_owner": None, "services": {}})
+
+
+def test_a_kill_mid_download_leaves_no_stock_clip_in_the_cache(world: World) -> None:
+    world.traps.armed.add("after api POST /api/library/footage/fetch")  # downloaded; the pointer not saved
+    assert world.run() == 130
+    change = world.state()["changes"]["stock_clip_pixabay"]
+    assert change["put_back"] is True and change["removed_after_kill"] == ["701"]
+    assert not list(world.paths.cache_clips.rglob("*.mp4"))
+    assert world.run() == 0 and world.results()["KS"] == "PASS"
+
+
+def test_a_kill_after_the_clip_post_makes_no_second_clip_job(world: World) -> None:
+    world.traps.armed.add("after api POST /api/jobs/clip")  # posted; the job id not saved
+    assert world.run() == 130
+    assert "job_id" not in world.state()["clip"]
+    assert world.run() == 0, world.out
+    assert (
+        len(world.dash_state.store.list_jobs(None, "clip", 50)) == 1 and world.state()["clip"]["found_again"]
+    )
+    assert world.results()["KC"] == "PASS"
+
+
+def test_a_clip_job_past_its_bound_is_cancelled(world: World) -> None:
+    world.clip_status = "running"
+    assert world.run() == 1
+    line = world.state()["steps"]["KC"]["line"]
+    assert world.results()["KC"] == "FAIL" and "it was cancelled" in line, line
+    jid = world.state()["clip"]["job_id"]
+    assert world.product.count("api", "POST", f"/api/jobs/{jid}/cancel") == 1

@@ -299,9 +299,11 @@ Good to know:
   candidate installed in between goes on with the same nights.
 - The kit's channel is used by a nightly run only on the two nights the kit switched on, once each night; never
   before them and never after them, even if the window was closed while its video was being made.
-- If you never run the kit again after the two nights, the third night runs your channels as usual, then pauses the
-  kit's channel, switches Automatic runs off (only when they were off before the kit and nobody switched them since)
-  and leaves a note on the Queue page.
+- If you never run the kit again after the two nights, the third night pauses the kit's channel first. When
+  Automatic runs were off before the kit and nobody switched them since, it switches them off, makes nothing that
+  night and leaves a note on the Queue page; when you chose them yourself, it runs your channels as usual.
+- The kit never takes the graphics card from something else: if Nightshift Code is open (or a job holds the card)
+  when a step needs the card, that step says so and waits for the next run; the kit starts and ends nothing of it.
 - If you switch Automatic runs yourself after the kit switched them on (in Settings, with `ns schedule install`, or
   by answering the nightly question when you run setup again), the kit leaves them as you set them.
 - If the kit's record of its nights cannot be read (a damaged file, or one from a newer kit), every night runs as if
