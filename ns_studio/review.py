@@ -179,6 +179,10 @@ def _move_together(pairs: list[tuple[Path, Path]], output_id: str) -> None:
                 move_one(b, a)
             except OSError:
                 stuck.append(b.name)
+        if not isinstance(e, PermissionError):
+            # not a held file (one that vanished, a full or refused drive): NS-E331 would tell the owner to
+            # close a program that has nothing open. What was moved is back; the failure is raised as itself.
+            raise
         held = pairs[len(moved)][0].name
         if stuck:
             state = (
