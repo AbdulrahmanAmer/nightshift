@@ -17,7 +17,7 @@ import pytest
 from typer.testing import CliRunner
 
 import ns_common.paths as nspaths
-from ns_common import __version__, config_snapshot, first_start, homeguard
+from ns_common import __version__, commandline, config_snapshot, first_start, homeguard
 from ns_common.errors import NsError, load_errors
 
 REPO = Path(__file__).resolve().parents[1]
@@ -189,15 +189,32 @@ def test_the_line_of_a_reading_command_says_the_mismatch_once(
 def test_the_shim_of_the_other_install_is_named(two: tuple[Path, Path]) -> None:
     a, b = two
     v = homeguard.decide(a)
+    form = commandline.command_form      # the path as a terminal takes it (quoted when it has a space)
     without = homeguard.sentence(v, "ns tune")
-    assert f"{a / 'venvs' / 'supervisor' / 'Scripts' / 'ns.exe'} tune" in without
-    assert f"run {b / 'venvs' / 'supervisor' / 'Scripts' / 'ns.exe'} there" in without
+    assert f"command: {form(str(a / 'venvs' / 'supervisor' / 'Scripts' / 'ns.exe'))} tune. " in without
+    assert f"run {form(str(b / 'venvs' / 'supervisor' / 'Scripts' / 'ns.exe'))} there." in without
     (a / "cmd").mkdir()
     (a / "cmd" / "ns.cmd").write_text("@echo off\n", encoding="utf-8")
     (a / "cmd" / "studio.cmd").write_text("@echo off\n", encoding="utf-8")
-    assert f"{a / 'cmd' / 'ns.cmd'} schedule install" in homeguard.sentence(v, "ns schedule install")
-    assert f"{a / 'cmd' / 'studio.cmd'} pause" in homeguard.sentence(v, "studio pause")
-    assert str(a / "cmd" / "ns.cmd") in homeguard.sentence(v)         # a writer's refusal: no command known
+    ns_shim, studio_shim = form(str(a / "cmd" / "ns.cmd")), form(str(a / "cmd" / "studio.cmd"))
+    assert f"command: {ns_shim} schedule install. " in homeguard.sentence(v, "ns schedule install")
+    assert f"command: {studio_shim} pause. " in homeguard.sentence(v, "studio pause")
+    assert f"command: {ns_shim}. " in homeguard.sentence(v)         # a writer's refusal: no command known
+
+
+def test_a_home_with_a_space_gets_a_command_a_terminal_takes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a = make_install(tmp_path / "NS old", OLD)
+    b = make_install(tmp_path / "NS-new", __version__)
+    monkeypatch.setattr(nspaths, "home_of_place", lambda *args, **kw: b)
+    monkeypatch.setenv(nspaths.HOME_ENV, str(a))
+    monkeypatch.delenv(nspaths.EXPLICIT_ENV, raising=False)
+    monkeypatch.delenv(nspaths.TEST_USER_HOME_ENV, raising=False)
+    said = homeguard.sentence(homeguard.decide(a), "ns tune")
+    assert commandline.by_full_path(a, "ns tune") in said
+    bare = f"{a / 'venvs' / 'supervisor' / 'Scripts' / 'ns.exe'} tune"
+    assert bare not in said             # a terminal would split the bare path at the space
 
 
 def test_nothing_is_remembered_between_two_calls(two: tuple[Path, Path]) -> None:
@@ -318,7 +335,6 @@ def test_the_settings_guard_asks_the_version_guard_first() -> None:
     calls = _calls(guard)
     assert ("homeguard", "refuse_write") in calls and ("", "ensure") in calls
     lines = {     # by line: ast.walk is breadth-first
-
         (n.func.attr if isinstance(n.func, ast.Attribute) else n.func.id): n.lineno  # type: ignore[union-attr]
         for n in ast.walk(guard) if isinstance(n, ast.Call) and isinstance(n.func, (ast.Attribute, ast.Name))
     }

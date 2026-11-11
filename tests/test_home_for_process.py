@@ -256,13 +256,16 @@ def test_an_owner_who_sets_the_variable_in_a_window_gets_that_install_and_is_tol
     assert done.returncode == 0, done.stdout + done.stderr
     assert "config/channels/b-only.yaml" in names and "config/channels/home-only.yaml" not in names
     told = [ln for ln in done.stderr.splitlines() if ln.startswith("Nightshift: using")]
+    # card version-mismatch-writes: B's app\VERSION is 0.1.15 (`install_at`); while that is not this program's
+    # version the line also says so (a backup only reads B, so it is not refused)
+    versions = "" if _program_version == "0.1.15" else (
+        f" (Nightshift 0.1.15 there, {_program_version} here): commands that change that install are refused "
+        "from this program (NS-E128); looking still works."
+    )
     assert told == [
         f"Nightshift: using {pc.b}: NIGHTSHIFT_HOME names it in this window (it is not this PC's default), "
         f"and this program is in the install at {pc.a}. If you did not set it, this window was opened before "
-        "the default changed: open a new one."
-        # card version-mismatch-writes: B's app\VERSION (0.1.15, `install_at`) is not this program's version
-        f" (Nightshift 0.1.15 there, {_program_version} here): commands that change that install are refused "
-        "from this program (NS-E128); looking still works."
+        "the default changed: open a new one." + versions
     ]
 
 

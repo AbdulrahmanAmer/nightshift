@@ -88,24 +88,22 @@ def decide(home: Path) -> Verdict:
     return Verdict(True, WHY_OTHER_VERSION, target, place, __version__, there)
 
 
-def _command_of(home: Path, program: str) -> str:
-    r"""The command that works on `home` whatever the window's variables say: its shim
-    `<home>\cmd\<program>.cmd` (FN-3) when it has one, else the program in its own venv
-    (`commandline.own_file`)."""
-    return str(commandline.own_file(home, program))
-
-
 def sentence(v: Verdict, command: str = "") -> str:
-    """What the owner reads on a refusal: both installs, both versions, that nothing changed, the way out for
-    each install. `command` is what was typed without its folder ("ns tune", "studio pause")."""
+    r"""What the owner reads on a refusal: both installs, both versions, that nothing changed, the way out for
+    each install. `command` is what was typed without its folder ("ns tune", "studio pause"); with none (a
+    settings writer refused) the other install's `ns` is named.
+
+    Each command is given by full path, in the form a terminal takes (`commandline.by_full_path`: the shim
+    `<home>\cmd\<program>.cmd` of FN-3 when the install has one, else the program in its own venv), because
+    a plain `ns` in this window is exactly what reached the wrong install."""
     words = command.split()
     program = words[0] if words and words[0] in ("ns", "studio") else "ns"
-    rest = " ".join(words[1:]) if words and words[0] == program else ""
+    asked = " ".join(words) if words and words[0] == program else program
     there = f"version {v.there}" if v.there else (
         f"its version could not be read: {v.target / 'app' / 'VERSION'} is missing or empty"
     )
-    other = _command_of(v.target, program) + (f" {rest}" if rest else "")
-    own = _command_of(v.place, program) if v.place is not None else program
+    other = commandline.by_full_path(v.target, asked)
+    own = commandline.by_full_path(v.place, program) if v.place is not None else program
     return (
         f"NIGHTSHIFT_HOME in this window names the Nightshift at {v.target} ({there}), but this program is "
         f"Nightshift {v.here} from {v.place}. Nothing was changed. To change {v.target}, use its own "
