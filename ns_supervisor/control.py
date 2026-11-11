@@ -128,7 +128,7 @@ def stop(
     recorded process. `say` gets each progress line. Otherwise the pids recorded in run/supervisor.json are
     killed when their image is still the recorded kind (an engine that died and left its record).
     """
-    if client.is_up() or stopping.engine_holder(paths) is not None:
+    if client.is_up() or stopping.engine_lives(paths):
         done = stopping.stop_nightshift(paths, client, holders=holders, say=say)
         lines = list(done.lines)
         if done.not_ended:

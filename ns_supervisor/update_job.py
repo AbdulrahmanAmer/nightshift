@@ -305,24 +305,32 @@ FINISHED_SINCE = (
 )
 
 
-def settled(paths: Paths, st: dict[str, Any]) -> dict[str, Any]:
-    """D-48, every reader of the state: a `failed` state that sends the owner to finish the environments
-    (`venvrepair.needs_finish`) while no repair record waits for the program in place and no environment
-    holds another Nightshift is no longer true (a finisher that did not close the state did the work: an
-    older launch script, a Repair of an older setup). It reads as `done`, saying so and what is in place
-    (`where`, read from the disk now); `finished_since` marks it. Anything else is returned as it is."""
-    if st.get("state") != "failed" or not venvrepair.needs_finish(st):
-        return st
+def nothing_left(paths: Paths) -> bool:
+    """True when nothing of an interrupted update is left to finish: no repair record waits for the program
+    in place, no environment holds another Nightshift, the program folder is there and no update runs. The
+    one test of every reader (`settled`; the bell, `notify.shown_notes`). False when it cannot be told."""
     try:
         from ns_supervisor import control
 
         app = control.app_path(paths)
         record = venvrepair.read(paths.home)
         if (record is not None and venvrepair.matches(record, app)) or venvrepair.mixed(paths.home, app):
-            return st
-        if not app.is_dir() or venvrepair.update_running(paths.home):
-            return st
+            return False
+        return app.is_dir() and not venvrepair.update_running(paths.home)
     except Exception:  # noqa: BLE001 - unreadable: the stored words stay (a reader must still answer)
+        return False
+
+
+FINISHED_TITLE = "An interrupted update or rollback was finished"
+
+
+def settled(paths: Paths, st: dict[str, Any]) -> dict[str, Any]:
+    """D-48, every reader of the state: a `failed` state that sends the owner to finish the environments
+    (`venvrepair.needs_finish`) while no repair record waits for the program in place and no environment
+    holds another Nightshift is no longer true (a finisher that did not close the state did the work: an
+    older launch script, a Repair of an older setup). It reads as `done`, saying so and what is in place
+    (`where`, read from the disk now); `finished_since` marks it. Anything else is returned as it is."""
+    if st.get("state") != "failed" or not venvrepair.needs_finish(st) or not nothing_left(paths):
         return st
     return {**st, "state": "done", "exit_code": 0, "finished_since": True,
             "message": " ".join(s for s in (FINISHED_SINCE, where(paths)) if s)}
@@ -873,6 +881,10 @@ def _work(
                 _tell(paths, log, watched, message)
             _final(paths, "failed", message, exit_code=1, record_left=True, relaunched=False,
                    updated=applied, **base)
+            return 1
+        if e.data.get("own_left"):      # D-46 review note: its own process holds the engine's lock; no
+            _tell(paths, log, watched, message, title=NOT_RESTARTED_TITLE)     # start can work: none is tried
+            _final(paths, "failed", message, exit_code=1, own_left=True, relaunched=False, **base)
             return 1
     except Exception as e:  # a worker has nobody to show a traceback to: log it, report failure
         sys.stderr.write(f"{type(e).__name__}: {e}\n")

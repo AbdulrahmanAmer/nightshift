@@ -149,6 +149,14 @@ def test_a_reader_says_an_interrupted_update_was_finished_when_nothing_is_left(t
         said = str(st["message"])
         assert "interrupted earlier and has been finished since" in said and "To fill" not in said
         assert update.where_now(paths, app) in said
-    # an environment that holds another Nightshift: not finished, the stored words stay
+    # the bell: a note that sends the owner to finish it is read by the same rule (review note)
+    from ns_supervisor import notify
+
+    notify.leave_note(paths, update_job.NOT_COMPLETE_TITLE, SYNC_LEFT)
+    (note,) = notify.shown_notes(paths)
+    assert "To fill" not in note["message"] and "has been finished since" in note["message"], note
+    assert note["title"] != update_job.NOT_COMPLETE_TITLE
+    # an environment that holds another Nightshift: not finished, the stored words stay (state and bell)
     fill(paths, "supervisor", "0.0.9")
     assert updater.read_update_state(paths)["state"] == "failed"
+    assert "To fill every environment" in notify.shown_notes(paths)[0]["message"]

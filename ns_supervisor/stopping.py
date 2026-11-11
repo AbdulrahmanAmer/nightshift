@@ -5,23 +5,19 @@ closed its port, and then never exited: the update's holder check, rightly, refu
 environments while it lived, named it (its venv launcher) as "a program to close", and nothing ended it, so
 Nightshift was left down. Asking is not enough. The sequence here is:
 
-1. Note what is OURS before anything is asked (the engine removes its pid file on its way out):
-   - the process that holds this home's `run/supervisor.lock` (only a live engine of this home can hold it;
-     the lock file names its pid, `singleton.read_owner`), when its command line runs `ns_supervisor.app`;
-   - each pid `run/supervisor.json` records (the engine and the services it started), when that process was
-     created no later than the file was last written (a pid Windows gave to another program after the record
-     is newer than the record) and its command line names this home or one of the engine's own modules;
-   - every live descendant of those (a studio child of the dashboard, a server a service started);
-   - the parent of the engine when its image is this home's `venvs\\supervisor\\Scripts\\python.exe` (the venv
-     launcher, which only waits for the engine).
-   Each is kept as a `psutil.Process`, which refuses to signal a pid that was reused since (it compares the
-   creation time), so "ours" never means "a pid that merely looks like one".
-2. Ask the engine to stop (`/shutdown`), when it answers. A request that fails or times out does not stop the
-   sequence: the waiting below decides.
+1. Note what is OURS before anything is asked (the engine removes its pid file on its way out), by the one
+   rule setup's holder wait uses too (`venvrepair.own_processes`, with `venvrepair.is_this_install` and its
+   truth table): the holder of this home's engine lock; a pid `run/supervisor.json` records only when it is
+   tied to THIS install (its program under the home, the home on its command line, or its NIGHTSHIFT_HOME,
+   read here from the process's environment) and started before the record was written; the engine's venv
+   launcher; their descendants. Each is kept as a `psutil.Process`, which refuses to signal a pid that was
+   reused since (it compares the creation time).
+2. Ask the engine to stop (`/shutdown`), when it answers, for at most `SHUTDOWN_WAIT_S`, with a progress line
+   every `PROGRESS_EVERY_S`. A request that fails or is still out does not stop the sequence.
 3. Wait up to `STOP_WAIT_S` until none of ours is alive and no program runs from the environments (`holders`,
    the holder check's own list), saying who is still there when that changes (and every
    `PROGRESS_EVERY_S`): "Waiting for Nightshift to stop: ...".
-4. End what is ours and still alive, by its recorded process, and wait up to `END_WAIT_S` for it to be gone.
+4. End what is ours and still alive, by its noted process, and wait up to `END_WAIT_S` for it to be gone.
    Each one ended is said ("Ended Nightshift's own ...").
 5. Return. The caller's holder check (`update.wait_no_holders`) then waits for the rest, which are not ours,
    and refuses naming THEM.
@@ -30,8 +26,8 @@ Nightshift was left down. Asking is not enough. The sequence here is:
 from __future__ import annotations
 
 import contextlib
-import json
 import os
+import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -40,9 +36,9 @@ from typing import Any
 
 import psutil
 
+from installer.stage2.web import venvrepair
 from ns_common.errors import NsError
 from ns_common.paths import Paths
-from ns_common.singleton import read_owner
 
 #: After the engine was asked to stop, how long it and every program of the environments get to end.
 STOP_WAIT_S = 30.0
@@ -50,13 +46,11 @@ STOP_WAIT_S = 30.0
 END_WAIT_S = 10.0
 #: How often an unchanged "Waiting for Nightshift to stop" line is said again.
 PROGRESS_EVERY_S = 10.0
-#: How long the engine gets to answer `/shutdown` (its own grace for a GPU holder is `SHUTDOWN_GRACE_S`).
+#: The engine's own grace for a GPU holder, sent with `/shutdown`.
 SHUTDOWN_GRACE_S = 30.0
-#: The modules the engine runs as, or starts its services with: a recorded pid whose command line names none
-#: of them (and not this home either) is not ours.
-OWN_MODULES = ("ns_supervisor.app", "ns_dashboard.server", "ns_tts.server", "ns_supervisor.devfake")
-#: A record written in the same second as a process started counts it (file times are coarse on some disks).
-RECORD_SLACK_S = 2.0
+#: How long the stop request is waited for before the sequence goes on without its answer (review note: the
+#: request alone may take 150 s; the waiting below decides anyway).
+SHUTDOWN_WAIT_S = SHUTDOWN_GRACE_S + 15.0
 
 Say = Callable[[str], None]
 
@@ -94,13 +88,6 @@ class Stopped:
     own_pids: set[int] = field(default_factory=set)
 
 
-def _cmdline(proc: psutil.Process) -> str:
-    try:
-        return " ".join(proc.cmdline())
-    except psutil.Error:
-        return ""
-
-
 def _image(proc: psutil.Process) -> str:
     try:
         return Path(proc.exe()).name or proc.name()
@@ -111,100 +98,50 @@ def _image(proc: psutil.Process) -> str:
             return "a program"
 
 
-def _under(path: str, folder: Path) -> bool:
-    root = os.path.normcase(os.path.abspath(folder)) + os.sep
-    return bool(path) and os.path.normcase(os.path.abspath(path)).startswith(root)
+def snapshot(paths: Paths) -> list[venvrepair.Proc]:
+    """Every running process as `venvrepair.Proc`. The NIGHTSHIFT_HOME of each pid the record names is read
+    from its environment (psutil; Windows allows it for a process of the same user that is not elevated;
+    otherwise None, and only its program file or command line can tie it to this install)."""
+    named, _written = venvrepair.recorded(paths.home)
+    asked = {pid for pid, _what in named}
+    out: list[venvrepair.Proc] = []
+    for proc in psutil.process_iter(["pid", "ppid", "exe", "cmdline", "create_time"]):
+        info = proc.info
+        env_home = None
+        if info["pid"] in asked:
+            with contextlib.suppress(psutil.Error, OSError):
+                env_home = proc.environ().get("NIGHTSHIFT_HOME")
+        out.append(venvrepair.Proc(
+            int(info["pid"]), info.get("ppid"), str(info.get("exe") or ""),
+            " ".join(str(a) for a in info.get("cmdline") or []), info.get("create_time"), env_home,
+        ))
+    return out
 
 
-def lock_held(lock: Path) -> bool:
-    """True while another process holds the lock file `lock` (byte 0 locked: reading it is refused). It only
-    looks: taking the lock, even for an instant, could make an engine that is starting refuse itself."""
-    try:
-        with open(lock, "rb") as fh:
-            fh.read(1)
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return False
-
-
-def engine_holder(paths: Paths) -> psutil.Process | None:
-    """The live engine of this home: the process that holds `run/supervisor.lock`, as the file names it, when
-    its command line runs `ns_supervisor.app`. None when nobody holds it."""
-    lock = paths.home / "run" / "supervisor.lock"
-    if not lock_held(lock):
-        return None
-    pid = read_owner(lock)
-    if pid is None:
-        return None
-    try:
-        proc = psutil.Process(pid)
-    except psutil.Error:
-        return None
-    return proc if "ns_supervisor.app" in _cmdline(proc) else None
-
-
-def _recorded(paths: Paths) -> list[tuple[psutil.Process, str]]:
-    """The processes `run/supervisor.json` records that are still the processes it recorded."""
-    f = paths.home / "run" / "supervisor.json"
-    try:
-        written = f.stat().st_mtime
-        data = json.loads(f.read_text(encoding="utf-8"))
-        named = [(int(data["pid"]), "the engine")]
-        named += [(int(v), f"the {k} service" if k != "dashboard" else "the dashboard")
-                  for k, v in dict(data.get("children") or {}).items()]
-    except (OSError, ValueError, KeyError, TypeError):
-        return []
-    home = str(paths.home)
-    found: list[tuple[psutil.Process, str]] = []
-    for pid, what in named:
+def ours(paths: Paths) -> list[Own]:
+    """What this install started and is alive now (`venvrepair.own_processes`), the engine first, each as
+    the `psutil.Process` that was listed (one whose creation time differs is another process: skipped)."""
+    procs = snapshot(paths)
+    by_pid = {p.pid: p for p in procs}
+    found: list[Own] = []
+    for pid, what in venvrepair.own_processes(paths.home, procs).items():
+        if pid == os.getpid():
+            continue
         try:
             proc = psutil.Process(pid)
             created = proc.create_time()
         except psutil.Error:
             continue
-        if created > written + RECORD_SLACK_S:
-            continue            # a newer process got the number: not the one recorded
-        cmd = _cmdline(proc)
-        exe = ""
-        with contextlib.suppress(psutil.Error):
-            exe = proc.exe()
-        names_us = any(m in cmd for m in OWN_MODULES) or _under(exe, paths.home) or (
-            os.path.normcase(home) in os.path.normcase(cmd)
-        )
-        if names_us:
-            found.append((proc, what))
-    return found
+        listed = by_pid[pid].created
+        if listed is not None and abs(created - listed) > 0.5:
+            continue
+        found.append(Own(proc, what, _image(proc)))
+    return sorted(found, key=lambda o: o.what != "the engine")
 
 
-def ours(paths: Paths) -> list[Own]:
-    """What this install started and is alive now (the rules are in the module docstring), engine first."""
-    seen: dict[int, Own] = {}
-
-    def add(proc: psutil.Process, what: str) -> None:
-        if proc.pid not in seen and proc.pid != os.getpid():
-            seen[proc.pid] = Own(proc, what, _image(proc))
-
-    roots: list[tuple[psutil.Process, str]] = []
-    holder = engine_holder(paths)
-    if holder is not None:
-        roots.append((holder, "the engine"))
-    roots += _recorded(paths)
-    for proc, what in roots:
-        add(proc, what)
-    for proc, _what in roots:
-        with contextlib.suppress(psutil.Error):
-            for child in proc.children(recursive=True):
-                add(child, "a process the engine started")
-    engines = [proc for proc, what in roots if what == "the engine"]
-    launcher = paths.venvs / "supervisor"
-    for proc in engines:
-        with contextlib.suppress(psutil.Error):
-            parent = proc.parent()
-            if parent is not None and _under(parent.exe(), launcher):
-                add(parent, "the engine's launcher")
-    return list(seen.values())
+def engine_lives(paths: Paths) -> bool:
+    """True while an engine of this home holds its lock (it may have closed its port: D-46)."""
+    return venvrepair.engine_lock_owner(paths.home) is not None
 
 
 def _names(own: Iterable[Own], holders: Iterable[Any], skip: set[int]) -> list[str]:
@@ -221,6 +158,37 @@ def _family() -> set[int]:
         return {me.pid, *(p.pid for p in me.parents())}
     except psutil.Error:
         return {os.getpid()}
+
+
+def _ask(client: Any, tell: Say, sleep: Callable[[float], None], clock: Callable[[], float]) -> str:
+    """`POST /shutdown`, waited for at most `SHUTDOWN_WAIT_S` with a progress line every `PROGRESS_EVERY_S`.
+    Its result line; a request still out is left to end on its own (a daemon thread)."""
+    answer: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            client.shutdown(SHUTDOWN_GRACE_S)
+            answer["ok"] = True
+        except NsError as e:
+            answer["error"] = e.detail
+        except Exception as e:  # noqa: BLE001 - a thread must not die silently
+            answer["error"] = f"{type(e).__name__}: {e}"
+
+    thread = threading.Thread(target=run, name="ns-stop-request", daemon=True)
+    thread.start()
+    start = said = clock()
+    while thread.is_alive() and clock() - start < SHUTDOWN_WAIT_S:
+        thread.join(0.25)
+        if thread.is_alive() and clock() - said >= PROGRESS_EVERY_S:
+            tell("Waiting for Nightshift to stop: the engine has not answered its stop request yet "
+                 f"({round(clock() - start)} s; a running job gets up to {SHUTDOWN_GRACE_S:g} s).")
+            said = clock()
+        sleep(0)
+    if answer.get("ok"):
+        return "Engine stopped through the supervisor API."
+    if "error" in answer:
+        return f"The engine did not answer its stop request ({answer['error']})."
+    return f"The engine had not answered its stop request after {SHUTDOWN_WAIT_S:g} s."
 
 
 def stop_nightshift(
@@ -246,11 +214,7 @@ def stop_nightshift(
     out.own_pids = {o.pid for o in mine}
     skip = _family()
     if client is not None and client.is_up():
-        try:
-            client.shutdown(SHUTDOWN_GRACE_S)
-            out.lines.append("Engine stopped through the supervisor API.")
-        except NsError as e:                    # (it may still be going: the wait decides)
-            out.lines.append(f"The engine did not answer its stop request ({e.detail}).")
+        out.lines.append(_ask(client, tell, sleep, clock))
     elif mine:
         out.lines.append("The engine does not answer; its own processes are still running.")
     else:

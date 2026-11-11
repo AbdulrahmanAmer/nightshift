@@ -103,6 +103,9 @@ ENGINE_BACK = (
     "before (Retry stops it again)."
 )
 ENGINE_BACK_WAIT_S = 30.0
+#: D-46 review, blocker 2: how long this install's own processes get to end after setup asked Nightshift to
+#: stop, before setup ends them by their pid (the rest of HOLDER_WAIT_S is theirs to go).
+OWN_WAIT_S = 30.0
 DETACHED = 0x00000008 | 0x00000200      # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP (Windows only)
 SHORTCUTS = ("Nightshift Dashboard", "Nightshift Studio", "Nightshift Outbox", "Nightshift - Stop All",
              "Nightshift - Update", "Nightshift - Diagnostics")
@@ -355,7 +358,7 @@ class Effects:
     key_check: Callable[[str, str], dict[str, Any]] = check_key
     head: modelcheck.Head = modelcheck.urllib_head
     launch: Callable[..., None] = launch_detached
-    engine_running: Callable[[Path], bool] = venvrepair.engine_running              # looks at its lock only
+    engine_answers: Callable[[Path], bool] = venvrepair.engine_answers              # GET /status of its port
     launch_captured: Callable[..., tuple[int | None, str]] = launch_captured
     elevate_longpaths: Callable[[], bool] = elevate_longpaths
     console: Callable[[str, str], None] = ignore_console
@@ -1430,11 +1433,14 @@ class SetupController:
             ) from None
         except OSError:
             return None     # the lock file cannot be made: the steps below meet the same folder and say so
-        was_up = self.fx.engine_running(self.home)
+        was_up = self.fx.engine_answers(self.home)
         try:
-            # (`ns stop` is the update's stop sequence: it ends the engine's own processes that do not end)
+            # the INSTALLED version's `ns stop` asks the engine (0.1.14 to 0.1.15-rc4 never end one that does
+            # not exit): what is this install's own and still there is ended below, by this bundle's rule
             bootstrap.B02Home._stop_engine(self._boot())
-            deadline = time.monotonic() + HOLDER_WAIT_S
+            start = time.monotonic()
+            deadline = start + HOLDER_WAIT_S
+            ended: set[int] = set()
             while True:
                 res = self.fx.cmd(
                     ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", venvrepair.PROCESS_LIST],
@@ -1443,11 +1449,15 @@ class SetupController:
                 # fails CLOSED: a listing that did not come (PowerShell missing or refused, CIM broken) is
                 # no proof that nothing runs from the environments setup is about to rewrite
                 listed = res.returncode == 0 and any(line.strip() for line in res.stdout.splitlines())
+                procs = venvrepair.parse_listing(res.stdout) if listed else []
+                own = venvrepair.own_processes(self.home, procs)
+                own.pop(os.getpid(), None)
                 found = venvrepair.holders_in(res.stdout, venvs, (os.getpid(),)) if listed else []
-                if listed and not found:
+                if listed and not found and not own:
                     return lock
+                if own and time.monotonic() - start >= OWN_WAIT_S:
+                    self._end_own(own, procs, ended, round(time.monotonic() - start))
                 if time.monotonic() >= deadline or self._stop.is_set():
-                    back = self._engine_back(was_up)       # D-46: never left down by a refusal
                     if not listed:
                         why = " ".join((res.stderr or res.stdout or f"exit code {res.returncode}").split())
                         raise bootstrap.BootstrapError(
@@ -1457,24 +1467,65 @@ class SetupController:
                             "Nothing was changed. Close every Nightshift window (Studio, terminals, "
                             "Nightshift Code, a Python prompt), then press Retry (or run INSTALL.cmd "
                             "again). If it keeps failing, restart the PC, then press Retry (or run "
-                            "INSTALL.cmd again)." + back,
+                            "INSTALL.cmd again)." + self._engine_back(was_up),
                         )
-                    raise bootstrap.BootstrapError(
-                        "NS-E706",
-                        "These programs still run from Nightshift's Python environments, and setup must not "
-                        f"replace their files: {'; '.join(found)}. Nothing was changed. Close them, then "
-                        "press Retry (or run INSTALL.cmd again)." + back,
-                    )
+                    raise bootstrap.BootstrapError("NS-E706", self._refusal(own, procs, venvs, was_up))
                 time.sleep(HOLDER_PAUSE_S)
         except BaseException:
             lock.release()
             raise
 
+    @staticmethod
+    def _named(pid: int, what: str, procs: list[venvrepair.Proc]) -> str:
+        exe = next((p.exe for p in procs if p.pid == pid), "")
+        return f"{Path(exe).name or 'a program'} (process {pid}, {what})"
+
+    def _end_own(
+        self, own: dict[int, str], procs: list[venvrepair.Proc], ended: set[int], waited: int
+    ) -> None:
+        """D-46 review, blocker 2: this install's own processes still there ``OWN_WAIT_S`` after setup asked
+        Nightshift to stop (the engine that never exits, its launcher) are ended by their pid, each once."""
+        for pid, what in own.items():
+            if pid in ended:
+                continue
+            ended.add(pid)
+            try:
+                self.fx.cmd(["taskkill", "/PID", str(pid), "/T", "/F"], None, None, 30)
+            except (OSError, subprocess.SubprocessError) as e:     # (still there: the wait names it)
+                self.log("warn", f"Could not end process {pid}: {e}")
+                continue
+            self.log("warn", f"Ended Nightshift's own {self._named(pid, what, procs)}: it was still running "
+                             f"{waited} s after setup asked Nightshift to stop.")
+
+    def _refusal(self, own: dict[int, str], procs: list[venvrepair.Proc], venvs: Path, was_up: bool) -> str:
+        """The NS-E706 words once the wait is over: the programs that are not Nightshift's, named as programs
+        to close; Nightshift's own that could not be ended, named as Nightshift's, with the only way out (a
+        restart of the PC: it keeps the engine's lock, so no start can work and none is tried)."""
+        listing = "\n".join(f"{p.pid}|{p.exe}|{p.cmdline}" for p in procs)
+        foreign = venvrepair.holders_in(listing, venvs, (os.getpid(), *own))
+        said: list[str] = []
+        if foreign:
+            said.append(
+                "These programs still run from Nightshift's Python environments, and setup must not replace "
+                f"their files: {'; '.join(foreign)}. Nothing was changed. Close them, then press Retry (or "
+                "run INSTALL.cmd again)."
+            )
+        if own:
+            stuck = "; ".join(self._named(pid, what, procs) for pid, what in own.items())
+            said.append(
+                f"Nightshift's own processes did not stop when asked and could not be ended: {stuck}. "
+                "Nothing was changed. Nightshift cannot start again while they run: restart the PC, then run "
+                "INSTALL.cmd again."
+            )
+            return " ".join(said)
+        return " ".join(said) + self._engine_back(was_up)
+
     def _engine_back(self, was_up: bool) -> str:
-        """D-46: after a refusal, start again the engine that ran before setup asked it to stop, and wait up
-        to ``ENGINE_BACK_WAIT_S`` for it to hold its lock. The words for the refusal: ``ENGINE_BACK`` when
-        it runs again, ``ENGINE_ASKED`` when it does not (an engine refuses to start on environments an
-        update left unfinished: the shortcut's replay is then the way back), nothing when none ran before."""
+        """D-46: after a refusal, start again the engine that ANSWERED before setup asked it to stop, and wait
+        up to ``ENGINE_BACK_WAIT_S`` for it to answer again (`/status`, like the update's relaunch; a lock
+        held by an engine that never exited proves nothing). The words: ``ENGINE_BACK`` when it answers,
+        ``ENGINE_ASKED`` when it does not (an engine refuses to start on environments an update left
+        unfinished: the shortcut's replay is then the way back), nothing when none answered before."""
         if not was_up:
             return ""
         py = self.home / "venvs" / "supervisor" / "Scripts" / "python.exe"
@@ -1485,7 +1536,7 @@ class SetupController:
             self.log("warn", f"The engine could not be started again: {e}")
             return ENGINE_ASKED
         deadline = time.monotonic() + ENGINE_BACK_WAIT_S
-        while not self.fx.engine_running(self.home):
+        while not self.fx.engine_answers(self.home):
             if time.monotonic() >= deadline:
                 return ENGINE_ASKED
             time.sleep(0.5)

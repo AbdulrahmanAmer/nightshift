@@ -158,7 +158,7 @@ def short_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(update, "RENAME_PAUSE_S", 0.05)
     stopping = getattr(__import__("ns_supervisor", fromlist=["x"]), "stopping", None)
     if stopping is not None:
-        monkeypatch.setattr(stopping, "STOP_WAIT_S", 5.0)
+        monkeypatch.setattr(stopping, "STOP_WAIT_S", 10.0)
         monkeypatch.setattr(stopping, "END_WAIT_S", 5.0)
 
 
@@ -168,7 +168,7 @@ def test_an_engine_that_stops_late_is_waited_for_and_the_rollback_goes_on(
     tmp_path: Path, started: Any
 ) -> None:
     app, paths = updated(tmp_path)
-    engine = started.engine(paths, late=2.0)
+    engine = started.engine(paths, late=6.0)
     said: list[str] = []
     err = raised(lambda: update.rollback_app(app, real_stop(paths, said), paths=paths))
     assert err is None, f"the rollback was refused: {err}"
@@ -343,7 +343,8 @@ def test_setups_refusal_starts_the_engine_it_stopped_again(
 
     s.fx.cmd = cmd
     s.fx.launch = launch
-    s.fx.engine_running = lambda home: engine["up"]
+    s.fx.engine_answers = lambda home: engine["up"]     # (fac2213 looked at a lock: engine_running)
+    s.fx.engine_running = s.fx.engine_answers  # type: ignore[attr-defined]
     py = s.home / "venvs" / "studio" / "Scripts" / "python.exe"
     s.cmd.fail["Get-CimInstance"] = CmdResult(0, f"4711|{py}|\"{py}\" -i\n1|C:/x.exe|x\n", "")
     assert s.ctl.do_action("start")[0] == 200
@@ -354,3 +355,175 @@ def test_setups_refusal_starts_the_engine_it_stopped_again(
     started = [a for a in s.fx.launched if a[1:] == ["-m", "ns_supervisor.app"]]     # type: ignore[attr-defined]
     assert started and engine["up"], "setup's refusal left Nightshift down"
     assert detail.endswith(getattr(controller, "ENGINE_BACK", "<no sentence>")), detail
+
+
+# ------------------------------------------- review blocker 1: "ours" is tied to THIS install, by one rule
+def test_the_rule_of_this_install_row_by_row(tmp_path: Path) -> None:
+    from installer.stage2.web import venvrepair
+
+    rule = getattr(venvrepair, "is_this_install", None)
+    assert rule is not None, "there is no one rule for what is this install's own"
+    home, other = tmp_path / "NS", tmp_path / "NS2"
+    rec = 1000.0
+    P = venvrepair.Proc
+
+    def proc(exe: str = "C:/Py/python.exe", cmd: str = "python -m ns_dashboard.server",
+             env: str | None = None, created: float | None = 900.0) -> Any:
+        return P(1, None, exe, cmd, created, env)
+
+    rows = [
+        (proc(exe=str(home / "venvs" / "supervisor" / "Scripts" / "python.exe")), True),   # program in home
+        (proc(cmd=f'python "{home / "app" / "x.py"}"'), True),                            # home on its line
+        (proc(env=str(home)), True),                                                     # its NIGHTSHIFT_HOME
+        (proc(), False),                                    # a Nightshift module, nothing of this install
+        (proc(exe=str(other / "venvs" / "supervisor" / "Scripts" / "python.exe"), env=str(other)), False),
+        (proc(cmd=f"python {other}"), False),                         # NS2 is not NS
+        (proc(env=str(home), created=1003.0), False),                 # started after the record
+        (proc(env=str(home), created=None), False),                   # start not known
+    ]
+    for p, want in rows:
+        assert rule(home, p, rec) is want, p
+
+
+@windows
+def test_a_second_installs_process_under_a_recorded_pid_survives(tmp_path: Path, started: Any) -> None:
+    """Install B's dashboard runs under a pid install A's record still lists (Windows reused it): A's update
+    must not end it, however Nightshift-like its command line."""
+    app, paths = updated(tmp_path)
+    other = tmp_path / "second-install"
+    (other / "run").mkdir(parents=True)
+    b = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(600)", "-m", "ns_dashboard.server", str(other)],
+        env={**os.environ, "NIGHTSHIFT_HOME": str(other)},
+    )
+    started._note(b)
+    time.sleep(0.5)
+    engine = started.engine(paths, late=-1)                 # A's engine, which never stops
+    record = paths.home / "run" / "supervisor.json"
+    data = {"pid": engine.pid, "port": 8099, "children": {"dashboard": b.pid}}
+    record.write_text(json.dumps(data), encoding="utf-8")
+    said: list[str] = []
+    err = raised(lambda: update.rollback_app(app, real_stop(paths, said), paths=paths))
+    assert b.poll() is None, f"install B's process was ended as A's own: {said}"
+    assert err is None and gone(engine), f"A's own engine was not ended: {err}"
+
+
+# --------------------------------------- review blocker 2: setup over an old install ends what is its own
+def _setup_over_old_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: Any, *, endable: bool
+                            ) -> tuple[Any, subprocess.Popen[Any], list[str]]:
+    from installer.stage2.web import controller, venvrepair
+    from installer.stage2.web.bootstrap import CmdResult
+    from tests.test_installer_web_controller import Setup
+
+    s = Setup(tmp_path, monkeypatch)
+    (s.home / "venvs" / "supervisor" / "Scripts").mkdir(parents=True)
+    s.accept()
+    paths = Paths(s.home)
+    engine = started.engine(paths, late=-1)        # the old engine that closed its port and never exits
+    (s.home / "venvs" / "supervisor" / "Scripts" / "ns.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(controller, "HOLDER_WAIT_S", 15.0, raising=False)
+    monkeypatch.setattr(controller, "HOLDER_PAUSE_S", 0.2, raising=False)
+    monkeypatch.setattr(controller, "OWN_WAIT_S", 1.0, raising=False)
+    monkeypatch.setattr(controller, "ENGINE_BACK_WAIT_S", 1.0, raising=False)
+    real_cmd, ended = s.fx.cmd, []
+
+    def cmd(argv: list[str], *a: Any, **k: Any) -> Any:
+        if argv[0].endswith("ns.exe") and argv[-1] == "stop":
+            return CmdResult(0, "Engine stopped through the supervisor API.\n", "")   # 0.1.15-rc4's stop
+        if argv[0] == "powershell.exe" and "Get-CimInstance" in argv[-1]:
+            listing = subprocess.run([argv[0], *argv[1:-1], getattr(venvrepair, "PROCESS_LIST", argv[-1])],
+                                     capture_output=True, text=True, timeout=120)       # read only
+            return CmdResult(listing.returncode, listing.stdout, listing.stderr)
+        if argv[0] == "taskkill":
+            pid = int(argv[argv.index("/PID") + 1])
+            ended.append(str(pid))
+            if pid not in started.family:
+                pytest.fail(f"setup tried to end a process this test did not start: {pid}")
+            if endable:
+                try:
+                    family = [*started.family[pid].children(recursive=True), started.family[pid]]
+                except psutil.Error:
+                    family = []
+                for p in family:
+                    try:
+                        p.kill()
+                    except psutil.Error:
+                        pass
+                return CmdResult(0, "", "")
+            return CmdResult(1, "", "ERROR: Access is denied.")
+        return real_cmd(argv, *a, **k)
+
+    s.fx.cmd = cmd
+    s.fx.engine_answers = lambda home: True       # it answered when setup started  # type: ignore[attr-defined]
+    s.fx.engine_running = lambda home: True       # (fac2213's probe: the lock)       # type: ignore[attr-defined]
+    return s, engine, ended
+
+
+@windows
+def test_setup_over_an_old_install_ends_its_hung_engine_and_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: Any
+) -> None:
+    s, engine, ended = _setup_over_old_install(tmp_path, monkeypatch, started, endable=True)
+    assert s.ctl.do_action("start")[0] == 200
+    st = s.until(lambda x: x["failure"] is not None or x["run"] in ("finished", "waiting"), timeout=90.0,
+                 what="setup to pass its holder check")
+    failure = st["failure"] or {}
+    assert failure.get("code") != "NS-E706", f"setup refused on its own engine: {failure.get('detail')}"
+    assert gone(engine) and str(engine.pid) in ended, "the hung engine of the old install was not ended"
+
+
+@windows
+def test_setup_with_an_own_process_it_cannot_end_says_restart_and_not_that_nightshift_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: Any
+) -> None:
+    from installer.stage2.web import controller
+
+    s, engine, _ended = _setup_over_old_install(tmp_path, monkeypatch, started, endable=False)
+    assert s.ctl.do_action("start")[0] == 200
+    st = s.until(lambda x: (x["failure"] or {}).get("code") == "NS-E706" or x["run"] == "finished",
+                 timeout=90.0, what="the holder check")
+    detail = " ".join(str((st["failure"] or {}).get("detail", "")).split())
+    assert not detail.endswith(controller.ENGINE_BACK.strip()), "it says Nightshift runs; nothing answers"
+    assert "Nightshift's own processes did not stop" in detail and "restart the PC" in detail, detail
+    assert f"(process {engine.pid}" in detail and "Close them" not in detail, detail
+
+
+# ---------------------------------------------------------------------------------- review notes
+def test_a_stop_request_that_does_not_answer_is_shown_and_bounded(monkeypatch: pytest.MonkeyPatch,
+                                                                    tmp_path: Path) -> None:
+    from ns_supervisor import stopping
+
+    monkeypatch.setattr(stopping, "PROGRESS_EVERY_S", 0.2)
+    monkeypatch.setattr(stopping, "SHUTDOWN_WAIT_S", 1.0, raising=False)
+
+    class Slow:
+        def is_up(self) -> bool:
+            return False if getattr(self, "asked", False) else True
+
+        def shutdown(self, grace_s: float) -> None:
+            self.asked = True
+            time.sleep(5)               # a request that hangs (the client's own timeout is 150 s)
+
+    said: list[str] = []
+    t0 = time.monotonic()
+    done = stopping.stop_nightshift(Paths(tmp_path / "ns"), Slow(), say=said.append, note=lambda p: [])
+    assert time.monotonic() - t0 < 4, "the sequence waited for the request's own timeout"
+    assert any("has not answered its stop request yet" in s for s in said), said
+    assert any("had not answered its stop request" in s for s in done.lines), done.lines
+
+
+def test_an_own_process_that_cannot_be_ended_gets_no_shortcut_promise(tmp_path: Path) -> None:
+    from ns_common.errors import NsError
+
+    paths, relaunch = Paths(tmp_path / "ns"), Restarts()
+
+    def body() -> update_job.Outcome:
+        raise NsError("NS-E706", "Nightshift's own processes did not stop when asked and could not be ended: "
+                      "python.exe (process 9, the engine). Nothing was changed. "
+                      + getattr(update, "OWN_STUCK_WAY_OUT", ""), own_left=True)
+
+    assert update_job.run_worker(paths, body, relaunch=relaunch) == 1
+    st = update_job.read_status(paths)
+    assert "restart" not in relaunch.calls, "a start was tried while its own engine holds the lock"
+    said = st["message"]
+    assert update_job.RESTART_HINT not in said and "restart the PC, then open Nightshift" in said, said

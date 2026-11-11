@@ -109,6 +109,12 @@ SETTINGS_BACKUP_HINT = (
 #: install's Python environments to end before it refuses (NS-E706): an engine process still exiting ends
 #: within seconds; a Studio window, a terminal command or a Python prompt does not, and is named.
 HOLDER_WAIT_S = 60.0
+#: D-46 review note: when one of Nightshift's own processes could not be ended it keeps the engine's lock, so
+#: no shortcut can start Nightshift until it is gone; only a restart of the PC ends it.
+OWN_STUCK_WAY_OUT = (
+    "Nightshift cannot start again while it runs: restart the PC, then open Nightshift and run the update "
+    "again."
+)
 #: A venv whose refresh failed on a file in use is tried SYNC_TRIES times, SYNC_PAUSE_S apart (the holder
 #: check ran before, so this is a program started since); then the update stops and says what is left.
 SYNC_TRIES = 3
@@ -1071,8 +1077,7 @@ def wait_no_holders(
     others = [h for h in found if h.pid not in theirs]
     said_mine = (
         "Nightshift's own processes did not stop when asked and could not be ended: "
-        f"{'; '.join(str(h) for h in mine)}. Nothing was changed. Restart the PC, then run the update "
-        "again."
+        f"{'; '.join(str(h) for h in mine)}. Nothing was changed. {OWN_STUCK_WAY_OUT}"
     ) if mine else ""
     said_others = (
         "These programs still run from Nightshift's Python environments, and Windows would not let the "
@@ -1083,6 +1088,7 @@ def wait_no_holders(
         "NS-E706",
         " ".join([*earlier, *(s for s in (said_others, said_mine) if s)]),
         holders=[h.pid for h in found],
+        own_left=bool(mine),        # (no restart can work while it holds the engine's lock: update_job)
     )
 
 

@@ -78,6 +78,7 @@ def entries(tmp_path: Path) -> list[tuple[str, list[str]]]:
         ("assistant module", ["ns_dashboard.assistant.cli", "ask", "what is waiting?", "--fake-services"]),
         ("dashboard job runner", ["ns_dashboard.studio_job", "run", "--args", job_args]),
         ("dashboard server", ["ns_dashboard.server", "--port", str(_free_port()), "--fake-services"]),
+        ("tts server", ["ns_tts.server", "--port", str(_free_port()), "--engine", "fake"]),
         ("ns tune", ["ns_supervisor.cli", "tune"]),
         ("ns verify", ["ns_supervisor.cli", "verify", "--quick"]),
         ("engine", ["ns_supervisor.app", "--headless", "--port", str(_free_port())]),
