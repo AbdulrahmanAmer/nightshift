@@ -528,8 +528,9 @@ def test_the_night_tells_a_damaged_model_once(tmp_home: Path, monkeypatch: pytes
     # the next night: the pre-check finds the recorded damage before anything loads; one note again
     attempts.clear()
     second = daily.run_daily(jobs.open_env(light=True), rng=random.Random(2), run_fn=load)
-    assert attempts == [] and second["failures"] == [], second
-    assert {s.get("reason") for s in second.get("skipped") or [{}]} == {"model_damaged"}, second
+    assert attempts == [] and not second.get("skipped"), second
+    (stop,) = second["failures"]                       # the Last night card: "The night: NS-E127. <the file>"
+    assert stop["channel"] == "The night" and stop["code"] == "NS-E127" and llm.name in stop["error"], stop
     notes = [n["message"] for n in _notes(tmp_home) if "NS-E127" in n["message"]]
     assert len(notes) == 2 and llm.name in notes[1], notes
 

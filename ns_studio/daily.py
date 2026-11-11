@@ -937,9 +937,16 @@ def _model_precheck(env: jobs.Env, report: dict) -> str | None:
         return None
     if not found:
         return None
-    env.log.error("daily_model_files", " ".join(found), code=MODEL_DAMAGED)
-    report["model_damaged"] = {"said": " ".join(found), "at": "start"}
-    return MODEL_DAMAGED
+    said = " ".join(found)
+    code = MODEL_DAMAGED if any(s.startswith(MODEL_DAMAGED) for s in found) else "NS-E202"  # (only missing)
+    env.log.error("daily_model_files", said, code=code)
+    report["model_damaged"] = {"said": said, "at": "start"}
+    # the Last night card shows a stop from `failures` (as for a night that could not be owned): one entry,
+    # "The night: NS-E127. <which file>"; no job was started, so none is "skipped because an earlier one
+    # stopped"
+    stop = {"job_id": NIGHT_NOT_STARTED, "channel": "The night", "code": code, "error": said}
+    report["failures"].append(stop)
+    return code
 
 
 def _model_damaged(report: dict, job_id: str, slug: str) -> None:
@@ -1075,6 +1082,7 @@ def _tonight(
         night = nightclock.Night(env.paths, run_id, nightclock.SystemClock(), start, None, env.log)
     outcomes: Outcomes = {}
     left_channels: dict[str, str] = {}
+    stopped: str | None = None
     try:
         # M7: a model file that cannot load stops the night's work before any of it starts (`gpu_busy`, the
         # one variable that makes every later job wait for the next night, carries the code)
@@ -1088,6 +1096,8 @@ def _tonight(
             in_note = {j.job_id for j in recovered.jobs}
             for e in report.get("slept") or []:  # told there (its outcome): not again in the sleep note
                 e["in_recovery_note"] = e["job_id"] in in_note
+    if stopped:  # M7: nothing starts tonight; what is due stays due and a half-made job stays where it is
+        return
     why: dict[str, str] = {}
     due = cadence.plan_daily(env.paths, env.db, now, why=why)
     for dj in due:
