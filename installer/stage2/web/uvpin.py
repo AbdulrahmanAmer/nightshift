@@ -214,7 +214,11 @@ def obtain(
         except OSError as e:
             say(f"cache\\{cached.name} could not be read ({e}); trying the next source")
         _unlink(cached)
-    where = "no checked copy of it is in a 'files' folder next to the update zip or in the cache folder and "
+    # the folders are named by their paths: the Dashboard's "From a file" and `--github` keep the update zip
+    # in <home>\data\updates, so "next to the zip you picked" would name a folder this route never sees
+    where = f"no checked copy of it is in {cached.parent} and "
+    if files_root is not None:
+        where = f"no checked copy of it is in {files_root} or in {cached.parent} and "
     if not url:
         return None, f"{where}this release names no address for it"
     part = cached.with_name(cached.name + ".part")

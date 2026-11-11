@@ -436,6 +436,25 @@ def test_a_uv_that_cannot_be_opened_is_could_not_look_not_damaged(
     assert inst.uv() == "0.14.0" and inst.version() == "0.2.0"
 
 
+def test_the_refusal_names_the_files_folder_of_the_dashboard_route(tmp_path: Path, net: Net) -> None:
+    """NOT RUN. "From a file" and `--github` keep the zip in `<home>\\data\\updates`: NS-E708 names
+    `<home>\\data\\updates\\files` by its path, and the uv zip put there is taken on the next try."""
+    inst = install(tmp_path)
+    updates = inst.paths.data / "updates"
+    updates.mkdir(parents=True)
+    sha = uv_zip(tmp_path / "stage" / LEAF, "0.14.0")
+    z = make_zip(updates, extra={"manifest.json": manifest("0.14.0", sha)})
+    with pytest.raises(NsError) as ei:
+        update.update_app(z, inst.app, Env().env(), paths=inst.paths)
+    assert ei.value.code == "NS-E708"
+    assert str(updates / "files") in ei.value.detail and str(inst.paths.home / "cache") in ei.value.detail
+    (updates / "files").mkdir()
+    shutil.copyfile(tmp_path / "stage" / LEAF, updates / "files" / LEAF)
+    update.update_app(z, inst.app, Env().env(), paths=inst.paths)
+    assert (inst.uv(), inst.uv(".prev"), inst.version()) == ("0.14.0", "0.13.6", "0.2.0")
+    assert net.calls == [url("0.14.0")]  # only the first, refused try asked GitHub
+
+
 def test_a_left_over_uv_next_is_cleared_by_the_next_update_or_rollback(tmp_path: Path) -> None:
     """NOT RUN. After a kill (no handler ran): the next update clears it even when its program pins no uv,
     and so does the next rollback (`uvpin.prepare` settles first)."""

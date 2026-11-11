@@ -686,7 +686,10 @@ names in its `manifest.json`, when the install has another one: it takes the uv 
 next to the update zip, then from `cache\uv-<version>.zip` in the install folder, then from GitHub, and uses it
 only when its SHA256 is the one the program names. For an update on a PC without internet, put that zip (the
 message names it, for example `uv-x86_64-pc-windows-msvc.zip` from that version's page of uv's releases on GitHub)
-into `files` next to the update zip. When no copy can be had or the uv in it does not run, the update stops with
+into `files` next to the update zip. That is the folder beside the zip as the updater has it: for `ns update <zip>`
+the folder of that zip; for the Dashboard's "From a file" and for an update from GitHub (Update now, `--github`)
+the zip is kept in `data\updates` of the install folder, so the folder is `data\updates\files` there, not a folder
+beside the file you picked. `NS-E708` names the folder by its full path. When no copy can be had or the uv in it does not run, the update stops with
 `NS-E708` before it stops or changes anything: Nightshift keeps running as it was. The uv it replaces stays in
 `bin\uv.prev`, and `ns update --rollback` puts it back; when a rollback cannot get the older program's uv, it still
 goes back and its result line says that uv stays at the newer version. `ns doctor` (row "uv") names a uv that is

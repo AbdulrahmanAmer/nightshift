@@ -1734,7 +1734,11 @@ def uv_for(
     """U1 to U4: the uv that the program about to be in `<app>` pins, checked and ready to swap in, before
     anything is changed. An update (`zip_path`) that cannot have it is refused with NS-E708, before Nightshift
     is stopped; a rollback keeps the uv there is and says so in its last sentence (`Plan.stays`)."""
-    files = filesdir.beside(zip_path.parent) if zip_path is not None else None
+    # the `files` folder beside the zip as the updater has it, there or not (its path goes into NS-E708). The
+    # Dashboard's "From a file" uploads the zip into <home>\data\updates (`svc_library.update_apply_file`: a
+    # browser hands over bytes, not a path) and `--github` downloads into the same folder, so on those two
+    # routes it is <home>\data\updates\files, never a folder beside the file the owner picked
+    files = zip_path.parent / filesdir.FILES_DIR if zip_path is not None else None
     try:
         plan = uvpin.prepare(pin, paths.home, files_root=files, say=say)
         # D-39a's holder check for `bin\uv`: a uv that still runs cannot be renamed. Looked at here, before
