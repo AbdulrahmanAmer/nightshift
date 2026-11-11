@@ -1122,12 +1122,12 @@ def holders(paths: Paths, venv: str | None = None, *, root: Path | None = None) 
     fall back to the venv's own interpreter must not rewrite that venv. A process that cannot be read
     (another user's) is not ours and is skipped."""
     base = root if root is not None else (paths.venvs / venv if venv else paths.venvs)  # (`root`: bin\uv)
-    root = os.path.normcase(os.path.abspath(base)) + os.sep
+    prefix = os.path.normcase(os.path.abspath(base)) + os.sep
     found: list[Holder] = []
     for proc in psutil.process_iter(["pid", "exe", "cmdline", "create_time"]):
         exe = str(proc.info.get("exe") or "")
         args = [str(a) for a in proc.info.get("cmdline") or []]
-        inside = [t for t in (exe, *args) if t and os.path.normcase(os.path.abspath(t)).startswith(root)]
+        inside = [t for t in (exe, *args) if t and os.path.normcase(os.path.abspath(t)).startswith(prefix)]
         if not inside:
             continue
         image = Path(exe or (args[0] if args else "a program")).name
