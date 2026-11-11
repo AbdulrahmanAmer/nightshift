@@ -28,6 +28,7 @@ from ns_studio.diskroom import require_story_room
 from ns_studio.errors import OUT_OF_TIME, PAUSED, UNEXPECTED, StudioError, describe_unexpected
 from ns_studio.footage_keys import require_footage_key
 from ns_studio.media.outbox import retime_sheet
+from ns_studio.media.sheet_read import read_sheet_file
 from ns_studio.policy.regen import run_job_guarded
 from ns_studio.stages import StageState
 
@@ -68,10 +69,12 @@ def scheduled_shorts(
     for r in rows:
         if r["job_id"] in skip_jobs:
             continue
+        sheet = read_sheet_file(Path(r["path"]).with_suffix(".json"), "json")
         try:
-            data = json.loads(read_text_retry(Path(r["path"]).with_suffix(".json")))
-            day = datetime.fromisoformat(str(data["publish_after"])).date()
-        except (OSError, ValueError, KeyError, TypeError):
+            day = datetime.fromisoformat(str(sheet.value.publish_after)).date() if sheet.usable else None
+        except ValueError:
+            day = None
+        if day is None:
             continue
         if day >= today:
             taken[day] = taken.get(day, 0) + 1
@@ -100,12 +103,10 @@ def apply_publish_times(
         except (OSError, json.JSONDecodeError):
             continue
         for item, entry in manifest.items():
-            try:
-                data = json.loads(Path(entry["json"]).read_text(encoding="utf-8"))
-            except (OSError, KeyError, json.JSONDecodeError):
+            sheet = read_sheet_file(Path(entry["json"]), "json") if "json" in entry else None
+            if sheet is None or not sheet.usable:  # the start sweep and the Queue mend a sheet not whole
                 continue
-            if not isinstance(data, dict) or "publish_after" not in data:
-                continue
+            data = sheet.value.model_dump(mode="json")
             if data.get("profile"):  # a test output (tiny_story) is never given a publish slot
                 refusal = describe("NS-E329").message
                 env.log.warn("publish_slot_refused", refusal, code="NS-E329", job_id=job_id, item=item)

@@ -157,8 +157,8 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
   const mark = useCallback((k: string, v = true) => setProg((p) => { const n = { ...p, [k]: v }; store.set("ns-post-" + o.output_id, n); return n; }), [o.output_id]);
   const description = useMemo(() => {
     if (!d) return "";
-    const ch = d.chapters?.length ? "\n\n" + d.chapters.map((c) => `${fmtDur(c.start_s)} ${c.title}`).join("\n") : "";
-    return (d.description || "") + ch + (d.hashtags?.length ? "\n\n" + d.hashtags.join(" ") : "");
+    // the description already holds the chapter list (the sheet's own text): only the hashtag line is added
+    return (d.description || "") + (d.hashtags?.length ? "\n\n" + d.hashtags.join(" ") : "");
   }, [d]);
   const copy = async (text: string, label: string, key: string) => {
     try { await navigator.clipboard.writeText(text); toast(`${label} copied`, "ok"); mark(key); }
@@ -199,7 +199,7 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
     { key: "description", title: "Description", sub: d?.chapters?.length ? `With ${d.chapters.length} chapters and ${d.hashtags?.length ?? 0} hashtags` : `With ${d?.hashtags?.length ?? 0} hashtags`, action: <Button size="sm" variant="soft" leadingIcon="copy" onClick={() => copy(description, "Description", "description")} disabled={!d}>Copy</Button> },
     { key: "thumb", title: "Thumbnail", sub: o.kind === "long" ? (d?.thumbnails?.length ? `Pick one of the ${d.thumbnails.length} made for this video` : "Open the one that was made") : "Pick a frame in Studio", action: o.kind === "long" && !demo ? <span className="flex gap-1">{(d?.thumbnails?.length ? d.thumbnails : ["thumb_1.jpg"]).map((t) => { const n = Number(/\d/.exec(t)?.[0] || 1); return <a key={t} href={api.thumbChoiceUrl(n, o.output_id)} target="_blank" rel="noreferrer" aria-label={`Open thumbnail ${n}`} onClick={() => mark("thumb")} className="ds-focus block overflow-hidden rounded-ds-sm shadow-ds-control"><img src={api.thumbChoiceUrl(n, o.output_id)} alt="" loading="lazy" className="h-9 w-16 object-cover" /></a>; })}</span> : <Button size="sm" variant="ghost" onClick={() => mark("thumb")}>Done</Button> },
     { key: "audience", title: "Audience", sub: d?.made_for_kids ? "Yes, it's made for kids" : "No, it's not made for kids", action: <Button size="sm" variant="ghost" onClick={() => mark("audience")}>Done</Button> },
-    { key: "altered", title: "Altered content", sub: d?.ai_disclosure === "yes" ? "Answer Yes" : "Answer No. The voice is production help, footage is real stock", action: <Button size="sm" variant="ghost" onClick={() => mark("altered")}>Done</Button> },
+    { key: "altered", title: "Altered content", sub: d ? [`${d.ai_disclosure === "unknown" ? "You decide" : `Answer ${d.ai_disclosure === "yes" ? "Yes" : "No"}`}${d.ai_disclosure_reason ? `: ${d.ai_disclosure_reason}` : ""}`, d.ai_disclosure_note].filter(Boolean).join(". ") : undefined, action: <Button size="sm" variant="ghost" onClick={() => mark("altered")}>Done</Button> },
     { key: "tags", title: "Tags", sub: d?.tags?.length ? `${d.tags.length} tags, ${d.tags.slice(0, 3).join(", ")}` : "No tags", action: <Button size="sm" variant="soft" leadingIcon="copy" onClick={() => copy((d?.tags || []).join(", "), "Tags", "tags")} disabled={!d}>Copy</Button> },
     { key: "schedule", title: "Schedule and related video", sub: [d?.publish_after ? `Publish ${fmtWhen(d.publish_after)}` : "Any time", o.kind !== "long" && d?.related_video_instruction].filter(Boolean).join(". "), action: <Button size="sm" variant="ghost" onClick={() => mark("schedule")}>Done</Button> },
   ];
@@ -291,6 +291,11 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
       {/* posting checklist, in YouTube's upload order */}
       <Card ref={aside} as="aside" aria-labelledby="q-post" padding="md" className={cx("scroll-thin @min-[1020px]:sticky @min-[1020px]:top-4 @min-[1020px]:max-h-[calc(100dvh-40px)] @min-[1020px]:overflow-y-auto", SPAN["2/4"])}>
         <CardHeader id="q-post" title="Post it" className="!mb-3" actions={<span className="mr-2 text-ds-2xs text-ds-muted ds-num">{doneCount} of {total} done</span>} />
+        {d?.youtube_notes?.length ? (
+          <ul aria-label="Changed for YouTube" className="mb-3 flex flex-col gap-1.5 rounded-ds-md bg-ds-sunken px-3 py-2">
+            {d.youtube_notes.map((n) => <li key={n} className="flex gap-2 text-ds-xs leading-ds-snug text-ds-text-2"><Icon name="info" size={14} className="mt-0.5 shrink-0 text-ds-muted" />{n}</li>)}
+          </ul>
+        ) : null}
         <ol className="-mx-2 flex flex-col gap-1">
           <StepItem n={1} className={nextKey === "approve" ? "is-next" : undefined} done={approved} current={!approved} title={approved ? "Approved" : "Watch it, then decide"} sub={approved ? "Ready to post" : undefined}
             action={approved && o.status === "pending" ? <Button size="sm" variant="ghost" leadingIcon="undo" onClick={() => mark("approved", false)}>Undo</Button> : undefined}>

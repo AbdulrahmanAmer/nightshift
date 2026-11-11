@@ -14,7 +14,7 @@ import tempfile
 import threading
 import zipfile
 from collections.abc import Callable, Collection, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -106,21 +106,29 @@ def write_fake_video(path: Path, source: Path | None = None) -> Path:
     return path
 
 
-def write_sheet(video: Path, *, title: str, channel: str, kind: str) -> None:
-    """Write `<video>.json` and `<video>.txt` upload sheets next to the video (spec 15.8 layout)."""
-    sheet = {
-        "channel": channel,
-        "kind": kind,
-        "title": title,
-        "description": f"{title}\n\nOriginal fiction.",
-        "tags": ["story", "fiction"],
-        "hashtags": ["#Shorts"],
-        "ai_disclosure": "yes",
-        "made_for_kids": False,
-        "age_restrict_suggested": False,
+def write_sheet(video: Path, *, title: str, channel: str, kind: str, job_id: str, k: int | None = None) -> None:
+    """Write `<video>.json` and `<video>.txt` upload sheets next to the video, as the product writes them
+    (spec 15.8 layout; `sheet_read.read_sheet_file` reads both as whole sheets)."""
+    from ns_common.models import Metadata
+    from ns_studio.clipper.models import ClipMetadata
+    from ns_studio.clipper.stages_clip import clip_sheet_text
+    from ns_studio.media.outbox import sheet_text
+
+    sheet: dict[str, Any] = {
+        "channel": channel, "job_id": job_id, "kind": kind, "k": None if kind == "long" else k or 1,
+        "title": title, "description": f"{title}\n\nOriginal fiction.", "tags": ["story", "fiction"],
+        "hashtags": ["#Shorts"], "ai_disclosure": "yes", "made_for_kids": False,
+        "age_restrict_suggested": False, "combo_id": "fake", "prompt_versions": {},
+        "publish_after": (datetime.now() + timedelta(days=1)).isoformat(timespec="minutes"),
     }
-    video.with_suffix(".json").write_text(json.dumps(sheet, indent=2), encoding="utf-8")
-    video.with_suffix(".txt").write_text(f"{title}\n\n{sheet['description']}\n\n#Shorts\n", encoding="utf-8")
+    if kind == "clip":
+        clip = ClipMetadata.model_validate({**sheet, "source_video": "source.mp4", "template": "center_crop"})
+        video.with_suffix(".json").write_text(clip.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        video.with_suffix(".txt").write_text(clip_sheet_text(clip, video.name), encoding="utf-8")
+        return
+    meta = Metadata.model_validate({**sheet, "clips": []})
+    video.with_suffix(".json").write_text(meta.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    video.with_suffix(".txt").write_text(sheet_text(meta, video.name), encoding="utf-8")
 
 
 class FakeRunAdapter:
@@ -156,7 +164,7 @@ class FakeRunAdapter:
             title = f"Fake short {k} for {channel}"
             target = fake_outbox_path(self.paths, channel, job_id, "short", k, f"Fake story for {channel}")
             video = write_fake_video(target)
-            write_sheet(video, title=title, channel=channel, kind="short")
+            write_sheet(video, title=title, channel=channel, kind="short", job_id=job_id, k=k)
             oid = f"{job_id}/s{k}"
             self.db.execute(
                 "INSERT INTO outputs(output_id, job_id, channel, kind, k, title, path, duration_s, status,"
@@ -207,7 +215,7 @@ class FakeClipAdapter:
         for k in range(1, max(1, min(int(params.get("max_clips") or 2), 2)) + 1):
             title = f"Fake clip {k} from {source_path.stem}"
             video = write_fake_video(fake_clip_path(self.paths, channel, source_path.stem, k, title), source_path)
-            write_sheet(video, title=title, channel=channel, kind="clip")
+            write_sheet(video, title=title, channel=channel, kind="clip", job_id=job_id, k=k)
             oid = f"{job_id}/c{k}"
             self.db.execute(
                 "INSERT INTO outputs(output_id, job_id, channel, kind, k, title, path, duration_s, status,"
@@ -565,7 +573,7 @@ class FakeSeriesAdapter:
         channel = str(params.get("channel") or ctl.channel or "series")
         title = str(params.get("title") or "Series part")
         video = write_fake_video(fake_outbox_path(self.paths, channel, ctl.job_id, "long", 1, title))
-        write_sheet(video, title=title, channel=channel, kind="long")
+        write_sheet(video, title=title, channel=channel, kind="long", job_id=ctl.job_id)
         oid = f"{ctl.job_id}/long"
         self.db.execute(
             "INSERT INTO outputs(output_id, job_id, channel, kind, k, title, path, duration_s, status, created_at)"
@@ -677,7 +685,7 @@ def seed_output(
         path = fake_outbox_path(paths, channel, job_id, kind, k, title)
     if with_files:
         write_fake_video(path, video)
-        write_sheet(path, title=title, channel=channel, kind=kind)
+        write_sheet(path, title=title, channel=channel, kind=kind, job_id=job_id, k=k)
     name = {"long": "long", "short": f"s{k}", "clip": f"c{k}"}[kind]
     oid = f"{job_id}/{name}"
     db.execute(
