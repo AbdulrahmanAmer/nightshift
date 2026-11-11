@@ -42,6 +42,10 @@ class _Stub:
         with (ctx.paths.home / CALLS_FILE).open("a", encoding="utf-8") as fh:
             fh.write(f"{self.name}:start\n")
         if os.environ.get("D31_HANG_AT") == self.name:
+            if os.environ.get("D31_TREE"):  # tests/test_night_kill_tree.py: the stage's children, then ready
+                from tests import night_tree
+
+                night_tree.start_children(Path(os.environ["D31_TREE"]), ctx.job_dir / "render.mp4")
             Path(os.environ["D31_READY"]).write_text(self.name, encoding="utf-8")
             time.sleep(600)  # the test kills this process long before
         ctx.write_json(self.outputs[0], {"stage": self.name})

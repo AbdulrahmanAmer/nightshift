@@ -1,0 +1,54 @@
+Night task end check (card night-fits-b). The GPU PC only: what Windows' end of the nightly task does to
+Nightshift's processes. The laptop shows both possible answers with stand-ins
+(tests/test_night_kill_tree.py); only a real task on the real PC shows which one Windows gives.
+
+What the documentation says, and what is not known
+- Task Scheduler stops a task that runs past its "Stop the task if it runs longer than" time
+  (TaskSettings.ExecutionTimeLimit; Nightshift registers 6 hours).
+- "schtasks /end" "Stops only the instances of a program started by a scheduled task." Nightshift's task
+  starts cmd.exe, which starts powershell.exe (nightshift-launch.ps1 -Nightly), which starts studio.exe,
+  whose python runs the night, FFmpeg, and the engine when none runs (the engine runs llama-server and the
+  voice service in its own Job Object).
+- Windows does not end the children of a process it terminates. If Task Scheduler only terminates cmd.exe,
+  the night runs on past the limit. If it also ends a Job Object it put the task in, the whole tree ends.
+
+What to run (about 20 minutes; on the kit's test install only, never on the owner's own install)
+1. Start PowerShell (not as administrator) and set the test install's home:
+     $env:NIGHTSHIFT_HOME = '<the kit test install home>'
+2. Save the task list first, as QA does:
+     Get-ScheduledTask | Export-Clixml "$env:USERPROFILE\Desktop\tasks-before.xml"
+3. Give the test install's nightly task a 10-minute limit (the night itself still plans with 6 hours, so
+   it does not stop itself first, and Windows' end comes in the middle of a stage):
+     $s = (Get-ScheduledTask -TaskName 'Nightshift Daily').Settings
+     $s.ExecutionTimeLimit = 'PT10M'
+     Set-ScheduledTask -TaskName 'Nightshift Daily' -Settings $s
+4. Start the task the way Windows does at night:
+     Start-ScheduledTask -TaskName 'Nightshift Daily'
+5. After 3 minutes, write down the process tree (names, pids, parents):
+     Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'cmd|powershell|studio|python|ffmpeg|llama|tts' } |
+       Select-Object ProcessId, ParentProcessId, Name, CommandLine | Format-Table -AutoSize | Out-File tree-before.txt
+6. Wait until 2 minutes after the 10-minute limit, then write the same list to tree-after.txt, and:
+     nvidia-smi > gpu-after.txt
+     Get-ScheduledTaskInfo -TaskName 'Nightshift Daily' | Format-List > task-after.txt
+
+What to observe (write the answers in the kit's evidence)
+a. Which of cmd.exe, powershell.exe, studio.exe, the studio's python, FFmpeg, the engine, llama-server and
+   the voice service are still in tree-after.txt.
+b. Whether the night's ledger (<home>\data\ledger\ledger-<yyyymm>.jsonl) gets lines after the limit, and its
+   night_end line (the night ran on) or none (it was ended).
+c. Whether llama-server still holds the graphics card (gpu-after.txt).
+d. Open the Dashboard of the test install. If the night was ended: the morning note and the job's Queue
+   card say so; here, because the night's own hard mark is two minutes before ITS 6-hour limit and not this
+   test's 10 minutes, the words are "The night's run was interrupted at about <time>, and what stopped it
+   cannot be told: the PC did not restart, so the run's own process was ended ..." (at a real 6-hour end
+   they are "Windows stopped the night's run at <time>, at the 6-hour limit it allows the nightly task").
+   If it ran on: no note about a stop, and the Queue's Last night card shows the night's real length.
+e. The next nightly run (or Start-ScheduledTask once more after the night is over) continues the job from the
+   stage it reached, if one was left.
+
+Then put everything back
+7. End whatever is left by its pid from tree-after.txt (Stop-Process -Id <pid>), never by name.
+8. Restore the task's limit:
+     $s.ExecutionTimeLimit = 'PT6H'; Set-ScheduledTask -TaskName 'Nightshift Daily' -Settings $s
+   and remove NS_TEST_NIGHT_LIMIT_S. Save the task list again (tasks-after.xml) and compare it with
+   tasks-before.xml: only the run times may differ.

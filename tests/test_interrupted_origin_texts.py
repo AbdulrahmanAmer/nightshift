@@ -274,3 +274,64 @@ def test_a_resume_by_hand_of_a_nightly_job_does_not_credit_the_nightly_run() -> 
     for resume, reason in (("pending", None), ("needs_retry", ownership.PAUSED_REASON), ("needs_retry", None)):
         text = ownership._card_text("voice", resume, reason, "gone", "manual")
         assert not any(w in text for w in NIGHT_WORDS) and "Press Retry to continue it" in text, text
+
+
+def test_every_cause_sentence_keeps_the_nightly_condition(tmp_home: Path) -> None:
+    """Card night-fits-b test 22: each sentence `nightcause` can give a dead night, and the sleep's, in the
+    morning note and on the Queue card of a job the next night continues, keeps "while Automatic runs are on"."""
+    import importlib
+    from types import SimpleNamespace
+
+    try:
+        nightcause = importlib.import_module("ns_studio.nightcause")
+    except ImportError:
+        nightcause = None
+    assert nightcause is not None, "no cause of a dead night (ns_studio.nightcause)"
+    paths = Paths.from_env()
+    last = datetime(2026, 11, 12, 3, 0, tzinfo=UTC)
+    task = last - timedelta(hours=6)
+    lines = [{"kind": "night_start", "run_id": "r", "at": task.isoformat(), "task_start": task.isoformat(),
+              "limit": 21600},
+             {"kind": "cut_expected", "run_id": "r", "at": (last - timedelta(seconds=100)).isoformat()}]
+    beat = {"run_id": "r", "at": last.isoformat()}
+
+    def event(i: int, at: datetime, **kw: Any) -> Any:
+        base = {"provider": "", "process": None, "reason": None, "action": None, "stopped_at": None}
+        return SimpleNamespace(id=i, at=at, **{**base, **kw})
+
+    class Log:
+        def __init__(self, *events: Any) -> None:
+            self.events = events
+
+        def read(self, since: datetime) -> list[Any]:
+            return [e for e in self.events if e.at >= since]
+
+    soon, boot = last + timedelta(seconds=20), last + timedelta(minutes=5)
+    causes = [
+        nightcause.cause(paths, "r", Log(), last - timedelta(days=1), lines=lines, beat=beat),
+        nightcause.cause(paths, "r", Log(event(1074, soon, process="TrustedInstaller.exe")), boot, lines=lines,
+                         beat=beat),
+        nightcause.cause(paths, "r", Log(event(6008, boot, stopped_at=soon)), boot, lines=lines, beat=beat),
+        nightcause.cause(paths, "r", Log(event(1074, soon, process="explorer.exe", action="restart")), boot,
+                         lines=lines, beat=beat),
+        nightcause.cause(paths, "r", Log(), boot, lines=lines[:1], beat=beat),
+    ]
+    assert [c.kind for c in causes] == ["time_limit", "update_restart", "power_loss", "shutdown", "unknown"]
+    for c in causes:
+        job = ownership.Interrupted("j1", CH, "master_first", "voice", "daily", "r", "gone", True, cause=c)
+        job.card_id = "card"
+        note = ownership.recovery_message(ownership.Recovery(jobs=[job])) or ""
+        assert note.startswith(f"{c.said}, while {CH}'s video was at voice. ") and "power cut" not in note, note
+        assert "while Automatic runs are on in Settings" in note, note
+        card = ownership._card_text("voice", "pending", None, "gone", cause_said=c.said)
+        assert ownership.WHILE_NIGHTLY_ON in card and "the PC or Nightshift stopped" not in card, card
+    slept = ownership._card_text("voice", "pending", None, ownership.SLEPT_OWNER)
+    assert "went to sleep" in slept and ownership.WHILE_NIGHTLY_ON in slept
+    job = ownership.Interrupted("j1", CH, "master_first", "voice", "daily", "r", "gone", True)
+    job.card_id = "card"
+    from ns_studio import daily
+
+    gap = SimpleNamespace(frm=last, to=last + timedelta(hours=2), slept_s=7200.0)
+    words = daily.slept_words(gap, CH, "voice")  # type: ignore[arg-type]
+    note = ownership.recovery_message(ownership.Recovery(jobs=[job]), outcomes={"j1": ("slept", words)}) or ""
+    assert "while Automatic runs are on in Settings" in note and "went to sleep" in note
