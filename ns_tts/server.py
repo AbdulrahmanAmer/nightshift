@@ -28,6 +28,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from ns_common import homeguard
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.languages import qwen_language
@@ -417,6 +418,11 @@ def main() -> None:
     ap.add_argument("--engine", choices=["qwentts", "reference", "fake"], default=None)
     args = ap.parse_args()
     paths = Paths.from_env()
+    try:    # version-mismatch-writes: a voice server of another version never starts on this home (NS-E128)
+        homeguard.require_own(paths.home, "studio dashboard")
+    except NsError as e:     # before the log, the engine and the voice library: nothing was changed
+        sys.stderr.write(f"{e}\nHint: {e.definition.hint}\n")
+        raise SystemExit(1) from e
     from installer.stage2.web import venvrepair
 
     why = venvrepair.home_refusal(paths.home)   # D-48 review note: a model server started by hand, gated too

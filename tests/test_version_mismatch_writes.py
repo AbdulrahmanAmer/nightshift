@@ -725,6 +725,66 @@ def test_the_dashboard_refuses_at_its_start_before_anything_is_written(
     assert tree_of(a) == before and sorted(p.name for p in a.iterdir()) == ["app", "config"]
 
 
+def test_the_voice_server_refuses_at_its_start_before_anything_is_written(
+    two: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fresh review of 5d9d1db9: `python -m ns_tts.server` takes its home from the variable too, and wrote
+    that install's log and voices. The engine starts it on its own home; a hand start in the accident's
+    window is refused before the log."""
+    import sys
+
+    import uvicorn
+
+    from ns_tts import server
+
+    a, _ = two
+    before = tree_of(a)
+    reached: list[str] = []
+    monkeypatch.setattr(sys, "argv", ["ns_tts.server", "--engine", "fake"])
+    monkeypatch.setattr(uvicorn, "run", never(reached, "uvicorn.run"))    # one that got there never serves
+    with pytest.raises(SystemExit) as stopped:
+        server.main()
+    assert stopped.value.code == 1 and reached == []
+    assert "NS-E128" in capsys.readouterr().err
+    assert tree_of(a) == before and sorted(p.name for p in a.iterdir()) == ["app", "config"]
+
+
+def test_the_dashboards_job_child_refuses_before_its_handler(
+    two: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`python -m ns_dashboard.studio_job download` writes that install's imports folder through no database
+    and no `open_env`: the child asks at its start, as an `error` event the dashboard would show."""
+    from ns_dashboard import studio_job
+
+    a, _ = two
+    reached: list[str] = []
+    monkeypatch.setitem(studio_job.HANDLERS, "download", never(reached, "download"))
+    args = tmp_path / "args.json"
+    args.write_text('{"url": "https://example.invalid/v", "source_id": "s1"}', encoding="utf-8")
+    before = tree_of(a)
+    assert studio_job.main(["download", "--args", str(args)]) == 1
+    out = capsys.readouterr().out
+    assert reached == []
+    assert studio_job.PREFIX in out and '"ev": "error"' in out and '"code": "NS-E128"' in out
+    assert tree_of(a) == before and sorted(p.name for p in a.iterdir()) == ["app", "config"]
+
+
+def test_a_clip_job_asks_before_it_makes_a_folder(two: tuple[Path, Path]) -> None:
+    """`create_clip_job` made the home's folders before its database opener refused: it asks first now, so
+    `python -m ns_studio.clipper.cli` (no root of its own) leaves nothing behind."""
+    from ns_studio.clipper import stages_clip
+
+    a, _ = two
+    before = tree_of(a)
+    with pytest.raises(NsError) as caught:      # refused before the channel or the parameters are looked at
+        stages_clip.create_clip_job(nspaths.Paths(a), None, None)  # type: ignore[arg-type]
+    assert caught.value.code == "NS-E128"
+    assert tree_of(a) == before and sorted(p.name for p in a.iterdir()) == ["app", "config"]
+
+
 # ---------------------------------------------------------------------------------------------------------
 # C7: the settings writers
 # ---------------------------------------------------------------------------------------------------------
