@@ -3,19 +3,31 @@
 ``<home>\\bin\\uv`` holds the uv of the program in ``<app>`` and ``<home>\\bin\\uv.prev`` the uv of the
 program in ``<app>.prev``, mirroring the program folders. An update or a rollback calls ``prepare`` before it
 changes anything (U1 read the pin, U2 compare, U3 get the zip, U4 unpack to ``bin\\uv.next`` and run it),
-``Plan.swap`` right before the repair record and the program swap (U5), and ``Plan.undo`` when the program
-did not get to ``<app>`` or was put back (U6, U7).
+``Plan.swap`` right before the repair record and the program swap (U5), ``Plan.finish`` right after the
+program swap, and ``Plan.undo`` when the program did not get to ``<app>`` or was put back (U6, U7).
 
 Invariant: every uv command that fills a venv of this install runs with the uv version the program it fills
 pins (or, for a program that pins none, the install's uv); an update that cannot have that uv changes nothing.
+And nothing of ``bin`` is deleted while a program folder may still need it: the uv of ``<app>.prev`` is moved
+aside to ``bin\\uv.swap`` by the swap, never deleted by it, and goes only when the program swap is done
+(``finish``) or when ``settle`` sees that ``<app>.prev`` does not pin it.
 
-Folders and what a kill leaves (``settle`` runs first in every ``prepare``):
+The swap of a fetched uv (``how == "next"``), one rename per step: S1 ``bin\\uv.prev`` -> ``bin\\uv.swap``,
+S2 ``bin\\uv`` -> ``bin\\uv.prev``, S3 ``bin\\uv.next`` -> ``bin\\uv``. A refused rename puts back what moved
+before it. The exchange (``how == "prev"``): E1 ``bin\\uv`` -> ``bin\\uv.swap``, E2 ``bin\\uv.prev`` ->
+``bin\\uv``, E3 ``bin\\uv.swap`` -> ``bin\\uv.prev``.
+
+Folders and what a kill leaves (``settle`` runs first in every ``prepare``, with the pin of ``<app>.prev``):
 
 - ``bin\\uv.next``: a uv that was unpacked and not yet swapped in. Never read by anything; removed.
-- ``bin\\uv`` missing and ``bin\\uv.prev`` there: a swap was cut between its two renames. ``bin\\uv.prev``
-  goes back to ``bin\\uv`` (the program swap comes after the uv swap, so the older uv is the right one, and
-  when it is not, the compare that follows sees it).
-- ``bin\\uv.swap``: an exchange with ``bin\\uv.prev`` was cut. It becomes ``bin\\uv.prev``.
+- ``bin\\uv`` missing and ``bin\\uv.prev`` there (killed after S2 or E1): ``bin\\uv.prev`` goes back to
+  ``bin\\uv`` (the program swap comes after the uv swap, so the older uv is the right one, and when it is
+  not, the compare that follows sees it).
+- ``bin\\uv.swap`` and no ``bin\\uv.prev`` (killed after S1, S2 or E2): it becomes ``bin\\uv.prev``.
+- ``bin\\uv.swap`` and ``bin\\uv.prev`` both (killed after S3, before ``finish``): when ``bin\\uv.swap`` is
+  the uv ``<app>.prev`` pins and ``bin\\uv.prev`` is not, the program swap did not happen and the uv swap is
+  put back whole (the fetched uv stays in the cache); otherwise ``bin\\uv.swap`` is not needed and goes. With
+  no pin of ``<app>.prev`` to go by (``older`` None) it is left.
 
 Standard library only at import (setup's own server imports this package without httpx); the download
 imports httpx and ``ns_supervisor.releases`` when it is called, which only the updater does.
@@ -254,19 +266,34 @@ def extract(zip_path: Path, dest: Path) -> None:
                 shutil.copyfileobj(src, out)
 
 
-def settle(home: Path) -> None:
-    """Finish what a run killed inside a swap left (the module text lists the three states). Never raises:
-    what could not be moved is seen by the compare that follows."""
+def _serves(folder: Path, pin: Mapping[str, str]) -> bool:
+    """The uv in ``folder`` runs and is the version ``pin`` names (False for a pin without a version)."""
+    want = pin.get("version", "")
+    return bool(want) and report(folder / EXE) == (True, want)
+
+
+def settle(home: Path, older: Mapping[str, str] | None = None) -> None:
+    """Finish what a run killed inside a swap left (the module text lists the states). ``older`` is the pin
+    of the program in ``<app>.prev`` ({} when there is none or it pins none; None: not known, so a kept
+    ``bin\\uv.swap`` is never deleted). Never raises: what could not be moved is seen by the compare that
+    follows, and the next ``settle`` tries again."""
     uv, prev, nxt, tmp = (uv_dir(home, s) for s in ("", ".prev", ".next", ".swap"))
     try:
         if not (uv / EXE).is_file() and (prev / EXE).is_file():
             shutil.rmtree(uv, ignore_errors=True)
             os.rename(prev, uv)
         if tmp.exists():
-            if prev.exists():
-                shutil.rmtree(tmp, ignore_errors=True)
-            else:
+            if not prev.exists():
                 os.rename(tmp, prev)
+            elif older is not None and _serves(tmp, older) and not _serves(prev, older):
+                # killed after S3 and before the program swap: <app>.prev still needs the kept uv, so the
+                # whole uv swap goes back (bin\uv was the uv of the program still in <app>)
+                shutil.rmtree(nxt, ignore_errors=True)
+                os.rename(uv, nxt)
+                os.rename(prev, uv)
+                os.rename(tmp, prev)
+            elif older is not None:     # bin\uv.prev serves <app>.prev, or <app>.prev does not want this one
+                shutil.rmtree(tmp, ignore_errors=True)
     except OSError:
         pass
     shutil.rmtree(nxt, ignore_errors=True)
@@ -285,23 +312,34 @@ class Plan:
     swapped: bool = False
     #: A rollback's sentence when the older program's uv could not be had and the current one stays.
     stays: str = ""
+    #: The pin of the program in ``<app>.prev`` when ``prepare`` ran (``settle`` decides a kept uv by it).
+    older: Mapping[str, str] | None = None
 
     def swap(self, rename: Rename = os.rename) -> str:
-        """U5. ``OSError`` when a rename stays refused (a uv still running): ``bin\\uv`` is as it was then,
-        except in the one case ``undo`` and ``settle`` finish. The line for the log when it swapped."""
+        """U5 (S1 to S3, or E1 to E3: the module text). ``OSError`` when a rename stays refused (a uv still
+        running): what moved before it is put back, and ``undo`` (which the caller calls next) or the next
+        ``settle`` finishes what that could not. ``bin\\uv.prev`` is moved aside to ``bin\\uv.swap``, never
+        deleted here: ``finish`` removes it after the program swap. The line for the log when it swapped."""
         uv, prev, nxt, tmp = (uv_dir(self.home, s) for s in ("", ".prev", ".next", ".swap"))
+        if self.how and tmp.exists():   # (settle could not decide or move it: nothing deleted to make room)
+            raise OSError(f"{tmp} is left from an earlier swap and could not be settled")
         if self.how == "next":
-            shutil.rmtree(prev, ignore_errors=True)
-            if uv.exists():
-                rename(uv, prev)
+            if prev.exists():
+                rename(prev, tmp)               # S1: the uv of <app>.prev aside, kept until the swap is done
             try:
-                rename(nxt, uv)
+                if uv.exists():
+                    rename(uv, prev)            # S2
+                rename(nxt, uv)                 # S3
             except OSError:
-                if prev.exists() and not uv.exists():
-                    os.rename(prev, uv)
+                try:        # back in the order they moved: bin\uv first, then the kept uv to bin\uv.prev
+                    if prev.exists() and not uv.exists():
+                        os.rename(prev, uv)
+                    if tmp.exists() and not prev.exists():
+                        os.rename(tmp, prev)
+                except OSError:
+                    pass    # (a cut swap: `undo`, called next by the caller, settles it; else the next run)
                 raise
         elif self.how == "prev":
-            shutil.rmtree(tmp, ignore_errors=True)
             rename(uv, tmp)
             try:
                 rename(prev, uv)
@@ -315,29 +353,52 @@ class Plan:
         self.swapped = True
         return f"uv {self.want} put in place (was {self.was or 'none'})"
 
+    def finish(self, older: Mapping[str, str]) -> None:
+        """Right after the program swap (or after the uv swap when no program swap follows): ``older`` is the
+        pin of the program in ``<app>.prev`` NOW. The uv kept in ``bin\\uv.swap`` by S1 goes, unless it is
+        the one ``<app>.prev`` pins and ``bin\\uv.prev`` is not: then it takes the place of ``bin\\uv.prev``.
+        Never raises: what stays is decided by the next ``settle`` by the same rule."""
+        prev, tmp = uv_dir(self.home, ".prev"), uv_dir(self.home, ".swap")
+        if self.swapped and self.how == "next" and tmp.exists():
+            try:
+                if _serves(tmp, older) and not _serves(prev, older):
+                    shutil.rmtree(prev, ignore_errors=True)
+                    os.rename(tmp, prev)
+                else:
+                    shutil.rmtree(tmp, ignore_errors=True)
+            except OSError:
+                pass
+        self.older = None   # (<app>.prev is another program now: an `undo` after this decides nothing by it)
+
     def undo(self, rename: Rename = os.rename) -> str:
-        """U6, U7: the uv that was there before, back in ``bin\\uv``. Never raises; the sentence says what is
-        there now ("" when nothing had been swapped)."""
+        """U6, U7: the uv that was there before, back in ``bin\\uv``, and the kept uv back in
+        ``bin\\uv.prev``. Never raises; the sentence says what is there now ("" when it is as it was)."""
         uv, prev, nxt, tmp = (uv_dir(self.home, s) for s in ("", ".prev", ".next", ".swap"))
         if not self.swapped:
-            shutil.rmtree(nxt, ignore_errors=True)
-            return ""
+            if not self.how:
+                shutil.rmtree(nxt, ignore_errors=True)
+                return ""
+            settle(self.home, self.older)   # (a swap refused half way and not put back: finished here)
+            if (uv / EXE).is_file() or not self.was:
+                return ""
+            return f" uv could not be put back to {self.was}: {uv} is missing. {REPAIR}"
         try:
-            if tmp.exists() and not prev.exists():
-                os.rename(tmp, prev)
             if self.how == "next":
                 shutil.rmtree(nxt, ignore_errors=True)
                 rename(uv, nxt)
                 if prev.exists():
                     rename(prev, uv)
+                if tmp.exists() and not prev.exists():   # (before `finish`: the kept uv of <app>.prev)
+                    rename(tmp, prev)
                 shutil.rmtree(nxt, ignore_errors=True)
             else:
-                shutil.rmtree(tmp, ignore_errors=True)
+                if tmp.exists() and not prev.exists():   # (E3 was cut)
+                    os.rename(tmp, prev)
                 rename(uv, tmp)
                 rename(prev, uv)
                 rename(tmp, prev)
         except OSError as e:
-            settle(self.home)
+            settle(self.home, self.older)
             runs, have = report(uv / EXE)
             if not (runs and have == self.was):
                 return f" uv could not be put back to {self.was or 'what it was'} ({e}). {REPAIR}"
@@ -348,11 +409,13 @@ class Plan:
 def prepare(
     pin: Mapping[str, str], home: Path, *, files_root: Path | None = None,
     say: Callable[[str], None] = lambda line: None, fetch: Fetch | None = None,
+    older: Mapping[str, str] | None = None,
 ) -> Plan:
     """U1 to U4, before anything of the install is changed. ``NotHad`` when the pinned uv cannot be had or
-    does not run; ``bin\\uv`` and ``bin\\uv.prev`` are untouched then and ``bin\\uv.next`` is removed."""
-    plan = Plan(home)
-    settle(home)        # U0: a bin/uv.next or a cut swap that a killed run left goes first, pin or no pin
+    does not run; ``bin\\uv`` and ``bin\\uv.prev`` are untouched then and ``bin\\uv.next`` is removed.
+    ``older``: the pin of the program in ``<app>.prev`` (``settle``)."""
+    plan = Plan(home, older=older)
+    settle(home, older)  # U0: a bin/uv.next or a cut swap that a killed run left goes first, pin or no pin
     want = pin.get("version", "")
     if not want:
         say("this program pins no uv version: the install's uv is kept")

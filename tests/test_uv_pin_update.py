@@ -357,6 +357,124 @@ def test_a_swap_cut_between_its_two_renames_is_settled_by_the_next_run(tmp_path:
     assert not (home / "bin" / "uv.swap").exists()
 
 
+def three_uvs(tmp_path: Path) -> tuple[Path, uvpin.Plan]:
+    """A home in the state just before S1: bin\\uv 0.13.6 (the program in <app>), bin\\uv.prev 0.12.0 (the
+    program in <app>.prev), bin\\uv.next 0.14.0 (fetched for the update); the plan `prepare` would make."""
+    home = tmp_path / "ns"
+    put_uv(home / "bin" / "uv", "0.13.6")
+    put_uv(home / "bin" / "uv.prev", "0.12.0")
+    put_uv(home / "bin" / "uv.next", "0.14.0")
+    plan = uvpin.Plan(home, want="0.14.0", was="0.13.6", how="next", older={"version": "0.12.0"})
+    return home, plan
+
+
+def uvs(home: Path) -> tuple[str | None, str | None, str | None, str | None]:
+    """(bin\\uv, bin\\uv.prev, bin\\uv.swap, bin\\uv.next): the version each reports, None when absent."""
+    at = [version_at(home / "bin" / f"uv{s}") for s in ("", ".prev", ".swap", ".next")]
+    return at[0], at[1], at[2], at[3]
+
+
+def failing_at(step: int, exc: BaseException) -> uvpin.Rename:
+    """A rename that does the first `step - 1` renames and raises `exc` at rename number `step`."""
+    done: list[tuple[Path, Path]] = []
+
+    def rename(src: Path, dst: Path) -> None:
+        if len(done) + 1 == step:
+            raise exc
+        done.append((src, dst))
+        src.rename(dst)
+
+    return rename
+
+
+@pytest.mark.parametrize("step", [1, 2, 3])
+def test_a_refused_rename_keeps_the_older_programs_uv(tmp_path: Path, step: int) -> None:
+    """B1 (written, NOT RUN): S1, S2 or S3 refused. What moved before it is put back and `undo` (which
+    `update.uv_swap` calls next) finds nothing left to do: bin\\uv.prev still reports 0.12.0."""
+    home, plan = three_uvs(tmp_path)
+    with pytest.raises(OSError, match="held"):
+        plan.swap(failing_at(step, PermissionError("held by another program")))
+    assert plan.undo() == ""
+    assert uvs(home) == ("0.13.6", "0.12.0", None, None)
+
+
+@pytest.mark.parametrize(
+    ("step", "older", "after"),
+    [
+        (1, {"version": "0.12.0"}, ("0.13.6", "0.12.0", None, None)),   # killed after S1
+        (2, {"version": "0.12.0"}, ("0.13.6", "0.12.0", None, None)),   # killed after S2
+        (3, {"version": "0.12.0"}, ("0.13.6", "0.12.0", None, None)),   # after S3, program swap not done
+        (3, {"version": "0.13.6"}, ("0.14.0", "0.13.6", None, None)),   # after S3 and the program swap
+        (3, {}, ("0.14.0", "0.13.6", None, None)),                       # <app>.prev gone or pins none
+        (3, None, ("0.14.0", "0.13.6", "0.12.0", None)),                 # not known: nothing is deleted
+    ],
+)
+def test_a_kill_after_each_step_of_the_swap_is_settled_by_the_next_run(
+    tmp_path: Path, step: int, older: dict[str, str] | None, after: tuple[str | None, ...]
+) -> None:
+    """B1 (written, NOT RUN): the worker killed right after S`step` (a KeyboardInterrupt at the next rename,
+    or no `finish` after S3), then the next update or rollback's `settle` with the pin of <app>.prev then."""
+    home, plan = three_uvs(tmp_path)
+    if step < 3:
+        with pytest.raises(KeyboardInterrupt):
+            plan.swap(failing_at(step + 1, KeyboardInterrupt()))
+    else:
+        plan.swap()                              # S3 done; the kill comes before `finish`
+    assert uvs(home)[2] == "0.12.0"              # the older program's uv is kept aside, never deleted
+    uvpin.settle(home, older)
+    assert uvs(home) == after
+
+
+def test_the_uv_kept_aside_goes_back_or_goes_by_the_program_in_prev(tmp_path: Path) -> None:
+    """B1 (written, NOT RUN): `undo` after S3 (U6: a refusal before the program swap) puts both back; `finish`
+    after the program swap removes the kept uv, or makes it bin\\uv.prev when <app>.prev pins it."""
+    home, plan = three_uvs(tmp_path)
+    plan.swap()
+    assert uvs(home) == ("0.14.0", "0.13.6", "0.12.0", None)
+    assert plan.undo() == " uv is back at 0.13.6."
+    assert uvs(home) == ("0.13.6", "0.12.0", None, None)
+    home, plan = three_uvs(tmp_path / "2")
+    plan.swap()
+    plan.finish({"version": "0.13.6"})          # the update's program swap: <app>.prev is 0.13.6's program
+    assert uvs(home) == ("0.14.0", "0.13.6", None, None)
+    home, plan = three_uvs(tmp_path / "3")
+    plan.swap()
+    plan.finish({"version": "0.12.0"})          # no program swap followed (a finished rollback's own uv)
+    assert uvs(home) == ("0.14.0", "0.12.0", None, None)
+
+
+def older_program(inst: Install, uv: str) -> None:
+    """<app>.prev: program 0.0.9, which pins uv `uv`, and that uv in bin\\uv.prev."""
+    prev = inst.app.with_name(inst.app.name + ".prev")
+    shutil.copytree(inst.app, prev)
+    (prev / "VERSION").write_text("0.0.9\n", encoding="utf-8")
+    (prev / "manifest.json").write_text(manifest(uv, "0" * 64), encoding="utf-8")
+    put_uv(inst.bin / "uv.prev", uv)
+
+
+def test_a_refusal_between_the_two_swaps_keeps_the_older_programs_uv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B1 (written, NOT RUN): U6 with a bin\\uv.prev there. The refusal says nothing changed, and nothing did:
+    bin\\uv.prev still reports the uv <app>.prev pins. The same update done afterwards replaces both."""
+    inst, z = install(tmp_path), package(tmp_path)
+    older_program(inst, "0.12.0")
+
+    def no_record(*a: object, **kw: object) -> bool:
+        raise OSError("disk full")
+
+    with monkeypatch.context() as m:
+        m.setattr(update, "write_record", no_record)
+        with pytest.raises(NsError) as ei:
+            update.update_app(z, inst.app, Env().env(), paths=inst.paths)
+    assert ei.value.code == "NS-E702" and "could not record the update" in ei.value.detail
+    assert (inst.uv(), inst.uv(".prev"), inst.version()) == ("0.13.6", "0.12.0", "0.1.0")
+    assert not (inst.bin / "uv.swap").exists() and not (inst.bin / "uv.next").exists()
+    update.update_app(z, inst.app, Env().env(), paths=inst.paths)
+    assert (inst.uv(), inst.uv(".prev"), inst.version()) == ("0.14.0", "0.13.6", "0.2.0")
+    assert not (inst.bin / "uv.swap").exists()   # `finish`: 0.12.0's program left <app>.prev with the swap
+
+
 @pytest.mark.parametrize(
     ("text", "said"),
     [("broken\n", "does not run on this PC"), ("uv 0.13.9 (stand-in)\n", "reports 0.13.9, not 0.14.0")],

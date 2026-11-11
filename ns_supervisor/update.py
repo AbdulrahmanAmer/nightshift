@@ -34,7 +34,7 @@ import sys
 import tempfile
 import time
 import zipfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -1384,7 +1384,8 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
     signed = checked.key or "no key trusted yet: sha256 only"
     log.info("update_start", old=old_version, new=new_version, zip=str(zip_path), signed_by=signed)
     uv = uv_for(    # NS-E708, NS-E706: before Nightshift is stopped
-        uvpin.pin_in_zip(zip_path, prefix), paths, log, env.say, zip_path=zip_path, earlier=earlier
+        uvpin.pin_in_zip(zip_path, prefix), paths, log, env.say, zip_path=zip_path, earlier=earlier,
+        older=uvpin.pin_of(prev),
     )
     try:
         env.stop()
@@ -1448,6 +1449,7 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
             raise NsError("NS-E702", f"could not swap directories: {e}; {RESTORE_HINT}") from e2
         drop_copy()
         raise NsError("NS-E702", f"could not swap directories: {e}") from e
+    uv.finish(uvpin.pin_of(prev))  # B1: the uv kept for the program that left <app>.prev goes only now
     # D-39a review note 3: "run the update again" here would replace <app>.prev, the only way back to the
     # older version; going there and back with --rollback keeps it, and the next start replays the record
     # before either
@@ -1588,8 +1590,11 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             # stops here and says so; the owner decides whether to go back. (The interrupted run never
             # synced the venvs for the program now in place: that is done here, still under the lock.)
             here, back = _shown_version(app), _shown_version(prev)
-            uv = uv_for(uvpin.pin_of(app), paths, log, env.say, target=here)  # (of the program in place)
+            uv = uv_for(  # (of the program in place)
+                uvpin.pin_of(app), paths, log, env.say, target=here, older=uvpin.pin_of(prev)
+            )
             uv_swap(uv, paths, log, env.say, "", soft=True)
+            uv.finish(uvpin.pin_of(prev))   # (no program swap follows: the uv swap is the whole swap)
             try:
                 recorded = write_record(paths, app, app, by="rollback", log=log)
             except OSError as e:     # (the earlier rollback is finished already: said by the way out)
@@ -1695,7 +1700,9 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             ) from e
         # U8: got and swapped in one go (a rollback is never refused for its uv, and no way out lies between
         # the two, so no bin\uv.next is left); before the record, which names the uv
-        uv = uv_for(uvpin.pin_of(prev), paths, log, env.say, target=restored_version)
+        uv = uv_for(
+            uvpin.pin_of(prev), paths, log, env.say, target=restored_version, older=uvpin.pin_of(prev)
+        )
         uv_swap(uv, paths, log, env.say, ROLLBACK_PREPARE_STOPPED, soft=True)
         try:        # W5: what the next start replays if the sync after the swap does not finish
             recorded = write_record(paths, prev, app, by="rollback", log=log)
@@ -1722,6 +1729,7 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
                 f"could not swap directories: {e}; {RESTORE_HINT} The record "
                 f"{rollback_intent.path_for(app)} says what to do.",
             ) from e
+        uv.finish(uvpin.pin_of(prev))  # B1: <app>.prev is the newer program now
         try:
             finished = rollback_intent.finish(app, paths.config, intent)
         except OSError as e:  # the record stays: the next start of a program with this code deletes it
@@ -1854,25 +1862,16 @@ UV_STOPPED = (
 def uv_for(
     pin: dict[str, str], paths: Paths, log: NsLogger, say: Callable[[str], None], *,
     zip_path: Path | None = None, target: str = "", earlier: Iterable[str] = (),
+    older: Mapping[str, str] | None = None,
 ) -> uvpin.Plan:
     """U1 to U4: the uv that the program about to be in `<app>` pins, checked and ready to swap in, before
     anything is changed. An update (`zip_path`) that cannot have it is refused with NS-E708, before Nightshift
-    is stopped; a rollback keeps the uv there is and says so in its last sentence (`Plan.stays`)."""
-    # the `files` folder beside the zip as the updater has it, there or not (its path goes into NS-E708). The
-    # Dashboard's "From a file" uploads the zip into <home>\data\updates (`svc_library.update_apply_file`: a
-    # browser hands over bytes, not a path) and `--github` downloads into the same folder, so on those two
-    # routes it is <home>\data\updates\files, never a folder beside the file the owner picked
-    files = zip_path.parent / filesdir.FILES_DIR if zip_path is not None else None
+    is stopped; a rollback keeps the uv there is and says so in its last sentence (`Plan.stays`). Every way
+    out leaves no `bin\\uv.next`. `older`: the pin of the program in `<app>.prev` (`uvpin.settle` keeps the
+    uv it needs)."""
+    want = pin.get("version", "")
     try:
-        plan = uvpin.prepare(pin, paths.home, files_root=files, say=say)
-        # D-39a's holder check for `bin\uv`: a uv that still runs cannot be renamed. Looked at here, before
-        # Nightshift is stopped, so the refusal (NS-E706) leaves everything running as it was
-        dirs = [uvpin.uv_dir(paths.home, s) for s in (("", ".prev") if plan.how == "prev" else ("",))]
-        busy = [h for d in dirs for h in holders(paths, root=d)] if plan.how else []
-        if busy:
-            plan.undo()
-            raise uvpin.Held(f"uv is still running from {dirs[0]}: {'; '.join(str(h) for h in busy)}.")
-        return plan
+        return _uv_plan(pin, paths, say, zip_path=zip_path, older=older)
     except uvpin.Held as e:     # held or running is "could not look or replace", never "damaged"
         log.warn("uv_held", str(e))
         if zip_path is not None:
@@ -1883,13 +1882,38 @@ def uv_for(
         return uvpin.Plan(paths.home, stays=f" uv stays as it is: {e}")
     except uvpin.NotHad as e:
         log.warn("uv_pin_not_had", str(e))
-        want = pin.get("version", "")
         if zip_path is not None:
             said = f"This update needs uv {want}. {e} {NOTHING_CHANGED}"
             raise NsError("NS-E708", " ".join([*earlier, said])) from e
         now = uvpin.report(home_uv(paths.home))[1] or "the version it has"
         why = f"{target} pins {want} and it could not be had"
         return uvpin.Plan(paths.home, stays=f" uv stays at {now} ({why}); {target} runs with it.")
+
+
+def _uv_plan(
+    pin: dict[str, str], paths: Paths, say: Callable[[str], None], *,
+    zip_path: Path | None, older: Mapping[str, str] | None,
+) -> uvpin.Plan:
+    """`uv_for` without its sentences: `uvpin.prepare` and the holder check of `bin\\uv`. Whatever it raises,
+    `bin\\uv.next` is gone first (nothing was swapped yet, so `undo` only clears)."""
+    # the `files` folder beside the zip as the updater has it, there or not (its path goes into NS-E708). The
+    # Dashboard's "From a file" uploads the zip into <home>\data\updates (`svc_library.update_apply_file`: a
+    # browser hands over bytes, not a path) and `--github` downloads into the same folder, so on those two
+    # routes it is <home>\data\updates\files, never a folder beside the file the owner picked
+    files = zip_path.parent / filesdir.FILES_DIR if zip_path is not None else None
+    plan = uvpin.Plan(paths.home, older=older)
+    try:
+        plan = uvpin.prepare(pin, paths.home, files_root=files, say=say, older=older)
+        # D-39a's holder check for `bin\uv`: a uv that still runs cannot be renamed. Looked at here, before
+        # Nightshift is stopped, so the refusal (NS-E706) leaves everything running as it was
+        dirs = [uvpin.uv_dir(paths.home, s) for s in (("", ".prev") if plan.how == "prev" else ("",))]
+        busy = [h for d in dirs for h in holders(paths, root=d)] if plan.how else []
+        if busy:
+            raise uvpin.Held(f"uv is still running from {dirs[0]}: {'; '.join(str(h) for h in busy)}.")
+        return plan
+    except BaseException:
+        plan.undo()
+        raise
 
 
 def uv_swap(
