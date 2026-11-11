@@ -681,6 +681,16 @@ it makes the full diagnostics zip with `ns doctor --bundle`, and when that fails
 the half-filled one) a smaller zip made without Python (the logs folder, `config/install_state.json`, `VERSION`,
 `run/venv-repair.json`, `run/update_state.json`; no settings and no keys), and says which one it made, or that none
 was made and which folder to send instead.
+An update first puts in place the version of uv (the tool that installs the Python packages) that the new program
+names in its `manifest.json`, when the install has another one: it takes the uv zip from a folder named `files`
+next to the update zip, then from `cache\uv-<version>.zip` in the install folder, then from GitHub, and uses it
+only when its SHA256 is the one the program names. For an update on a PC without internet, put that zip (the
+message names it, for example `uv-x86_64-pc-windows-msvc.zip` from that version's page of uv's releases on GitHub)
+into `files` next to the update zip. When no copy can be had or the uv in it does not run, the update stops with
+`NS-E708` before it stops or changes anything: Nightshift keeps running as it was. The uv it replaces stays in
+`bin\uv.prev`, and `ns update --rollback` puts it back; when a rollback cannot get the older program's uv, it still
+goes back and its result line says that uv stays at the newer version. `ns doctor` (row "uv") names a uv that is
+not the one the program names, with Repair as the way out.
 From 0.1.14 and the 0.1.15 candidates up to rc3, update or go back with Settings > Updates, the Update shortcut or
 `ns update ... --detach`: their own `ns update` typed in a terminal without `--detach` fails on its own `ns.exe`
 (0.1.14's `ns update <zip>` then puts 0.1.14 back; rc3's `ns update --rollback` leaves one environment on the newer
