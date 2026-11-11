@@ -8,7 +8,7 @@ owner does every click, every Windows prompt and every answer only a person can 
 
 ## 0. If you are a NEW session picking this up
 
-An earlier session may have done part of this. Run these three commands first.
+An earlier session may have done part of this. Run these three checks first.
 ```powershell
 Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'Nightshift-trial\vars.ps1' } | Where-Object { Test-Path $_ }
 ```
@@ -16,20 +16,19 @@ Nothing printed: begin at section 1. A path printed: use it in every `Invoke-Exp
 ```powershell
 Invoke-Expression (Get-Content -Raw 'D:\Nightshift-trial\vars.ps1')
 Get-Content "$N\findings.md" -TotalCount 8; Get-Content "$H\logs\install-report.json" -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json | Select-Object outcome
+"setup running: $(Test-Running "$N\setup-runs.txt")"
 ```
-The third command is the follow block of 5.4. Read all of `$N\findings.md`, then go on:
+The third is 5.4's follow block (process alive, state file, the log's last line). Read all of `$N\findings.md`:
 
 | What you see | Go on at |
 |---|---|
-| no `outcome`, no `$N\setup-console.log` | the first step of 3 or 4 not yet in the findings |
-| no `outcome`, and `$N\setup-console.log` changed in the last 20 minutes | 4.6 (setup is still working) |
-| no `outcome`, the log has not changed for 20 minutes | 4.5 once (setup resumes), then 4.6 |
+| no `outcome`, no `$N\setup-runs.txt` | the first step of 3 or 4 not yet in the findings |
+| no `outcome`, `setup running: True` | 4.6 (setup is still working) |
+| no `outcome`, `setup running: False` | 4.5 once (setup resumes), then 4.6 |
 | `outcome` is `failed` | 4.8 |
 | `outcome` is `done`, no `$K\kit-state.json` | 5.1 |
 | `kit running: True` | 5.4 |
-| `kit running: False`, `come back` is in the future | wait until that time, then 5.3 |
-| `kit running: False`, a step is not done, no `come back` or it has passed | section 6 for that step's line, then 5.3 |
-| K7 is done | 5.7, then section 7 |
+| `kit running: False` | the row of section 6 for the last line's `exit_code` |
 
 ## 1. Who you are and what this is
 
@@ -46,17 +45,15 @@ passed unless you saw its result yourself (a line, a file, an exit code). What y
 
 1. This is the owner's real machine. Write only into the work folder `$W` and the install folder `$H` (step 3.2).
    Delete nothing anywhere, also not inside those two.
-2. Change no Windows setting, driver, power plan, sleep or wake setting, scheduled task, PATH, saved environment
-   variable or registry key yourself. When setup, `ns doctor` or the kit says something must change (a driver, wake
-   timers, free disk space, Smart App Control, an antivirus block, the Visual C++ runtime), stop that step, tell
-   the owner in plain words, write it in the findings, and go on only when the owner did it or said to go on
-   without it. Nightshift changes its own nightly task through its own routes (setup, Settings, the kit).
+2. Change no Windows setting, driver, power or sleep setting, scheduled task, PATH, saved environment variable or
+   registry key yourself. When something must change (a driver, wake timers, disk space, Smart App Control, an
+   antivirus block, the Visual C++ runtime), stop that step, tell the owner, record it, and go on only when the
+   owner did it or said to go on without it. Nightshift changes its own nightly task through its own routes.
 3. No keyboard or mouse automation, no clicking or typing in windows. A Windows permission prompt, a window that
    needs a click and every question only a person can answer belong to the owner. The kit opens a Nightshift Code
    window by itself in its step 8: leave it alone; the kit closes it.
-4. Setup downloads about 22 GB of models (step 4.6). Never start anything that would fetch them again (an
-   uninstall, a new install folder, removing `models`) without the owner's yes. Running setup again does not
-   download a finished file again.
+4. Never start anything that would download the 22 GB of models again (an uninstall, a new install folder,
+   removing `models`) without the owner's yes. Running setup again does not download a finished file again.
 5. The stock-footage key is the owner's. Only the owner types or pastes it (step 4.4 or 5.1). You never read,
    print, copy, store or send it: you only check THAT one is stored (step 4.4 prints True or False; `ns doctor`
    prints "accepted the key" and never the key). Also never paste, print or upload any token or password, the
@@ -66,36 +63,38 @@ passed unless you saw its result yourself (a line, a file, an exit code). What y
 7. Post nothing to YouTube. Upload nothing anywhere except to the GitHub issue of section 7.
 8. Stop only what Nightshift started, and only by its own routes (`ns stop` in step 8.2, the kit's own end).
    Never `Stop-Process` or `taskkill`.
-9. Long work (setup, the kit, an update) runs as a background process whose output goes to a file in `$N`; your
-   shell calls are short checks. Between checks wait with your harness's own wait (one `Start-Sleep -Seconds 900`
-   call, or a background wait if foreground sleeps are refused); never a loop that prints. Each shell call starts
-   fresh: begin every block with the `Invoke-Expression` line of step 3.2. All commands are Windows PowerShell 5.1.
+9. Setup and the kit run for hours in one process; your shell tool cuts a call off after minutes and may end what
+   that call started. So they start DETACHED (`Start-Detached`, step 3.2: Windows' process service starts them, so
+   they are no child of your shell), log to `$N`, and you record the pid and return. Then short checks, with your
+   harness's own wait between them (one `Start-Sleep -Seconds 900`, or a background wait); never a printing loop.
+   Begin every block with the `Invoke-Expression` line of step 3.2. All commands are Windows PowerShell 5.1.
 
 ## 3. Before installing
 
-Do the steps in order. Write every result into the findings (section 7). Tell the owner first, in two sentences,
-what will happen: setup runs without its window and downloads for up to a few hours; then the kit runs 5 to 8
-hours on the first day, two nights by themselves, and 15 minutes on the third day.
+Do the steps in order; write every result into the findings (section 7). Tell the owner first: setup downloads
+for up to a few hours; the kit runs 5 to 8 hours on day 1, two nights by themselves, 15 minutes on day 3.
 
 3.1 Pick the drive.
 ```powershell
 Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object DeviceID, @{n='FreeGB';e={[math]::Round($_.FreeSpace/1GB,1)}}, @{n='SizeGB';e={[math]::Round($_.Size/1GB,1)}}
 Get-PhysicalDisk | Select-Object FriendlyName, MediaType, BusType, @{n='SizeGB';e={[math]::Round($_.Size/1GB)}}
 ```
-Acceptable: a local SSD or NVMe drive with at least 75 GB free; prefer one that is not C:. Setup works out its
-exact need itself (about 64 GB with the Balanced model: the models, the programs and a reserve for videos).
-If not: no drive has 75 GB free: stop, tell the owner what each drive has; the owner frees space themselves. Only a
-hard disk (MediaType HDD): setup warns NS-W106 (slow model loading); go on only with the owner's yes.
+Acceptable: a local SSD or NVMe drive with 75 GB free, preferably not C: (setup's own need is about 64 GB). If
+not: none has 75 GB: tell the owner what each has; they free space. Only a hard disk: setup warns NS-W106 (slow
+model loading); go on only with the owner's yes.
 
 3.2 Make the work folder and the variables file. Replace `D:` with the drive of 3.1 in all five places.
 ```powershell
 New-Item -ItemType Directory -Force 'D:\Nightshift-trial\notes', 'D:\Nightshift-trial\download' | Out-Null
-New-Item -ItemType File -Force 'D:\Nightshift-trial\empty.txt' | Out-Null
 @'
 $T = 'v0.1.15-rc5'; $V = $T.TrimStart('v'); $R = 'AbdulrahmanAmer/nightshift'
-$W = 'D:\Nightshift-trial'; $N = "$W\notes"; $X = "$W\setup"; $H = 'D:\Nightshift'; $K = "$H\kit"; $E = "$W\empty.txt"
-$env:PYTHONUNBUFFERED = '1'; $env:PYTHONIOENCODING = 'utf-8'
+$W = 'D:\Nightshift-trial'; $N = "$W\notes"; $X = "$W\setup"; $H = 'D:\Nightshift'; $K = "$H\kit"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+function Start-Detached([string]$CommandLine, [string]$Dir) {
+  $su = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0; EnvironmentVariables = [string[]](Get-ChildItem Env: | ForEach-Object { "$($_.Name)=$($_.Value)" }) }
+  $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $CommandLine; CurrentDirectory = $Dir; ProcessStartupInformation = $su }
+  if ($r.ReturnValue -ne 0) { "NOT STARTED (Win32_Process.Create returned $($r.ReturnValue))" } else { $r.ProcessId } }
+function Test-Running([string]$File) { $l = @(Get-Content $File -ErrorAction SilentlyContinue)[-1]; if ($l -match '^(\d+) ') { $q = Get-Process -Id $Matches[1] -ErrorAction SilentlyContinue; [bool]($q -and $q.ProcessName -eq 'cmd') } else { $false } }
 '@ | Set-Content -Encoding ASCII 'D:\Nightshift-trial\vars.ps1'
 ```
 From here on, every block starts with this line (it is not repeated below):
@@ -103,7 +102,8 @@ From here on, every block starts with this line (it is not repeated below):
 Invoke-Expression (Get-Content -Raw 'D:\Nightshift-trial\vars.ps1')
 ```
 `$H` (setup creates it): plain letters, digits, `-` and `_` (NS-E117), not in Downloads or OneDrive, not `$X`
-(NS-E115). `$E` is empty: every background process reads it as input, so no prompt waits. `$env:` is this shell only.
+(NS-E115). `Start-Detached` starts a command hidden, outside your shell, with this shell's environment, and prints
+its pid; `Test-Running` says whether the pid on the last line of a runs file is still that command.
 
 3.3 Windows and memory.
 ```powershell
@@ -211,20 +211,22 @@ Dashboard (step 5.1); record which. Not valid JSON: the owner opens it again and
 
 4.5 Start setup in the background (also the command to resume it after a stop, a closed session or a restart).
 ```powershell
-Start-Process -FilePath "$X\INSTALL.cmd" -ArgumentList '-Answers', "$W\answers.json" -WorkingDirectory $X -RedirectStandardInput $E -RedirectStandardOutput "$N\setup-console.log" -RedirectStandardError "$N\setup-console.err" -WindowStyle Hidden; Get-Date -Format s
+$log = "$N\setup-$(Get-Date -Format yyyyMMdd-HHmm).log"
+$id = Start-Detached ('cmd.exe /d /s /c ""{0}\INSTALL.cmd" -Answers "{1}\answers.json" > "{2}" 2>&1"' -f $X, $W, $log) $X
+"$id $log" | Add-Content "$N\setup-runs.txt"; "setup pid $id, log $log"
 ```
-Expected within two minutes, in `$N\setup-console.log`: "Nightshift setup - stage 1", "Using answers from ...
-(unattended mode).", then rows of the PC check marked `[ OK ]`, `[WARN]` or `[FAIL]`, each non-OK row with its
-code. If not: "Setup is already running on this PC": an earlier start still works: go to 4.6. "Setup cannot
-continue until the red items are fixed": 4.8. A start overwrites the log: copy it first
-(`Copy-Item "$N\setup-console.log" "$N\setup-console-$(Get-Date -Format HHmmss).log"`) when you start it again.
+With `-Answers`, INSTALL.cmd and setup read no input and never pause (the wizard runs `--non-interactive`).
+Expected: a number as the pid, and within two minutes, in the log: "Nightshift setup - stage 1", "Using answers
+from ... (unattended mode).", then the PC check's rows `[ OK ]`, `[WARN]` or `[FAIL]`, each non-OK row with its
+code. If not: `NOT STARTED`: record it, stop and report. "Setup is already running on this PC": an earlier start
+still works: 4.6. "Setup cannot continue until the red items are fixed": 4.8.
 
 4.6 Follow it every 15 minutes. Balanced downloads about 22 GB of models and 3 GB of programs (about 35 minutes at
 100 Mbit/s, 3 hours at 20 Mbit/s), then installs and tests a voice and a short video.
 ```powershell
+$log = (@(Get-Content "$N\setup-runs.txt")[-1] -split ' ', 2)[1]; "setup running: $(Test-Running "$N\setup-runs.txt")"
 '{0:N2} GB in models' -f ((Get-ChildItem "$H\models" -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1GB)
-Get-Item "$N\setup-console.log" | Select-Object LastWriteTime; Get-Content "$N\setup-console.log" -Tail 8
-Test-Path "$H\logs\install-report.json"
+Get-Item $log | Select-Object LastWriteTime; Get-Content $log -Tail 8; Test-Path "$H\logs\install-report.json"
 ```
 Expected: the GB number grows or the log changes (retries and waits for a busy site are said in the log). If not:
 nothing changed for 30 minutes: record the last 30 log lines and the `.part` files under `$H\models` with their
@@ -233,7 +235,7 @@ sizes; stop and report.
 4.7 Done when `install-report.json` exists.
 ```powershell
 $r = Get-Content "$H\logs\install-report.json" -Raw | ConvertFrom-Json; $r.outcome; Get-Content "$H\app\VERSION"
-Copy-Item "$H\logs\install-report.json" $N; Select-String -Path "$N\setup-console.log" -Pattern 'Removed the API keys from', 'Setup stopped'
+Copy-Item "$H\logs\install-report.json" $N; Select-String -Path "$N\setup-2*.log" -Pattern 'Removed the API keys from', 'Setup stopped'
 ```
 Expected: `done`, `0.1.15-rc5`, and (when a key was in the file) "Removed the API keys from answers.json (they
 are in the Windows keyring now).": the file holds no key now. Record setup's total time, every `[WARN]` row with
@@ -260,10 +262,9 @@ $e = Get-Content "$X\contracts\errors.json" -Raw | ConvertFrom-Json; $e.'NS-E104
 Each row is `[ok]`, `[WARN]` or `[FAIL]` with its name and detail; exit 1 when any row is FAIL. Expected:
 `[FAIL] supervisor: not running (opening the Dashboard starts it)` is normal while Nightshift is not running (it
 alone makes the exit 1). `[ok] stock key pixabay: Pixabay accepted the key`. Every other row `[ok]` or `[WARN]`.
-If not: any other `[FAIL]`: copy it verbatim into the findings; a FAIL that names INSTALL.cmd's Repair: 4.5 once,
-then 5.1; still FAIL: stop and report. `stock key pixabay: no key stored`: the owner opens the Nightshift
-Dashboard shortcut, Settings > Stock footage keys, pastes the key, saves and closes the Dashboard; then 5.1 again.
-`stock key pixabay: NS-E502 ...`: the same, with the key copied again. `could not be checked now`: record; go on.
+If not: another `[FAIL]`: copy it verbatim; one naming INSTALL.cmd's Repair: 4.5 once, then 5.1; still FAIL: stop
+and report. `no key stored` or `NS-E502`: the owner opens the Dashboard shortcut, Settings > Stock footage keys,
+pastes the key, saves, closes the Dashboard; then 5.1. `could not be checked now`: record; go on.
 
 5.2 What the kit does, in its own order (13 steps; state `$K\kit-state.json`, one for every version; lock
 `$K\kit.lock`; zip `$K\nightshift-gpu-kit-<date>.zip`). It sends nothing anywhere.
@@ -286,51 +287,48 @@ Dashboard shortcut, Settings > Stock footage keys, pastes the key, saves and clo
 How long `ns verify` takes with the real models is unknown until this PC: record step 3's time. Each step ends in
 one line, `PASS`, `FAIL`, `WAIT` or `NOT RUN`, then `Step N of 13 (<name>): <what happened>`.
 - Time guard: a step that needs the graphics card starts only when it can end 30 minutes before the next run time
-  (03:00); else WAIT, "Run GPU-KIT.cmd again after <day> <time>" (the run time plus 6 hours). Start the first run
-  by about 12:00 and day 1's steps fit.
-- Entry rule: a step that needs the card is NOT RUN, with nothing started or ended, when something the kit did not
-  start holds it ("Nightshift Code is open: close it and run the kit again", "the graphics card is held by ...").
-  Step 3 also waits while anyone uses Nightshift at all. When an update is unfinished, the step is NOT RUN with the
-  product's own code (NS-W210), its message and its hint.
-- Exit rule: the kit ends only what it started, and only while nothing else uses it; it never sends Stop All. Its
-  last lines say "Nightshift was stopped again: ..." or "Nightshift was left running because ...". Record that line.
-- It changes and puts back its own channel, Automatic runs for two nights (record `$H\run\gpu-kit-nights.json`),
-  a test clip, two test voices and the Code window. Left on purpose: its videos and clip in the Queue, the clip's
-  input, one Assistant conversation, one OpenCode session.
+  (03:00); else WAIT until the run time plus 6 hours. Start the first run by about 12:00 and day 1's steps fit.
+- Entry rule: a step that needs the card is NOT RUN, nothing started or ended, when something the kit did not start
+  holds it ("Nightshift Code is open: close it and run the kit again"); step 3 also while anyone uses Nightshift; an
+  unfinished update: NOT RUN with the product's own code (NS-W210), message and hint.
+- Exit rule: the kit ends only what it started, only while nothing else uses it, never by Stop All; it says
+  "Nightshift was stopped again: ..." or "Nightshift was left running because ...". Record that line.
+- It puts back its channel, Automatic runs (record `$H\run\gpu-kit-nights.json`), a test clip, two test voices and
+  the Code window; it leaves its videos and clip in the Queue, the clip's input, one Assistant conversation.
 
-5.3 Start the kit. Ask the owner first: "May I start the GPU kit now? Please do not open Nightshift Code or start a
-video until I say it has finished, and leave the PC on." Only on their yes (the kit's own "Press Enter to start"
-reads the empty input and starts):
+5.3 Start the kit, unattended and detached. Ask the owner first: "May I start the GPU kit now? Please do not open
+Nightshift Code or start a video until I say it has finished, and leave the PC on." Only on their yes:
 ```powershell
 $log = "$N\kit-run-$(Get-Date -Format yyyyMMdd-HHmm).log"
-$p = Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$H\app\dev\kit\gpukit.ps1", '-Home', $H -WorkingDirectory "$H\app" -RedirectStandardInput $E -RedirectStandardOutput $log -RedirectStandardError "$log.err" -WindowStyle Hidden -PassThru
-"started kit pid $($p.Id) at $(Get-Date -Format s), log $log" | Tee-Object -FilePath "$N\kit-runs.txt" -Append
+$id = Start-Detached ('cmd.exe /d /s /c ""{0}\app\GPU-KIT.cmd" -Unattended -Home "{0}" > "{1}" 2>&1"' -f $H, $log) "$H\app"
+"$id $log" | Add-Content "$N\kit-runs.txt"; "kit pid $id, log $log"
 ```
-This is GPU-KIT.cmd without its window and without its closing `pause`. Expected within two minutes, in the log:
-"NIGHTSHIFT_HOME for this kit: <home> (given with -Home), version 0.1.15-rc5", the plan, "Press Enter to start, or
-type q and Enter to stop.", then `PASS    Step 1 of 13 (start): ...` and "Step 2 of 13 (record this PC): starting."
-The same command starts every later run; a run goes on from the first step not done and never repeats a done one.
-If not: a line starting with `REFUSED`: nothing was changed: section 6. An empty log after five minutes: read
-`$log.err`, record it, stop and report.
+`-Unattended`: no input read, no key waited for, no pause, none of the owner's questions asked. Day 1 runs for
+hours in this one process, far past your tool's command timeout, so it is detached (rule 9); you return at once.
+Expected: a pid; within two minutes the log has "NIGHTSHIFT_HOME for this kit: <home> (given with -Home), version
+0.1.15-rc5", the plan, `PASS    Step 1 of 13 (start): ...`. Every later run is the same command; it goes on from
+the first step not done. If not: `NOT STARTED`: stop and report; the log already ends in JSON: 5.4.
 
-5.4 Follow it from the files, every 15 minutes (every 30 during step 5); never type into anything of it:
+5.4 Follow it every 15 minutes (every 30 during step 5); never type into anything of it:
 ```powershell
-$s = Get-Content "$K\kit-state.json" -Raw | ConvertFrom-Json
+$log = (@(Get-Content "$N\kit-runs.txt")[-1] -split ' ', 2)[1]; "kit running: $(Test-Running "$N\kit-runs.txt")"
+$s = Get-Content "$K\kit-state.json" -Raw | ConvertFrom-Json; "come back: $($s.come_back)  zip: $($s.zip)"
 foreach ($k in 'K0','K1','K2','KS','K3','KC','KV','KN','KA','K4','K5','K6','K7') { $r = $s.steps.$k; if ($r) { '{0,-3} {1,-8} {2}' -f $k, $r.result, $r.line } else { "$k -        not reached" } }
-$lk = Get-Content "$K\kit.lock" -Raw -ErrorAction SilentlyContinue; $kp = if ($lk -match 'pid (\d+)') { [int]$Matches[1] }
-"kit running: $([bool]($kp -and (Get-Process -Id $kp -ErrorAction SilentlyContinue)))  come back: $($s.come_back)  zip: $($s.zip)"
-Get-ChildItem "$N\kit-run-*.log" | Sort-Object LastWriteTime | Select-Object -Last 1 | Get-Content -Tail 6
+$last = @(Get-Content $log -Tail 1)[0]; $last
 ```
-During step 5 the log adds "still making the video: <time>; stages done: ..." every minute. A run ends with
-`kit running: False`, the exit rule's line, then "The zip so far: ..." or "Send this one file: ...". The first run
-ends after step 10 with "Run GPU-KIT.cmd again after <day> 09:00": the nights need nothing from you. If not:
-`kit running: False` with a step neither done nor WAIT (session ended, PC restarted): 5.3; it continues.
+While it runs, the last line is the kit's newest (step 5: "still making the video: ..." every minute). When
+`kit running: False`, the run has ended and its last line is ONE JSON object:
+```powershell
+$j = $last | ConvertFrom-Json; $j | Select-Object state, exit_code, step, step_title, next_run_after, zip, reason, @{n='failed';e={$_.failed_steps -join ', '}}, @{n='questions';e={@($_.open_questions).Count}}
+```
+Act on `exit_code` and `state` by section 6's first table, on each step's line by its second. Above the JSON: the
+exit rule's line, "The zip so far: ..." or "Send this one file: ...", and "For the owner:" with open questions.
+If not: no JSON last line (the process was cut off, the PC restarted): 5.3 once; the kit continues.
 
-5.5 The run after the nights. After the `come back` time (the second morning, 09:00), start the kit again (5.3).
-Expected: steps 11 and 12 judged ("Night 1: run ... ran 03:00 to ...: made the kit's video, job ..., in ...; the
-night used ... of its ... limit"), step 13 PASS or FAIL with what it put back, and the last line "Send this one
-file: <home>\kit\nightshift-gpu-kit-<date>.zip (<size>). The kit sent nothing anywhere."
-If not: "the nightly run ... is working now, so nothing was collected ...": wait one hour, then 5.3 again.
+5.5 The run after the nights. The first run ends after step 10: state `waiting`, `next_run_after` the second
+morning; the nights need nothing from you. After that time, 5.3 again. Expected: "Night 1: run ... ran 03:00 to
+...: made the kit's video, job ..., in ...", the same for night 2, step 13 with what it put back, "Send this one
+file: <home>\kit\nightshift-gpu-kit-<date>.zip (<size>). ...", and the JSON with `step` `done`.
 
 5.6 What you check yourself from files once step 5 says PASS:
 ```powershell
@@ -347,18 +345,18 @@ of -1 dBTP or lower (the QC limits); a title of at most 100 characters without `
 500; a made-for-kids and an altered-content line. Each miss is a finding with the number. If not: the finder
 prints NS-E401 (no ffprobe): record "not observed" for stream, resolution and duration.
 
-5.7 The questions only the owner can answer. The kit keeps them open until they are answered `y` or `n`; empty
-input (your runs) records nothing. Give the owner this numbered list in your report and in the chat:
-1. The video (after step 5; its path is in step 5's line): Does the picture move with the story all the way, with
-   no black or frozen part? Is the narration clear and at one steady level? Do the captions match the speech?
-2. The morning note (after the nights): Dashboard, Queue page. Is there a note about the last night at the top?
-   Does it say what the night did, as the Queue shows it?
-3. Optional, the owner's own decision and only by the owner: the paste into YouTube Studio as a Private upload
-   (`<home>\app\dev\kit\K8_PASTE_CHECK.md`, 5 questions and 5 extra checks). You never touch YouTube.
-4. Hand checks 1 and 2 (`night-task-end.txt`) need a separate test install: not part of this trial: `later`.
-Then, after 5.5 and only while `kit running: False`, the owner double-clicks `<home>\app\GPU-KIT.cmd`, types `a`
-and Enter, and answers each question with `y`, `n` and what they saw, or `later`; at the end they press a key to
-close the window. That run changes nothing else and rewrites the zip with the answers. Then record them:
+5.7 The questions only the owner can answer. An unattended run asks and answers none: each stays open, listed in
+the log under "For the owner:" and in the JSON's `open_questions` (group, id, exact question, file to look at):
+```powershell
+($last | ConvertFrom-Json).open_questions | ForEach-Object { "[$($_.group)] $($_.question) Look at: $($_.look_at)" }
+```
+Pass them to the owner verbatim, numbered, in the chat and in your report (`<home>` for `$H` there). `paste` is
+optional and the owner's alone (a Private upload; you never touch YouTube); `task_end` and `standby` need a
+separate test install, not this trial: `later`. The owner answers them by double-clicking `<home>\app\GPU-KIT.cmd`
+once (without `-Unattended`): `a` and Enter, then for each `y`, `n` and what they saw, or `later`; a key closes
+the window. That attended run asks exactly the questions still open (the same list), but first goes on with any
+step not done: only while `kit running: False` and the last state is `done`, or `waiting` at K5 outside 03:00 to
+09:00. It rewrites the zip with the answers. Then record them:
 ```powershell
 'watch','morning','paste' | ForEach-Object { "== $_"; Get-Content "$K\$_.json" -Raw -ErrorAction SilentlyContinue }
 ```
@@ -366,42 +364,51 @@ Write each answer into the findings as the owner gave it.
 
 ## 6. Judging
 
-| Result | What it means | What you do |
+When a kit run has ended (5.4), its exit code decides the one next action:
+
+| `exit_code` `state` | What you do |
+|---|---|
+| 0 `done` | every step is done, none failed: hand `open_questions` to the owner (5.7), then report 2 (7.4) |
+| 1 `failed`, `step` is `done` | every step is done, some failed: the same as 0, with `failed_steps` and their lines in the report |
+| 1 `failed`, `next_run_after` set | a step failed and the kit goes on later: report `failed_steps` with their lines now; 5.3 after `next_run_after` |
+| 1 `failed`, `next_run_after` empty | report `failed_steps` with their lines and `reason`, and stop; start again only where the line table says so |
+| 2 `refused` | nothing was started or changed: the line table's row for `reason`; otherwise report and stop |
+| 3 `waiting` | 5.3 after `next_run_after` (after step 10: 5.5); report 1 and the owner's questions if not yet sent |
+| 4 `locked` | another kit run (perhaps the owner's window) holds the lock: never start a second; 5.4 every 15 minutes until it has ended |
+| 5 `blocked` | the line of `step` (state file) says what must end first (Nightshift Code open, a job, an unfinished update with its code and hint): the owner ends it, or it ends by itself; 5.3 after 30 minutes |
+| 130 `interrupted` | 5.3 once |
+
+The steps' own lines (the state file, the log):
+
+| Line | What it means | What you do |
 |---|---|---|
 | REFUSED "... is not a GPU install" | the install did not take the graphics card | stop and report at once |
 | REFUSED "The Nightshift of another install ... is running" | another install's engine runs | the owner closes that Dashboard and presses Stop All there; 5.3 |
-| REFUSED "Another GPU kit is running (pid N)" | a kit run is still working | 5.4 until `kit running: False` |
 | REFUSED "... kit-state.json is damaged ..." | the state cannot be read | stop and report; never run the kit again until the Head answers |
-| NOT RUN, someone holds the card, Code open, Nightshift "did not say" | nothing was started | the owner closes Nightshift Code; a job: wait; then 5.3 |
 | NOT RUN or FAIL with a code (NS-W210 and others) | the product's own refusal | do what its hint says (the owner's hands where a click is needed); 5.3 once |
 | Step 2 FAIL, the driver did not answer | blocks real use | stop and report at once |
 | Step 2 FAIL, a model file is missing or damaged | maybe a broken download | 4.5 once, then 5.3; same FAIL: stop and report |
 | Step 3 FAIL "a model did not answer its short test" | blocks real use | stop and report at once |
-| Step 3 FAIL with "ns verify exit 0 ...; proofs: ..." | works, a proof failed | record; the kit goes on by itself |
+| Step 3 FAIL with "ns verify exit 0 ...; proofs: ...", or steps 6 to 9 FAIL | works but worse | record; the kit goes on |
 | Step 4 FAIL, the key was not accepted | no video without footage | the owner pastes the key again in Settings (5.1); 5.3 |
 | Step 4 FAIL, the rate limit / the site or connection | not the key | wait an hour; 5.3 |
 | Step 4 NOT RUN, no key stored | step 5 will fail for lack of footage | 5.1 for the key first; record |
-| Step 5 PASS | one real video was made | 5.6; report 1 after the run ends |
-| Step 5 FAIL "the video stopped (<code>)" | blocks real use | report at once with the code; the kit went on to the nights |
-| Any WAIT | the time guard, or a night is working | 5.3 after the time in its line |
-| Steps 6 to 9 FAIL | works but worse | record; the kit goes on |
+| Step 5 FAIL "the video stopped (<code>)" | blocks real use | report at once with the code; the kit goes on to the nights |
 | Step 10 FAIL "Automatic runs could not be switched on" | blocks the nights | stop and report at once |
 | Step 11 or 12 FAIL (did not run, past its limit, made nothing) | blocks real use | report after step 13 |
 | Step 13 FAIL "Automatic runs could not be switched off" | the PC is left changed | tell the owner at once; they switch them off in Settings; 5.3 |
 | "the kit stopped on an error it did not expect" | a kit bug | report at once with the zip |
 
-"Blocks real use": setup cannot finish; no video can be made; a night does not run, runs past its limit or makes
-nothing; the owner cannot find or play the video in the Queue or the Outbox; the same code after its own retry.
-Everything else (slow steps, warnings, a failed proof, misleading wording) is recorded and does not stop you.
-Retry a step at most once, and only where this table or the message's own hint says so.
+"Blocks real use": setup cannot finish; no video; a night does not run, overruns or makes nothing; the video cannot
+be found or played; the same code after its own retry. Everything else is recorded and does not stop you. Retry a
+step at most once, and only where these tables or the message's own hint say so.
 
 ## 7. Reporting back
 
 **The repository is public: anyone can read the issue and everything attached to it. Send only the kit's scrubbed
 zip and your own findings file, each after the check of 7.3; never a setup log, a diagnostics zip or anything else.**
 
-7.1 The findings file is `$N\findings.md`, kept up to date as you go, in exactly this form. Paths are written with
-`<home>` for `$H` and `<work>` for `$W`.
+7.1 `$N\findings.md`, kept up to date, in exactly this form (`<home>` for `$H`, `<work>` for `$W`):
 
 ```text
 # GPU PC first run: v0.1.15-rc5: <date>
@@ -436,10 +443,9 @@ length, resolution, audio, LUFS, true peak, QC, title and tags length, sheet lin
 gh issue create -R $R --title "GPU PC first run: ${T}: $(Get-Date -Format yyyy-MM-dd)" --body-file "$N\findings.md"
 gh issue comment <number> -R $R --body-file "$N\findings.md"
 ```
-Write the issue number into the findings header. `gh` cannot attach a file: write the kit zip's path (as
-`<home>\kit\...`) and its size in MB into the body, and ask the owner to drag that zip into a comment on the issue
-page in the browser; if GitHub refuses the file, record that. `gh` missing or not logged in: copy `findings.md`
-and the kit zip into `$H\gpu-session-report\` and tell the owner both full paths.
+Write the issue number into the header. `gh` cannot attach a file: put the zip's path (`<home>\kit\...`) and size
+in MB into the body; the owner drags that zip into a comment in the browser (if GitHub refuses it, record that).
+`gh` missing or not logged in: copy `findings.md` and the zip into `$H\gpu-session-report\`; tell the owner both paths.
 
 7.3 Before every report, send nothing that this check has not passed. Re-read `findings.md` yourself. Then:
 ```powershell
@@ -449,13 +455,12 @@ $rx = @($env:USERNAME, $env:COMPUTERNAME, $env:USERPROFILE, $H) | Where-Object {
 $rx += '\b\d{6,10}-[0-9a-f]{32}\b', '(?<![A-Za-z0-9])[A-Za-z0-9]{56}(?![A-Za-z0-9])', '\bhf_[A-Za-z0-9]{30,}', '\bgh[pousr]_[A-Za-z0-9]{30,}', '(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}'
 Get-ChildItem $z -Recurse -File | Select-String -Pattern $rx -List | Select-Object -ExpandProperty Path
 ```
-Expected: nothing printed (only paths, never the matching text). The kit already masks the stored keys, tokens,
-user name, profile folder, install path, PC name and account id; this check is yours on top. If not: look at the
-match yourself without copying it anywhere. A real name, key or token: do not send; fix `findings.md`, or, inside
-the kit zip, report without the zip and name the unscrubbed file. An ordinary word equal to a short user name:
-note it and send. Put the step lines of the zip's `README.txt` and `MISSING.txt` in the findings. No kit zip yet:
-replace the first two lines with `$z = "$N\zipcheck-$(Get-Date -Format HHmmss)"; New-Item -ItemType Directory $z
-| Out-Null; Copy-Item "$N\findings.md" $z`.
+Expected: nothing printed (only paths, never the matching text; the kit masks keys, tokens, names and paths
+already: this check is on top). If not: look at the match yourself, copy it nowhere. A real name, key or token:
+fix `findings.md`, or report without the zip and name the unscrubbed file. An ordinary word equal to a short user
+name: note it and send. Put the step lines of the zip's `README.txt` and `MISSING.txt` in the findings. No zip
+yet: the first two lines become `$z = "$N\zipcheck-$(Get-Date -Format HHmmss)"; New-Item -ItemType Directory $z |
+Out-Null; Copy-Item "$N\findings.md" $z`.
 
 7.4 When to report:
 - A blocker (section 6): at once, with what you have; do not wait for the rest.
@@ -466,22 +471,19 @@ Report also when everything worked: step by step, with the observed lines.
 
 ## 8. After a patch
 
-8.1 The Head answers on the issue with the fixed candidate's tag. Read it, then add it to the variables file (put
-the tag in place of `<FIXED>`):
+8.1 The Head answers on the issue with the fixed tag. Add it to the variables file (in place of `<FIXED>`):
 ```powershell
 gh issue view <number> -R $R --comments
 Add-Content -Encoding ASCII "$W\vars.ps1" '$F = ''<FIXED>''; $FV = $F.TrimStart(''v'')'
 ```
 `ns update --github` and the Dashboard's update check take only a final release: apply a prerelease's Update zip.
 
-8.2 Make sure nothing runs that the update would cut. Never update from the run time until six hours later (a
-night), while `kit running: True`, or while a video is being made.
+8.2 Never update during a night (the run time plus six hours), while `kit running: True` or a video is made.
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "$H\app\dev\kit\tools\nsproc.ps1" -NsHome $H
 ```
-Expected: `CLEAN: no process of this install runs`. If not: ask the owner to close the Dashboard and any Nightshift
-Code window; if processes are still listed and no night, kit or video runs, stop Nightshift by its own route:
-`& "$H\cmd\ns.cmd" stop`; then repeat 8.2.
+Expected: `CLEAN: no process of this install runs`. If not: the owner closes the Dashboard and any Nightshift Code
+window; still listed, with no night, kit or video running: `& "$H\cmd\ns.cmd" stop` (its own route); repeat 8.2.
 
 8.3 Download the Update zip with its checksum (the update refuses a zip without its `.sha256`, NS-E701), check
 the hash as in 4.2 (with the Update zip's name), and apply it:
@@ -495,15 +497,13 @@ Expected: "The update runs in the background; Nightshift will close. Progress: <
 powershell -NoProfile -ExecutionPolicy Bypass -File "<the follow path from the JSON line>" *> "$N\update-$FV.log"; "exit $LASTEXITCODE"
 Get-Content "$H\app\VERSION"; & "$H\cmd\ns.cmd" doctor
 ```
-Expected: exit 0, the version `$FV`, no FAIL row except the supervisor row of 5.1. If not: record the last 30
-lines of the log the JSON names and the message with its code (NS-E701 a bad or unchecked zip, NS-E705 another
-update runs, NS-E706 a program still runs from Nightshift's environments: 8.2, then try once more). Still failing:
-stop and report.
+Expected: exit 0, the version `$FV`, no FAIL row but the supervisor row of 5.1. If not: record the last 30 lines
+of the log the JSON names and the code (NS-E701 a bad or unchecked zip, NS-E705 another update runs, NS-E706 a
+program still runs from Nightshift's environments: 8.2, then once more). Still failing: stop and report.
 
-8.4 Re-run only what failed: start the kit again (5.3). It keeps one state for every version: steps not done run
-again on the new version; steps done are not repeated (its first line says "going on from the kit of ..."). If the
-patch is for a step the kit recorded as done (a FAIL that let it go on, for example step 5 to 9), do not edit the
-kit's state: say so in the report and wait for the Head's instruction. Report again (7.4).
+8.4 Re-run only what failed: 5.3. The kit keeps one state for every version: steps not done run on the new version,
+done steps are not repeated ("going on from the kit of ..."). A FAIL recorded as done (steps 5 to 9 go on after
+one) is never rerun and keeps every later run at exit 1: do not edit the state; report it and wait for the Head.
 
 8.5 Roll back when the update made things worse (something that worked before now fails):
 ```powershell
