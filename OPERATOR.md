@@ -769,6 +769,9 @@ A version from before the release key existed (0.1.14, and the candidates made u
 "This version of Nightshift does not check who made an update yet" in Settings > Updates and once in the update
 log: it accepts a package on its `.sha256` alone, as before, and ignores the `.sig`. That is how the first signed
 version gets installed. `ns update --rollback` goes back to the program kept on this PC and checks no package.
+`ns update --git` takes the program from the git remote of its checkout and checks no `.sig` either.
+The keys a Nightshift trusts are the ones its own program lists (`ns_common\release_keys.py`); no setting,
+environment variable or dev mode adds one.
 Setup's `INSTALL.cmd` (a first install, **Continue** over an install, Repair) runs from the Setup zip you chose to
 run and checks no `.sig`: verify that zip with its `.sha256` from the release page.
 
