@@ -155,7 +155,7 @@ def test_f_b13_b14_passes_against_the_fake_footage_endpoint(
     assert_passed(result, at_least_checks=30)
     names = step_names(result)
     assert any("Library > Footage (GET /api/library/footage) lists the fetched" in n for n in names)
-    assert any(n.startswith("endless 429: the fetch fails with the coded NS-E501") for n in names)
+    assert any(n.startswith("endless 429: the fetch fails with the coded NS-E504") for n in names)
     assert "cleanup: the proof's keys, clip rows and clip files are gone" in names
     assert proof_home.state.db.one("select count(*) as n from clips")["n"] == 0
     # the fake endpoint was a real child with its pid recorded, and the runner stopped it
@@ -204,7 +204,7 @@ def test_f_b14_fails_when_a_fetch_ignores_retry_after(
     assert_fails_at(result, "the fetch waited out 3 Retry-After periods")
 
 
-def test_f_b14_fails_when_an_endless_429_does_not_end_in_ns_e501(
+def test_f_b14_fails_when_an_endless_429_does_not_end_in_ns_e504(
     proof_home: ProofHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     from ns_common.errors import NsError
@@ -212,18 +212,18 @@ def test_f_b14_fails_when_an_endless_429_does_not_end_in_ns_e501(
 
     real = clip_sources._HttpSource._get
 
-    def other_code(self, *args, **kwargs):  # giving up on a 429 is reported as an outage, not NS-E501
+    def other_code(self, *args, **kwargs):  # giving up on a 429 is reported as the key, not NS-E504
         try:
             return real(self, *args, **kwargs)
         except NsError as err:
-            if "rate limited" in str(err):
-                raise NsError("NS-E503", str(err)) from err
+            if err.code == "NS-E504":
+                raise NsError("NS-E501", str(err)) from err
             raise
 
     monkeypatch.setattr(clip_sources._HttpSource, "_get", other_code)
     allow_footage_proof(proof_home, tmp_path, monkeypatch)
     result = proof_home.run("f_b13_b14_footage_429")
-    assert_fails_at(result, "endless 429: the fetch fails with the coded NS-E501")
+    assert_fails_at(result, "endless 429: the fetch fails with the coded NS-E504")
 
 
 def has_ffmpeg(folder: Path) -> bool:

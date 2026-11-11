@@ -94,9 +94,11 @@ def test_a_saved_key_is_checked_live_and_a_rejected_one_is_not_stored(tmp_home: 
     assert ei.value.status == 422 and ei.value.code == "NS-E502" and "did not accept" in ei.value.message
     assert state.adapters.keyring.get("pixabay_api_key") == "good"   # the working key is kept
     assert asked == [("pixabay", "good"), ("pixabay", "bad")]
-    svc.key_check = lambda s, k: {"ok": False, "code": "NS-E503", "message": "offline"}
+    # card stock-truth: a key the site could not be asked about now is `ok` with a code (`keys.verdict`)
+    svc.key_check = lambda s, k: {"ok": True, "code": "NS-E503", "message": "offline"}
     out = svc.set_key("pexels", "unchecked")
-    assert out["checked"] is False and "could not be reached" in out["message"]
+    assert out["checked"] is False and "could not be checked now" in out["message"]
+    assert "offline" in out["message"]
     assert state.adapters.keyring.get("pexels_api_key") == "unchecked"
 
 

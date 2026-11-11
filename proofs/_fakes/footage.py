@@ -501,8 +501,9 @@ class Api(BaseHTTPRequestHandler):
         try:
             pexels_paths = ("/videos/search", "/v1/videos/search", "/v1/search")
             if self.host == "api.pexels.com" and path in pexels_paths:
-                if self.headers.get("Authorization") not in st.good_keys:
-                    return self.send(401, "Unauthorized", "text/plain")
+                if self.headers.get("Authorization") not in st.good_keys:  # Pexels' own answer, 2026-11-11
+                    body = {"status": 401, "code": "Unauthorized", "message": "Invalid API key"}
+                    return self.json(401, body)
                 if not self.gate_ok(pexels=True):
                     return None
                 if "videos" in path:
@@ -510,8 +511,9 @@ class Api(BaseHTTPRequestHandler):
                 photos = [{"id": 1, "width": 100, "height": 100}]
                 return self.json(200, {"page": 1, "per_page": 1, "total_results": 1, "photos": photos})
             if self.host == "pixabay.com" and path in ("/api/videos/", "/api/videos", "/api/"):
-                if query.get("key") not in st.good_keys:
-                    return self.send(400, '[ERROR 400] "key" is invalid', "text/plain")
+                if query.get("key") not in st.good_keys:  # Pixabay's own answer to a wrong key, 2026-11-11
+                    return self.send(400, "[ERROR 400] Invalid or missing API key (https://pixabay.com/api/docs/).",
+                                     "text/html; charset=utf-8")
                 if not self.gate_ok(pexels=False):
                     return None
                 if path.startswith("/api/videos"):

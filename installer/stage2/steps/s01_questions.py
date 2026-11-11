@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import subprocess
 import tempfile
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,7 @@ from installer.stage2.web import shortcuts_view
 from installer.stage2.web.pathcheck import FOLDER_FOREIGN, folder_kind, foreign_warning, layout_problem
 from installer.stage2.winenv import HOME_VAR, run_ps, set_user_env, user_path
 from ns_common import diskneed
+from ns_common import stock_answer as sa
 from ns_common.errors import NsError
 from ns_common.pathrules import ascii_problem
 from ns_supervisor import schedule
@@ -113,31 +115,43 @@ def first_install(ctx: StepContext) -> bool:
 # ---------------------------------------------------------------------------------------------------------
 # live key validation (1-result query)
 # ---------------------------------------------------------------------------------------------------------
-def validate_pexels(client: httpx.Client, key: str) -> None:
-    """Pexels search with one result. Raises NS-E501 (rejected) or NS-E503 (network)."""
-    try:
-        r = client.get(
-            "https://api.pexels.com/v1/search", params={"query": "nature", "per_page": 1},
-            headers={"Authorization": key},
-        )
-    except httpx.HTTPError as e:
-        raise make_error("NS-E503", f"Pexels: {type(e).__name__}") from None
-    if r.status_code == 429:
-        return  # rate limited means the key was recognised
-    if r.status_code != 200:
-        raise make_error("NS-E501", f"Pexels answered HTTP {r.status_code}")
+def _httpx_fetch(client: httpx.Client) -> sa.Fetch:
+    """The one key-check request (`stock_answer.key_check_request`) sent through the wizard's own client."""
+
+    def fetch(req: urllib.request.Request) -> tuple[int, dict[str, str], bytes]:
+        try:
+            r = client.get(req.full_url, headers=dict(req.header_items()), timeout=sa.TIMEOUT_S)
+        except httpx.HTTPError as e:  # its message can carry the address, which carries a Pixabay key
+            raise OSError(type(e).__name__) from None
+        return r.status_code, dict(r.headers), r.content
+
+    return fetch
 
 
-def validate_pixabay(client: httpx.Client, key: str) -> None:
-    """Pixabay search with a small result page. Raises NS-E502 (rejected) or NS-E503 (network)."""
-    try:
-        r = client.get("https://pixabay.com/api/", params={"key": key, "q": "nature", "per_page": 3})
-    except httpx.HTTPError as e:
-        raise make_error("NS-E503", f"Pixabay: {type(e).__name__}") from None
-    if r.status_code == 429:
-        return
-    if r.status_code != 200:
-        raise make_error("NS-E502", f"Pixabay answered HTTP {r.status_code}")
+def _validate(provider: str, client: httpx.Client, key: str) -> sa.Answer:
+    """The classified answer of one key check (`ns_common.stock_answer`). Raises the key's code (NS-E501,
+    NS-E502) only when the site said the key is wrong; any other answer is returned for the caller to tell."""
+    answer = sa.check_key(provider, key, fetch=_httpx_fetch(client))
+    if answer.kind == sa.KEY_WRONG:
+        raise make_error(answer.code or sa.KEY_CODES[provider], answer.sentence)
+    return answer
+
+
+def validate_pexels(client: httpx.Client, key: str) -> sa.Answer:
+    """Pexels video search with one result, at the documented path."""
+    return _validate("pexels", client, key)
+
+
+def validate_pixabay(client: httpx.Client, key: str) -> sa.Answer:
+    """Pixabay video search with a small result page."""
+    return _validate("pixabay", client, key)
+
+
+def unchecked_words(label: str, answer: sa.Answer, *, saved: bool) -> str:
+    """What setup says about a key the site could not be asked about now: why, and that it is kept."""
+    which = f"the saved {label} key" if saved else f"the {label} key"
+    return (f"Could not check {which} now: {answer.sentence} Setup keeps it; Nightshift checks it again "
+            "before the first video.")
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -302,6 +316,14 @@ class S01Questions(Step):
         return {"mode": "clone", "speaker": None, "name": name}
 
     # ---- keys ----
+    @staticmethod
+    def _say_unchecked(ctx: StepContext, name: str, label: str, answer: sa.Answer, *, saved: bool) -> None:
+        """Tell the owner (setup's window or console, once per key) that a key could not be checked now."""
+        if answer.checked:
+            return
+        ctx.ui.say(unchecked_words(label, answer, saved=saved), "yellow")
+        ctx.log.warn("key_unchecked", name=name, kind=answer.kind, code=answer.code, detail=answer.why)
+
     def _keys(self, ctx: StepContext) -> None:
         if ctx.simulate:
             ctx.ui.say("Simulation: API key checks are skipped.", "dim")
@@ -324,24 +346,25 @@ class S01Questions(Step):
                 named = name in ctx.raw_answers
                 value = provided or ctx.store.get(name)
                 if value and not provided:
-                    # a key saved by an earlier setup or in Settings: when the service rejects it now, setup
-                    # must not stop (the first clean dev-mode install died on a stale key left in Credential
-                    # Manager); it is forgotten and Settings takes a new one. A network error keeps it.
+                    # a key saved by an earlier setup or in Settings: when the site says it is wrong now,
+                    # setup must not stop (the first clean dev-mode install died on a stale key left in
+                    # Credential Manager); it is forgotten and Settings takes a new one. Any answer that does
+                    # not say the key is wrong (busy, failing, out of reach, not understood) keeps it (card
+                    # stock-truth).
                     try:
-                        validator(client, str(value))
+                        answer = validator(client, str(value))
                     except NsError as e:
-                        if e.code == "NS-E503":
-                            ctx.ui.say(f"Could not check the saved {label} key ({e.detail}); keeping it.",
-                                       "yellow")
-                            ctx.log.warn("key_unchecked", name=name, detail=e.detail)
-                        else:
-                            ctx.ui.say(f"The saved {label} key was not accepted ({e.detail}); it was "
-                                       "removed. Add a key in Settings after setup.", "yellow")
-                            ctx.log.warn("key_rejected_removed", name=name, detail=e.detail)
-                            ctx.store.delete(name)
-                            value = None
+                        ctx.ui.say(f"The saved {label} key was not accepted ({e.detail}); it was "
+                                   "removed. Add a key in Settings after setup.", "yellow")
+                        ctx.log.warn("key_rejected_removed", name=name, detail=e.detail)
+                        ctx.store.delete(name)
+                        value = None
+                    else:
+                        self._say_unchecked(ctx, name, label, answer, saved=True)
                 elif value:
-                    validator(client, str(value))
+                    # an answers-file key: a wrong one stops setup (NS-E501/NS-E502); one that could not be
+                    # checked now is kept with a warning, and the check before the first video asks again
+                    self._say_unchecked(ctx, name, label, validator(client, str(value)), saved=False)
                 elif ctx.ui.interactive and not named:
                     ctx.ui.say(f"{label} key (free, optional, Enter to skip): {url}")
                     for attempt in range(3):
@@ -349,7 +372,7 @@ class S01Questions(Step):
                         if not value:
                             break
                         try:
-                            validator(client, value)
+                            self._say_unchecked(ctx, name, label, validator(client, value), saved=False)
                             break
                         except Exception as e:
                             ctx.ui.say(f"That key did not work: {e}", "red")

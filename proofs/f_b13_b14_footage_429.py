@@ -451,9 +451,10 @@ def _prove_b14(ctx: Any, fake: _Fake, base: str, tokens: dict[str, str], made: M
     err = _error(answer)
     ctx.check(
         status == 500
-        and err.get("code") == "NS-E501"
-        and f"rate limited (429) after {ENDLESS_TRIES} attempts" in str(err.get("message")),
-        "endless 429: the fetch fails with the coded NS-E501 'rate limited (429) after 4 attempts'",
+        and err.get("code") == "NS-E504"
+        and f"Asked {ENDLESS_TRIES} times" in str(err.get("message"))
+        and "key" not in str(err.get("hint") or "").lower().replace("the key is fine", ""),
+        "endless 429: the fetch fails with the coded NS-E504 (the site's limit, 'Asked 4 times'), no key",
         status=status,
         error=short(err),
     )

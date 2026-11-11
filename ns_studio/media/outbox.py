@@ -320,7 +320,8 @@ def sheet_text(
     The sheet of a video made on an engine-test install (`meta.profile`) opens with a line that says so.
     Then come the `notes`: a warning per problem YouTube would not accept that has no safe repair, and one
     "Changed for YouTube" line naming every change made to fit its rules. The altered-content line gives its
-    reason, and the note below it says what is left to the owner's judgement."""
+    reason, and the note below it says what is left to the owner's judgement. A video with Pexels or Pixabay
+    clips gets the optional credit line (`youtube_rules.credit_line`: asked for, not required)."""
     notes = notes or Notes()
     lines = [TEST_BANNER.format(mark=meta.profile), ""] if meta.profile else []
     lines += notes.head_lines()
@@ -342,6 +343,9 @@ def sheet_text(
         f"  Made for kids: {_yes_no(meta.made_for_kids)}",
         f"  Age restriction suggested: {_yes_no(meta.age_restrict_suggested)}",
     ]
+    credit = yr.credit_line([c.source for c in meta.clips])  # an offer (card stock-truth), never a field
+    if credit:
+        lines += ["", credit]
     if related_title:
         lines += ["", f"Related video: set Related video -> {related_title}"]
     if meta.midroll_suggestions_s:

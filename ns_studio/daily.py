@@ -26,7 +26,7 @@ from ns_studio.channels.crud import broken_channels, get_channel
 from ns_studio.context import JobContext
 from ns_studio.diskroom import require_story_room
 from ns_studio.errors import OUT_OF_TIME, PAUSED, UNEXPECTED, StudioError, describe_unexpected
-from ns_studio.footage_keys import require_footage_key
+from ns_studio.footage_keys import precheck
 from ns_studio.media.outbox import retime_sheet
 from ns_studio.media.sheet_read import read_sheet_file
 from ns_studio.policy.regen import run_job_guarded
@@ -462,8 +462,9 @@ def _attempt(
     job_id = "(not created)"
     raw = ""  # an NsError's own detail (NS-E208: the engine's words naming the programs)
     try:
-        # No stock-footage key: every story would fail at `clips` after an hour of GPU work (gap L3).
-        require_footage_key(env.services)
+        # No stock-footage key, or every stored key refused by its site: every story would fail at `clips`
+        # after an hour of GPU work (gap L3, card stock-truth). Asked once per site and kept (`footage_keys`).
+        precheck(env.services, env.paths, env.log)
         ctx = make()
         job_id = ctx.job_id
         if night is not None:  # the night's clock, deadline and run id for every stage and wait of the job

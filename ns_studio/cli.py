@@ -29,7 +29,7 @@ from ns_studio.daily import _paused_now as paused_now
 from ns_studio.daily import nothing_due_message, run_daily
 from ns_studio.diskroom import require_story_room
 from ns_studio.errors import PAUSED, UNEXPECTED, StudioError, describe_unexpected, hint_of
-from ns_studio.footage_keys import require_footage_key
+from ns_studio.footage_keys import precheck
 from ns_studio.gate import job_gate
 from ns_studio.learn import importer, reweight, status
 from ns_studio.orchestrator import OWNER_SCRIPT_FORMATS, plan_job, run_job
@@ -324,7 +324,8 @@ def _run_jobs(
                     raise StudioError(PAUSED, f"{ch.display_name} ({ch.slug}): {made}")
                 echo(f"channel {ch.slug} was paused: {count - n} job(s) not started")
                 break
-            require_footage_key(env.services)  # before any GPU work: `clips` would fail an hour in
+            # before any GPU work: `clips` would fail an hour in (no key, or every stored key refused)
+            precheck(env.services, env.paths, env.log)
             # and before the job exists: a drive with less room than the job needs writes nothing (D-33)
             require_story_room(env.paths, env.log, ch, job_fmt, fake=env.fake)
             if script is not None:

@@ -34,7 +34,10 @@ SAME_CHANNEL_DAYS = 14
 OTHER_CHANNEL_DAYS = 30
 DARK_MOODS = frozenset({"intimate", "horror", "eerie", "creepy", "dread", "haunting"})
 FACE_WORDS = frozenset({"person", "people", "portrait", "face", "faces", "selfie"})
-_API_ERRORS = {"NS-E501", "NS-E502", "NS-E503"}
+#: The codes of `ns_common.stock_answer`: a wrong key (E501, E502), no answer or a failing site (E503), the
+#: site's limit (E504), an answer not understood (E505). The key codes say nothing about the site's state.
+_API_ERRORS = {"NS-E501", "NS-E502", "NS-E503", "NS-E504", "NS-E505"}
+_SITE_DOWN = {"NS-E503", "NS-E504", "NS-E505"}
 # Titles and tags that mark stock footage with a burnt-in mark (spec 7.4 bullet 6); a word match on either.
 WATERMARK_WORDS = frozenset({"watermark", "watermarked", "watermarks", "logo", "logos"})
 WATERMARK_PHRASES = ("text overlay", "text overlays", "overlay text")
@@ -247,7 +250,7 @@ class Searcher:
         give_log(self.sources, log)
         self.lemma = lemma  # spaCy lemmatizer for keyword dedupe; None = the trailing-s rule
         self._memo: dict[tuple[str, str, str], list[ClipCandidate]] = {}
-        self._down: set[str] = set()  # sources that gave NS-E503 once: not asked again this job
+        self._down: set[str] = set()  # sources that gave NS-E503/E504/E505 once: not asked again this job
         self.errors: list[NsError] = []
 
     def search(self, keyword: str, orientation: Orientation) -> list[ClipCandidate]:
@@ -264,7 +267,7 @@ class Searcher:
                     if e.code not in _API_ERRORS:
                         raise
                     self.errors.append(e)
-                    if e.code == "NS-E503":  # an outage already cost its backoff; do not pay it per keyword
+                    if e.code in _SITE_DOWN:  # its retries and waits are spent; do not pay them per keyword
                         self._down.add(src.name)
                     if self.log:
                         self.log.warn("clip_search_failed", source=src.name, keyword=keyword, code=e.code)
