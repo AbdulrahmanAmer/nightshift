@@ -1265,7 +1265,9 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
     new, prev = _sibling(app, ".new"), _sibling(app, ".prev")
     replaced = current_version(prev) if prev.is_dir() else ""
     log.info("update_start", old=old_version, new=new_version, zip=str(zip_path))
-    uv = uv_for(uvpin.pin_in_zip(zip_path, prefix), paths, log, env.say, zip_path=zip_path)  # NS-E708
+    uv = uv_for(    # NS-E708, NS-E706: before Nightshift is stopped
+        uvpin.pin_in_zip(zip_path, prefix), paths, log, env.say, zip_path=zip_path, earlier=earlier
+    )
     try:
         env.stop()
         update_job.step(paths, WAITING_FOR_PROGRAMS, update_job.unchanged_sentence(old_version))
@@ -1729,7 +1731,7 @@ UV_STOPPED = (
 
 def uv_for(
     pin: dict[str, str], paths: Paths, log: NsLogger, say: Callable[[str], None], *,
-    zip_path: Path | None = None, target: str = "",
+    zip_path: Path | None = None, target: str = "", earlier: Iterable[str] = (),
 ) -> uvpin.Plan:
     """U1 to U4: the uv that the program about to be in `<app>` pins, checked and ready to swap in, before
     anything is changed. An update (`zip_path`) that cannot have it is refused with NS-E708, before Nightshift
@@ -1752,15 +1754,17 @@ def uv_for(
     except uvpin.Held as e:     # held or running is "could not look or replace", never "damaged"
         log.warn("uv_held", str(e))
         if zip_path is not None:
-            raise NsError(
-                "NS-E706", f"{e} {NOTHING_CHANGED} Nightshift was not stopped. {UV_HELD_WAY_OUT}"
-            ) from e
+            # (`earlier`: what the recovery of an interrupted rollback already did in this run, said first,
+            # as `wait_no_holders` does: "Nothing was changed" alone would be untrue after it)
+            said = f"{e} {NOTHING_CHANGED} Nightshift was not stopped. {UV_HELD_WAY_OUT}"
+            raise NsError("NS-E706", " ".join([*earlier, said])) from e
         return uvpin.Plan(paths.home, stays=f" uv stays as it is: {e}")
     except uvpin.NotHad as e:
         log.warn("uv_pin_not_had", str(e))
         want = pin.get("version", "")
         if zip_path is not None:
-            raise NsError("NS-E708", f"This update needs uv {want}. {e} {NOTHING_CHANGED}") from e
+            said = f"This update needs uv {want}. {e} {NOTHING_CHANGED}"
+            raise NsError("NS-E708", " ".join([*earlier, said])) from e
         now = uvpin.report(home_uv(paths.home))[1] or "the version it has"
         why = f"{target} pins {want} and it could not be had"
         return uvpin.Plan(paths.home, stays=f" uv stays at {now} ({why}); {target} runs with it.")
