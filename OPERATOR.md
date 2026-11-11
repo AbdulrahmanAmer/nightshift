@@ -233,6 +233,61 @@ If the same red error comes back after one retry, do not guess: press **Save a h
 4. In the Dashboard you can do the same from **Settings, Updates, Make report**: it saves the zip on your Desktop and
    shows a **Download** button.
 
+## The GPU kit (the first real nights on the GPU PC)
+
+The GPU kit shows whether Nightshift works on your own PC with the real models: it makes one real story video, lets
+two nights run by themselves, and puts what it found into one zip that you send back. It sends nothing anywhere
+itself. Run it after you installed a release candidate with **INSTALL.cmd**.
+
+You need: the PC with the graphics card, about 4 hours on the first day (mostly waiting; you can use the PC), the PC
+left plugged in and on or asleep (not shut down) for the next two nights, and 15 minutes on the third day.
+
+**Day 1**
+
+1. Double-click **GPU-KIT.cmd**. It is in the folder you unpacked the Setup zip into, and also in the `app` folder of
+   your Nightshift folder.
+2. The window names the Nightshift folder it found (`NIGHTSHIFT_HOME for this kit: ...`) and lists what it will do
+   and how long each part takes. Press **Enter** to start.
+3. It works through its steps. Each one ends with one line:
+   - **PASS**: nothing to do.
+   - **WAIT**: the line gives the day and time to double-click GPU-KIT.cmd again. For example, it does not start the
+     video when the video could still be running at the nightly run time.
+   - **FAIL**: the line says the one thing to do (for example "install the newest NVIDIA driver, restart the PC").
+     Do it, then double-click GPU-KIT.cmd again: it goes on from that step.
+   - **NOT RUN**: a step that waits for a step before it.
+4. When the video is made, the window shows where it is and asks three questions about it (does the picture move all
+   the way through, is the narration clear and steady, do the captions match the words). Type **y**, or **n** and
+   what you saw, or **later**, and press Enter.
+5. If Automatic runs were off, the kit switches them on for two nights and says so. Its last lines say when to come
+   back, for example "Run GPU-KIT.cmd again after Saturday 14 November 09:00".
+
+**Day 3**
+
+1. After that time, double-click **GPU-KIT.cmd** again. It reads what the two nights did, collects the records,
+   switches Automatic runs off again if they were off before, and asks two questions about the note on the
+   Dashboard's **Queue** page.
+2. Its last line is "Send this one file: ...zip (size)". Send that file to the person who gave you Nightshift, as you
+   send the diagnostics zip.
+
+**The paste check (about 10 minutes, any day after the video)**: follow `dev/kit/K8_PASTE_CHECK.md` (in the
+`dev/kit` folder next to GPU-KIT.cmd): upload the kit's video to YouTube Studio as **Private**, paste its title, description and
+tags, and the kit asks you what Studio accepted. The video is never made public.
+
+Good to know:
+
+- You can close the window at any time. Double-click GPU-KIT.cmd again and it goes on from the step it reached. It
+  never makes a second video or a second channel, and it changes Automatic runs at most once each way.
+- A line starting with **REFUSED** means the kit did not start and changed nothing; it says why and what to do (for
+  example: another GPU kit window is still open, or this is not the install with the graphics card).
+- What the kit changes: its own channel "GPU kit (test video)", which stays paused (its video waits in the Queue: post
+  it or reject it as you like), and Automatic runs for two nights. It reads your power and sleep settings and never
+  changes them.
+- The zip holds the PC's record (graphics card, driver, disk, sleep settings), the test and proof results, the video's
+  facts and one picture of its frames (one a minute), both nights' records, logs and Windows' power events of those nights, the
+  diagnostics zip and your answers. It never holds the video or the models. Before it is written, the stock-footage
+  keys, any token, your Windows user name, your Nightshift folder's path and the PC's name are replaced by `***` or a
+  placeholder.
+
 ## Make your first video (about 20 minutes)
 
 1. Open **Nightshift Dashboard** on your Desktop. A small "Nightshift Engine" window appears and the dashboard opens

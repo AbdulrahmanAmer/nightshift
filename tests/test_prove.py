@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib
 import io
 import json
+import re
 import sqlite3
 import subprocess
 import sys
@@ -237,6 +238,59 @@ def test_proof_selects_by_id_and_all_runs_every_proof_the_install_kind_fits(env)
     assert evidence_files(env) == ["F-X1.json"]
     assert run_main(env, "--all") == 0
     assert evidence_files(env) == ["F-X1.json", "F-Y1.json"]  # the engine-only proof does not fit a dev home
+
+
+def test_a_real_gpu_install_is_its_own_kind(env):
+    """Card gpu-kit: profile gpu with no test switch reads as `gpu`; --all there runs gpu and any proofs."""
+    assert "gpu" in prove.KINDS
+    runtime = env.home / "config" / "runtime.json"
+    runtime.write_text(json.dumps({"profile": "gpu", "llama": {"port": 8080}}), encoding="utf-8")
+    assert prove_ctx.read_install(env.home).kind == "gpu"
+    for switch in ({"fake_footage": True}, {"tiny_story": True}, {"tts": {"engine": "fake"}}):
+        runtime.write_text(json.dumps({"profile": "gpu", **switch}), encoding="utf-8")
+        assert prove_ctx.read_install(env.home).kind == "engine", switch  # an engine-test install
+    runtime.write_text(json.dumps({"profile": "gpu", "dev_mode": True}), encoding="utf-8")
+    assert prove_ctx.read_install(env.home).kind == "dev"
+    runtime.write_text(json.dumps({"profile": "gpu"}), encoding="utf-8")
+    write_proof(env.pdir, "on_gpu", boxes=["F-G1"], install="gpu")
+    write_proof(env.pdir, "anywhere", boxes=["F-A1"], install="any")
+    write_proof(env.pdir, "dev_only", boxes=["F-D1"], install="dev", body="raise AssertionError('ran')")
+    write_proof(env.pdir, "engine_only", boxes=["F-E1"], install="engine", body="raise AssertionError('ran')")
+    assert run_main(env, "--all", "--strict") == 0
+    assert evidence_files(env) == ["F-A1.json", "F-G1.json"]
+    assert evidence(env, "F-G1")["kind"] == "gpu"
+    real = {p.id: p.install for p in prove.discover()}
+    assert real["f-b18-studio-status"] == "any" and real["f-c1-status-events"] == "any"  # they only read
+    assert real["f-b7-review-reject"] == "dev" and real["vram-busy"] == "engine"  # they change state
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell")
+def test_the_kit_tools_never_stop_by_pattern(tmp_path):
+    """dev/kit/tools/nsproc.ps1 -Down runs the install's own Stop All and lists again; nothing is stopped by
+    name, command line or pid (the laptop tool's pattern kill would reach the owner's own browsers)."""
+    from ns_supervisor import pwsh
+
+    exe = pwsh.find_powershell()
+    if exe is None:
+        pytest.skip("powershell not on PATH")
+    root = Path(__file__).resolve().parents[1]
+    script = root / "dev" / "kit" / "tools" / "nsproc.ps1"
+    code = "\n".join(line.split("#", 1)[0] for line in script.read_text(encoding="ascii").splitlines())
+    assert not re.search(r"Stop-Process|taskkill|\.Kill\(|Terminate", code, re.IGNORECASE)
+    assert "stop-all.ps1" in code
+    home = tmp_path / "home"
+    (home / "app" / "launchers").mkdir(parents=True)
+    (home / "app" / "launchers" / "stop-all.ps1").write_text(
+        "Set-StrictMode -Version Latest\r\n$ErrorActionPreference = 'Stop'\r\n"
+        "Set-Content -LiteralPath (Join-Path $env:NIGHTSHIFT_HOME 'stopped.txt') -Value 'Stop All ran'\r\n",
+        encoding="ascii",
+    )
+    done = subprocess.run([exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-NsHome",
+                           str(home), "-Down"], capture_output=True, text=True, timeout=120,
+                          check=False)  # fmt: skip
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (home / "stopped.txt").read_text(encoding="utf-8").strip() == "Stop All ran"
+    assert done.stdout.strip().splitlines()[-1].startswith("CLEAN")  # then it lists: nothing runs from there
 
 
 def test_a_proof_asked_for_by_name_on_the_wrong_install_kind_is_a_usage_error_and_keeps_old_evidence(

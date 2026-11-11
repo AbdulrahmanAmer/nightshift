@@ -17,7 +17,10 @@ A proof is ``proofs/<slug>.py`` (the folder is a package; every name that starts
 
     def run(ctx): ...      # returning is a pass; ctx.check / ProofFailed / any exception is a fail
 
-``id``, ``boxes``, ``install`` ("dev" | "engine" | "any") and ``window`` are required; ``needs`` (``[]`` or
+``id``, ``boxes``, ``install`` ("dev" | "engine" | "gpu" | "any") and ``window`` are required (``gpu``: a
+real install with profile gpu and no test switch, where the GPU kit runs ``--all``: only ``gpu`` and ``any``
+proofs run there, so a proof that changes an install's state declares ``dev`` or ``engine``); ``needs``
+(``[]`` or
 ``["engine"]``), ``timeout_s`` and ``fakes`` (information only) are optional. A proof with a missing or wrong
 field is reported (``--list`` shows it, ``--all`` counts it as a failure); it never crashes the runner. The
 literal is read with ``ast`` and the module is imported as ``<package>.<stem>`` only when it runs.
@@ -88,7 +91,7 @@ from dev.prove_ctx import (  # noqa: E402
 DEFAULT_PROOFS = ROOT / "proofs"
 DEFAULT_TOOLS = Path(r"D:\NightShift\refs\tools")
 DEFAULT_LOCK = Path(r"D:\NightShift\refs\departments\LAPTOP.lock")
-KINDS = ("dev", "engine", "any")
+KINDS = ("dev", "engine", "gpu", "any")  # gpu: the owner's real install (prove_ctx.install_kind; the GPU kit)
 NEEDS = ("engine",)
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 BOX_RE = re.compile(r"^[A-Za-z]+-[A-Za-z0-9]+$")

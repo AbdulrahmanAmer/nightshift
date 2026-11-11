@@ -47,8 +47,25 @@ class SetupError(Exception):
 @dataclass(frozen=True)
 class InstallInfo:
     version: str
-    kind: str  # "dev" | "engine"
+    kind: str  # "dev" | "engine" | "gpu"
     ports: dict[str, int]
+
+
+def _test_switch(cfg: dict[str, Any]) -> bool:
+    """`ns_common.devmode.test_settings`, spelled out (this file imports nothing of the product): a dev or an
+    engine-test install (`dev_mode`, `fake_footage` or `tiny_story` true, or the fake voice engine)."""
+    if any(cfg.get(name) is True for name in ("dev_mode", "fake_footage", "tiny_story")):
+        return True
+    tts = cfg.get("tts")
+    return isinstance(tts, dict) and tts.get("engine") == "fake"
+
+
+def install_kind(cfg: dict[str, Any]) -> str:
+    """`dev` (dev_mode), `gpu` (profile gpu and no test switch: the owner's real install, card gpu-kit), else
+    `engine` (an engine-test install, or a CPU one)."""
+    if cfg.get("dev_mode"):
+        return "dev"
+    return "gpu" if cfg.get("profile") == "gpu" and not _test_switch(cfg) else "engine"
 
 
 def read_install(home: Path) -> InstallInfo:
@@ -77,7 +94,7 @@ def read_install(home: Path) -> InstallInfo:
         section = cfg.get(name)
         if isinstance(section, dict) and isinstance(section.get("port"), int):
             ports[name] = section["port"]
-    return InstallInfo(version, "dev" if cfg.get("dev_mode") else "engine", ports)
+    return InstallInfo(version, install_kind(cfg), ports)
 
 
 def now_iso() -> str:

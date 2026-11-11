@@ -10,7 +10,7 @@ from proofs._channels import loadable_channels
 PROOF = {
     "id": "f-b18-studio-status",
     "boxes": ["F-B18"],
-    "install": "dev",
+    "install": "any",  # it only reads (`studio status`, read-only queries): the GPU kit runs it on a real PC
     "window": False,
     "needs": [],
     "timeout_s": 180,
