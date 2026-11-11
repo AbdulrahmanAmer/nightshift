@@ -53,11 +53,14 @@ def tree_of(home: Path) -> dict[str, bytes]:
 @pytest.fixture
 def two(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     """(A, B): the window's NIGHTSHIFT_HOME names A (set in the window: the user-level default is unset),
-    the program is in B. Nothing is marked as reading yet (a new process)."""
+    the program is in B. Nothing is marked as reading yet (a new process). The one line `Paths.from_env`
+    says per process counts as said: it names NS-E128, and whether an earlier test of this process already
+    said it must not decide what a test here reads in a command's output (the line has its own test)."""
     a = make_install(tmp_path / "NS-old", OLD)
     b = make_install(tmp_path / "NS-new", __version__)
     monkeypatch.setattr(nspaths, "home_of_place", lambda *args, **kw: b)
     monkeypatch.setattr(homeguard, "_reading", set())
+    monkeypatch.setattr(nspaths, "_said_place", ["said by an earlier command of this process"])
     monkeypatch.setenv(nspaths.HOME_ENV, str(a))
     monkeypatch.delenv(nspaths.EXPLICIT_ENV, raising=False)
     monkeypatch.delenv(nspaths.TEST_USER_HOME_ENV, raising=False)
@@ -660,7 +663,8 @@ def test_the_engine_refuses_at_its_start_before_anything_is_written(
     before = tree_of(a)
     assert engine.main([]) == 1
     err = capsys.readouterr().err
-    assert "NS-E128" in err and "studio dashboard" in err
+    # the way out is that install's own `studio dashboard`, by full path (`sentence`): never the plain words
+    assert "NS-E128" in err and f"command: {commandline.by_full_path(a, 'studio dashboard')}. " in err
     assert tree_of(a) == before and sorted(p.name for p in a.iterdir()) == ["app", "config"]
 
 
@@ -721,8 +725,8 @@ def test_a_reader_of_a_torn_install_state_keeps_the_file_and_reads_the_last_good
     torn = a / "config" / "install_state.json"
     torn.write_text('{"app_path": "C:/x", "inst', encoding="utf-8")
     good = torn.with_name(torn.name + BACKUP_SUFFIX)
-    good.write_text("{}", encoding="utf-8")
+    good.write_text('{"app_path": "C:/the-last-good-copy"}', encoding="utf-8")
     before = tree_of(a)
     state = load_install_state(nspaths.Paths(a))
-    assert state is not None
+    assert state.app_path == "C:/the-last-good-copy"    # the `.bak`, not an empty state
     assert tree_of(a) == before                 # the torn file stays for that install's own program
