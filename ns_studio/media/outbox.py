@@ -183,7 +183,7 @@ def load_advice(ctx: JobContext) -> PolicyAdvice:
         if ctx.file(name).exists():
             advice = PolicyResult.model_validate(ctx.read_json(name)).advice
             break
-    answer = yr.disclosure(advice.ai_disclosure, yr.job_voice_mode(ctx)).answer
+    answer = yr.disclosure(advice.ai_disclosure, yr.job_voice_mode(ctx)).stored
     return advice.model_copy(update={"ai_disclosure": answer})
 
 
@@ -249,7 +249,7 @@ def build_sheet(
         "tags": f.tags,
         "hashtags": f.hashtags,
         "publish_after": publish_at,
-        "ai_disclosure": told.answer,
+        "ai_disclosure": told.stored,
         "made_for_kids": advice.made_for_kids or channel.made_for_kids,
         "age_restrict_suggested": advice.age_restrict_suggested,
         "clips": [c.model_dump() for c in clip_refs(shots)],
@@ -257,7 +257,7 @@ def build_sheet(
         "prompt_versions": prompt_versions,
     }
     data.update(extra or {})
-    notes = Notes(f.warnings, [*changes, *f.changes], told.reason, told.note)
+    notes = yr.notes_for(told, f.warnings, [*changes, *f.changes])
     return Sheet(Metadata.model_validate(data), notes)
 
 
@@ -447,69 +447,113 @@ def refit(
         update["chapters"] = None
     new = Notes(f.warnings, [*changes, *f.changes])
     if told is not None:
-        update["ai_disclosure"] = told.answer
-        new.reason, new.note = told.reason, told.note
+        update["ai_disclosure"] = told.stored
+        new = yr.notes_for(told, f.warnings, [*changes, *f.changes])
     fitted = type(meta).model_validate({**meta.model_dump(), **update})
     return fitted, old.merged(new)
 
 
-def channel_voice_mode(paths: Paths, slug: str) -> str | None:
-    """The channel's current voice mode, or None when its profile cannot be read."""
-    from ns_studio.channels.crud import get_channel
-    from ns_studio.errors import StudioError
-
-    try:
-        return get_channel(paths, slug).voice.mode
-    except (StudioError, OSError, ValueError):
-        return None
-
-
-def disclosure_for(paths: Paths, job_id: str, channel: str, kind: str, answer: str) -> yr.Disclosure:
+def disclosure_for(paths: Paths, job_id: str, kind: str, answer: str) -> yr.Disclosure:
     """The altered-content answer of a written output and its reason, from the job's own voice record
-    (else the channel's current voice): what the start sweep writes and the Queue shows."""
-    mode = yr.voice_mode_of(paths.job_dir(job_id), None) or channel_voice_mode(paths, channel)
-    return yr.disclosure(answer, mode, kind=kind)
+    (`youtube_rules.voice_mode_of`; never the channel's current voice): what the start sweep writes and the
+    Queue shows."""
+    return yr.disclosure(answer, yr.voice_mode_of(paths.job_dir(job_id)), kind=kind)
 
 
 SHEET_RULES_FILE = "sheet-rules.json"
+#: Starts in a row at which the sweep tries a sheet it cannot read, then stops and says so.
+SWEEP_TRIES = 5
 
 
 def sweep_sheets(paths: Paths, db: Any, log: NsLogger) -> int:
     """Dashboard start: the sheets of videos waiting to be posted, brought up to YouTube's rules once.
 
-    Runs once per `youtube_rules.RULES_VERSION` (`data/sheet-rules.json`, written last, so a sweep killed
-    halfway runs again at the next start). Pending and approved outputs only: an uploaded video is on
-    YouTube already and a rejected one is not going there. Each sheet is fitted again, its altered-content
-    answer recomputed for the job's voice, and written only when it differs: the `.txt` first (it carries the
-    "Changed for YouTube" line, which the `.json` cannot), then the `.json`, then `outputs.title`. A sheet
-    that cannot be read is left as it is with one WARN. Returns the number of outputs rewritten."""
+    States, each worked out (card posting-sheet-true, review of 07c320e):
+    - pending and approved outputs only: an uploaded video is on YouTube already, a rejected one is not going.
+    - the `.txt` holds what its `.json` renders (or what this sweep wrote before): rewritten from the fitted
+      `.json` when the text differs.
+    - the `.txt` was edited by hand: kept first as `<stem>.before-<version>.txt` (`keep_edited`), and the new
+      sheet and the Queue carry one line naming that file.
+    - the `.txt` is missing: written from the `.json`.
+    - the `.json` (or a `.txt` that exists) cannot be read: left as it is, NOT marked done; tried again at the
+      next start, at most `SWEEP_TRIES` starts in a row, with a WARN each time saying which try it is.
+    - interrupted half-way: each file is written atomically in the order kept copy, `.txt`, `.json`,
+      `outputs.title`, and `data/sheet-rules.json` last; the next start redoes only what still differs.
+    - run twice: `data/sheet-rules.json` holds the rules version and no sheet left to retry, so nothing runs.
+    Returns the number of outputs rewritten in this run."""
     marker = paths.data / SHEET_RULES_FILE
     try:
-        if json.loads(read_text_retry(marker)).get("rules_version") == yr.RULES_VERSION:
-            return 0
-    except (OSError, ValueError, AttributeError):
-        pass
-    rewritten = 0
+        state = json.loads(read_text_retry(marker))
+    except (OSError, ValueError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    same = state.get("rules_version") == yr.RULES_VERSION
+    raw = state.get("retry")
+    retry: dict[str, Any] = raw if same and isinstance(raw, dict) else {}
+    if same and not retry:
+        return 0
     rows = db.query(
         "SELECT output_id, job_id, channel, kind, path, title, duration_s FROM outputs"
         " WHERE status IN ('pending', 'approved') ORDER BY created_at, output_id"
     )
+    if same:  # an earlier run of this version did the rest: only the sheets it could not read
+        rows = [r for r in rows if r["output_id"] in retry]
+    rewritten = 0
+    left: dict[str, int] = {}
     for row in rows:
+        oid = str(row["output_id"])
         try:
             rewritten += _refit_output(paths, db, row)
         except (OSError, ValueError) as e:
+            tries = int(retry.get(oid, 0)) + 1
+            if tries < SWEEP_TRIES:
+                left[oid] = tries
+                then = f"Nightshift tries again at the next start (try {tries} of {SWEEP_TRIES})"
+            else:
+                then = (f"Nightshift stopped trying after {SWEEP_TRIES} starts: re-run the job "
+                        f"(studio run --resume {row['job_id']}) or reject the video")
             log.warn(
                 "sheet_unreadable",
-                f"the upload sheet of {row['output_id']} could not be read, so it was left as it is",
-                output_id=row["output_id"], path=str(row["path"]), detail=str(e)[:200],
+                f"the upload sheet of {oid} could not be read, so it was left as it is; {then}",
+                output_id=oid, path=str(row["path"]), detail=str(e)[:200], tries=tries,
             )
     write_text_atomic(
         marker,
-        json.dumps({"rules_version": yr.RULES_VERSION, "rewritten": rewritten,
+        json.dumps({"rules_version": yr.RULES_VERSION, "retry": left, "rewritten": rewritten,
                     "at": datetime.now(UTC).isoformat(timespec="seconds")}) + "\n",
     )
     log.info("sheets_fitted", f"upload sheets brought up to YouTube's rules: {rewritten}", count=rewritten)
     return rewritten
+
+
+def render_sheet(meta: Any, video_name: str, notes: Notes | None = None) -> str:
+    """The `.txt` text of a story or clip sheet (LF line ends)."""
+    if meta.kind == "clip":
+        from ns_studio.clipper.stages_clip import clip_sheet_text
+
+        return clip_sheet_text(meta, video_name, notes=notes)
+    related = (meta.related_video_instruction or "").removeprefix(RELATED_PREFIX) or None
+    return sheet_text(meta, video_name, related_title=related, notes=notes)
+
+
+def keep_edited(txt: Path, text: str) -> str:
+    """Keep a hand-edited `.txt` as `<stem>.before-<version>.txt` next to it; returns that file's name.
+
+    A copy already there with the same text is reused (a sweep killed after keeping it); one with other
+    text is never overwritten: `-2`, `-3`... is added."""
+    from ns_common import __version__
+
+    n = 1
+    while True:
+        name = f"{txt.stem}.before-{__version__}{'' if n == 1 else f'-{n}'}.txt"
+        dest = txt.with_name(name)
+        if not dest.exists():
+            write_text_atomic(dest, text, newline=None)
+            return name
+        if read_text_retry(dest).replace("\r\n", "\n") == text:
+            return name
+        n += 1
 
 
 def _refit_output(paths: Paths, db: Any, row: Mapping[str, Any]) -> int:
@@ -524,22 +568,20 @@ def _refit_output(paths: Paths, db: Any, row: Mapping[str, Any]) -> int:
     else:
         meta = Metadata.model_validate_json(read_text_retry(jpath))
     try:
-        old_text = read_text_retry(tpath).replace("\r\n", "\n")
-    except OSError:
-        old_text = ""
+        old_text: str | None = read_text_retry(tpath).replace("\r\n", "\n")
+    except FileNotFoundError:
+        old_text = None  # nothing to keep; any other error is raised: the sheet is tried again next start
     job_id = str(row["job_id"])
-    told = disclosure_for(paths, job_id, str(row["channel"]), str(row["kind"]), meta.ai_disclosure)
+    told = disclosure_for(paths, job_id, str(row["kind"]), meta.ai_disclosure)
     fitted, notes = refit(
         meta, yr.read_notes(old_text), told=told, duration_s=row["duration_s"],
-        fallback_title=working_title_of(paths.job_dir(str(row["job_id"])), str(row["job_id"])),
+        fallback_title=working_title_of(paths.job_dir(job_id), job_id),
     )
-    if row["kind"] == "clip":
-        from ns_studio.clipper.stages_clip import clip_sheet_text
-
-        text = clip_sheet_text(fitted, video.name, notes=notes)
-    else:
-        related = (fitted.related_video_instruction or "").removeprefix(RELATED_PREFIX) or None
-        text = sheet_text(fitted, video.name, related_title=related, notes=notes)
+    if old_text is not None:
+        ours = {yr.bare_sheet(render_sheet(m, video.name)) for m in (meta, fitted)}
+        if yr.bare_sheet(old_text) not in ours:  # edited by hand: kept before anything is written
+            notes.kept = keep_edited(tpath, old_text)
+    text = render_sheet(fitted, video.name, notes)
     changed = 0
     if text != old_text:
         write_text_atomic(tpath, text, newline=None)

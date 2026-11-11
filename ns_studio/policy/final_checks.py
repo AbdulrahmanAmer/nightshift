@@ -546,7 +546,7 @@ def compute_advice(ctx: JobContext, place_ner: NerFn | None = None) -> PolicyAdv
     places = (place_ner or (lambda t: place_entities(ctx.paths, t)))(blob)
     intense = ctx.channel.audience == "mature" and notes.get("intensity") in ("medium", "high")
     gates = "yes" if (unclear_or_real or places or claims_real) else "no"
-    answer = youtube_rules.disclosure(gates, youtube_rules.job_voice_mode(ctx)).answer
+    answer = youtube_rules.disclosure(gates, youtube_rules.job_voice_mode(ctx)).stored
     return PolicyAdvice(
         ai_disclosure="yes" if answer == "yes" else "no",
         made_for_kids=ctx.channel.made_for_kids,

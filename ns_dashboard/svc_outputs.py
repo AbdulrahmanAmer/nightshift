@@ -20,7 +20,7 @@ from ns_dashboard.security import is_within
 from ns_dashboard.state import AppState
 from ns_studio.errors import StudioError
 from ns_studio.media.outbox import disclosure_for
-from ns_studio.media.youtube_rules import read_notes
+from ns_studio.media.youtube_rules import WARNING_PREFIX, read_notes
 
 URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 EXCERPT_CHARS = 1500
@@ -37,6 +37,12 @@ def _read_json(f: Path) -> Any:
         return json.loads(read_text_retry(f))
     except (OSError, ValueError):
         return None
+
+
+def unreadable_sheet_line(name: str, job_id: str) -> str:
+    """The Queue's line for a video whose `.json` sheet cannot be read."""
+    return (f"{WARNING_PREFIX}the upload sheet {name} could not be read, so it was not checked against "
+            f"YouTube's rules: re-run the job (studio run --resume {job_id}) or reject the video")
 
 
 def _read_text(f: Path) -> str | None:
@@ -168,7 +174,10 @@ class OutputsService:
         answer = adv.get("ai_disclosure", flat.get("ai_disclosure"))
         told = None
         if answer in ("yes", "no"):  # the answer for the voice the job spoke with, and why (rule R8)
-            told = disclosure_for(self.s.paths, row["job_id"], row["channel"], row["kind"], str(answer))
+            told = disclosure_for(self.s.paths, row["job_id"], row["kind"], str(answer))
+        notes = read_notes(sheet_text).owner_lines()
+        if sheet_dict is None:  # the start sweep could not read it either (a bounded WARN in its log)
+            notes.insert(0, unreadable_sheet_line(video.with_suffix(".json").name, str(row["job_id"])))
         item.update(
             {
                 "description": flat.get("description", ""),
@@ -178,7 +187,7 @@ class OutputsService:
                 "ai_disclosure": told.answer if told else answer,
                 "ai_disclosure_reason": told.reason if told else None,
                 "ai_disclosure_note": (told.note or None) if told else None,
-                "youtube_notes": read_notes(sheet_text).owner_lines(),
+                "youtube_notes": notes,
                 "made_for_kids": adv.get("made_for_kids", flat.get("made_for_kids")),
                 "age_restrict_suggested": adv.get(
                     "age_restrict_suggested", flat.get("age_restrict_suggested")

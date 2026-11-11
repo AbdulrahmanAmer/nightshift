@@ -147,8 +147,12 @@ def test_angle_brackets_are_removed_from_every_field(tmp_home: Path, tmp_path: P
 def test_title_is_1_to_100_characters(tmp_home: Path, tmp_path: Path):
     hundred = ("word " * 20).strip()[:99] + "z"  # 100 characters
     assert meta_of({**SEO, "title": hundred}).title == hundred
-    emoji = "\U0001F47B" + "a" * 99  # YouTube counts a code point as a character (F-F17 confirms in Studio)
+    # counted in UTF-16 units, the safe side until the kit's check E1 says how Studio counts: an emoji is 2
+    emoji = "\U0001F47B" + "a" * 98  # 99 code points, 100 units
     assert meta_of({**SEO, "title": emoji}).title == emoji
+    assert meta_of({**SEO, "title": emoji + "a"}).title == emoji  # 101 units: one letter goes
+    tail = meta_of({**SEO, "title": "a" * 99 + "\U0001F47B"}).title  # 101 units: never half of the emoji
+    assert tail == "a" * 99 and len(tail.encode("utf-16-le")) // 2 == 99
     ctx = make_ctx(tmp_home, fmt="master_first", channel=make_channel(format="master_first"))
     long_title = "The Night Bus That Never Stopped At Harrow Street And What The Driver Told Me At 3 AM, Again"
     long_title += " Tonight."  # 101 characters
@@ -213,8 +217,10 @@ def test_tags_total_counts_quotes_and_commas_like_youtube(tmp_home: Path):
 
 # ---------------------------------------------------------------------------------------------- R5
 def test_hashtags_are_single_words_with_a_hash_and_at_most_five(tmp_home: Path):
-    meta = meta_of({**SEO, "hashtags": ["#scary story", "horror", "#Horror", "#a<b>"]})
-    assert meta.hashtags == ["#scarystory", "#horror", "#ab"]
+    meta = meta_of({**SEO, "hashtags": ["#scary story", "horror", "#Horror", "#a<b>", "#true-crime"]})
+    assert meta.hashtags == ["#scarystory", "#horror", "#ab", "#truecrime"]  # a hyphen ends a hashtag
+    arabic = meta_of({**SEO, "hashtags": ["#قصة رعب"]}).hashtags  # two words
+    assert arabic == ["#قصةرعب"]
     assert yr is not None
     tags, changes = yr.fit_hashtags([f"#t{i}" for i in range(8)])
     assert tags == [f"#t{i}" for i in range(5)] and changes == ["kept the first 5 hashtags"]
@@ -253,6 +259,7 @@ def test_a_cloned_voice_makes_the_disclosure_yes_with_the_reason(tmp_home: Path,
 
     def gated(voice: dict) -> str:
         ctx = make_ctx(tmp_home, channel=make_channel(voice=voice))
+        ctx.write_json("audio/voice.json", {"mode": voice["mode"]})  # the voice stage's record
         ctx.write_json("story.json", {"text": "A man heard knocking in an old farmhouse."})
         ctx.write_json("policy_notes.json", {"intensity": "low", "real_setting": False})
         return fc.compute_advice(ctx, place_ner=lambda t: []).ai_disclosure
@@ -261,6 +268,7 @@ def test_a_cloned_voice_makes_the_disclosure_yes_with_the_reason(tmp_home: Path,
     assert gated({"mode": "preset", "speaker": "Ryan"}) == "no"  # a preset and a designed voice: unchanged
     assert gated({"mode": "design", "name": "warm-narrator", "description": "warm"}) == "no"
     ctx = make_ctx(tmp_home, channel=make_channel(voice=CLONE))  # policy off: no gate file
+    ctx.write_json("audio/voice.json", CLONE)
     assert outbox.load_advice(ctx).ai_disclosure == "yes"
     meta, txt = run_short(ctx, tmp_path, SEO)
     assert meta["ai_disclosure"] == "yes"
@@ -269,8 +277,17 @@ def test_a_cloned_voice_makes_the_disclosure_yes_with_the_reason(tmp_home: Path,
     preset = make_ctx(tmp_home)  # the job's own record wins over the channel's current voice
     preset.write_json("audio/voice.json", {"mode": "clone", "name": "owner-clone"})
     assert outbox.load_advice(preset).ai_disclosure == "yes"
-    plain, ptxt = run_short(make_ctx(tmp_home), tmp_path, SEO)
+    narrated = make_ctx(tmp_home)
+    narrated.write_json("audio/voice.json", {"mode": "preset", "name": "Ryan"})
+    plain, ptxt = run_short(narrated, tmp_path, SEO)
     assert plain["ai_disclosure"] == "no" and "Altered or synthetic content: No (" in ptxt
+    # no record of the voice (a job of an earlier release): never the channel's CURRENT voice; the owner
+    # decides, with the rule quoted
+    unknown = make_ctx(tmp_home, channel=make_channel(voice=CLONE))
+    umeta, utxt = run_short(unknown, tmp_path, SEO)
+    assert umeta["ai_disclosure"] == "no"  # the .json keeps the gates' answer (a 0.1.14 reader needs yes or no)
+    assert "  Altered or synthetic content: You decide (Nightshift did not record which voice narrated" in utxt
+    assert "Creators must disclose GenAI content that: Makes a real person appear to say or do something" in utxt
     # the dashboard computes the same answer and its reason where it shows them
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -327,34 +344,37 @@ def test_retime_fits_again_and_keeps_what_the_sheet_told_the_owner(tmp_home: Pat
 
 
 # ---------------------------------------------------------------------------------------------- sweep
-def _rc3_sheet(paths: Paths, db, *, slug: str, job_id: str, title: str, status: str, kind: str = "short") -> Path:
-    """An output and its sheets as release 0.1.15-rc3 wrote them (no fitting, the old `.txt` layout)."""
+def _rc3_sheet(paths: Paths, db, *, slug: str, job_id: str, title: str, status: str) -> Path:
+    """An output and its sheets as release 0.1.15-rc3 wrote them: the `.json` as it was (no fitting) and the
+    `.txt` in rc3's layout (its altered-content line with no reason, no notes)."""
     folder = paths.outbox / slug / "stories" / job_id / "shorts"
     folder.mkdir(parents=True, exist_ok=True)
     mp4 = folder / f"{job_id} - Short 01.mp4"
     mp4.write_bytes(b"\x00" * 64)
-    meta = {"channel": slug, "job_id": job_id, "kind": kind, "k": 1, "title": title,
+    meta = {"channel": slug, "job_id": job_id, "kind": "short", "k": 1, "title": title,
             "description": "A story.\nOriginal fiction.", "tags": ["night bus", "story"],
             "hashtags": ["#Shorts"], "publish_after": "2026-11-02T18:05", "ai_disclosure": "no",
             "made_for_kids": False, "age_restrict_suggested": False, "clips": [], "combo_id": "c",
             "prompt_versions": {}}
     mp4.with_suffix(".json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
-    mp4.with_suffix(".txt").write_text(
-        f"FILE: {mp4.name}\nTITLE: {title}\n\nDESCRIPTION:\nA story.\nOriginal fiction.\n\n#Shorts\n\n"
-        "TAGS: night bus, story\n\nPUBLISH AFTER (local time): 2026-11-02 18:05\n\nSETTINGS:\n"
-        "  Altered or synthetic content: No\n  Made for kids: No\n  Age restriction suggested: No\n",
-        encoding="utf-8",
-    )
+    rc3 = outbox.sheet_text(Metadata.model_validate(meta), mp4.name)  # no notes: rc3's own text
+    mp4.with_suffix(".txt").write_text(rc3.replace("\n", "\r\n"), encoding="utf-8", newline="")
     db.execute(
         "INSERT INTO outputs(output_id, job_id, channel, kind, k, title, path, duration_s, status, created_at)"
         " VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (f"{job_id}/s1", job_id, slug, kind, 1, title, str(mp4), 30.0, status, "2026-11-01T00:00:00+00:00"),
+        (f"{job_id}/s1", job_id, slug, "short", 1, title, str(mp4), 30.0, status, "2026-11-01T00:00:00+00:00"),
     )
     return mp4
 
 
+def _logs(paths: Paths) -> str:
+    return "".join(f.read_text(encoding="utf-8") for f in paths.logs.glob("dashboard-*.jsonl"))
+
+
 def test_sheets_of_an_earlier_release_are_rewritten_once(tmp_home: Path, tmp_path: Path, monkeypatch):
+    from ns_common import __version__
     from ns_dashboard.handlers import build_state
+    from ns_dashboard.svc_outputs import OutputsService
 
     paths = Paths.from_env()
     paths.ensure()
@@ -365,16 +385,29 @@ def test_sheets_of_an_earlier_release_are_rewritten_once(tmp_home: Path, tmp_pat
     try:
         bracket = _rc3_sheet(paths, db, slug="after-dark", job_id="after-dark-20261101-aa01",
                              title="The <Last> Door", status="pending")
-        clone = _rc3_sheet(paths, db, slug="cloned", job_id="cloned-20261101-aa02", title="Quiet", status="approved")
-        posted = _rc3_sheet(paths, db, slug="after-dark", job_id="after-dark-20261101-aa03",
-                            title="Old <One>", status="uploaded")
-        dropped = _rc3_sheet(paths, db, slug="after-dark", job_id="after-dark-20261101-aa04",
-                             title="Gone <One>", status="rejected")
-        torn = _rc3_sheet(paths, db, slug="after-dark", job_id="after-dark-20261101-aa05",
-                          title="Torn", status="pending")
+        torn = _rc3_sheet(paths, db, slug="after-dark", job_id="after-dark-20261101-aa05", title="Torn",
+                          status="pending")
+        good_json = torn.with_suffix(".json").read_text(encoding="utf-8")
         torn.with_suffix(".json").write_text("{not json", encoding="utf-8")
+        edited = _rc3_sheet(paths, db, slug="after-dark", job_id="after-dark-20261101-aa06", title="Plain",
+                            status="pending")
+        mine = edited.with_suffix(".txt").read_text(encoding="utf-8").replace("TITLE: Plain", "TITLE: My own <title>")
+        edited.with_suffix(".txt").write_text(mine, encoding="utf-8", newline="")  # the owner's Notepad edit
+        missing = _rc3_sheet(paths, db, slug="after-dark", job_id="after-dark-20261101-aa08", title="Gone txt",
+                             status="pending")
+        missing.with_suffix(".txt").unlink()
+        unknown = _rc3_sheet(paths, db, slug="cloned", job_id="cloned-20261101-aa02", title="Quiet",
+                             status="approved")
+        recorded = _rc3_sheet(paths, db, slug="cloned", job_id="cloned-20261101-aa07", title="Heard",
+                              status="approved")
+        (paths.job_dir("cloned-20261101-aa07") / "audio").mkdir(parents=True)
+        (paths.job_dir("cloned-20261101-aa07") / "audio" / "voice.json").write_text('{"mode": "clone"}', "utf-8")
+        posted = _rc3_sheet(paths, db, slug="after-dark", job_id="after-dark-20261101-aa03", title="Old <One>",
+                            status="uploaded")
+        dropped = _rc3_sheet(paths, db, slug="after-dark", job_id="after-dark-20261101-aa04", title="Gone <One>",
+                             status="rejected")
         untouched = {p: (p.with_suffix(".json").read_bytes(), p.with_suffix(".txt").read_bytes())
-                     for p in (posted, dropped, torn)}
+                     for p in (posted, dropped)}
 
         writes: list[str] = []
         real_write = outbox.write_text_atomic
@@ -389,46 +422,128 @@ def test_sheets_of_an_earlier_release_are_rewritten_once(tmp_home: Path, tmp_pat
         assert sweep is not None, "the start sweep's sheet pass (outbox.sweep_sheets)"
         monkeypatch.setattr(outbox, "write_text_atomic", killed_after_one_sheet)
         with pytest.raises(RuntimeError):
-            sweep(paths, db, state.log)
+            sweep(paths, db, state.log)  # aa01 written, aa05 cannot be read, killed at aa06's first write
         assert not (paths.data / "sheet-rules.json").exists()  # written last: the next start runs again
         monkeypatch.setattr(outbox, "write_text_atomic", real_write)
-
-        def warned() -> int:
-            return "".join(f.read_text(encoding="utf-8") for f in paths.logs.glob("dashboard-*.jsonl")).count(
-                '"sheet_unreadable"')
-
-        before = warned()  # the killed run may have met the torn sheet already (rows go by output id)
-        first = writes[:]
-        done_one = (paths.outbox / "after-dark" / "stories").glob("*/shorts/*aa01*.json")
-        stamp = {p: p.stat().st_mtime_ns for p in done_one}
+        assert writes == [bracket.with_suffix(".txt").name, bracket.with_suffix(".json").name]
+        stamp = {p: p.stat().st_mtime_ns for p in (bracket.with_suffix(".txt"), bracket.with_suffix(".json"))}
+        warned = _logs(paths).count('"sheet_unreadable"')
 
         state.worker.start()  # the dashboard's start: recovery, then the sweeps
         state.worker.stop()
         rules = json.loads((paths.data / "sheet-rules.json").read_text(encoding="utf-8"))
-        assert rules["rules_version"] == yr.RULES_VERSION
+        assert rules["rules_version"] == yr.RULES_VERSION and rules["retry"] == {"after-dark-20261101-aa05/s1": 1}
+        assert all(p.stat().st_mtime_ns == t for p, t in stamp.items())  # the killed run's work is not redone
         meta = json.loads(bracket.with_suffix(".json").read_text(encoding="utf-8"))
-        assert meta["title"] == "The Last Door" and first  # the killed run had rewritten it already
-        assert all(p.stat().st_mtime_ns == t for p, t in stamp.items())  # and the second run left it alone
+        assert meta["title"] == "The Last Door"
         assert "removed < and > from the title" in bracket.with_suffix(".txt").read_text(encoding="utf-8")
         row = db.one("SELECT title FROM outputs WHERE output_id=?", ("after-dark-20261101-aa01/s1",))
         assert row is not None and row["title"] == "The Last Door"
-        cmeta = json.loads(clone.with_suffix(".json").read_text(encoding="utf-8"))
-        assert cmeta["ai_disclosure"] == "yes"
-        assert "Altered or synthetic content: Yes (the narration is a voice cloned" in clone.with_suffix(
-            ".txt").read_text(encoding="utf-8")
-        for p, (j, t) in untouched.items():  # uploaded and rejected left alone; the torn sheet skipped
+        # the hand-edited sheet: kept as it was, and the new sheet and the Queue name the copy
+        kept = edited.with_name(f"{edited.stem}.before-{__version__}.txt")
+        assert kept.read_text(encoding="utf-8") == mine
+        new = edited.with_suffix(".txt").read_text(encoding="utf-8")
+        assert f"YOUR EDITS KEPT: this sheet was rewritten for YouTube's rules; the copy you edited is kept next to it as {kept.name}" in new
+        detail = OutputsService(state).detail("after-dark-20261101-aa06/s1")
+        assert any(kept.name in n for n in detail["youtube_notes"])
+        assert "TITLE: Gone txt" in missing.with_suffix(".txt").read_text(encoding="utf-8")  # a missing .txt is written
+        assert not list(missing.parent.glob("*.before-*"))  # and nothing is kept for it
+        # no record of the voice: the owner decides (the channel's current clone is not taken as the voice heard)
+        assert json.loads(unknown.with_suffix(".json").read_text(encoding="utf-8"))["ai_disclosure"] == "no"
+        assert "Altered or synthetic content: You decide (" in unknown.with_suffix(".txt").read_text(encoding="utf-8")
+        assert json.loads(recorded.with_suffix(".json").read_text(encoding="utf-8"))["ai_disclosure"] == "yes"
+        for p, (j, t) in untouched.items():  # uploaded and rejected left alone
             assert (p.with_suffix(".json").read_bytes(), p.with_suffix(".txt").read_bytes()) == (j, t)
-        logs = "".join(f.read_text(encoding="utf-8") for f in paths.logs.glob("dashboard-*.jsonl"))
-        assert warned() == before + 1 and "upload sheets brought up to YouTube's rules: 1" in logs
+        assert _logs(paths).count('"sheet_unreadable"') == warned + 1 and "(try 1 of 5)" in _logs(paths)
+        assert "upload sheets brought up to YouTube's rules: 4" in _logs(paths)  # aa06, aa08, aa02, aa07
+        torn_detail = OutputsService(state).detail("after-dark-20261101-aa05/s1")
+        assert "could not be read" in torn_detail["youtube_notes"][0]  # the Queue says it too
 
+        torn.with_suffix(".json").write_text(good_json, encoding="utf-8")  # the other program let go of it
         bracket.with_suffix(".json").write_text(json.dumps({**meta, "title": "Back <again>"}), encoding="utf-8")
-        state.worker.start()  # a second start: the rules are already recorded, nothing is rewritten
+        state.worker.start()  # the next start retries only the sheet it could not read
         state.worker.stop()
-        assert "<again>" in bracket.with_suffix(".json").read_text(encoding="utf-8")
-        assert warned() == before + 1  # no WARN again either
+        assert json.loads(torn.with_suffix(".json").read_text(encoding="utf-8"))["title"] == "Torn"
+        assert "Altered or synthetic content:" in torn.with_suffix(".txt").read_text(encoding="utf-8")
+        assert "<again>" in bracket.with_suffix(".json").read_text(encoding="utf-8")  # done sheets are not redone
+        assert json.loads((paths.data / "sheet-rules.json").read_text(encoding="utf-8"))["retry"] == {}
+        assert _logs(paths).count("upload sheets brought up to YouTube's rules: 1") == 1
+
+        before = {p: p.stat().st_mtime_ns for p in paths.outbox.rglob("*.*")}
+        lines = _logs(paths).count("\n")
+        state.worker.start()  # run twice: nothing changes and nothing is said
+        state.worker.stop()
+        assert {p: p.stat().st_mtime_ns for p in paths.outbox.rglob("*.*")} == before
+        assert _logs(paths).count('"sheets_fitted"') == 2 and _logs(paths).count("\n") >= lines
     finally:
         state.worker.stop()
         db.close()
+
+
+def test_a_sheet_that_stays_unreadable_is_tried_at_five_starts_then_left_with_a_word(tmp_home: Path):
+    from ns_common.logging import NsLogger
+
+    paths = Paths.from_env()
+    paths.ensure()
+    from ns_common.db import Db
+
+    db = Db(paths.db_path)
+    db.migrate()
+    log = NsLogger("dashboard", paths.logs)
+    torn = _rc3_sheet(paths, db, slug="after-dark", job_id="after-dark-20261101-bb01", title="Torn", status="pending")
+    torn.with_suffix(".json").write_text("{not json", encoding="utf-8")
+    for _ in range(6):
+        outbox.sweep_sheets(paths, db, log)
+    logs = _logs(paths)
+    assert logs.count('"sheet_unreadable"') == 5  # tries 1 to 5, then the sweep is done with it
+    assert "(try 4 of 5)" in logs and "stopped trying after 5 starts" in logs
+    assert "studio run --resume after-dark-20261101-bb01" in logs
+    assert json.loads((paths.data / "sheet-rules.json").read_text(encoding="utf-8"))["retry"] == {}
+
+
+# ---------------------------------------------------------------------------------------------- properties
+_ALPHABET = (
+    list("abcdefghij XYZ0123456789") + [" ", "  ", "\n", "\n\n", "<", ">", ",", "-", "#", ".", "!", "?", "_"]
+    + ["\U0001F47B", "\U0001F600", "\U0001F3F3️‍\U0001F308"]  # emoji, one with a ZWJ sequence
+    + ["مرحبا", "بالعالم", "ً"]  # Arabic, a haraka
+    + ["夜のバス", "。", "中文"]  # CJK and its full stop
+    + ["é", "ä", "́"]  # combining marks, one alone
+)
+
+
+def _text(rng, most: int) -> str:
+    return "".join(rng.choice(_ALPHABET) for _ in range(rng.randint(0, most)))
+
+
+def _cases(n: int = 300):
+    import random
+
+    rng = random.Random(20261111)
+    for _ in range(n):
+        yield {
+            "title": _text(rng, 160),
+            "description": _text(rng, rng.choice([50, 900, 4000])),
+            "tags": [_text(rng, 40) for _ in range(rng.randint(0, 25))],
+            "hashtags": ["#" * rng.randint(0, 2) + _text(rng, 12) for _ in range(rng.randint(0, 8))],
+        }
+
+
+def test_a_repaired_sheet_passes_the_check():
+    assert yr is not None
+    for case in _cases():
+        f = yr.fit(**case, fallback_title="The working title")
+        assert yr.problems(title=f.title, description=f.description, tags=f.tags, hashtags=f.hashtags) == [], case
+
+
+def test_repairing_twice_equals_repairing_once():
+    assert yr is not None
+    for case in _cases():
+        once = yr.fit(**case, fallback_title="The working title")
+        twice = yr.fit(title=once.title, description=once.description, tags=once.tags, hashtags=once.hashtags,
+                       fallback_title="The working title")
+        assert (twice.title, twice.description, twice.tags, twice.hashtags) == (
+            once.title, once.description, once.tags, once.hashtags), case
+        assert twice.changes == [] and twice.warnings == [], (case, twice.changes)
 
 
 # ---------------------------------------------------------------------------------------------- sources

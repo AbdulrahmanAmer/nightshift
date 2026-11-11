@@ -860,8 +860,8 @@ def fitted_clip_sheet(meta: ClipMetadata, duration_s: float) -> tuple[ClipMetada
     )
     told = youtube_rules.disclosure(meta.ai_disclosure, None, kind="clip")
     data = {**meta.model_dump(), "title": f.title, "description": f.description, "tags": f.tags,
-            "hashtags": f.hashtags, "ai_disclosure": told.answer}
-    return ClipMetadata.model_validate(data), Notes(f.warnings, f.changes, told.reason, told.note)
+            "hashtags": f.hashtags, "ai_disclosure": told.stored}
+    return ClipMetadata.model_validate(data), youtube_rules.notes_for(told, f.warnings, f.changes)
 
 
 def clip_sheet_text(meta: ClipMetadata, video_name: str, *, notes: Notes | None = None) -> str:

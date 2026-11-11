@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,7 +50,10 @@ NO_ANGLE_BRACKETS = Rule(
     "except < and >.",
 )
 TITLE_MAX_CHARS = Rule(
-    "R2", "title of 1 to 100 characters (Unicode code points), not only spaces", 100, API_VIDEOS, CHECKED,
+    # Counted in UTF-16 units (`title_units`), the safe side: the page says "characters" without saying how an
+    # emoji counts; a browser's string length counts an emoji outside the BMP as 2. A title within 100 units
+    # is within 100 code points too. The GPU kit's paste check E1 records how Studio counts; change this then.
+    "R2", "title of 1 to 100 characters (counted in UTF-16 units), not only spaces", 100, API_VIDEOS, CHECKED,
     "The property value has a maximum length of 100 characters (snippet.title); Studio: 'Video titles have a "
     "character limit of 100 characters and cannot include invalid characters.' (" + HELP_SETTINGS + ")",
 )
@@ -68,8 +72,9 @@ TAGS_MAX_CHARS = Rule(
 HASHTAGS_IGNORED_ABOVE = Rule(
     "R5", "hashtags are one word each after a #; more than 60 make YouTube ignore them all", 60,
     HELP_HASHTAGS, CHECKED,
-    "Hashtags don't contain any spaces. ... If a video or playlist has more than 60 hashtags, we'll ignore "
-    "each hashtag on that content.",
+    "No spaces: Hashtags don't contain any spaces. If you want to have two words in a hashtag, you can join "
+    "them together (#TwoWords, #twowords). ... If a video or playlist has more than 60 hashtags, we'll "
+    "ignore each hashtag on that content.",
 )
 CHAPTERS_MIN_COUNT = Rule(
     "R6", "chapters: at least three, the first at 00:00, ascending", 3, HELP_CHAPTERS, CHECKED,
@@ -89,9 +94,11 @@ DISCLOSURE = Rule(
     "R8", "altered or synthetic content: Yes for realistic content that makes a real person appear to say "
     "what they did not, alters a real event or place, or shows a realistic scene that did not occur",
     0, HELP_DISCLOSURE, CHECKED,
-    "Creators must disclose GenAI content that: Makes a real person appear to say or do something they "
-    "didn't do. Alters footage of a real event or place. Generates a realistic scene that didn't actually "
-    "occur. ... [no disclosure for] Cloning one's own voice to create voice overs or dubs",
+    # Verbatim, as the page has them (its curly apostrophes kept): the introduction of the list of what must
+    # be disclosed and its first item; the heading of the list of what need not be, and its item on voices.
+    "Creators must disclose GenAI content that: | Makes a real person appear to say or do something they "
+    "didn’t do. | Examples of content creators don’t have to disclose | Cloning one’s own voice to "
+    "create voice overs or dubs",
 )
 MADE_FOR_KIDS = Rule(
     "R9", "made for kids is answered for every video", 0, HELP_KIDS, CHECKED,
@@ -147,14 +154,24 @@ def _no_brackets(text: str) -> tuple[str, bool]:
     return "\n".join(lines), True
 
 
+def title_units(text: str) -> int:
+    """Length in UTF-16 code units: an emoji outside the Basic Multilingual Plane counts 2 (see R2)."""
+    return len(text.encode("utf-16-le")) // 2
+
+
 def _cut_title(title: str) -> str:
-    """At most `TITLE_MAX_CHARS` code points, cut before a word where one ends inside the limit."""
+    """At most `TITLE_MAX_CHARS` UTF-16 units, cut before a word where one ends inside the limit (never
+    inside a surrogate pair); a title that would be left empty is cut at the last whole character."""
     limit = int(TITLE_MAX_CHARS.value)
-    if len(title) <= limit:
+    if title_units(title) <= limit:
         return title
-    head = title[: limit + 1]
-    cut = head.rsplit(" ", 1)[0] if " " in head[1:] else title[:limit]
-    return cut[:limit].rstrip(" ,;:-–—")
+    n = len(title)
+    while title_units(title[:n]) > limit:
+        n -= 1
+    head = title[: n + 1]  # one character past the limit: a space there ends the last whole word
+    cut = head.rsplit(" ", 1)[0] if " " in head[1:] else title[:n]
+    cut = cut[:n].rstrip(" ,;:-–—")
+    return cut or title[:n].rstrip() or title[:n]
 
 
 def fit_title(title: str, fallback: str) -> tuple[str, list[str]]:
@@ -261,6 +278,15 @@ def fit_tags(tags: Sequence[str]) -> tuple[list[str], list[str]]:
     return out, changes
 
 
+def hashtag_char(c: str) -> bool:
+    """A character a hashtag word keeps: a letter or digit of any script, `_`, or a combining mark.
+
+    R5's page says only "No spaces: Hashtags don't contain any spaces." and that two words are joined
+    together (#TwoWords). A hyphen or other punctuation ends the hashtag YouTube links (`#true-crime` links
+    `#true` only), so Nightshift joins across them as across spaces: the safe side, not a quoted rule."""
+    return c.isalnum() or c == "_" or unicodedata.category(c).startswith("M")
+
+
 def fit_hashtags(hashtags: Sequence[str]) -> tuple[list[str], list[str]]:
     """R1 and R5: each one word after one `#`, no repeats, at most `HASHTAGS_KEPT`."""
     changes: set[str] = set()
@@ -269,9 +295,12 @@ def fit_hashtags(hashtags: Sequence[str]) -> tuple[list[str], list[str]]:
         h = str(raw).strip()
         if _BRACKETS.search(h):
             changes.add("removed < and > from the hashtags")
-        word = re.sub(r"\s+", "", _BRACKETS.sub("", h)).lstrip("#")
-        if re.search(r"\s", h.strip()):
+        body = _BRACKETS.sub("", h).lstrip("#")
+        word = "".join(c for c in body if hashtag_char(c))
+        if re.search(r"\s", body):
             changes.add("joined the words of a hashtag (a hashtag has no spaces)")
+        if any(not hashtag_char(c) and not c.isspace() and c not in "<>" for c in body):
+            changes.add("joined a hashtag across a hyphen or other mark (YouTube ends a hashtag there)")
         if not h.startswith("#") and word:
             changes.add("added # to a hashtag")
         if not word:
@@ -341,9 +370,9 @@ def drop_chapter_lines(description: str) -> str:
 # ------------------------------------------------------------------------------------------- disclosure
 REASON_CLONE = "the narration is a voice cloned from a person's recording"
 NOTE_CLONE = (
-    "YouTube does not ask for Yes when you cloned your own voice for a voice-over (its list of changes that "
-    "need no disclosure has \"Cloning one's own voice to create voice overs or dubs\"). If this is your own "
-    "voice and nothing else in the video could pass as a real person, place or event, No is allowed."
+    "YouTube lists \"Cloning one’s own voice to create voice overs or dubs\" under \"Examples of content "
+    "creators don’t have to disclose\". If this is your own voice and nothing else in the video could pass "
+    "as a real person, place or event, No is allowed."
 )
 REASON_REAL = (
     "the story could pass as a real event or place (a real place, a claim that it is true, or a setting "
@@ -358,45 +387,69 @@ NOTE_SYNTHETIC = (
     "narrator voice that imitates nobody is not on its list. The call is yours if you think viewers would "
     "take this story as true."
 )
+REASON_UNKNOWN = (
+    "Nightshift did not record which voice narrated this video (it was made before Nightshift kept that "
+    "record), so the answer is yours"
+)
+NOTE_UNKNOWN = (
+    "YouTube: \"Creators must disclose GenAI content that: Makes a real person appear to say or do something "
+    "they didn’t do.\" Under \"Examples of content creators don’t have to disclose\" it lists \"Cloning "
+    "one’s own voice to create voice overs or dubs\". Answer Yes if the narration is a voice cloned from "
+    "someone other than you."
+)
 REASON_CLIP = "the clip is your own footage; Nightshift only cut it, framed it and added captions"
 REASON_CLIP_YES = "the metadata check asked for it"
+UNKNOWN = "unknown"  # the voice mode of a job whose narrating voice was never recorded
 
 
 @dataclass(frozen=True)
 class Disclosure:
-    """The altered or synthetic content answer, why, and what is left to the owner's judgement."""
+    """The altered or synthetic content answer, why, and what is left to the owner's judgement.
 
-    answer: str  # "yes" | "no"
+    `answer` is "yes", "no" or "unknown" (the owner decides; the sheet says so); `stored` is what the `.json`
+    keeps, always "yes" or "no" (the policy gates' answer when the sheet leaves it to the owner)."""
+
+    answer: str
     reason: str
     note: str = ""
+    stored: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.stored:
+            object.__setattr__(self, "stored", "yes" if self.answer == "yes" else "no")
 
 
 def disclosure(answer: str, voice_mode: str | None, *, kind: str = "short") -> Disclosure:
     """R8 for the cases Nightshift makes. `answer` is the policy gates' answer without the voice.
 
     A cloned voice is always Yes (whose voice it is is not recorded; a Yes only adds YouTube's label), with
-    YouTube's own-voice exception said in the note. A preset or designed voice imitates no real person and
-    leaves the gates' answer as it is. A clip is the owner's own footage."""
+    YouTube's own-voice example said in the note. A preset or designed voice imitates no real person and
+    leaves the gates' answer as it is. A job whose narrating voice was never recorded (`UNKNOWN`, made before
+    the voice record) is Yes when the gates say Yes, else left to the owner with the rule quoted: never the
+    channel's current voice, which may not be the one heard. A clip is the owner's own footage."""
     if kind == "clip":
         return Disclosure(answer, REASON_CLIP_YES if answer == "yes" else REASON_CLIP)
     if voice_mode == "clone":
         return Disclosure("yes", REASON_CLONE, NOTE_CLONE)
     if answer == "yes":
         return Disclosure("yes", REASON_REAL)
+    if voice_mode == UNKNOWN:
+        return Disclosure(UNKNOWN, REASON_UNKNOWN, NOTE_UNKNOWN, stored="no")
     return Disclosure("no", REASON_SYNTHETIC, NOTE_SYNTHETIC)
 
 
 VOICE_RECORD = "audio/voice.json"
 
 
-def job_voice_mode(ctx: JobContext) -> str | None:
-    """The voice mode the job narrated with (see `voice_mode_of`); the channel's voice when nothing says."""
-    return voice_mode_of(ctx.job_dir, ctx.channel.voice.mode)
+def job_voice_mode(ctx: JobContext) -> str:
+    """The voice mode the job narrated with (see `voice_mode_of`), or `UNKNOWN`."""
+    return voice_mode_of(ctx.job_dir)
 
 
-def voice_mode_of(job_dir: Path, channel_mode: str | None) -> str | None:
-    """The voice the job narrated with (`audio/voice.json`, written by the voice stage), else the series
-    design's voice, else `channel_mode` (the channel's current voice: jobs from before the record)."""
+def voice_mode_of(job_dir: Path) -> str:
+    """The voice the job narrated with: `audio/voice.json` (written by the voice stage), else the series
+    design's voice (a part is narrated by it), else `UNKNOWN`. The channel's current voice is never used:
+    the owner may have changed it after the video was narrated."""
     for name, pick in ((VOICE_RECORD, lambda d: d.get("mode")),
                        ("series_context.json",
                         lambda d: ((d.get("design") or {}).get("voice") or {}).get("mode"))):
@@ -407,55 +460,97 @@ def voice_mode_of(job_dir: Path, channel_mode: str | None) -> str | None:
         mode = pick(data) if isinstance(data, dict) else None
         if mode in ("preset", "design", "clone"):
             return str(mode)
-    return channel_mode
+    return UNKNOWN
+
+
+# ------------------------------------------------------------------------------------------- the check
+def problems(*, title: str, description: str, tags: Sequence[str], hashtags: Sequence[str]) -> list[str]:
+    """What in these fields YouTube would refuse or ignore (R1 to R5); empty when the sheet holds."""
+    out: list[str] = []
+    fields = [title, description, *tags, *hashtags]
+    if any(_BRACKETS.search(f) for f in fields):
+        out.append("R1: < or > in a field")
+    bad_title = not title.strip() or title != title.strip() or "\n" in title
+    if bad_title or title_units(title) > TITLE_MAX_CHARS.value:
+        out.append(f"R2: title of {title_units(title)} units, or empty, or not trimmed")
+    if description_bytes(description) + hashtag_line_bytes(hashtags) > DESCRIPTION_MAX_BYTES.value:
+        out.append("R3: description over 5,000 bytes with its hashtag line")
+    if tags_length(tags) > TAGS_MAX_CHARS.value or any(not t.strip() or "," in t for t in tags):
+        out.append("R4: tags over 500, or an empty tag, or a comma in a tag")
+    bodies = [h[1:] for h in hashtags]
+    if (len(hashtags) > HASHTAGS_KEPT or any(not h.startswith("#") or not h[1:] for h in hashtags)
+            or any(not hashtag_char(c) for b in bodies for c in b)
+            or len({b.lower() for b in bodies}) != len(bodies)):
+        out.append("R5: a hashtag that is not one word after one #, a repeat, or more than five")
+    return out
 
 
 # ------------------------------------------------------------------------------------- the sheet's notes
+KEPT_PREFIX = "YOUR EDITS KEPT: "
+
+
+def kept_line(name: str) -> str:
+    """The line that names the copy of a hand-edited sheet the start sweep kept."""
+    return (f"{KEPT_PREFIX}this sheet was rewritten for YouTube's rules; the copy you edited is kept next "
+            f"to it as {name}")
+
+
 @dataclass
 class Notes:
-    """The lines a sheet carries for the owner: warnings, changes, and the disclosure's reason and note."""
+    """The lines a sheet carries for the owner: warnings, changes, the copy of their edits it kept, and the
+    disclosure's reason and note (`decide`: the answer is left to the owner)."""
 
     warnings: list[str] = field(default_factory=list)
     changes: list[str] = field(default_factory=list)
     reason: str = ""
     note: str = ""
+    decide: bool = False
+    kept: str = ""
 
     def merged(self, other: Notes) -> Notes:
-        """These notes plus `other`'s warnings and changes (no repeats); `other`'s reason when it has one."""
+        """These notes plus `other`'s warnings and changes (no repeats); `other`'s disclosure when it has
+        one."""
+        theirs = bool(other.reason)
         return Notes(
             list(dict.fromkeys([*self.warnings, *other.warnings])),
             list(dict.fromkeys([*self.changes, *other.changes])),
-            other.reason or self.reason, other.note if other.reason else self.note,
+            other.reason if theirs else self.reason, other.note if theirs else self.note,
+            other.decide if theirs else self.decide, other.kept or self.kept,
         )
+
+    def owner_lines(self) -> list[str]:
+        """The warnings, the kept copy and the changes, as the sheet's head and the Queue show them."""
+        lines = [f"{WARNING_PREFIX}{w}" for w in self.warnings]
+        if self.kept:
+            lines.append(kept_line(self.kept))
+        if self.changes:
+            lines.append(CHANGED_PREFIX + "; ".join(self.changes))
+        return lines
 
     def head_lines(self) -> list[str]:
         """The lines at the top of the sheet (empty when there is nothing to say)."""
-        lines = [f"{WARNING_PREFIX}{w}" for w in self.warnings]
-        if self.changes:
-            lines.append(CHANGED_PREFIX + "; ".join(self.changes))
+        lines = self.owner_lines()
         return [*lines, ""] if lines else []
 
-    def owner_lines(self) -> list[str]:
-        """The warnings and the changes as the Queue shows them."""
-        return [f"{WARNING_PREFIX}{w}" for w in self.warnings] + (
-            [CHANGED_PREFIX + "; ".join(self.changes)] if self.changes else []
-        )
 
-
-_DISCLOSURE_LINE = re.compile(r"^  Altered or synthetic content: (?:Yes|No)(?: \((.*)\))?$")
+_DISCLOSURE_LINE = re.compile(r"^  Altered or synthetic content: (Yes|No|You decide)(?: \((.*)\))?$")
+_KEPT = re.compile(r"^" + re.escape(KEPT_PREFIX) + r".* as (.+)$")
 
 
 def read_notes(sheet_text: str | None) -> Notes:
     """The notes an earlier `.txt` sheet carries (rewriting a sheet keeps what it already told the owner)."""
     notes = Notes()
-    lines = (sheet_text or "").splitlines()
+    lines = (sheet_text or "").replace("\r\n", "\n").split("\n")
     for i, ln in enumerate(lines):
         if ln.startswith(WARNING_PREFIX):
             notes.warnings.append(ln[len(WARNING_PREFIX):])
         elif ln.startswith(CHANGED_PREFIX):
             notes.changes.extend(c for c in ln[len(CHANGED_PREFIX):].split("; ") if c)
+        elif m := _KEPT.match(ln):
+            notes.kept = m.group(1)
         elif m := _DISCLOSURE_LINE.match(ln):
-            notes.reason = m.group(1) or ""
+            notes.decide = m.group(1) == "You decide"
+            notes.reason = m.group(2) or ""
             nxt = lines[i + 1] if i + 1 < len(lines) else ""
             notes.note = nxt.strip() if nxt.startswith("    ") else ""
     return notes
@@ -464,5 +559,32 @@ def read_notes(sheet_text: str | None) -> Notes:
 def disclosure_lines(answer: str, notes: Notes) -> list[str]:
     """The sheet's altered-content line, with its reason, and the note below it."""
     reason = f" ({notes.reason})" if notes.reason else ""
-    line = f"  Altered or synthetic content: {answer.capitalize()}{reason}"
-    return [line, *([f"    {notes.note}"] if notes.note else [])]
+    label = "You decide" if notes.decide else answer.capitalize()
+    note = [f"    {notes.note}"] if notes.note else []
+    return [f"  Altered or synthetic content: {label}{reason}", *note]
+
+
+def notes_for(told: Disclosure, warnings: Sequence[str] = (), changes: Sequence[str] = ()) -> Notes:
+    """The notes of a sheet whose disclosure is `told`."""
+    return Notes(list(warnings), list(changes), told.reason, told.note, told.answer == UNKNOWN)
+
+
+def bare_sheet(text: str) -> str:
+    """A sheet's text without what Nightshift adds for the owner (the head notes, the disclosure answer, its
+    reason and note), line ends as LF and blank runs folded: two sheets with the same bare text hold the same
+    fields, so a `.txt` whose bare text differs from what its `.json` renders was edited by hand."""
+    out: list[str] = []
+    skip_note = False
+    for ln in text.replace("\r\n", "\n").split("\n"):
+        if skip_note:
+            skip_note = False
+            if ln.startswith("    "):
+                continue
+        if ln.startswith((WARNING_PREFIX, CHANGED_PREFIX, KEPT_PREFIX)):
+            continue
+        if _DISCLOSURE_LINE.match(ln):
+            out.append("  Altered or synthetic content:")
+            skip_note = True
+            continue
+        out.append(ln.rstrip())
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip("\n")

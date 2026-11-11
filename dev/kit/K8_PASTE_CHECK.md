@@ -32,8 +32,9 @@ open in Nightshift, and YouTube Studio (https://studio.youtube.com/) signed in t
 
 These settle what the help pages do not say. Undo each one before saving, or delete the video.
 
-- E1 title counting: replace the title with one emoji followed by 99 letters `a` (100 characters as Nightshift
-  counts them). Write down Studio's counter (100/100 or 101/100) and whether Save is allowed.
+- E1 title counting: replace the title with one emoji followed by 99 letters `a` (100 characters, or 101 if
+  an emoji counts as two). Write down Studio's counter (100/100 or 101/100) and whether Save is allowed.
+  Nightshift counts an emoji as two until this answer says otherwise (R2 in `youtube_rules.py`).
 - E2 tag counting: replace the tags with this line (500 characters as YouTube's own rule counts them: a tag with
   a space counts its two quote marks, and every comma counts). Write down Studio's counter and whether all ten
   tags stay:
@@ -42,9 +43,12 @@ These settle what the help pages do not say. Undo each one before saving, or del
   first one. Write down Studio's description counter for both copies (Nightshift counts each line break as two
   bytes, the Windows form, so either copy stays within 5,000).
 
+- E4 hashtag with a hyphen: add `#true-crime` at the end of the description, save, and write down which part
+  of it YouTube shows as a link after saving (all of it, or only `#true`). Nightshift writes it `#truecrime`.
+
 ## What to record (the kit writes it to `paste.json`)
 
-- the five answers above (y, n with Studio's words, or later), the field name from step 7, and E1 to E3;
+- the five answers above (y, n with Studio's words, or later), the field name from step 7, and E1 to E4;
 - the Nightshift version and the output id of the video (the Queue shows both);
 - if anything was refused: the exact text Studio showed. The builder of the next release changes the rule in
   `ns_studio/media/youtube_rules.py` (one constant, with the page and date it came from).
