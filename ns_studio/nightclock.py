@@ -61,8 +61,8 @@ BEAT_FILE = "night-beat.json"
 #: A task start this far in the future is not this night's (a clock set back, a variable from elsewhere).
 FUTURE_SLACK_S = 300
 #: Card night-fits-b, 4b.4: the PC's sleep counter (`Clock.asleep`) grew by more than this between two beats:
-#: the PC slept (a `slept` ledger line). A stage that ends in an error within `WAKE_GRACE_S` after the wake,
-#: or that was under way when the PC went to sleep, stopped because of the sleep: the job is interrupted.
+#: the PC slept (a `slept` ledger line). A job whose error comes within `WAKE_GRACE_S` after the wake stopped
+#: because of the sleep: it is interrupted. A later error is an ordinary failure.
 SLEEP_GAP_S = 90
 WAKE_GRACE_S = 120
 
@@ -328,8 +328,6 @@ class Night:
     card: str | None = None
     #: the PC's sleeps found during this night (4b.4), oldest first
     sleeps: list[Sleep] = field(default_factory=list)
-    #: per job: the stage it began last and when (wall time); dropped when that stage finished
-    began: dict[str, tuple[str, datetime]] = field(default_factory=dict)
     _beat_warned: bool = False
     _stop: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = None
@@ -456,8 +454,6 @@ class Night:
                 self.sums["stages_done"] = self.sums.get("stages_done", 0.0) + 1
         if kind == "stage":
             self.current = None
-            if line.get("outcome") == "done" and line.get("job_id"):
-                self.began.pop(str(line["job_id"]), None)
         try:
             ledger.write(self.paths, line, when=now, log=self.log)
         except Exception as e:  # noqa: BLE001 - the ledger never stops a night
@@ -498,7 +494,6 @@ class Night:
                        overhead_s=round((self.clock.now() - self.start.at).total_seconds(), 3))
         self.sums["stages_begun"] = self.sums.get("stages_begun", 0.0) + 1
         self.current = (ctx.job_id, ctx.channel.slug, stage, plan, self.clock.monotonic())
-        self.began[ctx.job_id] = (stage, self.clock.now())
 
     def before_wait(self, ctx: JobContext, rest: Sequence[str], service: str, cap_s: int) -> int | None:
         """S7: before the wait for the graphics card ahead of `rest[0]` (`rest`: the job's stages still to
@@ -513,19 +508,17 @@ class Night:
     def slept_through(self, job_id: str) -> Sleep | None:
         """4b.4, asked as a job's error comes out: the sleep that explains it, or None. A beat is taken first,
         so a sleep the beat thread has not seen yet (the error came the moment the PC woke) is found now. It
-        explains the error when the error came within `WAKE_GRACE_S` of the wake, or when the job's stage
-        under way (begun, not finished) began before the PC went to sleep."""
+        explains the error only when the error came within `WAKE_GRACE_S` of the wake (the first beat after
+        it): a stage that was under way across the sleep and fails later fails by the ordinary rules, since
+        nothing shows the sleep caused it. (`job_id` is kept for the record of which job asked.)"""
         try:
             self.tick()
         except Exception as e:  # noqa: BLE001 - the sleeps already found still count
             if self.log is not None:
                 self.log.warn("night_beat_failed", str(e))
         now = self.clock.now()
-        began = self.began.get(job_id)
         for gap in reversed(self.sleeps):
             if 0 <= (now - gap.to).total_seconds() <= WAKE_GRACE_S:
-                return gap
-            if began is not None and began[1] <= gap.frm and now >= gap.to:
                 return gap
         return None
 

@@ -303,8 +303,8 @@ def test_every_cause_sentence_keeps_the_nightly_condition(tmp_home: Path) -> Non
         def __init__(self, *events: Any) -> None:
             self.events = events
 
-        def read(self, since: datetime) -> list[Any]:
-            return [e for e in self.events if e.at >= since]
+        def read(self, since: datetime, until: datetime) -> list[Any]:
+            return [e for e in self.events if since <= e.at <= until]
 
     soon, boot = last + timedelta(seconds=20), last + timedelta(minutes=5)
     causes = [

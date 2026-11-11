@@ -129,7 +129,7 @@ def _hhmm(when: datetime) -> str:
 class NoEvents:
     """The event log of a PC on which nothing was shut down (the shape of `winevents.SystemLog.read`)."""
 
-    def read(self, since: datetime) -> list[Any]:
+    def read(self, since: datetime, until: datetime) -> list[Any]:
         return []
 
 

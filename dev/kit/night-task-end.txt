@@ -46,6 +46,16 @@ d. Open the Dashboard of the test install. If the night was ended: the morning n
 e. The next nightly run (or Start-ScheduledTask once more after the night is over) continues the job from the
    stage it reached, if one was left.
 
+Modern standby (whether it counts as sleep is not known; check it once, on another evening)
+f. Ask Windows which sleep this PC has:  powercfg /a > sleep-states.txt
+   If it lists "Standby (S0 Low Power Idle)", the PC has modern standby instead of (or as well as) S3 sleep.
+g. Start a night as in step 4 (with the task's normal 6-hour limit), wait for a stage, then put the PC to
+   sleep from Start > Power > Sleep for 5 minutes, and wake it.
+h. Observe: the night's ledger has one "slept" line with "from" and "to" about 5 minutes apart (then
+   Nightshift counts modern standby as sleep), or none (then its sleep counter does not, and a stage that
+   fails after such a wake is told as an ordinary failure). Also, if an administrator PowerShell is at hand:
+   powercfg /sleepstudy (an HTML report) for the time Windows says the PC was in standby. Write which of the two happened into the kit's evidence.
+
 Then put everything back
 7. End whatever is left by its pid from tree-after.txt (Stop-Process -Id <pid>), never by name.
 8. Restore the task's limit:

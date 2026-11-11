@@ -10,8 +10,12 @@ The evidence, all of it optional:
   written two minutes before Windows' limit, and the time of every line);
 - the night's beat (`run/night-beat.json`, rewritten every `nightclock.BEAT_S` = 30 s while the run lives):
   the last moment the run was known alive, to within 30 s;
-- Windows' System log after that moment (`events`, an `EventSource`: `ns_common.winevents.SystemLog` on a
-  real install, a fake in tests), read only, bounded (5 s, 20 events), never required;
+- Windows' System log in a window around that moment (`events`, an `EventSource`:
+  `ns_common.winevents.SystemLog` on a real install, a fake in tests), read only, never required: from
+  `NEAR_S` before the last beat to `NEAR_S` after it, or, when the PC started again since, to `AFTER_BOOT_S`
+  after that start (41 and 6008 are written as the PC starts again); oldest first, 20 events at most (5 s).
+  When the read stops at 20 and nothing in it explains the end, the sentence says it cannot tell, never that
+  the log names nothing;
 - the time the PC last started (`boot`).
 
 Each cause has its own sentence and is asserted only on its evidence (`Cause.said`, no full stop: the
@@ -44,6 +48,7 @@ from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.winevents import (
     LOG_STOPPED,
+    MAX_EVENTS,
     SHUTDOWN_ASKED,
     UNEXPECTED_BOOT,
     UNEXPECTED_SHUTDOWN,
@@ -59,6 +64,8 @@ TIME_LIMIT, UPDATE_RESTART, POWER_LOSS, SHUTDOWN, UNKNOWN = (
 NEAR_S = 120
 #: How often the night's beat is written (`nightclock.BEAT_S`, repeated: this module imports no clock).
 BEAT_S = 30
+#: The read's window reaches this far past the PC's last start (Windows writes 41 and 6008 as it starts).
+AFTER_BOOT_S = 600
 #: A second restart for updates within this many days adds the NS-W212 sentence (once in such a window).
 REPEAT_DAYS = 14
 #: Windows Update's programs that ask for a restart (event 1074, param1).
@@ -71,10 +78,11 @@ CAUSE_LINE = "night_cause"
 
 
 class EventSource(Protocol):
-    """Windows' System log: shutdown, restart and power-loss events from `since` on (raises when it cannot
-    be read)."""
+    """Windows' System log: shutdown, restart and power-loss events created from `since` to `until`, oldest
+    first, at most `winevents.MAX_EVENTS`; a `capped` attribute True when it stopped there (raises when it
+    cannot be read)."""
 
-    def read(self, since: datetime) -> Sequence[Event]: ...
+    def read(self, since: datetime, until: datetime) -> Sequence[Event]: ...
 
 
 @dataclass(frozen=True)
@@ -182,17 +190,23 @@ def cause(
                                 "boot": boot.isoformat() if boot else None}
     found: list[Event] = []
     unreadable: str | None = None
+    capped = False
+    since, until = window(last, boot)
     if precise:
         try:
             if events is None:
                 raise LookupError("no event source")
-            found = list(events.read(last - timedelta(seconds=NEAR_S)))
+            got = events.read(since, until)
+            capped = bool(getattr(got, "capped", False))
+            found = [e for e in got if since <= e.at <= until]
         except Exception as e:  # noqa: BLE001 - never required: the sentence says it was not read
             unreadable = str(e) or type(e).__name__
             if log is not None:
                 log.warn("event_log_unreadable", unreadable, run_id=run_id)
     evidence["events"] = [f"{e.id}@{e.at.isoformat(timespec='seconds')}" for e in found]
-    evidence["event_log"] = "not read: no beat" if not precise else (unreadable or "read")
+    evidence["event_log"] = "not read: no beat" if not precise else (
+        unreadable or ("read, stopped at its cap" if capped else "read"))
+    evidence["window"] = [since.isoformat(timespec="seconds"), until.isoformat(timespec="seconds")]
     if precise and restarted is not False:
         explained = _from_events(found, last, own, lines, run_id, start, evidence)
         if explained is not None:
@@ -201,8 +215,8 @@ def cause(
     task = _parse((start or {}).get("task_start"))
     limit = _limit_s(start)
     # Windows' own stop at the limit, once a restart or a power loss at that moment is ruled out: the PC did
-    # not start again since, or the log was read and names none near the last beat
-    ruled_out = restarted is False or unreadable is None
+    # not start again since, or the whole window of the log was read and names none near the last beat
+    ruled_out = restarted is False or (unreadable is None and not capped)
     if precise and ruled_out and cut is not None and task is not None and limit is not None:
         limit_at = task + timedelta(seconds=limit)
         cut_at = _parse(cut.get("at"))
@@ -215,7 +229,19 @@ def cause(
                 "it allows the nightly task",
                 limit_at, evidence=evidence,
             )
+    if capped and unreadable is None and restarted is not False:
+        unreadable = "capped"
     return Cause(UNKNOWN, _unknown_words(last, precise, boot, restarted, unreadable), None, evidence=evidence)
+
+
+def window(last: datetime, boot: datetime | None) -> tuple[datetime, datetime]:
+    """The part of the System log read for a run last alive at `last`: from `NEAR_S` before it to `NEAR_S`
+    after it, or to `AFTER_BOOT_S` after the PC's next start when that is later (41 and 6008 are written as
+    the PC starts again)."""
+    until = last + timedelta(seconds=NEAR_S)
+    if boot is not None and boot > last:
+        until = max(until, boot + timedelta(seconds=AFTER_BOOT_S))
+    return last - timedelta(seconds=NEAR_S), until
 
 
 def _unknown_words(
@@ -230,6 +256,9 @@ def _unknown_words(
                   "program ended it")
     elif not precise:
         detail = "the run's last beat was not kept, so its end cannot be matched with what Windows recorded"
+    elif unreadable == "capped":
+        detail = ("Windows' event log holds more shutdowns and restarts after that time than Nightshift "
+                  f"reads ({MAX_EVENTS}), and none of those it read explains it")
     elif unreadable is not None:
         detail = "Windows' event log could not be read"
     else:

@@ -3,16 +3,17 @@
 Two readings, both standard library, both never required (a caller that cannot have them says it cannot
 tell, and never guesses):
 
-* `SystemLog.read(since)`: the System event log's shutdown, restart and power-loss events after `since`,
-  through `wevtutil qe System /q:<the four ids, after since> /rd:true /c:20 /f:xml` (5 s, no shell, no
-  window). The ids: 1074 (User32: a program or a person asked for a shutdown or restart; param1 is the
-  program, param3 the reason, param5 `restart` or `power off`), 41 (Kernel-Power: the PC started again
-  after it stopped without a clean shutdown), 6008 (EventLog: "the previous system shutdown ... was
-  unexpected"; its binary data holds that moment as two SYSTEMTIMEs, local then UTC) and 6006 (EventLog: the
-  event log service stopped: a clean shutdown). Under pytest it is refused before anything starts
-  (`ns_common.testguard.under_test`, no opt-out): a test hands its own `read` (the fake of
-  `tests/test_night_cause.py`, which reproduces the shapes `parse` reads from a capture of this laptop's own
-  log, `tests/fixtures/winevents/system-1074-41-6008-6006.xml`).
+* `SystemLog.read(since, until)`: the System event log's shutdown, restart and power-loss events created
+  from `since` to `until`, through `wevtutil qe System /q:<the four ids, in that window> /rd:false /c:20
+  /f:xml` (oldest first, so later events never push the window's first ones out; 5 s, no shell, no
+  window); `Events.capped` says the read stopped at 20. The ids: 1074 (User32: a program or a person
+  asked for a shutdown or restart; param1 is the program, param3 the reason, param5 `restart` or
+  `power off`), 41 (Kernel-Power: the PC started again after it stopped without a clean shutdown), 6008
+  (EventLog: "the previous system shutdown ... was unexpected"; its binary data holds that moment as two
+  SYSTEMTIMEs, local then UTC) and 6006 (EventLog: the event log service stopped: a clean shutdown).
+  Under pytest it is refused before anything starts (`ns_common.testguard.under_test`, no opt-out): a
+  test hands its own `read` (the fake of `tests/test_night_cause.py`, which reproduces the shapes `parse`
+  reads from a capture of this laptop's own log, `tests/fixtures/winevents/system-1074-41-6008-6006.xml`).
 * `asleep_s()`: the seconds this PC has spent in sleep or hibernation since it started: the interrupt time
   (`QueryInterruptTime`, which keeps counting through sleep) minus the unbiased interrupt time
   (`QueryUnbiasedInterruptTime`: "does not include time the system spends in sleep or hibernation",
@@ -61,13 +62,24 @@ class Event:
     stopped_at: datetime | None = None  # 6008: the moment of the unexpected shutdown (UTC)
 
 
-def query_argv(since: datetime) -> list[str]:
-    """The one command `SystemLog` runs: the four ids, created at or after `since`, newest first, 20 at
-    most."""
-    when = since.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+class Events(list[Event]):
+    """What one read returned, oldest first; `capped` when it returned `MAX_EVENTS` (there may be more in the
+    window: a caller must not say the window holds no other event)."""
+
+    capped: bool = False
+
+
+def _stamp(when: datetime) -> str:
+    return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def query_argv(since: datetime, until: datetime) -> list[str]:
+    """The one command `SystemLog` runs: the four ids, created from `since` to `until`, OLDEST first (so the
+    events right after `since` are never pushed out by later ones), 20 at most."""
     ids = " or ".join(f"EventID={i}" for i in IDS)
-    xpath = f"*[System[({ids}) and TimeCreated[@SystemTime>='{when}']]]"
-    return ["wevtutil", "qe", "System", f"/q:{xpath}", "/rd:true", f"/c:{MAX_EVENTS}", "/f:xml"]
+    window = f"@SystemTime>='{_stamp(since)}' and @SystemTime<='{_stamp(until)}'"
+    xpath = f"*[System[({ids}) and TimeCreated[{window}]]]"
+    return ["wevtutil", "qe", "System", f"/q:{xpath}", "/rd:false", f"/c:{MAX_EVENTS}", "/f:xml"]
 
 
 def _time(raw: str | None) -> datetime | None:
@@ -94,17 +106,19 @@ def _systemtime_utc(binary: str | None) -> datetime | None:
         return None
 
 
-def parse(text: str) -> list[Event]:
-    """wevtutil's `/f:xml` answer (one `<Event>` element after another, no root) as events, oldest first.
-    An element that does not read is skipped."""
+def parse(text: str) -> Events:
+    """wevtutil's `/f:xml` answer (one `<Event>` element after another, no root) as events, oldest first;
+    `capped` when it held `MAX_EVENTS` elements (counted before any is skipped). An element that does not
+    read is skipped."""
     body = text.strip()
     if not body:
-        return []
+        return Events()
     try:
         root = ET.fromstring(f"<Events>{body}</Events>")
     except ET.ParseError as e:
         raise EventLogUnavailable(f"wevtutil's answer is not XML: {e}") from e
-    out: list[Event] = []
+    out = Events()
+    out.capped = len(root) >= MAX_EVENTS
     for el in root:
         system = el.find(f"{_NS}System")
         if system is None:
@@ -131,13 +145,14 @@ def parse(text: str) -> list[Event]:
         elif event_id == UNEXPECTED_SHUTDOWN and data is not None:
             stopped = _systemtime_utc(data.findtext(f"{_NS}Binary"))
         out.append(Event(event_id, at, provider, process, reason, action, stopped))
-    return sorted(out, key=lambda e: e.at)
+    out.sort(key=lambda e: e.at)
+    return out
 
 
 class SystemLog:
     """The real System log (the `EventSource` of `ns_studio.nightcause`). Never writes anything."""
 
-    def read(self, since: datetime) -> list[Event]:
+    def read(self, since: datetime, until: datetime) -> Events:
         if testguard.under_test():
             raise EventLogUnavailable(
                 "a test tried to read this PC's real Windows event log; this is refused under pytest and "
@@ -147,7 +162,7 @@ class SystemLog:
             raise EventLogUnavailable("not Windows: there is no System event log")
         try:
             done = subprocess.run(
-                query_argv(since), capture_output=True, timeout=TIMEOUT_S, check=False,
+                query_argv(since, until), capture_output=True, timeout=TIMEOUT_S, check=False,
                 creationflags=_NO_WINDOW, env={**os.environ},
             )
         except (OSError, subprocess.SubprocessError) as e:

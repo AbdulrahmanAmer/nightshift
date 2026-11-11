@@ -80,16 +80,22 @@ def captured() -> dict[int, Any]:
 
 
 class FakeEventLog:
-    """`winevents.SystemLog` with the captured events at the test's times: `read(since)` answers what
-    wevtutil's `TimeCreated >= since` query answers, oldest first."""
+    """`winevents.SystemLog` with the captured events at the test's times: `read(since, until)` answers what
+    wevtutil's query answers (`since <= TimeCreated <= until`, `/rd:false`: oldest first, `/c:20`), with
+    `capped` as `winevents.parse` sets it."""
 
     def __init__(self, events: list[Any]) -> None:
         self.events: list[Any] = events
-        self.asked: list[datetime] = []
+        self.asked: list[tuple[datetime, datetime]] = []
 
-    def read(self, since: datetime) -> list[Any]:
-        self.asked.append(since)
-        return sorted((e for e in self.events if e.at >= since), key=lambda e: e.at)
+    def read(self, since: datetime, until: datetime) -> list[Any]:
+        self.asked.append((since, until))
+        inside = sorted((e for e in self.events if since <= e.at <= until), key=lambda e: e.at)
+        cap = winevents.MAX_EVENTS if winevents is not None else 20
+        out = winevents.Events(inside[:cap]) if winevents is not None else inside[:cap]
+        if winevents is not None:
+            out.capped = len(inside) >= cap  # type: ignore[attr-defined]
+        return out
 
 
 def at(event_id: int, when: datetime, **change: Any) -> Any:
@@ -209,11 +215,45 @@ def test_a_restart_for_updates_is_told_with_its_time(tmp_home: Path, clock: Fake
     asked = last + timedelta(seconds=20)
     log = FakeEventLog([at(1074, asked, process=program), at(6006, asked + timedelta(seconds=40))])
     dead.recover(log, last + timedelta(minutes=3))
-    assert log.asked == [last - timedelta(seconds=120)]
+    # the window: 2 min before the last beat to 10 min after the PC's next start
+    assert log.asked == [(last - timedelta(seconds=120), last + timedelta(minutes=3) + timedelta(seconds=600))]
     head = f"Windows restarted the PC at {hhmm(asked)} to finish installing updates, during the night's run"
     assert dead.note() == f"{head}, while {CH}'s video was at {dead.stage}. {TAIL}"
     assert "NS-W212" not in dead.note()
     assert dead.card()["message"].startswith(f"Interrupted at {dead.stage}: {head}.")
+
+
+@pytest.mark.parametrize("own_events", [True, False])
+def test_a_recovery_days_later_reads_the_nights_own_events_first_and_a_full_read_cannot_tell(
+    tmp_home: Path, clock: FakeClock, own_events: bool
+) -> None:
+    """Review blocker (night-fits-b @ 0196be1): the recovery runs four days later (Automatic runs off, the
+    Dashboard not opened) and the PC was restarted 12 more times since the night (25 later events). The read
+    is oldest first from just before the last beat, so the night's own events are read; without them the read
+    stops at its cap of 20 and the sentence says it cannot tell, never that the log names nothing."""
+    paths, db = _setup()
+    dead = DeadNight(paths, db, clock)
+    last = dead.beat(2 * 3600)
+    own = [at(1074, last + timedelta(seconds=20)), at(6006, last + timedelta(seconds=50))] if own_events else []
+    later: list[Any] = []
+    for n in range(25):  # restarts on the following days, asked by a person: 1074 + 6006, one 1074 extra
+        when = last + timedelta(hours=8 + 3 * n)  # all 25 inside the window
+        later.append(at(1074, when, process="explorer.exe", action="restart", reason="Other (Planned)")
+                     if n % 2 == 0 else at(6006, when))
+    log = FakeEventLog([*own, *later])
+    boot = last + timedelta(days=4)  # the PC's last start: the read reaches past all 25
+    dead.recover(log, boot)
+    [(since, until)] = log.asked
+    assert since == last - timedelta(seconds=120) and until == boot + timedelta(seconds=600)
+    if own_events:
+        assert dead.note().startswith(
+            f"Windows restarted the PC at {hhmm(last + timedelta(seconds=20))} to finish installing updates")
+        return
+    assert "names no shutdown" not in dead.note()
+    assert dead.note().startswith(
+        f"The night's run was interrupted at about {hhmm(last)}, and what stopped it cannot be told: Windows' "
+        "event log holds more shutdowns and restarts after that time than Nightshift reads (20), and none of "
+        f"those it read explains it; the PC was started again at {hhmm(boot)}, while")
 
 
 def test_a_restart_for_updates_named_only_by_its_reason_and_one_not_restarted(
@@ -293,21 +333,24 @@ def test_a_power_cut_is_told_as_such(tmp_home: Path, clock: FakeClock) -> None:
 def test_the_real_event_log_reader_is_refused_under_pytest_and_reads_the_captured_shape() -> None:
     since = datetime(2026, 11, 12, 3, 0, tzinfo=UTC)
     assert winevents is not None, "no reader of Windows' event log (ns_common.winevents)"
-    assert winevents.query_argv(since) == [
+    until = since + timedelta(hours=1)
+    assert winevents.query_argv(since, until) == [
         "wevtutil", "qe", "System",
         "/q:*[System[(EventID=1074 or EventID=41 or EventID=6008 or EventID=6006) and "
-        "TimeCreated[@SystemTime>='2026-11-12T03:00:00.000Z']]]",
-        "/rd:true", "/c:20", "/f:xml",
+        "TimeCreated[@SystemTime>='2026-11-12T03:00:00.000Z' and @SystemTime<='2026-11-12T04:00:00.000Z']]]",
+        "/rd:false", "/c:20", "/f:xml",  # oldest first: later events never push the window's first ones out
     ]
     with pytest.raises(winevents.EventLogUnavailable, match="refused under pytest"):
-        winevents.SystemLog().read(since)
+        winevents.SystemLog().read(since, until)
     got = winevents.parse(FIXTURE.read_text(encoding="utf-8"))
     assert [e.id for e in got] == [1074, 6006, 41, 6008, 1074, 6006]  # oldest first
     restart = got[0]
     assert (restart.process, restart.action, restart.reason) == (
         "TrustedInstaller.exe", "restart", "Operating System: Upgrade (Planned)")
     assert got[3].stopped_at == datetime(2026, 11, 5, 22, 53, 3, tzinfo=UTC)  # 6008's UTC SYSTEMTIME
-    assert winevents.parse("") == []
+    assert winevents.parse("") == [] and got.capped is False
+    raw = FIXTURE.read_text(encoding="utf-8").strip()
+    assert winevents.parse(raw * 4).capped is True  # 24 elements: the read stopped at its cap of 20
 
 
 def test_an_unknown_end_keeps_todays_words(tmp_home: Path, clock: FakeClock) -> None:
@@ -472,20 +515,60 @@ def test_a_stage_that_fails_right_after_a_wake_leaves_the_job_interrupted_not_fa
     assert world.ran[-3:] == ["nf_b", "nf_c", "nf_d"]
 
 
-def test_a_stage_under_way_when_the_pc_slept_is_interrupted_when_it_fails_later(
-    sleepy: World, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("after_wake_s, interrupted", [(60, True), (3 * 3600, False)])
+def test_a_stage_under_way_when_the_pc_slept_is_interrupted_only_when_it_fails_as_it_wakes(
+    sleepy: World, monkeypatch: pytest.MonkeyPatch, after_wake_s: int, interrupted: bool
 ) -> None:
+    """Review note (a): a stage that began before the sleep and fails within the window after the wake
+    stopped as it woke; one that fails hours later is an ordinary failure (nothing shows the sleep caused it,
+    and "stopped as it woke" would be untrue)."""
     world = sleepy
     world.seconds = {"nf_a": 300, "nf_b": 600, "nf_c": 60, "nf_d": 60}
-    _fail_after(world, "nf_b", 3 * 3600, sleep_first=True)  # began before the sleep, fails 3 h after the wake
+    _fail_after(world, "nf_b", after_wake_s, sleep_first=True)  # began before the sleep
     report = _night(world, monkeypatch)
-    assert report["failures"] == [] and [s["stage"] for s in report["slept"]] == ["nf_b"]
+    if interrupted:
+        assert report["failures"] == [] and [s["stage"] for s in report["slept"]] == ["nf_b"]
+    else:
+        assert [f["code"] for f in report["failures"]] == ["NS-E301"] and not report.get("slept")
     # and a stage the sleep did not stop just finishes: nothing is interrupted, the night says nothing of it
     world.hold.clear()
     world.clock.advance(24 * 3600)
     _sleep_in(world, "nf_c")
     report2 = _night(world, monkeypatch)
     assert report2["failures"] == [] and not report2.get("slept") and len(report2["jobs"]) == 1
+
+
+# ------------------------------------------------------------------ a night that ran past the limit
+@pytest.mark.parametrize("used_s, said", [(LIMIT, False), (LIMIT + 60, True)])
+def test_a_night_that_ran_past_the_limit_is_said_in_the_morning_note(used_s: int, said: bool) -> None:
+    """Review note (b): the run, not Windows, ended a night that went past the task's limit (Windows' end of
+    the task does not stop what runs under cmd.exe); the morning note says so in one sentence."""
+    from ns_studio import notifications
+
+    note = notifications.time_note({"timing": {"used_s": used_s, "limit_s": LIMIT}})
+    if not said:
+        assert note is None
+        return
+    assert note == ("Last night's run worked 6 h 1 min, 1 min past the 6 hours Windows allows the nightly task: "
+                    "the run went on past that limit and ended by itself.")
+
+
+def test_a_night_whose_stage_ran_past_the_limit_says_so_with_what_it_left(
+    world_plain: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = world_plain
+    world.seconds = {"nf_a": 3600, "nf_b": 60, "nf_c": 60, "nf_d": 60}  # nf_a's estimate is the 10-min floor
+    report = world.night(left_s=900)
+    assert report["timing"]["used_s"] == LIMIT + 2100
+    [note] = [n["message"] for n in world.notes() if "Last night's run" in n["message"]]
+    assert note.startswith("Last night's run worked 6 h 35 min, 35 min past the 6 hours Windows allows the "
+                           "nightly task: the run went on past that limit and ended by itself.")
+    assert note.endswith("(NS-W211)")  # it also left the job's next stage for the next night
+
+
+@pytest.fixture
+def world_plain(tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> World:
+    return World(tmp_home, monkeypatch)
 
 
 # ------------------------------------------------------------------ the toast and the Queue are not misled
