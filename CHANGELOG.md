@@ -433,7 +433,10 @@ suite and no more is claimed.
   Nightshift's own program cannot be ended it says to restart the PC. Setup's Repair does the same over 0.1.14
   and the earlier candidates. An interrupted update that was finished or repaired now reads as finished
   everywhere, and nothing starts a job or the engine while one is unfinished (NS-W210), whichever way the program
-  was started. Not covered: shown by tests with real hung processes, not yet repeated on an install.
+  was started. A rollback that had to end an engine which no longer answered starts Nightshift again and its
+  last line says so (D-51). Shown on an install of this candidate's code before its last two fixes (D-50, D-51):
+  12 terminal rollbacks of 12, an engine hung in its own exit, and a foreign program holding a file; the D-51
+  case itself is shown by tests only.
 - An update or rollback typed in a terminal now hands over to a separate window (D-39). `ns update <zip>`,
   `ns update --github`, `ns update --git` and `ns update --rollback` return at once and open a window, "Nightshift
   update", that shows each step and the result; closing the terminal or that window stops nothing. The command
@@ -533,7 +536,10 @@ suite and no more is claimed.
   server keeps its own check; llama-server and the embedding service are not guarded by this; update
   packages are still checked for integrity only (the SHA256 beside the zip proves it arrived whole, not who made
   it), not signed; a browser too old to mark its own requests (Firefox before 70, Edge's IE mode) is taken for a
-  program; the rule has not been tried in a real browser on this build; the fake services of fake installs have no guard. Shown by tests.
+  program, and can send a request with no body to the routes that take none (stop everything, start a check); the
+  refusal note counts "at least" what it had seen when it was written (D-50); the fake services of fake installs
+  have no guard. Shown in a real browser (Edge) on an install of this candidate's code before its last two fixes:
+  every request from a page on another port and from a file page was refused and nothing ran.
 - Morning notes have one owner, and Mark all read removes only what you saw (FN-2). Every note any part of Nightshift
   leaves goes through one module under one lock (the launch script takes the same lock), so two notes written at the
   same moment are both kept, and Mark all read removes exactly the notes the bell showed; a note that arrives
