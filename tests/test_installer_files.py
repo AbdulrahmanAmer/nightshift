@@ -137,7 +137,38 @@ STDLIB_ONLY_NS_COMMON = {
     "ns_common.new_fields",
     # card stock-truth: the one reading of a Pexels or Pixabay answer (the setup window's key check uses it)
     "ns_common.stock_answer",
+    # card version-mismatch-writes: first_start.guard, NsLogger and the window's home sentence of paths ask it
+    # whether this program may change the install the window names (NS-E128); it reads ns_common's version
+    "ns_common.homeguard",
+    # the package itself (ns_common/__init__.py: the version line and testguard): `from ns_common import X`
+    "ns_common",
 }
+
+
+def _module_file(name: str) -> Path:
+    """The file of a first-party module: `a/b.py`, or `a/b/__init__.py` for a package."""
+    folder = ROOT / name.replace(".", "/")
+    return folder / "__init__.py" if folder.is_dir() else folder.with_suffix(".py")
+
+
+def _imported(node: object) -> list[str]:
+    """The modules an import statement loads, absolute only. `from ns_common import homeguard` loads the
+    submodule `ns_common.homeguard`; `from ns_common import __version__` loads the package `ns_common`."""
+    import ast
+
+    if isinstance(node, ast.Import):
+        return [a.name for a in node.names]
+    if not (isinstance(node, ast.ImportFrom) and node.level == 0 and node.module):
+        return []
+    if node.module.split(".")[0] != "ns_common":
+        return [node.module]
+    out: list[str] = []
+    for a in node.names:
+        sub = f"{node.module}.{a.name}"
+        out.append(sub if _module_file(sub).is_file() else node.module)
+    return out
+
+
 # installer.stage2.devmode (dev mode numbers, stubs, mode switch) is stdlib-only too and shared by the setup
 # server and the wizard; the test below keeps it that way.
 # installer.stage2.shortcut_owner (card launcher-reach) reads Desktop shortcuts for setup and the engine.
@@ -152,14 +183,9 @@ def test_the_ns_common_modules_the_setup_server_uses_are_really_stdlib_only():
     import sys
 
     for name in STDLIB_ONLY_NS_COMMON:
-        tree = ast.parse((ROOT / (name.replace(".", "/") + ".py")).read_text(encoding="utf-8"))
+        tree = ast.parse(_module_file(name).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            mods: list[str] = []
-            if isinstance(node, ast.Import):
-                mods = [a.name for a in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                mods = [node.module]
-            for m in mods:
+            for m in _imported(node):
                 ok = m.split(".")[0] in sys.stdlib_module_names or m in STDLIB_ONLY_NS_COMMON
                 assert ok or m == "__future__", f"{name} imports {m}"
 
@@ -170,12 +196,7 @@ def test_the_dev_mode_module_shared_with_the_setup_server_is_stdlib_only():
 
     tree = ast.parse((ROOT / "installer" / "stage2" / "devmode.py").read_text(encoding="utf-8"))
     for node in ast.walk(tree):
-        mods: list[str] = []
-        if isinstance(node, ast.Import):
-            mods = [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            mods = [node.module]
-        for m in mods:
+        for m in _imported(node):
             ok = m.split(".")[0] in sys.stdlib_module_names or m in STDLIB_ONLY_NS_COMMON
             assert ok or m == "__future__", f"installer/stage2/devmode.py imports {m}"
 
@@ -189,12 +210,7 @@ def test_web_package_imports_only_the_standard_library():
     for path in sorted((ROOT / "installer" / "stage2" / "web").glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            names: list[str] = []
-            if isinstance(node, ast.Import):
-                names = [a.name for a in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                names = [node.module]
-            for name in names:
+            for name in _imported(node):
                 top = name.split(".")[0]
                 if top in sys.stdlib_module_names or top == "__future__":
                     continue
