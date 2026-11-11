@@ -316,6 +316,9 @@ class Plan:
     stays: str = ""
     #: The pin of the program in ``<app>.prev`` when ``prepare`` ran (``settle`` decides a kept uv by it).
     older: Mapping[str, str] | None = None
+    #: The sentence of the last ``undo`` when it could not put the uv back as it was ("" when it did, or had
+    #: nothing to put back): the caller's refusal has to carry it, a log line alone tells nobody.
+    not_back: str = ""
 
     def swap(self, rename: Rename = os.rename) -> str:
         """U5 (S1 to S3, or E1 to E3: the module text). ``OSError`` when a rename stays refused (a uv still
@@ -381,16 +384,24 @@ class Plan:
 
     def undo(self, rename: Rename = os.rename) -> str:
         """U6, U7: the uv that was there before, back in ``bin\\uv``, and the kept uv back in
-        ``bin\\uv.prev``. Never raises; the sentence says what is there now ("" when it is as it was)."""
+        ``bin\\uv.prev``. Never raises; the sentence says what is there now ("" when it is as it was). When
+        the uv is NOT as it was, the same sentence stays in ``not_back`` for the caller's refusal."""
         uv, prev, nxt, tmp = (uv_dir(self.home, s) for s in ("", ".prev", ".next", ".swap"))
+        self.not_back = ""
         if not self.swapped:
             if not self.how:
                 shutil.rmtree(nxt, ignore_errors=True)
                 return ""
             settle(self.home, self.older)   # (a swap refused half way and not put back: finished here)
-            if (uv / EXE).is_file() or not self.was:
+            # read, not assumed: an exchange refused at E2 whose own put-back was refused too is finished
+            # FORWARD by `settle` (bin\uv missing, bin\uv.prev there), so a uv can be in place that is not
+            # the one that was
+            have = report(uv / EXE)[1]
+            if have == self.was:
                 return ""
-            return f" uv could not be put back to {self.was}: {uv} is missing. {REPAIR}"
+            now = f"holds uv {have}" if have else "is missing" if not (uv / EXE).is_file() else "does not run"
+            self.not_back = f" uv could not be put back to {self.was or 'what it was'}: {uv} {now}. {REPAIR}"
+            return self.not_back
         try:
             if self.how == "next":
                 shutil.rmtree(nxt, ignore_errors=True)
@@ -410,7 +421,8 @@ class Plan:
             settle(self.home, self.older)
             runs, have = report(uv / EXE)
             if not (runs and have == self.was):
-                return f" uv could not be put back to {self.was or 'what it was'} ({e}). {REPAIR}"
+                self.not_back = f" uv could not be put back to {self.was or 'what it was'} ({e}). {REPAIR}"
+                return self.not_back
         self.swapped = False
         return f" uv is back at {self.was}." if self.was else ""
 

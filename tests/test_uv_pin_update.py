@@ -603,6 +603,49 @@ def test_a_refusal_between_the_two_swaps_keeps_the_older_programs_uv(
     assert not (inst.bin / "uv.swap").exists()   # `finish`: 0.12.0's program left <app>.prev with the swap
 
 
+@pytest.mark.parametrize("what", ["update", "rollback"])
+def test_a_uv_that_could_not_be_put_back_is_said_in_the_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, what: str
+) -> None:
+    """Fresh review of 437ba5b4 (written, NOT RUN): U6 when the put-back is refused too (the first rename of
+    `undo`, bin\\uv -> bin\\uv.next, is held). The refusal does not say that nothing was changed: it says
+    that uv could not be put back, with Repair as the way out, and the disk is what it says (the swapped uv
+    in bin\\uv, the program not swapped, `ns doctor` warning about the two)."""
+    z: Path | None = None
+    if what == "update":
+        inst, z = install(tmp_path), package(tmp_path)
+        was, now, program = "0.13.6", "0.14.0", "0.1.0"
+    else:
+        inst = rolled_forward(tmp_path, cached=True)
+        was, now, program = "0.14.0", "0.13.6", "0.2.0"
+    real = update.rename_with_retry
+
+    def held(src: Path, dst: Path, **kw: object) -> None:
+        if dst == inst.bin / "uv.next":
+            raise PermissionError("held by another program")
+        real(src, dst, **kw)  # type: ignore[arg-type]
+
+    def no_record(*a: object, **kw: object) -> bool:
+        raise OSError("disk full")
+
+    with monkeypatch.context() as m:
+        m.setattr(update, "write_record", no_record)
+        m.setattr(update, "rename_with_retry", held)
+        with pytest.raises(NsError) as ei:
+            if z is not None:
+                update.update_app(z, inst.app, Env().env(), paths=inst.paths)
+            else:
+                update.rollback_app(inst.app, Env().env(), paths=inst.paths)
+    detail = ei.value.detail
+    assert ei.value.code == "NS-E702" and f"could not record the {what}" in detail
+    assert "Nothing was changed" not in detail and "Nothing else was changed" not in detail, detail
+    assert f"uv could not be put back to {was} (held by another program). {uvpin.REPAIR}" in detail
+    assert (inst.uv(), inst.version()) == (now, program)
+    assert doctor.uv_row(inst.paths, inst.app) == (
+        "uv", True, doctor.WARN + f"uv {now}, but this program pins {was}. {uvpin.REPAIR}"
+    )
+
+
 @pytest.mark.parametrize(
     ("text", "said"),
     [("broken\n", "does not run on this PC"), ("uv 0.13.9 (stand-in)\n", "reports 0.13.9, not 0.14.0")],

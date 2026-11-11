@@ -1442,14 +1442,17 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
         update_job.step(paths, f"Putting {new_version}'s program in place.", SWAP_STOPPED.format(**names))
         shutil.rmtree(prev, ignore_errors=True)
         rename_with_retry(app, prev)
-    except NsError:
+    except NsError as e:
         shutil.rmtree(new, ignore_errors=True)
         drop_copy()
+        said = uv_not_back(e.detail, uv)    # U6: a uv that could not be put back is said, never only logged
+        if said != e.detail:
+            raise NsError(e.code, said, **e.data) from e
         raise
     except OSError as e:
         shutil.rmtree(new, ignore_errors=True)
         drop_copy()  # <app>.prev is gone, so the copy this update made for it belongs to nothing
-        raise NsError("NS-E702", f"could not stage the update: {e}. {BUSY_HINT}") from e
+        raise NsError("NS-E702", uv_not_back(f"could not stage the update: {e}. {BUSY_HINT}", uv)) from e
     try:
         rename_with_retry(new, app)
     except OSError as e:
@@ -1458,7 +1461,7 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
         except OSError as e2:
             raise NsError("NS-E702", f"could not swap directories: {e}; {RESTORE_HINT}") from e2
         drop_copy()
-        raise NsError("NS-E702", f"could not swap directories: {e}") from e
+        raise NsError("NS-E702", uv_not_back(f"could not swap directories: {e}", uv)) from e
     uv.finish(uvpin.pin_of(prev))  # B1: the uv kept for the program that left <app>.prev goes only now
     # D-39a review note 3: "run the update again" here would replace <app>.prev, the only way back to the
     # older version; going there and back with --rollback keeps it, and the next start replays the record
@@ -1731,8 +1734,12 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             update_job.step(
                 paths, f"Putting {restored_version}'s program in place.", ROLLBACK_SWAP_STOPPED
             )
-        except BaseException:
+        except BaseException as e:
             uv_undo(uv, log)    # (the older program did not get to <app>: the uv of the one there goes back)
+            if isinstance(e, NsError):
+                said = uv_not_back(e.detail, uv)    # (and when it could not go back, the refusal says so)
+                if said != e.detail:
+                    raise NsError(e.code, said, **e.data) from e
             raise
         try:
             _swap_programs(app, prev, tmp)
@@ -1740,9 +1747,9 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             if app.is_dir() and app_fingerprint(app) == left_fingerprint:  # the folders are as they were
                 uv_undo(uv, log)
                 drop_record(paths, log)
+                undone = _undo_settings(app, paths, intent, log)
                 raise NsError(
-                    "NS-E702",
-                    f"could not swap directories: {e}. {BUSY_HINT} {_undo_settings(app, paths, intent, log)}",
+                    "NS-E702", uv_not_back(f"could not swap directories: {e}. {BUSY_HINT} {undone}", uv)
                 ) from e
             raise NsError(
                 "NS-E702",
@@ -1971,6 +1978,8 @@ def uv_swap(
                 f"The program and your settings were not changed. {UV_HELD_WAY_OUT}",
             ) from e
         plan.stays = f" uv stays at {was} (uv {plan.want} could not be put in place: {e})."
+        if plan.not_back:       # (it is not as it was either: "stays" would be untrue, so said as it is)
+            plan.stays = f" uv {plan.want} could not be put in place ({e}).{plan.not_back}"
         return
     say(said)
     log.info("uv_swapped", said, want=plan.want, was=was)
@@ -1978,11 +1987,27 @@ def uv_swap(
 
 def uv_undo(plan: uvpin.Plan, log: NsLogger) -> str:
     """U6, U7: the uv that was there before the swap, back in `bin\\uv`; the sentence for the error ("" when
-    nothing had been swapped). Never raises."""
+    nothing had been swapped). Never raises. A uv that could NOT be put back stays in `plan.not_back`: the
+    caller's refusal carries it (`uv_not_back`)."""
     back = plan.undo(rename_with_retry)
     if back:
         log.warn("uv_put_back", back.strip())
     return back
+
+
+def uv_not_back(detail: str, plan: uvpin.Plan) -> str:
+    """`detail` of a refusal, made true for a uv that was swapped in and could not be put back by the
+    `uv_undo` before it (`uvpin.Plan.not_back`): "Nothing was changed" would be untrue then, so the sentence
+    keeps what is true (the program and the settings are as they were) and ends with what became of the uv and
+    the way out (Repair; the same update or rollback run again also puts the right uv in place first).
+    `detail` itself when the uv is as it was, or when the refusal already says it (`uv_swap`)."""
+    left = plan.not_back
+    if not left or left.strip() in detail:
+        return detail
+    # (the leads of NOTHING_CHANGED and of `_undo_settings`: what follows them stays true)
+    for lead in ("Nothing was changed: the ", "Nothing else was changed: the "):
+        detail = detail.replace(lead, "The ")
+    return f"{_sentence(detail)}{left}"
 
 
 @dataclass
