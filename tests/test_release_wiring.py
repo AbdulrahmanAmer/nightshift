@@ -516,3 +516,56 @@ def test_candidates_sort_below_their_final_and_in_number_order():
     assert releases.is_newer("0.1.15-rc1", "0.1.14") and not releases.is_newer("0.1.14", "0.1.15-rc1")
     # an installation on a candidate is offered the final, and never an older final
     assert releases.is_newer("0.1.15", "0.1.15-rc3") and not releases.is_newer("0.1.14", "0.1.15-rc3")
+
+
+# ---- card update-signing: the release run signs both zips and checks its own signature -----------------
+def test_the_release_run_signs_both_zips_and_checks_its_own_signature(tmp_path: Path):
+    wf = yaml.safe_load(read(RELEASE_YML))
+    steps = wf["jobs"]["release"]["steps"]
+    names = [s.get("name", "") for s in steps]
+    assert "Sign" in names, "release.yml has no Sign step"
+    at = names.index("Sign")
+    assert names.index("Build bundle") < at < names.index("Publish GitHub Release")
+    # the key reaches that one step and nothing else: no job, no other step, no workflow-level variable
+    assert steps[at]["env"] == {"NS_RELEASE_SIGNING_KEY": "${{ secrets.NS_RELEASE_SIGNING_KEY }}"}
+    assert read(RELEASE_YML).count("secrets.") == 1
+    others = [wf.get("env") or {}] + [j.get("env") or {} for j in wf["jobs"].values()]
+    others += [s.get("env") or {} for j in wf["jobs"].values() for s in j["steps"] if s is not steps[at]]
+    assert not [e for e in others if "NS_RELEASE_SIGNING_KEY" in e]
+    run = steps[at]["run"]
+    # cryptography pinned with hashes, on a Python that is set up for it; then the signer, which runs the
+    # shipped verifier on what it signed and decides what a run without the key does (test_sign_release.py)
+    assert any(str(s.get("uses", "")).startswith("actions/setup-python@") for s in steps[:at])
+    assert "pip install --require-hashes -r dev/sign-requirements.txt" in run
+    assert "python dev/sign_release.py --release $env:TAG" in run
+    assert '"dist/Nightshift-Update-$version.zip"' in run and '"dist/Nightshift-Setup-$version.zip"' in run
+    last = "if ($LASTEXITCODE -ne 0) { throw 'the release was not signed: the lines above say why' }"
+    assert run.rstrip().endswith(last)
+    signer = read("dev/sign_release.py")
+    assert "sigcheck.check_package(" in signer and "release_keys.TRUSTED" in signer
+    # the .sig files are uploaded when the step made them, and only then
+    for signed in (False, True):
+        work = tmp_path / str(signed)
+        (work / "dist").mkdir(parents=True)
+        if signed:
+            for kind in ("Setup", "Update"):
+                (work / "dist" / f"Nightshift-{kind}-0.1.16.zip.sig").write_text("x", encoding="ascii")
+        calls = _publish(work, "v0.1.16", release_exists=False)
+        upload = [c for c in calls if c.startswith("release upload")]
+        assert len(upload) == 1 and upload[0].count(".zip.sig") == (2 if signed else 0), upload
+        assert upload[0].count(".zip.sha256") == 2
+
+
+def test_the_operator_guide_and_the_release_notes_name_the_three_files_and_the_key_step():
+    guide = read("OPERATOR.md")
+    for needle in ("### The release key", "### Lost key", r"dev\release_keys.ps1 -Create -BackupFolder",
+                   "nightshift-release-backup-key.txt", "NS_RELEASE_SIGNING_KEY", "NS-E707", "INSTALL.cmd",
+                   "does not check who made an update yet"):  # fmt: skip
+        assert needle in guide, needle
+    notes = read("dev/release_notes.md")
+    for name in ("Nightshift-Update-<ver>.zip.sig", "Nightshift-Setup-<ver>.zip.sig"):
+        assert name in notes, name
+    assert "NS_RELEASE_SIGNING_KEY" in read("docs/REPO_SETTINGS.md")
+    boxes = read("docs/FINALIZATION.md")
+    assert "- [ ] F-E26 " in boxes and "- [ ] F-E27 " in boxes
+    assert "sign=False" not in read("docs/DEV_MODE.md") and "--unsigned" in read("docs/DEV_MODE.md")

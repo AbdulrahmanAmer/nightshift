@@ -10,6 +10,10 @@ from pathlib import Path
 
 import pytest
 
+# The GPU kit's cases live in tests/gpukit_cases.py and are collected from the tests/test_gpu_kit*.py part
+# files (CI splits by file). pytest rewrites the asserts of test_*.py files only: this adds that module.
+pytest.register_assert_rewrite("tests.gpukit_cases")
+
 # No test may change the PC it runs on, whatever it does with its fakes. The product refuses at its lowest
 # call points when it runs under a test, and an audit hook covers every process this session starts
 # (ns_common/testguard.py). In this process "under test" is known from pytest being imported; this variable

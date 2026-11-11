@@ -50,6 +50,7 @@ CODE_MIN_CONTEXT = 16384
 #: Why the tune keeps a processor-only PC's context small; the second half of the owner's line.
 CPU_WHY = "a larger one would take memory this PC needs for the jobs"
 MTP_GAIN = 1.03  # MTP must beat plain decoding by 3 % to be kept
+CPU_REPEATS = 2  # cpu-dev: measurements per context candidate (see `pick_context`)
 
 Runner = Callable[[Runtime], tuple[float, float]]
 """Runs llama-server for a candidate runtime and returns (tok_s, load_s); raises NsError on a failed load."""
@@ -153,7 +154,8 @@ def ctx_preference(rt: Runtime) -> Callable[[LlamaFlags], tuple[Any, ...]]:
 def context_note(rt: Runtime, flags: LlamaFlags, floor: int) -> str:
     """The line `ns tune` prints about the context it chose, for a cpu-dev PC ("" on the gpu profile): what it
     is, which use sets the floor and why it is not larger. True in each state: the floor was chosen, or a
-    larger one because the floor was more than 5 % slower or did not load."""
+    larger one because the floor was more than 5 % slower in every measurement or did not load
+    (`pick_context`)."""
     if rt.profile != "cpu-dev":
         return ""
     big = largest_use(rt)
@@ -162,7 +164,7 @@ def context_note(rt: Runtime, flags: LlamaFlags, floor: int) -> str:
         return f"context {flags.ctx} tokens: the smallest that {needs}; {CPU_WHY}."
     return (
         f"context {flags.ctx} tokens: the smallest that {needs} is {floor}, but that size was more than 5 % "
-        f"slower or did not load, so this one is used; {CPU_WHY}."
+        f"slower in every measurement, or did not load, so this one is used; {CPU_WHY}."
     )
 
 
@@ -180,11 +182,13 @@ def plan_matrix(rt: Runtime) -> dict[str, list[Any]]:
 def matrix_lines(rt: Runtime) -> list[str]:
     """Human-readable matrix for `--dry-run`."""
     m = plan_matrix(rt)
-    runs = 1 + max(0, len(m["ctx_kv"]) - 1) + max(0, len(m["n_cpu_moe"]) - 1) + len(m["mtp_draft_n_max"])
+    repeats = context_repeats(rt)
+    runs = 1 + len(m["ctx_kv"]) * repeats + max(0, len(m["n_cpu_moe"]) - 1) + len(m["mtp_draft_n_max"])
+    often = f" (each measured {repeats} times)" if repeats > 1 else ""
     return [
         f"model: {rt.llama.model_path or '(not configured)'}  profile: {rt.profile}",
-        f"1. -ngl (first that loads): {m['ngl']}",
-        "2. ctx x KV: " + ", ".join(f"{c // 1024}K/{kv}" for c, kv in m["ctx_kv"]),
+        f"1. -ngl (first that loads; that load is the cold one and its speed is not counted): {m['ngl']}",
+        "2. ctx x KV: " + ", ".join(f"{c // 1024}K/{kv}" for c, kv in m["ctx_kv"]) + often,
         "3. --n-cpu-moe: " + (str(m["n_cpu_moe"]) if m["n_cpu_moe"] else "skipped (not a MoE file)"),
         f"4. MTP --spec-draft-n-max: {m['mtp_draft_n_max']} (kept only if 3 % faster than plain)",
         "probe: 300 tokens generated after a ~400-token prompt, tok/s from /completion timings",
@@ -200,6 +204,41 @@ def pick_winner(
     best = max(t for _, t in results)
     near = [(f, t) for f, t in results if t >= best * EQUIVALENT]
     return min(near, key=lambda ft: (prefer(ft[0]), -ft[1]))
+
+
+def context_repeats(rt: Runtime) -> int:
+    """How often stage 2 measures each context candidate: twice on the processor profile, where two runs of
+    one candidate differ by more than the 5 % the choice turns on (D-52); once on the gpu profile."""
+    return CPU_REPEATS if rt.profile == "cpu-dev" else 1
+
+
+def pick_context(
+    rt: Runtime, measured: list[tuple[LlamaFlags, list[float]]], floor: int
+) -> tuple[LlamaFlags, float]:
+    """The context and KV type from stage 2: `measured` holds each candidate that loaded in EVERY repeat, with
+    one speed per repeat (never the run's first, cold load: stage 1's speed is not a sample). Returns the
+    winner and the mean of its speeds.
+
+    gpu: as ever, `pick_winner` with the profile's preference (the roomiest within 5 % of the fastest).
+
+    cpu-dev (D-52): the smallest context that does the work (`floor`) is kept unless a larger one is clearly
+    faster: EACH of the larger one's measurements more than 5 % above EACH measurement of the floor, in
+    either KV type. One sample that is, or one cold or noisy one, decides nothing, so two runs on the same
+    PC choose the same context. A floor slower in every measurement, or one that did not load, still gives
+    way (D-44). Within the pool that remains (the floor's candidates, or the larger ones that beat it) a
+    candidate stands for its SLOWEST measurement, and the profile's preference decides among those within
+    5 % of the best: the smallest context, then q8_0."""
+    if rt.profile != "cpu-dev":
+        flags, speed = pick_winner([(f, sum(ts) / len(ts)) for f, ts in measured], ctx_preference(rt))
+        return flags, speed
+    at_floor = [(f, ts) for f, ts in measured if f.ctx == floor]
+    pool = [(f, ts) for f, ts in measured if f.ctx > floor]
+    if at_floor:
+        fastest_floor = max(max(ts) for _, ts in at_floor)
+        pool = [(f, ts) for f, ts in pool if min(ts) * EQUIVALENT > fastest_floor] or at_floor
+    chosen, _ = pick_winner([(f, min(ts)) for f, ts in pool], ctx_preference(rt))
+    speeds = next(ts for f, ts in pool if f is chosen)
+    return chosen, sum(speeds) / len(speeds)
 
 
 @dataclass
@@ -266,16 +305,24 @@ def tune(paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = No
         _write_log(paths, rt, out)
         return out
 
-    # 2. ctx x KV
-    results = [(current, current_tok)]
+    # 2. ctx x KV. Stage 1's load was the run's first, cold one (the model file not yet in memory): its speed
+    # is not a sample, so every candidate, the floor's included, is measured here, warm; on the processor
+    # profile twice (D-52). A candidate one of whose loads failed is not compared.
+    repeats = context_repeats(rt)
+    measured: list[tuple[LlamaFlags, list[float]]] = []
     for ctx, kv in matrix["ctx_kv"]:
-        if (ctx, kv) == (current.ctx, current.kv_type):
-            continue
         f = current.model_copy(update={"ctx": ctx, "kv_type": kv})
-        t = attempt("ctx_kv", f)
-        if t is not None:
-            results.append((f, t))
-    current, current_tok = pick_winner(results, ctx_preference(rt))
+        speeds: list[float] = []
+        for _ in range(repeats):
+            t = attempt("ctx_kv", f)
+            if t is None:
+                break
+            speeds.append(t)
+        if len(speeds) == repeats:
+            measured.append((f, speeds))
+    if measured:
+        current, current_tok = pick_context(rt, measured, floor)
+    # (else: nothing loaded a second time; stage 1's flags did load once and are kept, with its cold speed)
 
     # 3. --n-cpu-moe (MoE only)
     if matrix["n_cpu_moe"]:

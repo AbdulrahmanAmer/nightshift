@@ -68,15 +68,28 @@ class RangeResult:
 
 
 def _read(path: Path, start: int, length: int, chunk: int) -> Iterator[bytes]:
-    remaining = length
-    with path.open("rb") as fh:
-        fh.seek(start)
-        while remaining > 0:
-            block = fh.read(min(chunk, remaining))
-            if not block:
-                break
-            remaining -= len(block)
-            yield block
+    """The bytes of one answer, a block at a time. The file is opened for each block and closed again BEFORE
+    the block is handed out.
+
+    A browser that has buffered enough of a video stops reading and keeps the connection open, for as long
+    as the page shows the player. With one handle held across the whole answer (as before), Windows refused
+    to move or delete the file for all that time (WinError 32): Reject from the Queue could not take a
+    video out of the Outbox while its own preview was on the page (D-57). Now nothing of Nightshift holds
+    the file between two blocks. A file that is moved or removed between two blocks ends the answer there:
+    the player shows its own error and the Queue no longer lists the video."""
+    offset, remaining = start, length
+    while remaining > 0:
+        try:
+            with path.open("rb") as fh:
+                fh.seek(offset)
+                block = fh.read(min(chunk, remaining))
+        except OSError:  # moved, removed or held by another program since the last block
+            return
+        if not block:
+            return
+        offset += len(block)
+        remaining -= len(block)
+        yield block
 
 
 def open_range(path: Path, header: str | None, *, chunk: int = 1 << 20) -> RangeResult:

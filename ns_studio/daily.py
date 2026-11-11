@@ -14,8 +14,11 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from ns_common import dbrestore
 from ns_common.atomic import read_text_retry, write_text_atomic
-from ns_common.db import claim_job_id
+from ns_common.db import BackupFailed, claim_job_id
+from ns_common.dbrestore import BROKE_MID_RUN, WAY_OUT_WINDOW, is_damage_error
+from ns_common.dbrestore import DAMAGED_CODE as DB_DAMAGED
 from ns_common.errors import NsError, describe
 from ns_common.keepawake import keep_awake
 from ns_common.models import Channel
@@ -306,15 +309,32 @@ def _run_daily(
             _tonight(env, run, rng, now, run_id, report, recovered, night)
             done = [j["job_id"] for j in report["jobs"]]
             report["publish_times_set"] = apply_publish_times(env, done, rng, now)
-            backup = env.db.backup(env.paths.backup_dir, today=now.date())
-            report["backup"] = str(backup)
+            try:
+                report["backup"] = str(env.db.backup(env.paths.backup_dir, today=now.date()))
+                dbrestore.backup_made(env.paths)
+            except BackupFailed as e:  # 4b.3: no copy tonight; the older copies all stay. Counted and SAID
+                # (NS-W214 with the age of the newest copy); a copy whose check answered damage makes the
+                # next start check the live file in full.
+                report["backup"], report["backup_failed"] = None, str(e)
+                report["backup_note"] = dbrestore.backup_failed(
+                    env.paths, str(e), env.log, notifications.db_note(env.paths), damaged=e.damaged)
         except BaseException as e:  # the night itself broke: close its row, so it never looks unfinished
-            report["failed"] = getattr(e, "code", UNEXPECTED)
+            damaged = _damage_of(e)
+            report["failed"] = DB_DAMAGED if damaged is not None else getattr(e, "code", UNEXPECTED)
             report["timing"] = _close_night(env, night, report)
-            env.db.execute(
-                "update runs set finished_at=?, summary_json=? where run_id=?",
-                (clock.now().isoformat(timespec="seconds"), json.dumps(report), run_id),
-            )
+            if damaged is not None:
+                _stop_for_damage(env, report, now, damaged)
+            try:
+                env.db.execute(
+                    "update runs set finished_at=?, summary_json=? where run_id=?",
+                    (clock.now().isoformat(timespec="seconds"), json.dumps(report), run_id),
+                )
+            except Exception as closing:  # noqa: BLE001 - a damaged database cannot take the row: said above
+                if damaged is None:
+                    raise
+                env.log.warn("daily_row_not_closed", str(closing), run_id=run_id)
+            if damaged is not None and damaged is not e:
+                raise damaged from e
             raise
         finally:
             if isinstance(acquirer, StudioAcquirer):
@@ -339,6 +359,40 @@ def _run_daily(
     if finish is not None:  # gap 25: the engine this run needed leaves once nobody else uses it
         finish()
     return report
+
+
+def _damage_of(e: BaseException) -> NsError | None:
+    """db-integrity 4b.2: the NS-E209 that ends the night when `e` is the database itself breaking (SQLite's
+    "malformed", "not a database"), else None. One job's error that is not about the database stays that
+    job's failure."""
+    if isinstance(e, NsError) and e.code == DB_DAMAGED:
+        return e
+    if not is_damage_error(e):
+        return None
+    return NsError(DB_DAMAGED, f"{type(e).__name__}: {e}", hint=WAY_OUT_WINDOW, said=BROKE_MID_RUN)
+
+
+def _stop_for_damage(env: jobs.Env, report: dict, now: datetime, damaged: NsError) -> None:
+    """The night stops on a damaged database (4b.2): the report says so (the run's row may not take it, so the
+    night's own file `logs/nightly-<date>.json` does), and the owner's morning note says what to do. The other
+    jobs are not tried: every one of them would fail the same way."""
+    raw = damaged.detail or str(damaged)
+    job_id = str(damaged.data.get("job_id") or "(the night)")
+    report["failures"].append({"job_id": job_id, "channel": "The night", "code": DB_DAMAGED,
+                               "error": BROKE_MID_RUN, "detail": raw})
+    env.log.error("daily_db_damaged", raw, code=DB_DAMAGED)
+    # The quick check of the next start may pass (an index entry without its row): this mark makes that start
+    # run the full check and decide on it, so the note's promise below holds or the owner reads why not.
+    dbrestore.want_full_check(env.paths, f"the night stopped: {raw}", env.log)
+    try:
+        env.paths.logs.mkdir(parents=True, exist_ok=True)
+        write_text_atomic(env.paths.logs / f"nightly-{now:%Y%m%d}.json", json.dumps(report, indent=2) + "\n")
+    except OSError as e:
+        env.log.warn("nightly_report_not_written", str(e))
+    try:
+        notifications.db_note(env.paths)(f"{DB_DAMAGED}: {BROKE_MID_RUN}")
+    except Exception as e:  # noqa: BLE001 - the toast and the log still say it
+        env.log.warn("morning_note_failed", str(e))
 
 
 def _refusal_words(error: StudioError) -> tuple[str, str]:
@@ -488,6 +542,12 @@ def _attempt(
         env.log.info("daily_job_busy", job_id=job_id, detail=str(e))
         return BUSY
     except (NsError, StudioError) as e:
+        damaged = _damage_of(e)
+        if damaged is not None:  # 4b.2: the database broke under this job: the night ends, not this job
+            damaged.data.setdefault("job_id", job_id)
+            if damaged is e:
+                raise
+            raise damaged from e
         code, detail, raw = e.code, str(e), str(getattr(e, "detail", "") or "")
         if code == PAUSED and job_id != "(not created)":  # stopped between two stages by a pause (P47)
             _paused_mid_job(env, report, job_id, slug, resumed=resumed)
@@ -497,6 +557,12 @@ def _attempt(
             _left_for_time(env, report, night, job_id, slug, decision, resumed=resumed)
             return OUT_OF_TIME
     except Exception as e:  # an uncoded bug or corrupt file ends this job, never the night
+        damaged = _damage_of(e)
+        if damaged is not None:  # 4b.2: ... unless the file is the database: then every job would fail
+            damaged.data.setdefault("job_id", job_id)
+            if damaged is e:
+                raise
+            raise damaged from e
         code, detail = UNEXPECTED, f"{UNEXPECTED}: {describe_unexpected(e)}"
         env.log.error("daily_job_crashed", job_id=job_id, traceback=traceback.format_exc())
     if night is not None and job_id != "(not created)":
@@ -1063,14 +1129,21 @@ def _tonight(
             if d.answer != nightfit.BEGIN:
                 _left_entry(report, night, d, channel=ch.slug, plan=dj.fmt, fmt=dj.fmt, jobs=dj.count - n)
                 break
+            long_job: dict[str, Any] | None = None
             if d.reason in (nightfit.FIRST_WORK, nightfit.FIRST_WORK_LONG):  # made over several nights
-                report.setdefault("long_jobs", []).append(
-                    {"channel": ch.slug, "fmt": dj.fmt, "need_s": _seconds(d.need_s), "nights": d.nights,
-                     "reason": d.reason,
-                     "said": nightclock.marked(night.card, nightfit.say(d, channel=ch.slug, plan=dj.fmt))}
-                )
+                long_job = {
+                    "channel": ch.slug, "fmt": dj.fmt, "need_s": _seconds(d.need_s), "nights": d.nights,
+                    "reason": d.reason,
+                    "said": nightclock.marked(night.card, nightfit.say(d, channel=ch.slug, plan=dj.fmt)),
+                }  # fmt: skip
             make = partial(jobs.make_job, env, ch, dj.fmt, now=now, rng=rng, origin="daily", run_id=run_id)
             code = _attempt(env, run, report, make, ch.slug, run_id=run_id, fmt=dj.fmt, night=night)
+            # "Begun as the night's first work and made over about N nights: each nightly run after this one
+            # continues it" is said only of a job this night really left half made for time. Said before the
+            # attempt, it stood in the note beside the failure of a job that was never made (a stock key
+            # refused before any job: block E final review), or of one that failed, or that finished tonight.
+            if long_job is not None and code == OUT_OF_TIME:
+                report.setdefault("long_jobs", []).append(long_job)
             if code == OUT_OF_TIME:  # S6/S7: left at a stage boundary; the rest of this channel waits too
                 rest = _ask_new(night, dj.fmt) if dj.count - n - 1 else None
                 if rest is not None and rest.answer != nightfit.BEGIN:

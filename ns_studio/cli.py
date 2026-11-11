@@ -427,7 +427,10 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
         echo(left_for_time)
     for bad_slug, problem in report.get("unreadable_profiles", []):
         echo(f"channel {bad_slug} NOT RUN, its profile cannot be read: {problem}")
-    echo(f"backup: {report['backup']}")
+    if report.get("backup"):
+        echo(f"backup: {report['backup']}")
+    else:  # db-integrity 4b.3: the copy failed its check or could not be written; the older copies stay
+        echo(f"backup: not made tonight ({report.get('backup_failed')}); the older copies are kept")
     code = nightly_exit_code(report)
     if code:
         raise typer.Exit(code)

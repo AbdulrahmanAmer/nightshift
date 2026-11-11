@@ -1164,3 +1164,32 @@ def test_the_last_night_card_reads_what_was_left_and_the_time() -> None:
     assert "r.summary?.out_of_time" in queue and "r.summary?.timing" in queue
     bundle = (REPO / "ns_dashboard" / "static" / "app.js").read_text(encoding="utf-8")
     assert "Left for time: " in bundle and "until it has timed one on this PC" in bundle
+
+
+def test_the_long_job_sentence_is_only_said_of_a_job_the_night_left_half_made(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "Begun as the night's first work and made over about N nights: each nightly run after this one
+    continues it" was recorded before the job was attempted, so it stood in the morning note also when the
+    job was never made (a stock key refused first), when it failed, and when it simply finished that night.
+    It is said only when the night really left the job half made for time."""
+    from ns_studio import nightfit
+
+    reasons: list[str] = []
+    ask = daily._ask_new
+
+    def asked(night: Any, fmt: str) -> Any:
+        d = ask(night, fmt)
+        reasons.append(d.reason)
+        return d
+
+    monkeypatch.setattr(daily, "_ask_new", asked)
+    world.history(each_s=30 * 60)  # the plan's estimate: 2 h of work, more than the hour that is left
+    world.seconds = {name: 1 for name, _t in PLAN}  # tonight every stage is quick
+    report = world.night(left_s=3700)  # begun as the night's first work ...
+    # the premise (review of f574e0d): the night DID decide "first work, made over several nights" for this
+    # job, the decision under which the entry used to be recorded before the attempt
+    assert reasons[:1] in ([nightfit.FIRST_WORK], [nightfit.FIRST_WORK_LONG]), reasons
+    assert world.ran == [name for name, _t in PLAN] and report["failures"] == []  # ... and finished tonight
+    assert not report.get("long_jobs") and not report.get("out_of_time"), report
+    assert "made over about" not in (notifications.time_note(report) or "")

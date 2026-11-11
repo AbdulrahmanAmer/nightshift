@@ -15,7 +15,7 @@ import sys
 import tempfile
 import zipfile
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
@@ -165,6 +165,88 @@ def _add_setup_evidence(
                 _add_file(z, f, f"setup/bootstrap/{f.name}", skipped)
 
 
+def _add_database_evidence(z: zipfile.ZipFile, paths: Paths, skipped: list[str]) -> None:
+    """db-integrity: the last check, a restore in progress and the last restore (`run/db-*.json`), and the
+    NAMES and sizes of the set-aside files in data/damaged (never the files: they hold the owner's data)."""
+    from ns_common import dbrestore
+
+    for src in (dbrestore.check_path(paths), dbrestore.record_path(paths), dbrestore.restored_path(paths)):
+        if src.is_file():
+            _add_file(z, src, f"run/{src.name}", skipped)
+    folder = dbrestore.damaged_dir(paths)
+    try:
+        names = sorted(folder.iterdir()) if folder.is_dir() else []
+        lines = [f"{p.name}  {p.stat().st_size} bytes" for p in names if p.is_file()]
+    except OSError as e:
+        lines = [f"data/damaged could not be listed: {e}"]
+    if lines:
+        z.writestr("data-damaged.txt", "".join(f"{line}\n" for line in lines))
+
+
+def database_row(paths: Paths, now: datetime | None = None) -> tuple[str, bool, str]:
+    """Row "database" (db-integrity): what the last check at a start found (`run/db-check.json`), and a
+    restore of the last `RESTORED_SHOWN_DAYS` days. Read only: `ns doctor` never checks nor restores it."""
+    from ns_common import dbrestore
+
+    if dbrestore.record_path(paths).exists():
+        return ("database", False, "a replacement of the damaged database stopped mid-way; opening the "
+                "Dashboard finishes it")
+    chk = dbrestore.read_json(dbrestore.check_path(paths))
+    if chk is None:
+        ok, said = True, "not checked yet (it is checked when Nightshift starts)"
+    else:
+        at = _when(chk.get("at"))
+        result = str(chk.get("result"))
+        if result in (dbrestore.OK, dbrestore.NEW):
+            ok, said = True, f"ok (checked {at})"
+        elif result in (dbrestore.HELD, dbrestore.NEWER, dbrestore.SLOW):
+            try:
+                starts = int(chk.get("not_checked_starts") or 1)
+            except (TypeError, ValueError):
+                starts = 1
+            if starts >= dbrestore.NOT_CHECKED_SAID_AFTER:  # a bound: never "ok" for ever
+                ok, said = False, (f"could not be checked at the last {starts} starts ({chk.get('detail')}); "
+                                   f"{dbrestore.newest_copy_words(paths)}; close every Nightshift window and "
+                                   "any other program that uses the Nightshift folder, then open the "
+                                   "Dashboard")
+            else:
+                ok, said = True, f"not checked {at} ({chk.get('detail')}); it is checked at the next start"
+        elif result == "restore_failed":
+            ok, said = False, str(chk.get("detail"))
+        else:
+            ok, said = False, f"found damaged {at}; opening the Dashboard replaces it with the newest copy"
+    nights = dbrestore.read_json(dbrestore.backup_state_path(paths))
+    if nights is not None and nights.get("failed_nights"):
+        ok = False
+        said += (f"; no nightly copy was made on the last {nights.get('failed_nights')} night(s) "
+                 f"({nights.get('last_error')}); {dbrestore.newest_copy_words(paths)}")
+    if dbrestore.full_check_path(paths).exists():
+        said += "; it answered 'damaged' while in use: the next start checks it in full"
+    done = dbrestore.read_json(dbrestore.restored_path(paths))
+    if done is not None:
+        restored: datetime | None = None
+        try:
+            restored = datetime.fromisoformat(str(done["restored_at"]))
+            age_days = ((now or datetime.now(UTC)) - restored).total_seconds() / 86400
+        except (KeyError, ValueError, TypeError):
+            age_days = None
+        if restored is not None and age_days is not None and age_days < dbrestore.RESTORED_SHOWN_DAYS:
+            on = restored.astimezone().strftime("%Y-%m-%d")
+            if done.get("backup") and done.get("backup_time") is not None:
+                made = datetime.fromtimestamp(float(done["backup_time"])).strftime("%Y-%m-%d")
+                said += f"; restored from the backup of {made} on {on}"
+            else:
+                said += f"; made new on {on} (no good backup), the videos put back from their folders"
+    return ("database", ok, said)
+
+
+def _when(raw: object) -> str:
+    try:
+        return datetime.fromisoformat(str(raw)).astimezone().strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return "at an unknown time"
+
+
 def build_bundle(
     paths: Paths,
     *,
@@ -209,6 +291,7 @@ def build_bundle(
                 _add_file(z, src, arc, skipped)
             elif arc in ("install_state.json", "runtime.json", "verify-report.json"):
                 skipped.append(f"{arc}: not found")
+        _add_database_evidence(z, paths, skipped)
         _add_setup_evidence(
             z, paths, skipped, setup_dir or setup_data_dir(), temp_dir or Path(tempfile.gettempdir())
         )
@@ -253,6 +336,7 @@ def diagnose(
     profile = rt.profile if rt is not None else None    # None: the install's kind is unknown
     st, state_row = install_state_row(paths)
     rows.append(state_row)
+    rows.append(database_row(paths))
     for venv in ("studio", "supervisor"):
         py = paths.venvs / venv / "Scripts" / "python.exe"
         rows.append((f"venv {venv}", py.exists(), str(py)))
