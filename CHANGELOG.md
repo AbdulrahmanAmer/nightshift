@@ -16,8 +16,9 @@ installed on the GPU PC, and nothing in it has run on a real graphics card yet. 
 items of block E, "the first real nights": a nightly run never begins work that cannot end inside the time Windows
 allows the task, and says in the morning what it left and what stopped a night that died; other programs holding the
 graphics card's memory are waited for and named; the upload sheet holds what YouTube accepts; every answer of Pexels
-and Pixabay is told for what it is and a wrong key is found before a job starts; and a simulated graphics card lets
-a PC without one run the code that hands the card over. 0.1.15-rc4 added the items of block D, "install and update
+and Pixabay is told for what it is and a wrong key is found before a job starts; a simulated graphics card lets
+a PC without one run the code that hands the card over; and a one-command kit, `GPU-KIT.cmd`, proves the product on
+the GPU PC and packs what it found into one zip. 0.1.15-rc4 added the items of block D, "install and update
 safety": an update or rollback typed in a terminal hands over to its own window, a second Nightshift on the same PC
 takes nothing of the first without your yes, setup asks about the nightly run and keeps it off unless you say yes,
 packages are installed from a lock, the local servers refuse requests made by web pages, and `ns` and `studio` work
@@ -235,6 +236,75 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
   text, so a channel in a script that takes more tokens (Cyrillic takes about 2.3 times as many) can send a prompt
   over 16384 on a processor install; a clip moment longer than 120 seconds that crosses the middle of a split window
   fits neither half; a story title with an emoji still becomes the outbox folder name. Shown by tests.
+- `GPU-KIT.cmd` proves the product on the GPU PC and packs what it found into one zip (gpu-kit). It is in the Setup
+  zip beside `INSTALL.cmd`: after you install the candidate, double-click it. It finds the install (`-Home`, your
+  `NIGHTSHIFT_HOME`, the install it sits in, or it asks once for the folder), says which one it is using, prints
+  its plan, and refuses an install that is not a GPU install, with the way out. It tells every step in one line
+  that ends PASS, FAIL, WAIT or NOT RUN, and the steps are: (1) start, which checks this is a GPU install and that
+  no other install's Nightshift is running; (2) record this PC: the graphics card, driver and video memory, the
+  disk, the sleep settings, `ns doctor`, and the check of the model files (`ns verify --downloads`, skipped when
+  the kit ran it less than a day ago); (3) test each model once with `ns verify` and run the proofs that fit a
+  real install (`prove.py --all --strict`); (4) try each stored stock-footage key, Pixabay and Pexels, with one
+  real search and one real download; (5) make one story video with the real models on the kit's own channel
+  (about 3 hours); (6) cut 3 minutes from that video and make one clip from them in Clips; (7) make a voice
+  designed from a description and a voice cloned from the video's narration, each speaking one sentence; (8) open
+  Nightshift Code on the graphics card, send it one prompt, close it and check the card is free within 5 seconds;
+  (9) ask the Assistant one question; (10) switch Automatic runs on for the next two nights if they are off, say
+  the two times, and stop until you run it again after the second morning; (11) and (12) read night 1 and night
+  2; (13) collect everything, put back what the kit changed and write the zip. After the steps it asks a few
+  questions only you can answer (the posting sheet pasted into YouTube Studio, the video watched, the morning
+  note, the two hand checks in `dev/kit/night-task-end.txt`); "later" keeps a question for the next run. Step 5
+  does not start when the video (the estimate and 30 minutes to spare) would not end before the nightly run: it
+  says WAIT with the hours and the time to run it again. Resumable: close the window whenever you like, run
+  `GPU-KIT.cmd` again and it goes on from the step it reached (its state is `kit\kit-state.json` in the install);
+  a video job the kit started that was cut off is continued, not made again, and there is one kit channel, one
+  story video, one settings change and one zip however often it runs. What it changes on the PC and puts back:
+  its own channel `gpu-kit` (made from the first active channel's language and voice, active only for its video
+  and the two nights, paused again at the end and on every way out); Automatic runs, switched on for exactly two
+  nights only when they were off (the old value is written first) and switched off again in step 13 or by the
+  night after the two, unless you switched them yourself in between (the next entry); two test voices
+  (`gpukit-design-<date>` and `gpukit-clone-<date>` in the voice library), removed again unless a channel names
+  one as its voice; and one stock clip per key, removed from the footage cache again unless a video used it. Left
+  on the PC on purpose, and listed in the zip's README: the kit's story video, the two night videos and the clip
+  in the Queue on the kit's channel, the clip's 3-minute input in Library > Sources, one Assistant conversation
+  and one OpenCode session. Each of the two armed nights makes one more full story video on the kit's channel,
+  besides what your channels have due (step 10 says what each has due). A night is read from its own run record
+  and is a PASS only when the run's summary lists the kit's video and the night ledger has it ended "done" in
+  that run, inside a known time limit, or when the night's own time rule says it did not begin or finish the
+  video (that is recorded as the finding); a night that did not run, made nothing for the kit, knew no limit or
+  ran past it is a FAIL with the reason. The stock keys are tried before the long video: a provider with no
+  stored key is NOT RUN for that provider, and a stored key that fails stops the kit with Nightshift's own
+  sentence for that answer, before any video is made. A step is NOT RUN, and nothing is started or ended, when
+  someone else is using Nightshift or the graphics card: an update that is unfinished gives NS-W210 and its way
+  out; Nightshift Code, a job, a waiting job or a model loading holds the card; and step 3, which stops and
+  reloads every model, runs only while nobody else uses Nightshift at all. The kit ends only what it started: it
+  starts Nightshift's engine when it is down and asks it to shut down at the end only when its own start record
+  is still the engine that runs and nothing else is using it (otherwise it leaves it running and says why; the
+  engine ends by itself after 30 minutes without use); it closes only its own Nightshift Code window by the
+  process it recorded; it never sends Stop All; and a closed window stops nothing and says so. The zip is one file,
+  `kit\nightshift-gpu-kit-<date>.zip`, written whole and atomically, also after a failed step, with a
+  `MISSING.txt` that names each part that is not there and why; the last lines say "Send this one file" or why
+  not yet. It holds the machine record, the model and proof results, the stock results, the story job's stage
+  times, path, length, QC result, frame grid and posting sheet (not the video itself), the clip, voice, Code and
+  Assistant results, both nights' ledgers, logs, morning notes and Windows' power and restart events, the
+  diagnostics zip, your answers and the kit's state. Masked in every text file, and listed in its README: the
+  stock-footage keys and tokens stored on this PC (every value, in every spelling it can take), the usual key
+  shapes and any value named key, token, secret, password or authorization, Hugging Face, GitHub and Bearer
+  tokens, the Windows user name and profile folder, the install's home path, the PC's name and the account's
+  security id; pictures and audio are copied as they are. The kit sends nothing anywhere: it asks only this PC's
+  own Nightshift. A run on a test install with the simulated graphics card (`-DryRun`, which a real install
+  refuses, as it refuses an install that is not a GPU install without it) is marked SIMULATED on every result
+  line and on the first line of the zip's README, and ends by saying that its zip is a test, not the GPU PC's
+  proof. Not covered: nothing in the kit has run on a real graphics card or with real models; on this laptop its
+  dry run gave NOT RUN for the stock keys, the clip, the cloned voice and Nightshift Code (no FFmpeg, OpenCode or
+  key there), so those steps are shown by tests with stand-ins only; `GPU-KIT.cmd` itself has not been run from a
+  real install yet, because block E's install proof has not run. Step 3's model test stops and reloads every
+  model, so a video or Nightshift Code started during it loses its model (the kit says so first and starts it
+  only while nobody else uses Nightshift); ending the engine is a check followed by a request, so something
+  started in the instant between them is not seen; the stage times, the 3-hour estimate and what a night makes
+  beside your own work are unknown until the GPU PC's nights have written the ledger. Shown by tests with
+  stand-ins for the engine, the clock, FFmpeg, OpenCode, the models and the Windows readers, and by a dry run on a
+  test install with the simulated card, not on a real one.
 
 ### Updates, files and safety
 
@@ -670,6 +740,36 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
   or NS-E203); a game open at the very first reading can hide in the idle figure until a quieter reading lowers it;
   `NS_TEST_VRAM_WAIT_S` (60 to 1800 seconds) shortens the wait for a proof, on a dev or engine-test install only;
   `proofs/vram_busy.py` is the proof for an engine-test install and has not been run on one.
+- Every night now looks for the GPU kit's record before it plans, even if you never run the kit (gpu-kit). The kit
+  writes `run\gpu-kit-nights.json` before it changes anything for its two nights: each night's window (a day long,
+  from 30 minutes before the run time), what each makes (one full story video on the kit's channel), what
+  Automatic runs were before the kit, the run time it armed and the end of night 2's window. One reader
+  (`ns_supervisor/kitnights.py`) answers for the nightly run, the planner, the three routes to Automatic runs and
+  the kit's last step, and it never raises. No record, which is every PC that never ran the kit: nothing changes,
+  and the planner pays one missing-file check. A valid record: the night inside a window plans the kit's video
+  (below). An expired record, a night after the end of night 2's window: the nightly run first puts back what the
+  kit changed, then runs exactly as it would without a record. It pauses the kit's channel before the night, so
+  the night neither plans nor continues the kit's job; it switches Automatic runs off only when they were off
+  before the kit, nobody switched them since, and the task is still at the time the kit armed, and then leaves a
+  morning note and that night makes nothing, because you never asked for it; it removes the record. When the runs
+  are yours, that night runs as usual. An unreadable record (torn, not JSON, a time without a time zone, written by
+  a newer version, a file that cannot be opened): the night runs as if there were none, the log says why, and one
+  morning note names the file and says to switch Automatic runs off in Settings if you did not switch them on
+  yourself, or to run `GPU-KIT.cmd` again, which puts back what it changed; the file is left as it is, and no
+  night switches Automatic runs off while it cannot be read. The planner's one exception: it never plans a
+  channel named `gpu-kit`, except on an armed night, when it adds one full story video (`master_first`) on it,
+  last in the night's plan, once a night (not when a kit job was made or worked on in that night's window, so a
+  night-1 job continued by night 2 is that night's one), never after the record's end, and the video goes through
+  the night's time rule like any other, so it can be left for time. If you switch Automatic runs yourself after
+  the kit armed them, by any of the three routes (a request to the switch in Settings, `ns schedule install`
+  without `--disabled`, or yes to setup's nightly question), the record notes it once with the route and the time,
+  and from then neither a night nor the kit switches them off: the switch is yours. A request the kit itself makes
+  is not counted as yours. Not covered: shown by tests with stand-in nights and clocks and by the kit's dry run on
+  a test install, where the nights ran through the install's own stub with a 20-minute test limit, never started
+  by the Windows task and never on a real graphics card or with real models; nothing in the kit has run on a real
+  graphics card, and `GPU-KIT.cmd` itself has not been run from a real install yet (block E's install proof has
+  not run). When the kit switched Automatic runs on and its record is then unreadable, they stay on after the two
+  nights until you or the kit's last step switch them off. Shown by tests.
 
 ### Videos and stories
 

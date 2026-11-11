@@ -1,4 +1,4 @@
-__version__ = "0.1.15-rc4"
+__version__ = "0.1.15-rc5"
 
 from ns_common import testguard as _testguard  # noqa: E402 - the version line stays first
 

@@ -292,6 +292,26 @@ give the full path of `night-task-end.txt` and of the folder to work in. They ar
 of Nightshift, never on your own. The first shows what Windows does when the nightly run reaches its time limit, the
 second whether a short sleep during a night is noticed. The files the steps save in that folder go into the zip.
 
+**Run by an agent or a script (unattended)**: `GPU-KIT.cmd -Unattended` (add `-Home <folder>` when Nightshift's
+folder is not found by itself). The kit then reads no input and waits for no key, whatever its input is; it does
+not pause before it starts and it asks none of the questions only a person can answer. Those questions are not
+answered either: they stay open, the run lists them under one heading, "For the owner", each with its exact words
+and the file to look at, and the next time a person double-clicks GPU-KIT.cmd (without the switch) the kit asks
+them. Everything else is the same as when a person runs it: the same steps, time limits, records and zip.
+
+- The exit code says what happened: **0** every step is done and none failed (only the owner's questions may be
+  open); **1** a step failed; **2** refused, nothing was started or changed; **3** it stopped to wait, run it again
+  after the time it names; **4** another run of the kit is still going; **5** a step could not start now (for
+  example Nightshift Code is open), its line says what has to end first; **130** interrupted.
+- The last line it prints is one JSON object: `step` (the step it stands at, or `done`), `step_title`, `state`
+  (`done`, `failed`, `refused`, `waiting`, `locked`, `blocked` or `interrupted`), `exit_code`, `next_run_after`
+  (the time to run it again, also `come_back` in `kit\kit-state.json`; a wait whose end the kit cannot know is
+  looked at again half an hour later), `open_questions` (each with `group`, `id`, `question` and `look_at`),
+  `zip` (the zip's path), `failed_steps` and `reason`.
+- Without the switch nothing waits for ever either: a question nobody answers is left for the next run after 15
+  minutes, whatever the kit's input is (a keyboard, a pipe nobody writes to, a file), and the window's last
+  "Press any key" is only shown at a keyboard.
+
 Good to know:
 
 - You can close the window at any time. Double-click GPU-KIT.cmd again and it goes on from the step it reached. It
