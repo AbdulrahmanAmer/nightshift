@@ -19,7 +19,7 @@ from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.security import is_within
 from ns_dashboard.state import AppState
 from ns_studio.errors import StudioError
-from ns_studio.media.outbox import disclosure_for
+from ns_studio.media.outbox import disclosure_for, refit_output, sheet_way_out
 from ns_studio.media.youtube_rules import WARNING_PREFIX, read_notes
 
 URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
@@ -37,12 +37,6 @@ def _read_json(f: Path) -> Any:
         return json.loads(read_text_retry(f))
     except (OSError, ValueError):
         return None
-
-
-def unreadable_sheet_line(name: str, job_id: str) -> str:
-    """The Queue's line for a video whose `.json` sheet cannot be read."""
-    return (f"{WARNING_PREFIX}the upload sheet {name} could not be read, so it was not checked against "
-            f"YouTube's rules: re-run the job (studio run --resume {job_id}) or reject the video")
 
 
 def _read_text(f: Path) -> str | None:
@@ -153,6 +147,13 @@ class OutputsService:
         video = Path(row["path"])
         sheet = _read_json(video.with_suffix(".json"))
         sheet_dict = sheet if isinstance(sheet, dict) else None
+        txt = video.with_suffix(".txt")
+        problem = None
+        broken = sheet_dict is None or (txt.exists() and _read_text(txt) is None)
+        if broken and row["status"] in ("pending", "approved"):  # rebuilt now, or the way out that is true
+            problem = self._repair_sheet(row)
+            sheet = _read_json(video.with_suffix(".json"))
+            sheet_dict = sheet if isinstance(sheet, dict) else None
         job_dir = self.s.paths.job_dir(row["job_id"])
         policy = None
         for name in ("policy_final.json", "policy_text.json"):
@@ -176,8 +177,8 @@ class OutputsService:
         if answer in ("yes", "no"):  # the answer for the voice the job spoke with, and why (rule R8)
             told = disclosure_for(self.s.paths, row["job_id"], row["kind"], str(answer))
         notes = read_notes(sheet_text).owner_lines()
-        if sheet_dict is None:  # the start sweep could not read it either (a bounded WARN in its log)
-            notes.insert(0, unreadable_sheet_line(video.with_suffix(".json").name, str(row["job_id"])))
+        if problem:
+            notes.insert(0, f"{WARNING_PREFIX}{problem}")
         item.update(
             {
                 "description": flat.get("description", ""),
@@ -208,6 +209,18 @@ class OutputsService:
             }
         )
         return item
+
+    def _repair_sheet(self, row: sqlite3.Row) -> str | None:
+        """A sheet that cannot be read, rebuilt from the job's records and fitted (`outbox.refit_output`):
+        None when it worked, else the owner's way out that is true for its case (`outbox.sheet_way_out`)."""
+        try:
+            with self.s.db.lock:
+                refit_output(self.s.paths, self.s.db, row)
+        except (OSError, ValueError) as e:
+            return sheet_way_out(self.s.paths, row, e)
+        self.s.log.info("sheet_rebuilt", "the upload sheet was rebuilt when the video was opened",
+                        output_id=row["output_id"])
+        return None
 
     def _story_excerpt(self, row: sqlite3.Row) -> str | None:
         if row["kind"] == "clip":

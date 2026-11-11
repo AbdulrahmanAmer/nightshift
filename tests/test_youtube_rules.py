@@ -360,9 +360,9 @@ def _rc3_sheet(paths: Paths, db, *, slug: str, job_id: str, title: str, status: 
     rc3 = outbox.sheet_text(Metadata.model_validate(meta), mp4.name)  # no notes: rc3's own text
     mp4.with_suffix(".txt").write_text(rc3.replace("\n", "\r\n"), encoding="utf-8", newline="")
     db.execute(
-        "INSERT INTO outputs(output_id, job_id, channel, kind, k, title, path, duration_s, status, created_at)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (f"{job_id}/s1", job_id, slug, "short", 1, title, str(mp4), 30.0, status, "2026-11-01T00:00:00+00:00"),
+        "INSERT INTO outputs(output_id, job_id, channel, kind, k, title, path, duration_s, combo_id, status,"
+        " created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (f"{job_id}/s1", job_id, slug, "short", 1, title, str(mp4), 30.0, "c", status, "2026-11-01T00:00:00+00:00"),
     )
     return mp4
 
@@ -422,7 +422,7 @@ def test_sheets_of_an_earlier_release_are_rewritten_once(tmp_home: Path, tmp_pat
         assert sweep is not None, "the start sweep's sheet pass (outbox.sweep_sheets)"
         monkeypatch.setattr(outbox, "write_text_atomic", killed_after_one_sheet)
         with pytest.raises(RuntimeError):
-            sweep(paths, db, state.log)  # aa01 written, aa05 cannot be read, killed at aa06's first write
+            sweep(paths, db, state.log)  # aa01 written, killed at aa05's first write (its rebuilt .txt)
         assert not (paths.data / "sheet-rules.json").exists()  # written last: the next start runs again
         monkeypatch.setattr(outbox, "write_text_atomic", real_write)
         assert writes == [bracket.with_suffix(".txt").name, bracket.with_suffix(".json").name]
@@ -432,7 +432,7 @@ def test_sheets_of_an_earlier_release_are_rewritten_once(tmp_home: Path, tmp_pat
         state.worker.start()  # the dashboard's start: recovery, then the sweeps
         state.worker.stop()
         rules = json.loads((paths.data / "sheet-rules.json").read_text(encoding="utf-8"))
-        assert rules["rules_version"] == yr.RULES_VERSION and rules["retry"] == {"after-dark-20261101-aa05/s1": 1}
+        assert rules["rules_version"] == yr.RULES_VERSION and rules["retry"] == {}
         assert all(p.stat().st_mtime_ns == t for p, t in stamp.items())  # the killed run's work is not redone
         meta = json.loads(bracket.with_suffix(".json").read_text(encoding="utf-8"))
         assert meta["title"] == "The Last Door"
@@ -454,51 +454,165 @@ def test_sheets_of_an_earlier_release_are_rewritten_once(tmp_home: Path, tmp_pat
         assert json.loads(recorded.with_suffix(".json").read_text(encoding="utf-8"))["ai_disclosure"] == "yes"
         for p, (j, t) in untouched.items():  # uploaded and rejected left alone
             assert (p.with_suffix(".json").read_bytes(), p.with_suffix(".txt").read_bytes()) == (j, t)
-        assert _logs(paths).count('"sheet_unreadable"') == warned + 1 and "(try 1 of 5)" in _logs(paths)
-        assert "upload sheets brought up to YouTube's rules: 4" in _logs(paths)  # aa06, aa08, aa02, aa07
+        # a .json that cannot be read is rebuilt from its .txt and the job's records, and says so
+        assert _logs(paths).count('"sheet_unreadable"') == warned
+        assert "upload sheets brought up to YouTube's rules: 5" in _logs(paths)  # aa05, aa06, aa08, aa02, aa07
+        rebuilt, was = json.loads(torn.with_suffix(".json").read_text(encoding="utf-8")), json.loads(good_json)
+        assert {k: rebuilt[k] for k in was} == was  # every field the sheet had, from the .txt and the records
+        assert outbox.REBUILT in torn.with_suffix(".txt").read_text(encoding="utf-8")
         torn_detail = OutputsService(state).detail("after-dark-20261101-aa05/s1")
-        assert "could not be read" in torn_detail["youtube_notes"][0]  # the Queue says it too
+        assert not any(n.startswith("WARNING FOR YOUTUBE") for n in torn_detail["youtube_notes"])
 
-        torn.with_suffix(".json").write_text(good_json, encoding="utf-8")  # the other program let go of it
         bracket.with_suffix(".json").write_text(json.dumps({**meta, "title": "Back <again>"}), encoding="utf-8")
-        state.worker.start()  # the next start retries only the sheet it could not read
-        state.worker.stop()
-        assert json.loads(torn.with_suffix(".json").read_text(encoding="utf-8"))["title"] == "Torn"
-        assert "Altered or synthetic content:" in torn.with_suffix(".txt").read_text(encoding="utf-8")
-        assert "<again>" in bracket.with_suffix(".json").read_text(encoding="utf-8")  # done sheets are not redone
-        assert json.loads((paths.data / "sheet-rules.json").read_text(encoding="utf-8"))["retry"] == {}
-        assert _logs(paths).count("upload sheets brought up to YouTube's rules: 1") == 1
-
         before = {p: p.stat().st_mtime_ns for p in paths.outbox.rglob("*.*")}
-        lines = _logs(paths).count("\n")
         state.worker.start()  # run twice: nothing changes and nothing is said
         state.worker.stop()
+        assert "<again>" in bracket.with_suffix(".json").read_text(encoding="utf-8")  # done sheets are not redone
         assert {p: p.stat().st_mtime_ns for p in paths.outbox.rglob("*.*")} == before
-        assert _logs(paths).count('"sheets_fitted"') == 2 and _logs(paths).count("\n") >= lines
+        assert _logs(paths).count('"sheets_fitted"') == 1
     finally:
         state.worker.stop()
         db.close()
 
 
-def test_a_sheet_that_stays_unreadable_is_tried_at_five_starts_then_left_with_a_word(tmp_home: Path):
-    from ns_common.logging import NsLogger
+def _dashboard(paths: Paths):
+    from ns_dashboard.handlers import build_state
+    from ns_dashboard.svc_outputs import OutputsService
 
+    state = build_state(paths, fake_services=True)
+    return state, OutputsService(state)
+
+
+def _warnings(detail: dict) -> list[str]:
+    return [n for n in detail["youtube_notes"] if n.startswith("WARNING FOR YOUTUBE")]
+
+
+def _block(txt: Path) -> str:
+    """A .txt that exists but cannot be read (as when another program holds it): a folder of that name."""
+    text = txt.read_text(encoding="utf-8")
+    txt.unlink()
+    txt.mkdir()
+    return text
+
+
+def _let_go(txt: Path, text: str) -> None:
+    """The other program lets go of the .txt: it can be read again, as it was."""
+    txt.rmdir()
+    txt.write_text(text, encoding="utf-8")
+
+
+def test_a_sheet_that_stays_unreadable_is_tried_at_five_starts_then_left_with_a_word(tmp_home: Path):
     paths = Paths.from_env()
     paths.ensure()
-    from ns_common.db import Db
+    state, queue = _dashboard(paths)
+    try:
+        torn = _rc3_sheet(paths, state.db, slug="after-dark", job_id="after-dark-20261101-bb01", title="Torn",
+                          status="pending")
+        torn.with_suffix(".json").write_text("{not json", encoding="utf-8")
+        held = _block(torn.with_suffix(".txt"))
+        for _ in range(6):
+            outbox.sweep_sheets(paths, state.db, state.log)
+        logs = _logs(paths)
+        assert logs.count('"sheet_unreadable"') == 5  # tries 1 to 5, then the sweep is done with it
+        assert "(try 4 of 5) and whenever the video is opened in the Queue" in logs
+        assert "stopped trying at its starts after 5; opening the video in the Queue tries once more" in logs
+        assert "reject" not in logs and "--resume" not in logs  # no way out that does not mend the sheet
+        last = "close the program that holds after-dark-20261101-bb01 - Short 01.txt, then open this video in the Queue again"
+        assert last in logs
+        assert json.loads((paths.data / "sheet-rules.json").read_text(encoding="utf-8"))["retry"] == {}
+        # the Queue says the same while it holds
+        detail = queue.detail("after-dark-20261101-bb01/s1")
+        assert any(last in w for w in _warnings(detail))
+        # follow it: the program lets go, the owner opens the video again: the sheet is rebuilt, the line is gone
+        _let_go(torn.with_suffix(".txt"), held)
+        detail = queue.detail("after-dark-20261101-bb01/s1")
+        assert _warnings(detail) == [] and detail["title"] == "Torn" and detail["tags"] == ["night bus", "story"]
+        assert Metadata.model_validate_json(torn.with_suffix(".json").read_text(encoding="utf-8")).title == "Torn"
+    finally:
+        state.db.close()
 
-    db = Db(paths.db_path)
-    db.migrate()
-    log = NsLogger("dashboard", paths.logs)
-    torn = _rc3_sheet(paths, db, slug="after-dark", job_id="after-dark-20261101-bb01", title="Torn", status="pending")
-    torn.with_suffix(".json").write_text("{not json", encoding="utf-8")
-    for _ in range(6):
-        outbox.sweep_sheets(paths, db, log)
-    logs = _logs(paths)
-    assert logs.count('"sheet_unreadable"') == 5  # tries 1 to 5, then the sweep is done with it
-    assert "(try 4 of 5)" in logs and "stopped trying after 5 starts" in logs
-    assert "studio run --resume after-dark-20261101-bb01" in logs
-    assert json.loads((paths.data / "sheet-rules.json").read_text(encoding="utf-8"))["retry"] == {}
+
+def test_every_way_out_for_a_sheet_that_cannot_be_read_is_true(tmp_home: Path, tmp_path: Path):
+    """Each sentence the Queue prints for a broken sheet, followed as written."""
+    paths = Paths.from_env()
+    paths.ensure()
+    state, queue = _dashboard(paths)
+    try:
+        # 1. the .json is torn, the .txt reads: opening the video rebuilds it, nothing to do
+        ctx = make_ctx(tmp_home)
+        ctx.write_json("prompt_versions.json", {"seo": 3})
+        before, _ = run_short(ctx, tmp_path, SEO)
+        sheet = Path(ctx.read_json("outbox/manifest.json")["s1"]["json"])
+        sheet.write_text("{torn", encoding="utf-8")
+        detail = queue.detail(f"{ctx.job_id}/s1")
+        after = json.loads(sheet.read_text(encoding="utf-8"))
+        assert _warnings(detail) == [] and outbox.REBUILT in (detail["sheet_text"] or "")
+        for key in ("title", "description", "tags", "hashtags", "publish_after", "clips", "combo_id",
+                    "prompt_versions", "made_for_kids", "age_restrict_suggested", "ai_disclosure"):
+            assert after[key] == before[key], key
+        # the same for a master (its chapters and thumbnails) and for a clip (its source and template)
+        master = make_ctx(tmp_home, fmt="master_first", channel=make_channel(format="master_first"))
+        mmeta, _ = run_master(master, tmp_path, {**SEO, "description": "Summary.\n\n[[CHAPTERS]]\n\nOriginal fiction."},
+                              THREE_CHAPTERS)
+        msheet = Path(master.read_json("outbox/manifest.json")["long"]["json"])
+        msheet.write_text("", encoding="utf-8")
+        assert _warnings(queue.detail(f"{master.job_id}/long")) == []
+        assert json.loads(msheet.read_text(encoding="utf-8"))["chapters"] == mmeta["chapters"]
+        clip = make_ctx(tmp_home, fmt="clip")
+        cmeta, _ = run_clip(clip, tmp_path, {"title": "Best play", "description": "A moment.\n\nClip from: My Stream",
+                                              "tags": ["stream"], "hashtags": ["#Shorts"], "keywords": []})
+        csheet = Path(clip.read_json("outbox/manifest.json")["c1"]["json"])
+        csheet.write_text("{", encoding="utf-8")
+        assert _warnings(queue.detail(f"{clip.job_id}/c1")) == []
+        rebuilt = json.loads(csheet.read_text(encoding="utf-8"))
+        assert (rebuilt["source_video"], rebuilt["template"], rebuilt["title"]) == (
+            cmeta["source_video"], cmeta["template"], cmeta["title"])
+
+        # 2. the .txt is held too: "close the program that holds <stem>.txt, then open this video in the Queue
+        #    again: Nightshift rebuilds the sheet from it"
+        held_ctx = make_ctx(tmp_home)
+        run_short(held_ctx, tmp_path, SEO)
+        hsheet = Path(held_ctx.read_json("outbox/manifest.json")["s1"]["json"])
+        hsheet.write_text("{torn", encoding="utf-8")
+        text = _block(hsheet.with_suffix(".txt"))
+        said = _warnings(queue.detail(f"{held_ctx.job_id}/s1"))
+        assert len(said) == 1 and f"close the program that holds {hsheet.with_suffix('.txt').name}" in said[0]
+        _let_go(hsheet.with_suffix(".txt"), text)  # done as said
+        assert _warnings(queue.detail(f"{held_ctx.job_id}/s1")) == []
+        assert Metadata.model_validate_json(hsheet.read_text(encoding="utf-8")).title == SEO["title"]
+
+        # 3. the .txt is not in the sheet's layout: "copy the title, description and tags from <stem>.txt and
+        #    check them yourself before posting: <the rules>"
+        odd = make_ctx(tmp_home)
+        run_short(odd, tmp_path, SEO)
+        osheet = Path(odd.read_json("outbox/manifest.json")["s1"]["json"])
+        osheet.write_text("{torn", encoding="utf-8")
+        osheet.with_suffix(".txt").write_text("my own notes\nTitle idea: The Doorbell\n", encoding="utf-8")
+        said = _warnings(queue.detail(f"{odd.job_id}/s1"))
+        name = osheet.with_suffix(".txt").name
+        assert len(said) == 1 and f"copy the title, description and tags from {name}" in said[0]
+        assert outbox.RULES_TO_CHECK in said[0] and "reject" not in said[0]
+        assert "The Doorbell" in osheet.with_suffix(".txt").read_text(encoding="utf-8")  # the file it names holds them
+
+        # 4. the .txt is missing: "the title, description and tags this job wrote are in <job>/seo.json; copy
+        #    them into YouTube Studio and check them yourself before posting: <the rules>"
+        gone = make_ctx(tmp_home)
+        run_short(gone, tmp_path, SEO)
+        gsheet = Path(gone.read_json("outbox/manifest.json")["s1"]["json"])
+        gsheet.write_text("{torn", encoding="utf-8")
+        gsheet.with_suffix(".txt").unlink()
+        said = _warnings(queue.detail(f"{gone.job_id}/s1"))
+        record = gone.file("seo.json")
+        assert len(said) == 1 and f"are in {record}" in said[0] and outbox.RULES_TO_CHECK in said[0]
+        wrote = json.loads(record.read_text(encoding="utf-8"))[0]  # the file it names holds the three fields
+        assert (wrote["title"], wrote["description"], wrote["tags"]) == (SEO["title"], SEO["description"], SEO["tags"])
+        # 5. and the job folder has no SEO record either: the fields are written by hand, to the rules
+        record.unlink()
+        said = _warnings(queue.detail(f"{gone.job_id}/s1"))
+        assert len(said) == 1 and "write the title, description and tags in YouTube Studio yourself" in said[0]
+        assert outbox.RULES_TO_CHECK in said[0]
+    finally:
+        state.db.close()
 
 
 # ---------------------------------------------------------------------------------------------- properties
