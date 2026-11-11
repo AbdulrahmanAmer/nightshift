@@ -218,7 +218,9 @@ def repair_owed(home: Path, planned: Iterable[tuple[Path, str | None]] = ()) -> 
     ``planned`` (``planned_files``): a planned file setup's models step would not take as verified is owed
     too, whether or not a marker is left to say so (a file deleted together with its marker)."""
     root = Path(home) / "models"
-    lines = [f"{key}: its SHA256 did not match at the check of {entry.get('checked_at') or '?'}"
+    # the checker records ``bad hash`` for a wrong size too, without reading the hash (``sha256_ok`` None)
+    lines = [f"{key}: its {'SHA256' if entry.get('sha256_ok') is False else 'size'} did not match at the "
+             f"check of {entry.get('checked_at') or '?'}"
              for key, entry in sorted(recorded_damage(home).items())]
     if root.is_dir():
         for folder, _dirs, files in os.walk(root):
