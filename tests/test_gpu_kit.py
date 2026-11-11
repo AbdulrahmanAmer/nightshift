@@ -296,6 +296,10 @@ class LocalProduct:
     def api(self, method: str, path: str, body: Any = None, timeout: float = 60) -> tuple[int | None, Any]:
         self.calls.append(("api", method, path, body))
         self.world.traps.hit(f"api {method} {path}")
+        if self.world.dashboard_down:  # Stop All between two runs: nothing answers until it is started
+            return None, None
+        if self.world.refuse_cancel and method == "POST" and path.endswith("/cancel"):
+            return None, None
         out = self.http.api(method, path, body, timeout)
         if method == "PUT" and path == "/api/settings":
             self.world.traps.hit("settings applied")
@@ -384,6 +388,7 @@ class LocalProduct:
 
     def start_engine(self, timeout: float) -> tuple[bool, str]:
         self.calls.append(("start_engine",))
+        self.world.dashboard_down = False
         return True, "engine + dashboard up (headless)"
 
     def night_now(self, limit_s: int, timeout: float) -> tuple[int | None, str]:
@@ -541,6 +546,8 @@ class World:
         self.code: CodeProc | None = None
         self.frees_card = True
         self.clip_status = "done"
+        self.dashboard_down = False
+        self.refuse_cancel = False
         self.traps, self.clock = Traps(), Clock()
         self.product = LocalProduct(self)
         self.windows = CannedWindows(self)
@@ -1788,6 +1795,61 @@ def test_a_clip_job_past_its_bound_is_cancelled(world: World) -> None:
     world.clip_status = "running"
     assert world.run() == 1
     line = world.state()["steps"]["KC"]["line"]
-    assert world.results()["KC"] == "FAIL" and "it was cancelled" in line, line
+    assert world.results()["KC"] == "FAIL" and "cancel asked (HTTP 200)" in line, line
     jid = world.state()["clip"]["job_id"]
     assert world.product.count("api", "POST", f"/api/jobs/{jid}/cancel") == 1
+
+
+# ------------------------------------------------------------------------------------------------ round 5
+def _label(step: str) -> str:
+    return f"Step {gpukit.STEPS.index(step) + 1} of {len(gpukit.STEPS)} ({gpukit.TITLES[step]}): starting."
+
+
+@pytest.mark.parametrize("step", ["K1", "K2", "KS", "K3", "KC", "KV", "KN", "KA", "K4", "K5", "K6", "K7"])
+def test_a_run_that_starts_cold_at_each_step_brings_the_engine_up_first(world: World, step: str) -> None:
+    """The state says the steps before `step` are done; the engine and the Dashboard are stopped (Stop All
+    between the runs). The run's first step goes through the ONE entry: it runs, or gives its true NOT RUN,
+    never 'the Dashboard is down'."""
+    kit_here()
+    if step in ("K5", "K6", "K7"):
+        assert world.run() == 0
+        world.nights_pass()
+    world.say_trap = _label(step)
+    assert world.run() == 130, world.out[-5:]
+    assert not world.state()["steps"].get(step, {}).get("done")
+    world.dashboard_down = True
+    before = world.product.count("start_engine")
+    world.run()
+    rec = world.state()["steps"][step]
+    for down in ("did not answer", "did not say who holds", "did not start"):
+        assert down not in rec["line"], (step, rec["line"])
+    if gpukit.ENTRY[step] != "none":
+        assert world.product.count("start_engine") > before  # the entry brought it up first
+    if step == "KN":
+        assert rec["result"] == "NOT RUN" and rec["line"].startswith("Nightshift Code is not installed")
+    else:
+        assert rec["result"] == "PASS", (step, rec)
+
+
+def test_a_saved_clip_job_is_followed_after_a_cold_start_not_polled_dead(world: World) -> None:
+    world.clip_status = "running"  # the worker has not ended it yet
+    world.say_trap = "  the clip job: "  # the window closed while the kit followed the job
+    assert world.run() == 130
+    jid = world.state()["clip"]["job_id"]
+    world.clip_status = "done"
+    world.finish_clip(jid)  # the worker finished it while the kit was closed
+    world.dashboard_down = True  # and the engine was stopped
+    assert world.run() == 0, world.out
+    assert world.results()["KC"] == "PASS" and jid in world.state()["steps"]["KC"]["line"]
+    assert len(world.dash_state.store.list_jobs(None, "clip", 50)) == 1
+
+
+def test_an_unanswered_cancel_never_says_cancelled(world: World) -> None:
+    world.clip_status = "running"
+    world.refuse_cancel = True
+    assert world.run() == 1
+    line = world.state()["steps"]["KC"]["line"]
+    said = ("the cancel request was not answered (HTTP None): the job may still be running: open "
+            "Nightshift's Dashboard, Queue, and press Cancel on clip job")  # fmt: skip
+    assert said in line, line
+    assert "cancel asked" not in line

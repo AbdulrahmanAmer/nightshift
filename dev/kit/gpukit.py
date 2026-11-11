@@ -60,6 +60,12 @@ TITLES = {"K0": "start", "K1": "record this PC", "K2": "test each model and run 
           "KN": "Nightshift Code on the graphics card", "KA": "ask the Assistant one question",
           "K4": "switch Automatic runs on for two nights", "K5": "night 1", "K6": "night 2",
           "K7": "collect everything and put Automatic runs back"}  # fmt: skip
+#: What each step needs before it may talk to the product (`Kit.enter`): nothing, the engine and Dashboard
+#: answering, or that and the graphics card free of anything the kit did not start.
+ENTRY = {"K1": "none", "K2": "card", "KS": "dashboard", "K3": "card", "KC": "card", "KV": "card",
+         "KN": "card",
+         "KA": "card", "K4": "dashboard", "K5": "none", "K6": "none", "K7": "dashboard"}  # fmt: skip
+ENGINE_ANSWER_S = 180  # how long the kit waits for a started engine and Dashboard to answer
 STOCK_QUERIES = ("lighthouse in fog", "rain on a window at night", "empty country road at dusk")
 CLIP_BOUND_S = 90 * 60  # the clip job of 3 minutes of video, with its models loaded (bounded)
 VOICE_BOUND_S = 30 * 60
@@ -836,9 +842,45 @@ class Kit:
         self.state["engine_started_by_kit"] = True
         self.save()  # before the start: a kill from here on still stops it at the end of the next run
         ok, text = self.product.start_engine(300)
-        if ok and self.product.api("GET", "/api/health", timeout=10)[0] == 200:
+        begun = self.now()
+        while ok:  # started: it answers within a bound, or that is the answer
+            if self.product.api("GET", "/api/health", timeout=10)[0] == 200:
+                return None
+            if (self.now() - begun).total_seconds() > ENGINE_ANSWER_S:
+                break
+            self.clock.sleep(2)
+        return f"Nightshift's engine did not start or did not answer ({text[-300:].strip()})"
+
+    def enter(self, step: str) -> Result | None:
+        """Every step's ONE entry, before the step talks to the product: the engine and the Dashboard brought
+        up (`engine`, bounded) when the step needs them, what the kit left from a killed run put back, then
+        the engine asked who holds the graphics card (bounded wait for an answer) when the step takes it. None
+        hands over to the step; a Result is the step's answer (nothing of the step was started)."""
+        need = ENTRY.get(step, "none")
+        if need == "none":
             return None
-        return f"Nightshift's engine did not start ({text[-300:].strip()})"
+        why = self.engine()
+        if why:
+            return Result("FAIL", f"{why}. What to do: run GPU-KIT.cmd again; if this line comes back, send "
+                          "the zip.", done=False, stop=True)  # fmt: skip
+        self.put_back_extras()  # (the kit's own Code window, test voices or stock clip of a killed run)
+        if need != "card" or self.own_work_running(step):
+            return None
+        begun = self.now()
+        while self.engine_status() is None and (self.now() - begun).total_seconds() < ENGINE_ANSWER_S:
+            self.clock.sleep(2)
+        return self.card_taken()
+
+    def own_work_running(self, step: str) -> bool:
+        """The card may be held by the kit's OWN work of this step, started by an earlier run: its studio
+        (step 5), its clip job (step 6). That step follows it; the card is not asked about."""
+        if step == "K3":
+            job = self.state.get("job") or {}
+            return bool(job.get("pid")) and self.product.alive(job["pid"], job.get("pid_created"))
+        if step == "KC":
+            clip = self.state.get("clip") or {}
+            return bool(clip.get("job_id") or clip.get("posting"))
+        return False
 
     def run_times(self, after: datetime, count: int) -> list[datetime]:
         """The next `count` nightly run times after `after`, at the install's run time (Settings)."""
@@ -1070,8 +1112,6 @@ class Kit:
         est = self.estimate_s()
         why = self.engine()
         held = None if why else self.guard(est)
-        if held is None and not why and not job.get("id"):
-            held = self.card_taken()
         if held is not None:
             return held
         why = why or self.channel()
@@ -1259,10 +1299,10 @@ class Kit:
         """One real search and one real download of one clip per provider whose key is stored, through the
         product's own route (`POST /api/library/footage/fetch`, count 1); the clip leaves the cache again.
         PASS names the clip (source, clip id) the product's answer gave for the kit's own request."""
-        why = self.engine()
-        settings = None if why else self.settings()
+        settings = self.settings()  # (entry brought the Dashboard up)
         if settings is None:
-            return Result("FAIL", f"the Dashboard did not answer ({why}). What to do: send the zip.",
+            return Result("FAIL", "the Dashboard did not answer GET /api/settings. What to do: run "
+                          "GPU-KIT.cmd again; if this line comes back, send the zip.",
                           done=False, stop=True)  # fmt: skip
         self.put_back_extras()  # a clip a killed run downloaded leaves the cache first
         keys = settings.get("keys") or {}
@@ -1347,12 +1387,9 @@ class Kit:
                 rec.update({"job_id": found["job_id"], "started": rec["posting"], "found_again": True})
                 self.save()
         if not rec.get("job_id"):
-            held = self.room(CLIP_BOUND_S, "the clip") or self.card_taken()
+            held = self.room(CLIP_BOUND_S, "the clip")
             if held is not None:
                 return held
-            why = self.engine()
-            if why:
-                return Result("FAIL", f"{why}. What to do: send the zip.")
             if not src.is_file():
                 problem = self.product.cut(video, src, 60, 180, False)
                 if problem:
@@ -1374,13 +1411,23 @@ class Kit:
         job: dict[str, Any] = {}
         while True:
             st, got = self.product.api("GET", f"/api/jobs/{rec['job_id']}")
+            if st is None:  # the Dashboard stopped answering: brought up again, never polled dead
+                why = self.engine()
+                if why:
+                    self.save()
+                    return Result("FAIL", self.marked(f"the Dashboard stopped answering while the kit "
+                                  "followed "
+                                  f"clip job {rec['job_id']} ({why}); the job may still be running: run "
+                                  "GPU-KIT.cmd again, it follows the same job"),
+                                  done=False, stop=True)  # fmt: skip
+                continue
             job = got if st == 200 and isinstance(got, dict) else {}
             if job.get("status") in ("done", "failed", "cancelled"):
                 break
             if (self.now() - begun).total_seconds() > CLIP_BOUND_S:
                 # at its bound the job is cancelled through the product's own route, not left running
-                self.product.api("POST", f"/api/jobs/{rec['job_id']}/cancel", {})
-                rec["cancelled_at_bound"] = True
+                cst, _ = self.product.api("POST", f"/api/jobs/{rec['job_id']}/cancel", {})
+                rec.update({"cancelled_at_bound": True, "cancel_status": cst})
                 break
             self.say(f"  the clip job: {job.get('status')}, {job.get('message') or ''} "
                      f"({_span(begun, self.now())})")  # fmt: skip
@@ -1427,11 +1474,16 @@ class Kit:
         stays = f"; left on the PC: {'; '.join(left)}" if left else ""
         jid = rec.get("job_id")
         if job.get("status") not in ("done", "failed", "cancelled") or rec.get("cancelled_at_bound"):
+            cst = rec.get("cancel_status")
+            stopped = (f"cancel asked (HTTP {cst})" if cst == 200 else
+                       f"the cancel request was not answered (HTTP {cst}): the job may still be running: "
+                       "open "
+                       f"Nightshift's Dashboard, Queue, and press Cancel on clip job {jid}")  # fmt: skip
             return Result(
                 "FAIL",
                 self.marked(
                     f"the clip job {jid} did not finish in {_secs(CLIP_BOUND_S)} "
-                    f"(it was {job.get('status')}: {job.get('message')}); it was cancelled{said}"
+                    f"(it was {job.get('status')}: {job.get('message')}); {stopped}{said}"
                 ),
             )
         if job.get("status") != "done":
@@ -1457,14 +1509,7 @@ class Kit:
         held = self.room(VOICE_BOUND_S, "the two test voices")
         if held is not None:
             return held
-        why = self.engine()
-        if why:
-            return Result("FAIL", f"{why}. What to do: send the zip.")
         rec = self.state.setdefault("voices", {})
-        if any((rec.get(k) or {}).get("result") is None for k in ("design", "clone")):
-            taken = self.card_taken()
-            if taken is not None:
-                return taken
         day = self.now().strftime("%Y%m%d")
         parts = []
         for kind in ("design", "clone"):
@@ -1551,13 +1596,7 @@ class Kit:
         held = self.room(CODE_LOAD_S + CODE_PROMPT_S + idle + 120, "the Nightshift Code check")
         if held is not None:
             return held
-        why = self.engine()
-        if why:
-            return Result("FAIL", f"{why}. What to do: send the zip.")
-        self.put_back_extras()  # a window left open by a killed run is closed first
-        taken = self.card_taken()  # the owner's own Nightshift Code (or a job) holds it: not touched
-        if taken is not None:
-            return taken
+        # (entry closed a window a killed run left and found the card free: the owner's Code is not touched)
         rec: dict[str, Any] = {"vram_before": self.vram_used(), "started": self.iso()}
         self.state["code"] = rec
         self.change("code_window", "closed", "opened by the kit and closed again")
@@ -1626,12 +1665,6 @@ class Kit:
     def ka(self) -> Result:
         """One question that needs no confirmation, to the Assistant on the install's own model; the answer
         must not be empty."""
-        why = self.engine()
-        if why:
-            return Result("FAIL", f"{why}. What to do: send the zip.")
-        taken = self.card_taken()
-        if taken is not None:
-            return taken
         begun = self.now()
         status, body = self.product.api("POST", "/api/assistant/chat", {"message": ASSISTANT_QUESTION},
                                         timeout=ASK_BOUND_S)  # fmt: skip
@@ -2265,7 +2298,7 @@ class Kit:
                     continue
                 self.say(f"{self.label(step)}: starting.")
                 begun = self.now()
-                res = fns[step]()
+                res = self.enter(step) or fns[step]()
                 steps[step] = {"result": res.result, "line": res.line, "done": res.done, "at": self.iso(),
                                "seconds": round((self.now() - begun).total_seconds()),
                                "version": self.version}  # fmt: skip
