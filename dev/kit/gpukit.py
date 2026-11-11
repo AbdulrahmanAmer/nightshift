@@ -245,11 +245,12 @@ class RealWindows:
 
     def physical_disk(self, drive: str) -> str | None:
         self._guard("disks")
-        script = (f"$n = (Get-Partition -DriveLetter '{drive[:1]}').DiskNumber; Get-PhysicalDisk | "
+        # the drive letter goes in as data (an environment variable), never into the script's text
+        script = ("$n = (Get-Partition -DriveLetter $env:NS_KIT_DRIVE).DiskNumber; Get-PhysicalDisk | "
                   "Where-Object { $_.DeviceId -eq [string]$n } | "
                   "Select-Object FriendlyName, MediaType, BusType, Size | "
                   "ConvertTo-Json -Compress")  # fmt: skip
-        rc, text = _run([*POWERSHELL, "-Command", script], 60)
+        rc, text = _run([*POWERSHELL, "-Command", script], 60, {**os.environ, "NS_KIT_DRIVE": drive[:1]})
         return text if rc == 0 else None
 
     def powercfg(self, args: list[str]) -> str | None:
@@ -1178,7 +1179,10 @@ def start(args: argparse.Namespace, env: KitEnv) -> Kit:
                       "GPU PC: install the candidate there with INSTALL.cmd, then run its GPU-KIT.cmd.")
     offset = timedelta(0)
     if args.clock:
-        offset = datetime.fromisoformat(args.clock).astimezone() - datetime.now().astimezone()
+        try:
+            offset = datetime.fromisoformat(args.clock).astimezone() - datetime.now().astimezone()
+        except ValueError as e:
+            raise Refused(f"-Clock needs a time like 2026-11-12T22:00, not {args.clock!r}.") from e
     clock = env.clock or RealClock(offset)
     product = env.product or InstallProduct(home, info.ports["dashboard"])
     status, body = product.api("GET", "/api/status", timeout=30)
