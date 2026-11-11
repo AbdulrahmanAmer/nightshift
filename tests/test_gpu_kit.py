@@ -2802,3 +2802,61 @@ def test_an_unattended_wait_always_names_the_time_to_run_it_again(world: World) 
         world.hold_at = None
         world.stage_may_go.set()
         night2.join(120)
+
+
+# ============================================ the kit's output on a file (block E final review, blocker 1)
+MOON = "\U0001f319"
+
+
+def test_a_line_with_a_character_the_output_cannot_take_is_written_escaped_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An agent's `> log 2>&1` is a file in the PC's ANSI code page; step 5's PASS line prints the video's
+    path (its title, every character kept) and step 9's the Assistant's answer. One emoji must not turn a
+    finished step into "an error it did not expect": the line is written, the character escaped."""
+    log = tmp_path / "kit.log"
+    with log.open("w", encoding="cp1252", errors="strict", newline="\n") as ansi:
+        monkeypatch.setattr(sys, "stdout", ansi)
+        gpukit.say_line(f"PASS    step 5 (story video): D:/out/Night {MOON} story.mp4")
+        gpukit.say_line("plain")
+    escaped = "\\" + "U0001f319"   # the eight-digit escape Python writes for a character cp1252 cannot take
+    assert log.read_text(encoding="cp1252").splitlines() == [
+        f"PASS    step 5 (story video): D:/out/Night {escaped} story.mp4", "plain",
+    ]
+
+
+def test_the_kit_as_a_program_writes_utf8_to_a_file_whatever_the_code_page(tmp_path: Path) -> None:
+    """The program itself, as a child whose output is a file (what GPU-KIT.cmd > log gives it), with Python's
+    UTF-8 mode off as on a stock Windows: `utf8_output` makes the file UTF-8, so the line arrives whole and
+    `Get-Content -Encoding UTF8` reads it; without it Python writes ANSI, strictly, and the line raises."""
+    kit = Path(gpukit.__file__).resolve()
+    code = (
+        "import importlib.util, sys\n"
+        f"spec = importlib.util.spec_from_file_location('gpukit_child', {str(kit)!r})\n"
+        "kit = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['gpukit_child'] = kit\n"
+        "spec.loader.exec_module(kit)\n"
+        "kit.utf8_output()\n"
+        f"kit.say_line('Night {MOON} story.mp4')\n"
+        "print('err line \u2019', file=sys.stderr, flush=True)\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+    env["PYTHONUTF8"] = "0"
+    log = tmp_path / "child.log"
+    with log.open("wb") as out:
+        done = subprocess.run(  # noqa: S603 - this interpreter, a fixed script
+            [sys.executable, "-X", "utf8=0", "-c", code], stdout=out, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, env=env, cwd=str(tmp_path), timeout=120, check=False,
+        )
+    text = log.read_bytes().decode("utf-8")
+    assert done.returncode == 0, text
+    assert text.splitlines() == [f"Night {MOON} story.mp4", "err line \u2019"]
+
+
+def test_the_unattended_last_line_is_ascii_whatever_the_state_holds(world: World) -> None:
+    """The one line an agent parses is readable under any code page: `json.dumps` escapes every character
+    that is not ASCII (a zip path or a reason with the owner's own letters in it)."""
+    code = world.run("--unattended")
+    raw_last = world.out[-1]
+    assert code in gpukit.EXIT.values() and raw_last.isascii(), (code, raw_last)
+    assert json.loads(raw_last)["kit"] == "nightshift-gpu-kit"

@@ -15,7 +15,7 @@ Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'Nightsh
 Nothing printed: begin at section 1. A path printed: use it in every `Invoke-Expression` line of this file, then:
 ```powershell
 Invoke-Expression (Get-Content -Raw 'D:\Nightshift-trial\vars.ps1')
-Get-Content "$N\findings.md" -TotalCount 8; Get-Content "$H\logs\install-report.json" -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json | Select-Object outcome
+Get-Content -Encoding UTF8 "$N\findings.md" -TotalCount 8; Get-Content -Encoding UTF8 "$H\logs\install-report.json" -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json | Select-Object outcome
 "setup running: $(Test-Running "$N\setup-runs.txt")"
 ```
 The third is 5.4's follow block (process alive, state file, the log's last line). Read all of `$N\findings.md`:
@@ -91,7 +91,7 @@ $T = 'v0.1.15-rc5'; $V = $T.TrimStart('v'); $R = 'AbdulrahmanAmer/nightshift'
 $W = 'D:\Nightshift-trial'; $N = "$W\notes"; $X = "$W\setup"; $H = 'D:\Nightshift'; $K = "$H\kit"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 function Start-Detached([string]$CommandLine, [string]$Dir) {
-  $su = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0; EnvironmentVariables = [string[]](Get-ChildItem Env: | ForEach-Object { "$($_.Name)=$($_.Value)" }) }
+  $su = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0; EnvironmentVariables = [string[]](Get-ChildItem Env: | Where-Object { $_.Name -ne 'PSModulePath' } | ForEach-Object { "$($_.Name)=$($_.Value)" }) }
   $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $CommandLine; CurrentDirectory = $Dir; ProcessStartupInformation = $su }
   if ($r.ReturnValue -ne 0) { "NOT STARTED (Win32_Process.Create returned $($r.ReturnValue))" } else { $r.ProcessId } }
 function Test-Running([string]$File) { $l = @(Get-Content $File -ErrorAction SilentlyContinue)[-1]; if ($l -match '^(\d+) ') { $q = Get-Process -Id $Matches[1] -ErrorAction SilentlyContinue; [bool]($q -and $q.ProcessName -eq 'cmd') } else { $false } }
@@ -204,7 +204,7 @@ Start-Process notepad.exe "$W\answers.json"
 Tell the owner: find the line `"pixabay_api_key":  ""`, paste your key between the two quotes, save, close
 Notepad. (A Pexels key, if they have one, goes the same way into `pexels_api_key`.) Then check without seeing it:
 ```powershell
-try { $j = Get-Content "$W\answers.json" -Raw | ConvertFrom-Json -ErrorAction Stop; "pixabay key filled in: $([bool]$j.pixabay_api_key)" } catch { 'answers.json is not valid JSON' }; Remove-Variable j -ErrorAction SilentlyContinue
+try { $j = Get-Content -Encoding UTF8 "$W\answers.json" -Raw | ConvertFrom-Json -ErrorAction Stop; "pixabay key filled in: $([bool]$j.pixabay_api_key)" } catch { 'answers.json is not valid JSON' }; Remove-Variable j -ErrorAction SilentlyContinue
 ```
 Expected: `pixabay key filled in: True`. If not: `False`: the owner may instead add the key after setup in the
 Dashboard (step 5.1); record which. Not valid JSON: the owner opens it again and fixes the quotes.
@@ -226,7 +226,7 @@ still works: 4.6. "Setup cannot continue until the red items are fixed": 4.8.
 ```powershell
 $log = (@(Get-Content "$N\setup-runs.txt")[-1] -split ' ', 2)[1]; "setup running: $(Test-Running "$N\setup-runs.txt")"
 '{0:N2} GB in models' -f ((Get-ChildItem "$H\models" -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1GB)
-Get-Item $log | Select-Object LastWriteTime; Get-Content $log -Tail 8; Test-Path "$H\logs\install-report.json"
+Get-Item $log | Select-Object LastWriteTime; Get-Content -Encoding UTF8 $log -Tail 8; Test-Path "$H\logs\install-report.json"
 ```
 Expected: the GB number grows or the log changes (retries and waits for a busy site are said in the log). If not:
 nothing changed for 30 minutes: record the last 30 log lines and the `.part` files under `$H\models` with their
@@ -234,7 +234,7 @@ sizes; stop and report.
 
 4.7 Done when `install-report.json` exists.
 ```powershell
-$r = Get-Content "$H\logs\install-report.json" -Raw | ConvertFrom-Json; $r.outcome; Get-Content "$H\app\VERSION"
+$r = Get-Content -Encoding UTF8 "$H\logs\install-report.json" -Raw | ConvertFrom-Json; $r.outcome; Get-Content "$H\app\VERSION"
 Copy-Item "$H\logs\install-report.json" $N; Select-String -Path "$N\setup-2*.log" -Pattern 'Removed the API keys from', 'Setup stopped'
 ```
 Expected: `done`, `0.1.15-rc5`, and (when a key was in the file) "Removed the API keys from answers.json (they
@@ -243,7 +243,7 @@ its code, and the step times in the report. If not: `failed`, or "Setup stopped 
 
 4.8 When setup stops, look up its code's meaning and "what to do" (replace the code):
 ```powershell
-$e = Get-Content "$X\contracts\errors.json" -Raw | ConvertFrom-Json; $e.'NS-E104'
+$e = Get-Content -Encoding UTF8 "$X\contracts\errors.json" -Raw | ConvertFrom-Json; $e.'NS-E104'
 ```
 - A download that failed (NS-E105, NS-E109), the PC restarted, or your session ended: 4.5 once (it resumes).
 - A wrong stock key (NS-E502 Pixabay, NS-E501 Pexels), or exit code 11 (answers.json unreadable): the owner fixes
@@ -312,9 +312,9 @@ the first step not done. If not: `NOT STARTED`: stop and report; the log already
 5.4 Follow it every 15 minutes (every 30 during step 5); never type into anything of it:
 ```powershell
 $log = (@(Get-Content "$N\kit-runs.txt")[-1] -split ' ', 2)[1]; "kit running: $(Test-Running "$N\kit-runs.txt")"
-$s = Get-Content "$K\kit-state.json" -Raw | ConvertFrom-Json; "come back: $($s.come_back)  zip: $($s.zip)"
+$s = Get-Content -Encoding UTF8 "$K\kit-state.json" -Raw | ConvertFrom-Json; "come back: $($s.come_back)  zip: $($s.zip)"
 foreach ($k in 'K0','K1','K2','KS','K3','KC','KV','KN','KA','K4','K5','K6','K7') { $r = $s.steps.$k; if ($r) { '{0,-3} {1,-8} {2}' -f $k, $r.result, $r.line } else { "$k -        not reached" } }
-$last = @(Get-Content $log -Tail 1)[0]; $last
+$last = @(Get-Content -Encoding UTF8 $log -Tail 1)[0]; $last
 ```
 While it runs, the last line is the kit's newest (step 5: "still making the video: ..." every minute). When
 `kit running: False`, the run has ended and its last line is ONE JSON object:
@@ -332,11 +332,11 @@ file: <home>\kit\nightshift-gpu-kit-<date>.zip (<size>). ...", and the JSON with
 
 5.6 What you check yourself from files once step 5 says PASS:
 ```powershell
-$st = Get-Content "$K\story\story.json" -Raw | ConvertFrom-Json; $st | Select-Object video, length_s, lufs, true_peak_dbtp, qc_passed, qc_reason
+$st = Get-Content -Encoding UTF8 "$K\story\story.json" -Raw | ConvertFrom-Json; $st | Select-Object video, length_s, lufs, true_peak_dbtp, qc_passed, qc_reason
 $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User'); $env:NIGHTSHIFT_HOME = $H
 Push-Location "$H\app"; $fp = & "$H\venvs\studio\Scripts\python.exe" -c "from ns_common import ffmpeg; print(ffmpeg.ffprobe_exe())"; Pop-Location
 & $fp -v error -show_entries format=duration:stream=codec_type,codec_name,width,height,sample_rate,channels -of json $st.video
-$sh = Get-Content "$K\story\sheet.txt"; $ti = ($sh -match '^TITLE: ') -replace '^TITLE: '; $tg = ($sh -match '^TAGS: ') -replace '^TAGS: '
+$sh = Get-Content -Encoding UTF8 "$K\story\sheet.txt"; $ti = ($sh -match '^TITLE: ') -replace '^TITLE: '; $tg = ($sh -match '^TAGS: ') -replace '^TAGS: '
 "title $("$ti".Length) chars, tags line $("$tg".Length) chars, < or > in title: $("$ti" -match '[<>]')"; $sh -match 'Made for kids|Altered'
 ```
 The python line asks the product's own ffprobe finder (PATH as Windows saved it, then `$H\bin\ffmpeg`). Expected:
@@ -358,7 +358,7 @@ the window. That attended run asks exactly the questions still open (the same li
 step not done: only while `kit running: False` and the last state is `done`, or `waiting` at K5 outside 03:00 to
 09:00. It rewrites the zip with the answers. Then record them:
 ```powershell
-'watch','morning','paste' | ForEach-Object { "== $_"; Get-Content "$K\$_.json" -Raw -ErrorAction SilentlyContinue }
+'watch','morning','paste' | ForEach-Object { "== $_"; Get-Content -Encoding UTF8 "$K\$_.json" -Raw -ErrorAction SilentlyContinue }
 ```
 Write each answer into the findings as the owner gave it.
 
@@ -371,10 +371,10 @@ When a kit run has ended (5.4), its exit code decides the one next action:
 | 0 `done` | every step is done, none failed: hand `open_questions` to the owner (5.7), then report 2 (7.4) |
 | 1 `failed`, `step` is `done` | every step is done, some failed: the same as 0, with `failed_steps` and their lines in the report |
 | 1 `failed`, `next_run_after` set | a step failed and the kit goes on later: report `failed_steps` with their lines now; 5.3 after `next_run_after` |
-| 1 `failed`, `next_run_after` empty | report `failed_steps` with their lines and `reason`, and stop; start again only where the line table says so |
+| 1 `failed`, `next_run_after` empty | report `failed_steps` with their lines and `reason`. Then read the state file's line for `step` (the first step not done): when that line is a NOT RUN, act on it as row 5; otherwise stop, and start again only where the line table says so |
 | 2 `refused` | nothing was started or changed: the line table's row for `reason`; otherwise report and stop |
 | 3 `waiting` | 5.3 after `next_run_after` (after step 10: 5.5); report 1 and the owner's questions if not yet sent |
-| 4 `locked` | another kit run (perhaps the owner's window) holds the lock: never start a second; 5.4 every 15 minutes until it has ended |
+| 4 `locked` | another kit run (perhaps the owner's window) holds the lock, and this start changed nothing. Wait 15 minutes and start the kit again (5.3): while the other run lives the answer is `locked` again, and that is harmless. If it is still `locked` after 4 hours, report it with the content of `$K\kit.lock` and stop |
 | 5 `blocked` | the line of `step` (state file) says what must end first (Nightshift Code open, a job, an unfinished update with its code and hint): the owner ends it, or it ends by itself; 5.3 after 30 minutes |
 | 130 `interrupted` | 5.3 once |
 
@@ -449,7 +449,7 @@ in MB into the body; the owner drags that zip into a comment in the browser (if 
 
 7.3 Before every report, send nothing that this check has not passed. Re-read `findings.md` yourself. Then:
 ```powershell
-$s = Get-Content "$K\kit-state.json" -Raw | ConvertFrom-Json; $z = "$N\zipcheck-$(Get-Date -Format HHmmss)"
+$s = Get-Content -Encoding UTF8 "$K\kit-state.json" -Raw | ConvertFrom-Json; $z = "$N\zipcheck-$(Get-Date -Format HHmmss)"
 Expand-Archive -LiteralPath $s.zip -DestinationPath $z; Copy-Item "$N\findings.md" $z
 $rx = @($env:USERNAME, $env:COMPUTERNAME, $env:USERPROFILE, $H) | Where-Object { $_ } | ForEach-Object { '(?<![A-Za-z0-9])' + [regex]::Escape($_) + '(?![A-Za-z0-9])' }
 $rx += '\b\d{6,10}-[0-9a-f]{32}\b', '(?<![A-Za-z0-9])[A-Za-z0-9]{56}(?![A-Za-z0-9])', '\bhf_[A-Za-z0-9]{30,}', '\bgh[pousr]_[A-Za-z0-9]{30,}', '(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}'

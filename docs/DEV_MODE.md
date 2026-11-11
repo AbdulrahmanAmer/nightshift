@@ -378,8 +378,10 @@ or `tiny_story`, or a dev install), setup writes `fake_gpu: true` into `config\r
   "Simulated card" chip and the Queue page's meters say "Simulated card (fake_gpu)"; Settings lists `fake_gpu`
   with the other test switches; `ns doctor` has a row `fake_gpu` (on, and where the numbers come from) and its
   `nvidia-smi` row says "simulated (fake_gpu)"; the diagnostics zip's `nvidia-smi.txt` starts with "simulated
-  (fake_gpu): not a real graphics card"; `ns verify` gives its idle-VRAM check as "n/a: simulated graphics card
-  (fake_gpu)" (never a number) and its report's `machine.gpu` as "simulated (fake_gpu): <name>"; the engine log
+  (fake_gpu): not a real graphics card"; on an engine-test install `ns verify` gives its idle-VRAM check as "n/a: simulated graphics card
+  (fake_gpu)" (never a number) and its report's `machine.gpu` as "simulated (fake_gpu): <name>" (on a dev install
+  `ns verify` answers its dev-mode line first: `vram.idle = n/a` with "dev mode: no graphics card to measure" and
+  no `machine.gpu`: no number is shown there either); the engine log
   says `fake_gpu_on` at every start and a service's `vram_mb` line carries `card: simulated (fake_gpu)`. Every one
   of them takes the words from one function, `ns_supervisor/gpu.py:simulated_mark`.
 - **The lease time for a proof.** `NS_FAKE_GPU_LEASE_S` in the environment of the process that starts the engine

@@ -220,8 +220,33 @@ class Windows(Protocol):
 def say_line(text: str) -> None:
     """One line of the kit, written out at once. A person's console shows a line as it is printed anyway;
     a pipe or a file (an agent's shell) would get it hours later, or never when the shell ends the kit
-    first: the step the kit is at must be readable while it runs."""
-    print(text, flush=True)
+    first: the step the kit is at must be readable while it runs.
+
+    A line is never lost and never an error for a character in it. A video's path holds its title with every
+    character kept, and the Assistant's answer is free text: one emoji raised UnicodeEncodeError on an output
+    that is a file in the PC's ANSI code page (an agent's `> log 2>&1`), inside a step that had just passed.
+    `utf8_output` (first thing the program does) makes that output UTF-8; should a stream still refuse a
+    character (another caller's stream), it is written escaped (`\\U0001f319`)."""
+    try:
+        print(text, flush=True)
+    except UnicodeEncodeError:
+        how = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(text.encode(how, "backslashreplace").decode(how), flush=True)
+
+
+def utf8_output() -> None:
+    """The program's own output (and its errors) as UTF-8, whatever it is connected to, with a character no
+    encoding takes written escaped instead of raised. A console shows it as before. A file or a pipe is then
+    UTF-8 from the kit's first line to its last: read a log with `Get-Content -Encoding UTF8` (the last line,
+    the JSON object of an unattended run, is ASCII only: `json.dumps` escapes everything else)."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, ValueError):  # a closed or detached stream: nothing to write to anyway
+            continue
 
 
 @dataclass
@@ -3444,4 +3469,5 @@ def _window_close_is_an_interrupt() -> Any:
 
 
 if __name__ == "__main__":
+    utf8_output()
     sys.exit(main())
