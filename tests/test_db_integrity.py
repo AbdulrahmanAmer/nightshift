@@ -70,6 +70,18 @@ def open_db(paths: Paths) -> Db:
     return opener(paths, NsLogger("studio", paths.logs), note=db_note(paths))
 
 
+def migrated(paths: Paths) -> Db | None:
+    """`open_db` and `migrate`, as every reader does; None when the opener handed over a file SQLite refuses
+    (the base's opener does, for a damaged one)."""
+    db = open_db(paths)
+    try:
+        db.migrate()
+    except sqlite3.DatabaseError:
+        db.close()
+        return None
+    return db
+
+
 def build_db(path: Path, marker: str) -> None:
     """A migrated studio.db with one `runs` row named `marker`, closed (its WAL folded in)."""
     db = Db(path)
@@ -309,8 +321,8 @@ def test_videos_made_since_the_backup_are_put_back_in_the_queue(tmp_home: Path) 
     build_db(paths.db_path, "live")
     cut_to_half(paths.db_path)
 
-    db = open_db(paths)
-    db.migrate()
+    db = migrated(paths)
+    assert db is not None, "the opener leaves a database SQLite can use"
     rows = {r["output_id"]: dict(r) for r in db.query("select * from outputs")}
     db.close()
 
@@ -487,8 +499,11 @@ def _two_due_channels(paths: Paths) -> None:
     db = Db(paths.db_path)
     db.migrate()
     created = (datetime.now(UTC) - timedelta(weeks=11)).isoformat(timespec="seconds")
-    for slug in ("after-dark", "night-desk"):
-        crud.add_channel(paths, db, make_channel(slug=slug, format="master_first", created_at=created))
+    crud.add_channel(paths, db, make_channel(slug="after-dark", format="master_first", created_at=created))
+    crud.add_channel(paths, db, make_channel(
+        slug="night-desk", format="master_first", created_at=created,
+        niche="quiet ghost stories told by a night receptionist", voice_notes="Slow, warm, close to the mic.",
+    ))
     db.close()
 
 
@@ -585,8 +600,8 @@ def test_every_kind_of_damage_is_found_and_replaced(tmp_home: Path, kind: str) -
     {"page3": damage_page3, "half": cut_to_half, "text": as_text,
      "zero_bytes": lambda p: p.write_bytes(b""), "missing": lambda p: p.unlink()}[kind](paths.db_path)
 
-    db = open_db(paths)
-    db.migrate()
+    db = migrated(paths)
+    assert db is not None, f"{kind}: the opener leaves a database SQLite can use"
     runs = [r["run_id"] for r in db.query("select run_id from runs")]
     db.close()
     assert runs == ["day-2"], f"{kind}: the newest good copy is in place"
@@ -706,9 +721,12 @@ def _dashboard(paths: Paths) -> Any:
     from ns_dashboard.server import create_app
     from ns_dashboard.supervisor_link import SupervisorLink
 
-    state = build_state(paths, fake_services=True, link=SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
+    try:
+        state = build_state(paths, fake_services=True, link=SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
+    except sqlite3.DatabaseError as e:  # the base: the dashboard's start meets the damaged file as it is
+        raise AssertionError(f"the dashboard did not start: {e}") from e
     app = create_app(state=state, start_worker=False, static_dir=paths.home / "static", heartbeat_s=0.01)
-    return TestClient(app, base_url="http://127.0.0.1:8100"), state
+    return TestClient(app, base_url="http://127.0.0.1:8100", raise_server_exceptions=False), state
 
 
 def test_the_dashboard_start_replaces_a_damaged_database(tmp_home: Path) -> None:
