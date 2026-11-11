@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -31,6 +32,7 @@ from ns_dashboard.state import (
 )
 from ns_dashboard.svc_engine import EngineService
 from ns_dashboard.templates import load_templates
+from ns_supervisor import kitnights
 
 KeyCheck = Callable[[str, str], dict[str, Any]]
 
@@ -184,6 +186,8 @@ class SettingsService:
         if "notifications" in body:
             updates["notifications"] = body["notifications"]
         if "automatic_runs" in body:
+            if body.get("by") != kitnights.BY_KIT:  # the owner's own click ends the GPU kit's claim on it
+                kitnights.owner_changed(self.s.paths, datetime.now().astimezone())
             # the switch (and the time with it): Windows first, and the answer is what Windows then has
             schedule_result = self.s.adapters.schedule.switch(body["automatic_runs"], updates.get("run_time"))
         elif "run_time" in updates:  # the task first: a time Windows refused must not be remembered as the schedule

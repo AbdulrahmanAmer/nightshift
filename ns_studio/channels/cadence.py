@@ -25,6 +25,9 @@ REJECT_MIN_REVIEWED = 5
 CRITIC_BAR_STEP = 0.5
 CRITIC_BAR_COOLDOWN_DAYS = 7
 JITTER_MIN = 45
+#: The GPU kit's own channel (dev/kit/gpukit.py, card gpu-kit): it makes its one video from the kit; a night
+#: never plans it, whatever its status (a window closed during the kit's video leaves it active).
+KIT_CHANNEL = "gpu-kit"
 
 
 @dataclass
@@ -270,14 +273,14 @@ def jobs_due_today(
 def plan_daily(
     paths: Paths, db: Db, now: datetime | None = None, *, why: dict[str, str] | None = None
 ) -> list[DailyJob]:
-    """The nightly plan: one entry per active channel that is due today.
+    """The nightly plan: one entry per active channel that is due today (never the GPU kit's channel).
 
     `why` (when given) receives, per active channel that is not due, the reason in words.
     """
     now = now or datetime.now(UTC)
     out: list[DailyJob] = []
     for ch in all_channels(paths):
-        if ch.status != "active":
+        if ch.status != "active" or ch.slug == KIT_CHANNEL:
             continue
         plan = plan_channel(db, ch, now)
         reasons: list[str] = []

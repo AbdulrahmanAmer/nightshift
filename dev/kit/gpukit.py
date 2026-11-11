@@ -130,7 +130,7 @@ class KitEnv:
     clock: Clock | None = None
     product: Product | None = None
     windows: Windows | None = None
-    ask: Callable[[str], str] | None = None
+    ask: Callable[[str], str | None] | None = None
     say: Callable[[str], None] = print
 
 
@@ -269,12 +269,12 @@ class RealWindows:
         return text if rc == 0 else None
 
 
-def timed_input(prompt: str, timeout_s: float = ASK_TIMEOUT_S) -> str:
-    """One answer typed in this window, or 'later' when nobody answers within `timeout_s` (or no console)."""
+def timed_input(prompt: str, timeout_s: float = ASK_TIMEOUT_S) -> str | None:
+    """One answer typed in this window, or None when nobody answers within `timeout_s` (or no console)."""
     print(prompt, end=" ", flush=True)
     if sys.platform != "win32" or not sys.stdin or not sys.stdin.isatty():
         line = sys.stdin.readline() if sys.stdin else ""
-        return line.strip() if line else "later"
+        return line.strip() if line else None
     import msvcrt
 
     end, typed = time.monotonic() + timeout_s, ""
@@ -287,19 +287,22 @@ def timed_input(prompt: str, timeout_s: float = ASK_TIMEOUT_S) -> str:
             print()
             return typed.strip()
         typed = typed[:-1] if ch == "\b" else typed + ch
-    print("(no answer: later)")
-    return "later"
+    print("(no answer: left for the next run)")
+    return None
 
 
 # ---------------------------------------------------------------------------------------------- the scrubber
-#: What `scrub_text` masks in every text file of the bundle (the bundle's README lists it too).
+#: What `scrub_text` masks in every text file of the bundle (the bundle's README lists it too). Each word and
+#: path in every form a file can hold it: as written in any letter case, with doubled backslashes or forward
+#: slashes, JSON's \u escapes, URL-encoded, and the 8.3 short name; a file saved as UTF-16 or in the PC's ANSI
+#: code page is read as such first (and written into the zip as UTF-8).
 MASKED = (
     "the stock-footage keys (Pexels: 56 letters and digits; Pixabay: digits-32 hex) and any value named "
     "key, token, secret, password or authorization",
-    "GitHub tokens and Bearer tokens",
-    "the Windows user name (and the profile folder C:\\Users\\<name>)",
-    "the install's home path",
-    "the PC's name",
+    "Hugging Face (hf_), GitHub and Bearer tokens anywhere",
+    "the Windows user name (and the profile folder C:\\Users\\<name>, also as its 8.3 short name)",
+    "the install's home path (also as its 8.3 short name)",
+    "the PC's name and the account's security id (S-1-5-21-...)",
 )
 _SECRET_NAMED = re.compile(
     r"""(?i)(["']?[\w-]*(?:api[_-]?key|key|token|secret|password|passwd|authorization)["']?\s*[:=]\s*)"""
@@ -308,59 +311,138 @@ _SECRET_NAMED = re.compile(
 _SECRET_SHAPES = (
     re.compile(r"\b\d{6,10}-[0-9a-f]{32}\b"),  # Pixabay
     re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]{56}(?![A-Za-z0-9])"),  # Pexels
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),
+    re.compile(r"\bhf_[A-Za-z0-9]{30,}\b"),  # Hugging Face
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),  # GitHub
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"),
+    re.compile(r"\bS-1-5-21-\d+-\d+-\d+(?:-\d+)?\b"),  # the account's security id (wevtutil's "User:")
 )
-TEXT_SUFFIXES = {".json", ".jsonl", ".txt", ".log", ".md", ".csv", ".xml", ".html", ".yaml", ".yml", ".ps1"}
+#: Files copied as they are (no text in them); every other file is read as text and scrubbed.
+BINARY_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".mp4", ".mp3", ".wav", ".gguf", ".onnx"}
+
+
+def _short_name(path: str) -> str | None:
+    """The 8.3 short form Windows gives an existing path, when it differs from the path."""
+    if sys.platform != "win32" or not path:
+        return None
+    import ctypes
+
+    buf = ctypes.create_unicode_buffer(1024)
+    n = ctypes.windll.kernel32.GetShortPathNameW(path, buf, 1024)
+    return buf.value if 0 < n < 1024 and buf.value.lower() != path.lower() else None
+
+
+def _forms(value: str) -> set[str]:
+    """Every way a text can hold `value`: as written, backslashes doubled, forward slashes, JSON's escapes
+    (ASCII \\u and not), URL-encoded (path characters kept or not, + for a space)."""
+    from urllib.parse import quote, quote_plus
+
+    out: set[str] = set()
+    for v in {value, value.replace("\\", "/")}:
+        out |= {v, v.replace("\\", "\\\\"), json.dumps(v)[1:-1], json.dumps(v, ensure_ascii=False)[1:-1],
+                quote(v, safe=""), quote(v, safe="/:"), quote_plus(v)}  # fmt: skip
+    return {f for f in out if f}
 
 
 @dataclass(frozen=True)
 class Masks:
-    """The PC-specific words to mask: the home path, the user's name and profile folder, the PC's name."""
+    """The PC-specific words to mask: the home path, the user's name and profile folder, the PC's name, and
+    the 8.3 short forms of the two paths."""
 
     home: str
     user: str
     profile: str
     computer: str
+    short_home: str = ""
+    short_profile: str = ""
 
     @classmethod
     def here(cls, home: Path) -> Masks:
         e = os.environ
-        return cls(str(home), e.get("USERNAME", ""), e.get("USERPROFILE", ""), e.get("COMPUTERNAME", ""))
+        profile = e.get("USERPROFILE", "")
+        return cls(str(home), e.get("USERNAME", ""), profile, e.get("COMPUTERNAME", ""),
+                   _short_name(str(home)) or "", _short_name(profile) or "")  # fmt: skip
+
+    def pairs(self) -> list[tuple[str, str, bool]]:
+        """(form, replacement, whole word only), longest first."""
+        out: list[tuple[str, str, bool]] = []
+        short_user = self.short_profile.rstrip("\\/").rsplit("\\", 1)[-1] if self.short_profile else ""
+        for value, word, whole in ((self.home, "<home>", False), (self.short_home, "<home>", False),
+                                   (self.profile, "<profile>", False),
+                                   (self.short_profile, "<profile>", False), (self.computer, "<pc>", True),
+                                   (self.user, "<user>", True), (short_user, "<user>", True)):  # fmt: skip
+            if len(value) >= (2 if whole else 3):
+                out += [(f, word, whole) for f in _forms(value)]
+        return sorted(set(out), key=lambda x: -len(x[0]))
 
 
 def scrub_text(text: str, masks: Masks) -> str:
     """`text` with every item of MASKED replaced: secrets by `***`, the home by `<home>`, the profile folder
-    by `<profile>`, the user name by `<user>`, the PC's name by `<pc>` (any letter case; backslashes as
-    written, doubled as in JSON, or forward slashes)."""
+    by `<profile>`, the PC's name by `<pc>`, the user name by `<user>` (every form of `Masks.pairs`)."""
     for rx in _SECRET_SHAPES:
         text = rx.sub("***", text)
+
     def hide(m: re.Match[str]) -> str:  # a quoted value keeps its quotes: the JSON stays readable
         value = m.group(2)
         return m.group(1) + (value[0] + "***" + value[0] if value[:1] in ("'", '"') else "***")
 
     text = _SECRET_NAMED.sub(hide, text)
-    for value, word in ((masks.home, "<home>"), (masks.profile, "<profile>")):
-        if len(value) >= 3:
-            for form in {value, value.replace("\\", "\\\\"), value.replace("\\", "/")}:
-                text = re.sub(re.escape(form), word, text, flags=re.IGNORECASE)
-    # the PC's name first: it may hold the user's name ("AHMED-PC")
-    for value, word in ((masks.computer, "<pc>"), (masks.user, "<user>")):
-        if len(value) >= 2:
-            text = re.sub(rf"(?i)(?<![A-Za-z0-9]){re.escape(value)}(?![A-Za-z0-9])", word, text)
+    for form, word, whole in masks.pairs():
+        # whole word: no letter or digit around it, or a URL escape (%2F, %5C) just before it
+        rx = (rf"(?:(?<![A-Za-z0-9])|(?<=%[0-9A-Fa-f]{{2}})){re.escape(form)}(?![A-Za-z0-9])" if whole
+              else re.escape(form))  # fmt: skip
+        text = re.sub(rx, word.replace("\\", "\\\\"), text, flags=re.IGNORECASE)
     return text
 
 
+def decode_text(data: bytes) -> str:
+    """A file's text whatever it was saved as: UTF-8 (with or without a BOM), UTF-16 (PowerShell 5.1's
+    `Out-File` and `>`, with or without a BOM), else the PC's ANSI code page."""
+    import codecs
+    import locale
+
+    if data.startswith(codecs.BOM_UTF8):
+        return data[3:].decode("utf-8", "replace")
+    if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return data.decode("utf-16", "replace")
+    if len(data) >= 4 and data.count(b"\x00") * 3 >= len(data):  # UTF-16 without a BOM
+        return data.decode("utf-16-le" if data[1:2] == b"\x00" else "utf-16-be", "replace")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode(locale.getpreferredencoding(False) or "cp1252", "replace")
+
+
+def scrub_bytes(name: str, data: bytes, masks: Masks) -> bytes:
+    """One file's content for the zip: text read in its own encoding, scrubbed, as UTF-8; images as they
+    are."""
+    if Path(name).suffix.lower() in BINARY_SUFFIXES:
+        return data
+    return scrub_text(decode_text(data), masks).encode("utf-8")
+
+
 def scrub_zip(src: Path, out: zipfile.ZipFile, prefix: str, masks: Masks) -> None:
-    """Every entry of the zip `src` into `out` under `prefix`; text entries and every name scrubbed."""
+    """Every entry of the zip `src` into `out` under `prefix`: every name scrubbed, every text entry
+    scrubbed, a zip inside it entry by entry."""
+    import io
+
     with zipfile.ZipFile(src) as z:
         for info in z.infolist():
             if info.is_dir():
                 continue
             data = z.read(info)
-            if Path(info.filename).suffix.lower() in TEXT_SUFFIXES:
-                data = scrub_text(data.decode("utf-8", "replace"), masks).encode("utf-8")
-            out.writestr(scrub_text(prefix + info.filename, masks), data)
+            name = scrub_text(prefix + info.filename, masks)
+            if info.filename.lower().endswith(".zip"):
+                _scrub_nested(io.BytesIO(data), out, name[:-4] + "/", masks)
+                continue
+            out.writestr(name, scrub_bytes(info.filename, data, masks))
+
+
+def _scrub_nested(src: Any, out: zipfile.ZipFile, prefix: str, masks: Masks) -> None:
+    with zipfile.ZipFile(src) as z:
+        for info in z.infolist():
+            if not info.is_dir():
+                data = scrub_bytes(info.filename, z.read(info), masks)
+                out.writestr(scrub_text(prefix + info.filename, masks), data)
 
 
 # ---------------------------------------------------------------------------------------------- the kit
@@ -372,6 +454,9 @@ class Result:
     stop: bool = False  # the steps after it do not run now
 
 
+#: The person's checklists ({paste}, {hand}, {folder}: full paths, filled in at run time). Asked only what the
+#: kit cannot observe itself; what it can (powercfg /a, the ledger's "slept" lines, Windows' power events)
+#: is recorded beside the answers.
 QUESTIONS: dict[str, tuple[str, ...]] = {
     "watch": (
         "Open the kit's video (its path is above). Does the picture move with the story all the way "
@@ -380,17 +465,37 @@ QUESTIONS: dict[str, tuple[str, ...]] = {
         "Do the captions show the words that are spoken, at the time they are spoken?",
     ),
     "paste": (  # dev/kit/K8_PASTE_CHECK.md: its steps, these five questions and the extra checks below
-        "Paste check (follow dev\\kit\\K8_PASTE_CHECK.md first). Was the title accepted as pasted?",
+        "Paste check: follow {paste} first. Was the title accepted as pasted?",
         "Was the description accepted as pasted (nothing cut, chapters shown after saving)?",
         "Were the tags accepted as pasted (all there, counter at or under 500)?",
         "Could the altered-content answer be set as the sheet says?",
         "Could the made-for-kids answer be set as the sheet says?",
+    ),
+    "task_end": (  # dev/kit/night-task-end.txt a to e (night-fits-b: only this PC can show it)
+        "Hand check 1, the task's end (about 20 minutes, on a TEST install, never your own Nightshift): "
+        "follow steps 1 to 8 of {hand} in a PowerShell window opened in {folder}, so the files it saves land "
+        "there. (a) Were cmd.exe, powershell.exe, studio.exe, its python, FFmpeg, llama-server and the voice "
+        "service all gone from tree-after.txt?",
+        "(b) Did the night's ledger get lines after the 10-minute limit (the night ran on)?",
+        "(c) Did llama-server still hold the graphics card in gpu-after.txt?",
+        "(d) Did the test install's Dashboard say the night was interrupted (or, if it ran on, show its real "
+        "length)?",
+        "(e) Did the next nightly run continue the job from the stage it reached?",
+    ),
+    "standby": (  # dev/kit/night-task-end.txt f to h; f (which sleep states) is read by the kit itself
+        "Hand check 2, sleep during a night (steps g and h of {hand}, another evening): after the PC slept 5 "
+        "minutes during a night, did the night's ledger get one \"slept\" line about 5 minutes long?",
     ),
     "morning": (
         "Open Nightshift's Dashboard, Queue page. Is there a note about the last night at the top?",
         "Does the note say what the night did (videos made, or why not) as the Queue shows it?",
     ),
 }
+#: Each group's title in its result line.
+GROUP_TITLES = {"watch": "the video", "paste": "the paste into YouTube Studio",
+                "task_end": "hand check 1, the task's end (night-task-end.txt a to e)",
+                "standby": "hand check 2, sleep during a night (night-task-end.txt f to h)",
+                "morning": "the morning note"}  # fmt: skip
 PASTE_EXTRA = (
     ("field_name", "Step 7: what is the altered-content field called in Studio?"),
     ("E1", "E1: the title counter (100/100 or 101/100) and whether Save was allowed"),
@@ -411,14 +516,15 @@ class Kit:
     clock: Clock
     product: Product
     windows: Windows
-    ask: Callable[[str], str]
+    ask: Callable[[str], str | None]
     ev: Path = field(init=False)
     state: dict[str, Any] = field(default_factory=dict)
     mark: str | None = None
     lock: Path | None = None
 
     def __post_init__(self) -> None:
-        self.ev = self.home / "kit" / self.version
+        # ONE state for every version: a newer candidate's kit goes on with the nights an older one armed
+        self.ev = self.home / "kit"
 
     def close(self) -> None:
         """Give the kit lock back (only ours: `lock` is set once `take_lock` succeeded)."""
@@ -440,13 +546,14 @@ class Kit:
     def save(self) -> None:
         from ns_common.atomic import write_text_atomic
 
-        text = json.dumps(self.state, indent=2, default=str) + "\n"
+        text = json.dumps(self.state, indent=2, default=str, ensure_ascii=False) + "\n"
         write_text_atomic(self.ev / "kit-state.json", text, keep_backup=True)
 
     def write_json(self, name: str, data: Any) -> Path:
         from ns_common.atomic import write_text_atomic
 
-        return write_text_atomic(self.ev / name, json.dumps(data, indent=2, default=str) + "\n")
+        return write_text_atomic(self.ev / name, json.dumps(data, indent=2, default=str, ensure_ascii=False)
+                                 + "\n")
 
     def label(self, step: str) -> str:
         return f"Step {STEPS.index(step) + 1} of {len(STEPS)} ({TITLES[step]})"
@@ -458,6 +565,31 @@ class Kit:
     @staticmethod
     def when(t: datetime) -> str:
         return t.strftime("%A %d %B %H:%M")
+
+    def change(self, what: str, was: Any, will_be: Any) -> None:
+        """What the kit is about to change, saved BEFORE the change: what it was and what it will be."""
+        changes = self.state.setdefault("changes", {})
+        first = changes.get(what) or {"was": was, "at": self.iso(), "version": self.version}
+        changes[what] = {**first, "will_be": will_be, "put_back": False}
+        self.save()
+
+    def put_back(self) -> None:
+        """On every way out of a run (end, Ctrl+C, the window closed, an error): the kit's channel goes back
+        to paused unless its video is being made right now. Bounded and best effort: a night never plans the
+        channel anyway (`cadence.KIT_CHANNEL`), and the next run of the kit puts it back too."""
+        ch = (self.state.get("changes") or {}).get("channel")
+        job = self.state.get("job") or {}
+        busy = bool(job.get("pid")) and self.product.alive(job["pid"], job.get("pid_created"))
+        if not ch or ch.get("put_back") or busy:
+            return
+        with contextlib.suppress(Exception):
+            if self.pause_channel(start=False):
+                ch["put_back"] = True
+                self.save()
+
+    def marked(self, text: str) -> str:
+        """The simulated card's mark in front of a measured result (H-10): never read as the GPU PC's."""
+        return f"{self.mark}: {text}" if self.mark else text
 
     def come_back(self, when: datetime) -> datetime:
         self.state["come_back"] = when.isoformat(timespec="seconds")
@@ -544,12 +676,21 @@ class Kit:
         with contextlib.suppress(OSError, ValueError, AttributeError):
             runtime = (self.home / "config" / "runtime.json").read_text("utf-8-sig")
             rec["llama"] = json.loads(runtime).get("llama")
+        from ns_common import devmode
+        from ns_common.paths import Paths
+
+        # `fake_gpu` typed into a real install is ignored by the product (NS-W121); the Head sees it was typed
+        rec["fake_gpu_typed_on_a_real_install"] = devmode.fake_gpu_ignored(Paths(self.home))
+        rec["modern_standby"] = _modern_standby(rec["power"]["sleep_states"])
         rec["schedule"] = self.product.cli("ns", ["schedule", "show"], 60)
         rec["doctor"] = self.product.cli("ns", ["doctor"], 300)
-        check = self.home / "logs" / "model-check.json"
-        fresh = check.is_file() and time.time() - check.stat().st_mtime < 86400
-        rec["models"] = (None, "skipped: logs\\model-check.json is under a day old") if fresh else \
+        # the kit's own record of its last full model check (no product file says when one last ran)
+        last = self.state.get("models_checked_at")
+        fresh = bool(last) and (self.now() - self.at(str(last))).total_seconds() < 86400
+        rec["models"] = (None, f"skipped: checked at {last}, under a day ago") if fresh else \
             self.product.cli("ns", ["verify", "--downloads"], 45 * 60)  # fmt: skip
+        if not fresh and rec["models"][0] == 0:
+            self.state["models_checked_at"] = self.iso()
         self.write_json("machine.json", rec)
         if not rec["gpu"]["name"]:
             return Result("FAIL", "the graphics card's driver did not answer (nvidia-smi). What to do: "
@@ -633,7 +774,9 @@ class Kit:
         """The kit's channel exists and is active (made from the first active channel); None, or why not."""
         status, body = self.product.api("GET", f"/api/channels/{CHANNEL}")
         if status == 200 and isinstance(body, dict):
-            if (body.get("profile") or {}).get("status") == "paused":
+            was = str((body.get("profile") or {}).get("status") or "active")
+            self.change("channel", was, "active")  # before the change; put back by `put_back` / K3's end
+            if was == "paused":
                 st, _ = self.product.api("POST", f"/api/channels/{CHANNEL}/resume", {"note": "GPU kit video"})
                 return None if st == 200 else f"the kit's channel could not be resumed (HTTP {st})"
             return None
@@ -649,15 +792,17 @@ class Kit:
         body = {"niche": "short scary stories", **{k: profile[k] for k in keep if k in profile},
                 "slug": CHANNEL, "display_name": "GPU kit (test video)", "status": "active",
                 "format": "master_first"}  # fmt: skip
-        self.state["channel_made"] = True
-        self.save()
+        self.change("channel", "absent", "active")
         st, answer = self.product.api("POST", "/api/channels", body)
         why = f"the kit's channel could not be made (HTTP {st}: {answer})"[:300]
         return None if st in (201, 409) else why
 
-    def pause_channel(self) -> bool:
-        """The kit's channel is paused (or does not exist); False when the Dashboard could not make it so."""
-        if self.engine() is not None:
+    def pause_channel(self, start: bool = True) -> bool:
+        """The kit's channel is paused (or does not exist); False when the Dashboard could not make it so
+        (`start` False: an engine that is down is not started for it)."""
+        if start and self.engine() is not None:
+            return False
+        if not start and self.product.api("GET", "/api/health", timeout=10)[0] != 200:
             return False
         status, body = self.product.api("GET", f"/api/channels/{CHANNEL}")
         if status == 404:
@@ -677,6 +822,9 @@ class Kit:
             res = self.k3_wait(job, None)
             if res is not None:
                 return res
+        if not job.get("id") and self.kit_jobs():  # made by a run closed before it wrote the id: ours
+            job["id"] = self.kit_jobs()[-1]["job_id"]
+            self.save()
         if job.get("id") and self.long_rows(job["id"]):  # it finished while nobody watched: not touched
             job.update({"outcome": "done", "ended": job.get("ended") or self.iso()})
             self.save()
@@ -730,9 +878,11 @@ class Kit:
                 break
             self.clock.sleep(POLL_S)
             stages = [str(x.get("stage")) for x in self.ledger() if x.get("kind") == "stage"
-                      and x.get("job") == job.get("id") and x.get("outcome") == "done"]  # fmt: skip
+                      and x.get("job_id") == job.get("id") and x.get("outcome") == "done"]  # fmt: skip
             self.say(f"  still making the video: {_span(begun, self.now())}; stages done: "
                      f"{', '.join(stages) or 'none yet'}")  # fmt: skip
+        if not job.get("id") and self.kit_jobs():  # a studio that ended before the first look
+            job["id"] = self.kit_jobs()[-1]["job_id"]
         if job.get("outcome") != "failed":
             if self.long_rows(job.get("id")) and (rc == 0 or proc is None):
                 job.update({"outcome": "done", "exit": rc if proc is not None else None})
@@ -753,22 +903,25 @@ class Kit:
         if not self.pause_channel():  # first, also after a kill between the job's end and the pause
             return Result("FAIL", f"the kit's channel '{CHANNEL}' could not be paused. What to do: pause it "
                           "in Channels, then run GPU-KIT.cmd again.", done=False, stop=True)  # fmt: skip
+        if (self.state.get("changes") or {}).get("channel"):
+            self.state["changes"]["channel"]["put_back"] = True
+            self.save()
         story = self.ev / "story"
         story.mkdir(parents=True, exist_ok=True)
         rows = self.long_rows(job.get("id"))
         stages = [{k: x.get(k) for k in ("stage", "seconds", "outcome", "at")} for x in self.ledger()
-                  if x.get("kind") == "stage" and x.get("job") == job.get("id")]  # fmt: skip
+                  if x.get("kind") == "stage" and x.get("job_id") == job.get("id")]  # fmt: skip
         facts: dict[str, Any] = {**job, "simulated": self.mark, "stages": stages}
         took = _span(job.get("started"), job.get("ended"))
         if job.get("outcome") != "done" or not rows:
             self.write_json("story/story.json", facts)
-            return Result("FAIL", f"the video stopped ({job.get('code')}) after {took}; its log goes into "
-                          "the zip. Nothing to do now: the kit goes on with the nights.")  # fmt: skip
+            return Result("FAIL", self.marked(f"the video stopped ({job.get('code')}) after {took}; its log "
+                          "goes into the zip. Nothing to do now: the kit goes on with the nights."))
         video = Path(rows[0]["path"])
         video = video if video.is_absolute() else self.home / video
         facts.update({"video": str(video), "length_s": rows[0]["duration_s"],
                       "output_id": rows[0]["output_id"],
-                      "lufs": _number(self.home / "data" / "jobs" / str(job["id"]), "lufs")})  # fmt: skip
+                      **_qc(self.home / "data" / "jobs" / str(job["id"]))})  # fmt: skip
         for suffix in (".txt", ".json"):
             if video.with_suffix(suffix).is_file():
                 shutil.copy2(video.with_suffix(suffix), story / ("sheet" + suffix))
@@ -776,8 +929,8 @@ class Kit:
             facts["grid_problem"] = self.product.frame_grid(video, story / "frames.png", 600)
         self.write_json("story/story.json", facts)
         length = float(facts["length_s"] or 0)
-        return Result("PASS", f"video made: {video} ({int(length // 60)} min {int(length % 60)} s long, made "
-                      f"in {took}); the kit's channel is paused")  # fmt: skip
+        return Result("PASS", self.marked(f"video made: {video} ({int(length // 60)} min "
+                      f"{int(length % 60)} s long, made in {took}); the kit's channel is paused"))
 
     # -------------------------------------------------------------------------------------- K4 arm
     def k4(self) -> Result:
@@ -788,27 +941,47 @@ class Kit:
             if settings is None:
                 return Result("FAIL", f"the Dashboard did not answer ({why}). What to do: send the zip.",
                               done=False, stop=True)  # fmt: skip
+        from ns_common.paths import Paths
+        from ns_supervisor import kitnights
+
+        paths = Paths(self.home)
+        record = kitnights.read(paths)
         if self.state.get("automatic_runs_before") is None:
-            self.state["automatic_runs_before"] = bool(settings.get("schedule_registered"))
+            # the ORIGINAL value: an older kit's record (a newer candidate installed since) wins over now
+            before = record.get("automatic_runs_before") if record else None
+            now_on = bool(settings.get("schedule_registered"))
+            self.state["automatic_runs_before"] = now_on if before is None else bool(before)
             self.save()  # FIRST: whatever happens next, the next run knows what to put back
-        if self.night_now:
-            self.state["automatic_note"] = "not changed: -NightNow runs each night itself, through the stub"
-        elif not self.state["automatic_runs_before"]:
-            if not settings.get("schedule_registered"):  # (on already: a run killed after its PUT)
-                self.say("Switching Automatic runs on for two nights (they are off now; the kit switches "
-                         "them off again at the end).")  # fmt: skip
-                status, body = self.product.api("PUT", "/api/settings", {"automatic_runs": True})
-                if status != 200 or not isinstance(body, dict) or not body.get("schedule_registered"):
-                    note = (body.get("schedule_result") or {}).get("note") if isinstance(body, dict) else body
-                    return Result("FAIL", f"Automatic runs could not be switched on ({note}). What to do: "
-                                  "switch them on in Settings, then run GPU-KIT.cmd again.",
-                                  done=False, stop=True)  # fmt: skip
-            self.state["turned_on"] = True
         armed = self.at(self.state["armed_at"]) if self.state.get("armed_at") else self.now()
         nights = [armed, armed] if self.night_now else self.run_times(armed, 2)
         self.state.update({"armed_at": armed.isoformat(timespec="seconds"),
                            "nights": [{"run_at": t.isoformat(timespec="seconds")} for t in nights]})
         self.save()
+        if self.night_now:
+            self.state["automatic_note"] = "not changed: -NightNow runs each night itself, through the stub"
+        elif not self.state["automatic_runs_before"]:
+            until = nights[1] + timedelta(seconds=NIGHT_LIMIT_S)
+            run_time = str(settings.get("schedule_time") or nights[0].strftime("%H:%M"))
+            self.change("automatic_runs", False, True)
+            if record is None or not record.get("until"):  # what the product honours if the kit never returns
+                kitnights.write(paths, {"armed_at": armed.isoformat(timespec="seconds"),
+                                        "until": until.isoformat(timespec="seconds"),
+                                        "automatic_runs_before": False, "run_time": run_time,
+                                        "by": f"GPU kit {self.version}"})  # fmt: skip
+            if not settings.get("schedule_registered"):  # (on already: a run killed after its PUT)
+                self.say("Switching Automatic runs on for two nights (they are off now). The kit switches "
+                         "them off again when you run it after the nights; if you do not, the third night "
+                         "does.")  # fmt: skip
+                body_in = {"automatic_runs": True, "by": kitnights.BY_KIT}
+                status, body = self.product.api("PUT", "/api/settings", body_in)
+                if status != 200 or not isinstance(body, dict) or not body.get("schedule_registered"):
+                    kitnights.remove(paths)  # nothing was switched on: nothing for a night to undo
+                    note = (body.get("schedule_result") or {}).get("note") if isinstance(body, dict) else body
+                    return Result("FAIL", f"Automatic runs could not be switched on ({note}). What to do: "
+                                  "switch them on in Settings, then run GPU-KIT.cmd again.",
+                                  done=False, stop=True)  # fmt: skip
+            self.state["turned_on"] = True
+            self.save()
         if self.night_now:
             return Result("PASS", "dry run: the two nights run now, one after the other, through the stub")
         back = self.come_back(nights[1] + timedelta(seconds=NIGHT_LIMIT_S))
@@ -862,7 +1035,7 @@ class Kit:
             return Result("WAIT", f"Night {i + 1}: not yet (come back after {self.when(back)})",
                           done=False, stop=True)  # fmt: skip
         self.save()
-        return Result("PASS", f"Night {i + 1}: {words}")
+        return Result("PASS", self.marked(f"Night {i + 1}: {words}"))
 
     # -------------------------------------------------------------------------------------- K7 collect
     def k7(self) -> Result:
@@ -875,61 +1048,131 @@ class Kit:
             (col / f"windows-events-night{i + 1}.txt").write_text(text, encoding="utf-8")
         rc, text = self.product.cli("ns", ["doctor", "--bundle", "--out-dir", str(col)], 600)
         (col / "doctor-bundle.txt").write_text(f"exit {rc}\n{text}", encoding="utf-8")
+        said = self.state.get("restored_said") or "Automatic runs were left as you had them"
         if self.state.get("turned_on") and not self.state.get("restored"):
+            from ns_common.paths import Paths
+            from ns_supervisor import kitnights
+
+            paths = Paths(self.home)
+            record = kitnights.read(paths) or {}
             settings = self.settings() if self.engine() is None else None
-            if settings is not None and settings.get("schedule_registered"):
-                status, _ = self.product.api("PUT", "/api/settings", {"automatic_runs": False})
-                settings = None if status != 200 else {}
             if settings is None:
-                return Result("FAIL", "Automatic runs could not be switched off again. What to do: switch "
-                              "them off in Settings (they were off before the kit), then run GPU-KIT.cmd "
-                              "again.", done=False, stop=True)  # fmt: skip
-            self.state["restored"] = True
+                return Result("FAIL", "the Dashboard did not answer, so Automatic runs were not switched off "
+                              "again. What to do: run GPU-KIT.cmd again later.", done=False, stop=True)
+            armed_time = record.get("run_time") or settings.get("schedule_time")
+            if record.get("owner_changed_at"):
+                said = (f"you switched Automatic runs yourself at {record['owner_changed_at'][:16]}, after "
+                        "the kit: they were left as you set them")  # fmt: skip
+            elif not settings.get("schedule_registered"):
+                said = "Automatic runs are off again, as they were before the kit (switched off already)"
+            elif settings.get("schedule_time") != armed_time:
+                said = (f"you moved the run time to {settings.get('schedule_time')} after the kit: Automatic "
+                        "runs were left on, as you set them")  # fmt: skip
+            else:
+                self.say("Switching Automatic runs off again: they were off before the kit. To keep them on, "
+                         "switch them on again in Settings.")  # fmt: skip
+                status, _ = self.product.api("PUT", "/api/settings", {"automatic_runs": False,
+                                                                      "by": kitnights.BY_KIT})
+                if status != 200:
+                    return Result("FAIL", "Automatic runs could not be switched off again. What to do: "
+                                  "switch them off in Settings (they were off before the kit), then run "
+                                  "GPU-KIT.cmd again.", done=False, stop=True)  # fmt: skip
+                said = "Automatic runs are off again, as they were before the kit"
+            kitnights.remove(paths)
+            self.state.update({"restored": True, "restored_said": said})
+            self.state.setdefault("changes", {}).setdefault("automatic_runs", {})["put_back"] = True
             self.save()
-        said = "Automatic runs are off again, as they were before the kit" if self.state.get("restored") \
-            else "Automatic runs were left as you had them"  # fmt: skip
         return Result("PASS", f"collected the nights' records; {said}")
 
     # -------------------------------------------------------------------------------------- K8 questions
-    def wants(self, group: str) -> bool:
+    def ready(self, group: str) -> bool:
         steps = self.state.get("steps", {})
-        ready = (steps.get("K6") or {}).get("done") if group == "morning" else \
-            (steps.get("K3") or {}).get("result") == "PASS"  # fmt: skip
+        if group == "morning":
+            return bool((steps.get("K6") or {}).get("done"))
+        if group in ("watch", "paste"):
+            return (steps.get("K3") or {}).get("result") == "PASS"
+        return bool((steps.get("K4") or {}).get("done"))
+
+    def open_questions(self, group: str) -> list[tuple[str, str]]:
+        """(key, question) of the group still unanswered: neither y nor n (`later` stays open)."""
         answers = self.state.get("answers", {}).get(group, {})
-        open_extra = group == "paste" and any(answers.get("extra", {}).get(k) in (None, "", "later")
-                                              for k, _ in PASTE_EXTRA)  # fmt: skip
-        return bool(ready) and (open_extra or any(answers.get(f"q{n}", {}).get("answer") not in ("y", "n")
-                                                  for n in range(1, len(QUESTIONS[group]) + 1)))
+        places = {"paste": str(KIT_DIR / "K8_PASTE_CHECK.md"), "hand": str(KIT_DIR / "night-task-end.txt"),
+                  "folder": str(self.ev / "hand-checks")}  # fmt: skip
+        out = [(f"q{n}", q.format(**places)) for n, q in enumerate(QUESTIONS[group], 1)
+               if answers.get(f"q{n}", {}).get("answer") not in ("y", "n")]  # fmt: skip
+        if group == "paste":
+            out += [(f"extra:{k}", f"{q} (or later)") for k, q in PASTE_EXTRA
+                    if answers.get("extra", {}).get(k) in (None, "", "later")]  # fmt: skip
+        return out
+
+    def observations(self) -> dict[str, Any]:
+        """What the kit sees itself for the hand checks: the sleep states, the nights' "slept" lines and
+        Windows' sleep (42) and wake (1) events, and the files saved in hand-checks."""
+        armed = self.at(self.state["armed_at"]) if self.state.get("armed_at") else None
+        slept = [x for x in self.ledger() if x.get("kind") == "slept" and (armed is None or _when(x.get("at"))
+                                                                           >= armed)]  # fmt: skip
+        machine = {}
+        with contextlib.suppress(OSError, ValueError):
+            machine = json.loads((self.ev / "machine.json").read_text(encoding="utf-8"))
+        folder = self.ev / "hand-checks"
+        files = sorted(p.name for p in folder.iterdir() if p.is_file()) if folder.is_dir() else []
+        events = ""
+        for f in sorted((self.ev / "collected").glob("windows-events-night*.txt")):
+            with contextlib.suppress(OSError):
+                events += f.read_text(encoding="utf-8", errors="replace")
+        return {"modern_standby": machine.get("modern_standby"), "slept_lines_in_the_nights": len(slept),
+                "sleeps_in_the_nights": len(re.findall(r"Event ID: 42\b", events)),  # Kernel-Power: sleep
+                "hand_check_files": files}
 
     def k8(self) -> None:
-        """The person's checklists: every answer is saved as it is given; `later` keeps a question open."""
-        groups = [g for g in QUESTIONS if self.wants(g)]
-        if groups:
-            self.say("Questions only you can answer. Type y, n (then what you saw) or later; then Enter.")
+        """The person's checklists: one bounded prompt for all of them; every answer is saved as it is
+        given; `later`, or no answer, keeps a question open for the next run; a result line per group."""
+        groups = [g for g in QUESTIONS if self.ready(g)]
+        todo = [(g, k, q) for g in groups for k, q in self.open_questions(g)]
+        if todo:
+            go = self.ask(f"{len(todo)} question(s) only you can answer are open (about {2 * len(todo)} "
+                          "minutes). Type a and press Enter to answer them now; press Enter, or wait 10 "
+                          "minutes, to leave them for the next run.")  # fmt: skip
+            if (go or "").strip().lower().startswith("a"):
+                self.say("Type y, n (then what you saw) or later, and press Enter.")
+                for group, key, question in todo:
+                    answers = self.state.setdefault("answers", {}).setdefault(group, {})
+                    reply = self.ask(question if key.startswith("extra:") else f"{question} [y/n/later]")
+                    if reply is None:  # nobody answered: the rest stay for the next run
+                        break
+                    reply = reply.strip()
+                    if key.startswith("extra:"):
+                        answers.setdefault("extra", {})[key[6:]] = reply or "later"
+                    else:
+                        word = reply[:1].lower() if reply[:1].lower() in ("y", "n") else "later"
+                        note = reply[1:].strip(" :-,") if word == "n" else ""
+                        if word == "n" and not note:
+                            note = (self.ask("What did you see? (one line)") or "").strip()
+                        answers[key] = {"question": question, "answer": word, "note": note, "at": self.iso()}
+                    self.save()
+        seen = self.observations()
+        results = self.state.setdefault("checklists", {})
         for group in groups:
-            answers = self.state.setdefault("answers", {}).setdefault(group, {})
-            for n, question in enumerate(QUESTIONS[group], 1):
-                if answers.get(f"q{n}", {}).get("answer") in ("y", "n"):
-                    continue
-                reply = (self.ask(f"{question} [y/n/later]") or "later").strip()
-                word = reply[:1].lower() if reply[:1].lower() in ("y", "n") else "later"
-                note = reply[1:].strip(" :-,") if word == "n" else ""
-                if word == "n" and not note:
-                    note = (self.ask("What did you see? (one line)") or "").strip()
-                answers[f"q{n}"] = {"question": question, "answer": word, "note": note, "at": self.iso()}
-                self.save()
-            if group == "paste":
-                extra = answers.setdefault("extra", {})
-                for key, prompt in PASTE_EXTRA:
-                    if extra.get(key) in (None, "", "later"):
-                        extra[key] = (self.ask(f"{prompt} (or later)") or "later").strip()
-                        self.save()
-            self.write_json(f"{group}.json", answers)
+            answers = self.state.get("answers", {}).get(group, {})
+            self.write_json(f"{group}.json", {**answers, **({"kit_observed": seen} if group in (
+                "task_end", "standby") else {})})  # fmt: skip
+            left, total = len(self.open_questions(group)), len(QUESTIONS[group]) + (
+                len(PASTE_EXTRA) if group == "paste" else 0)  # fmt: skip
+            line = f"{total - left} of {total} answered" + ("" if left else "; nothing left to ask")
+            if group == "standby":
+                ms = {True: "yes", False: "no", None: "unknown"}[seen["modern_standby"]]
+                line += (f"; seen by the kit: modern standby (S0) {ms}, \"slept\" lines in the nights "
+                         f"{seen['slept_lines_in_the_nights']}")  # fmt: skip
+            if group == "task_end":
+                line += f"; files in hand-checks: {', '.join(seen['hand_check_files']) or 'none yet'}"
+            results[group] = {"result": "WAIT" if left else "PASS", "line": line, "version": self.version}
+            self.say(f"{results[group]['result']:7} Questions, {GROUP_TITLES[group]}: {line}")
+        self.save()
 
     # -------------------------------------------------------------------------------------- the zip
     def zip_path(self) -> Path:
         day = self.at(self.state["started"]).strftime("%Y%m%d")
-        return self.home / "kit" / f"nightshift-gpu-kit-{self.version}-{day}.zip"
+        return self.ev / f"nightshift-gpu-kit-{day}.zip"  # one zip whatever versions ran (README lists them)
 
     def parts(self) -> list[tuple[str, Path, str]]:
         """(name in the zip, file, why it may be missing): the Head's checklist (card 4b.3)."""
@@ -940,7 +1183,9 @@ class Kit:
             ("story/frames.png", "no finished video (or FFmpeg failed: story.json says why)"),
             ("story/sheet.txt", "no finished video"), ("story/sheet.json", "no finished video"),
             ("story/studio-run.log", "the kit started no video"), ("watch.json", "not answered yet"),
-            ("paste.json", "not answered yet"), ("morning.json", "not answered yet"))]  # fmt: skip
+            ("paste.json", "not answered yet"), ("morning.json", "not answered yet"),
+            ("task_end.json", "not asked yet (after step 5)"),
+            ("standby.json", "not asked yet (after step 5)"))]
         out += [("logs/verify-report.json", home / "logs" / "verify-report.json", "ns verify wrote none"),
                 ("run/vram-need.json", home / "run" / "vram-need.json", "no model load was measured yet"),
                 ("run/morning_note.json", home / "run" / "morning_note.json", "no morning note waits")]
@@ -948,13 +1193,15 @@ class Kit:
         if nights:
             ledger = sorted((home / "data" / "ledger").glob("ledger-*.jsonl"))
             out += [(f"ledger/{f.name}", f, "") for f in ledger]
-            days = sorted({(self.at(n["run_at"]) + timedelta(days=d)).strftime("%Y%m%d") for n in nights
+            # the nightly report is named by the night's UTC date, the logs by the PC's: both, and the next
+            days = sorted({(when + timedelta(days=d)).strftime("%Y%m%d") for n in nights
+                           for when in (self.at(n["run_at"]), self.at(n["run_at"]).astimezone(UTC))
                            for d in (0, 1)})  # fmt: skip
             for day in days:
                 out.append((f"logs/nightly-{day}.json", home / "logs" / f"nightly-{day}.json",
                             "no nightly report for that date"))  # fmt: skip
                 out += [(f"logs/{f.name}", f, "") for f in sorted((home / "logs").glob(f"*-{day}.jsonl"))]
-        for folder in (ev / "collected", ev / "proofs"):
+        for folder in (ev / "collected", ev / "proofs", ev / "hand-checks"):
             if folder.is_dir():
                 files = [p for p in sorted(folder.rglob("*")) if p.is_file()]
                 out += [(p.relative_to(ev).as_posix(), p, "") for p in files]
@@ -998,6 +1245,7 @@ class Kit:
         stopped: str | None = None
         failed = False
         self.state.pop("come_back", None)
+        step = "K1"
         try:
             for step in STEPS[1:]:
                 rec = steps.get(step) or {}
@@ -1013,7 +1261,8 @@ class Kit:
                 begun = self.now()
                 res = fns[step]()
                 steps[step] = {"result": res.result, "line": res.line, "done": res.done, "at": self.iso(),
-                               "seconds": round((self.now() - begun).total_seconds())}  # fmt: skip
+                               "seconds": round((self.now() - begun).total_seconds()),
+                               "version": self.version}  # fmt: skip
                 self.save()
                 self.say(f"{res.result:7} {self.label(step)}: {res.line}")
                 failed = failed or res.result == "FAIL"
@@ -1024,10 +1273,21 @@ class Kit:
                                }.get(res.result, f"waits for step {n}")  # fmt: skip
             self.k8()
         except KeyboardInterrupt:
+            self.put_back()
             where = next((s for s in STEPS if not (steps.get(s) or {}).get("done")), "K7")
             self.say(f"Stopped by you during {self.label(where)}. Nothing is lost: run GPU-KIT.cmd again and "
                      "it continues from there.")  # fmt: skip
             return 130
+        except Exception as e:  # noqa: BLE001 - an error the kit did not expect: still put back, still the zip
+            steps[step] = {"result": "FAIL", "done": False, "at": self.iso(), "version": self.version,
+                           "line": f"the kit stopped on an error it did not expect ({type(e).__name__}: "
+                                   f"{str(e)[:300]}). What to do: send the zip."}  # fmt: skip
+            self.save()
+            self.say(f"FAIL    {self.label(step)}: {steps[step]['line']}")
+            self.put_back()
+            self.finish(blocked=True)
+            return 1
+        self.put_back()
         self.finish(blocked=failed and stopped is not None and stopped.startswith("not run"))
         return 1 if failed else 0
 
@@ -1061,34 +1321,50 @@ class Kit:
 def _put(z: zipfile.ZipFile, name: str, path: Path, masks: Masks, missing: list[str], why: str) -> None:
     """One part into the zip, text scrubbed (a nested zip entry by entry); a part that cannot be read is
     named in MISSING.txt with why, and the rest still goes in."""
+    name = scrub_text(name, masks)
     try:
         if not path.is_file():
             raise FileNotFoundError(why or "not there")
         if path.suffix.lower() == ".zip":
             scrub_zip(path, z, name[:-4] + "/", masks)
-        elif path.suffix.lower() in TEXT_SUFFIXES:
-            z.writestr(name, scrub_text(path.read_text(encoding="utf-8", errors="replace"), masks))
         else:
-            z.writestr(name, path.read_bytes())
+            z.writestr(name, scrub_bytes(path.name, path.read_bytes(), masks))
     except (OSError, zipfile.BadZipFile) as e:
         missing.append(f"{name}: {why or e}" if isinstance(e, FileNotFoundError) else f"{name}: {e}")
 
 
-def _number(folder: Path, word: str) -> float | None:
-    """The first number under a key containing `word` in a qc JSON file of the job (its loudness)."""
-    for f in sorted(folder.rglob("qc*.json")) if folder.is_dir() else []:
-        with contextlib.suppress(OSError, ValueError):
-            todo: list[Any] = [json.loads(f.read_text(encoding="utf-8"))]
-            while todo:
-                item = todo.pop(0)
-                if isinstance(item, dict):
-                    for k, v in item.items():
-                        if word in str(k).lower() and isinstance(v, int | float) and not isinstance(v, bool):
-                            return float(v)
-                        todo.append(v)
-                elif isinstance(item, list):
-                    todo.extend(item)
-    return None
+def _qc(job_dir: Path) -> dict[str, Any]:
+    """The master's QC as the QC stage writes it (`ns_studio/media/qc.py:run_qc_master`): the verdict from
+    `qc/report.json` ("long": {passed, reason}) and the loudness from `qc/long.json` (`QcResult`: checks
+    -> loudness -> value "-14.2 LUFS / -1.3 dBTP"). Missing or unreadable: None for each."""
+    out: dict[str, Any] = {"qc_passed": None, "qc_reason": None, "lufs": None, "true_peak_dbtp": None}
+    with contextlib.suppress(OSError, ValueError, AttributeError, TypeError):
+        long = json.loads((job_dir / "qc" / "report.json").read_text(encoding="utf-8")).get("long") or {}
+        out.update({"qc_passed": long.get("passed"), "qc_reason": long.get("reason")})
+    with contextlib.suppress(OSError, ValueError, AttributeError, TypeError):
+        result = json.loads((job_dir / "qc" / "long.json").read_text(encoding="utf-8"))
+        value = str(result["checks"]["loudness"]["value"])
+        m = re.match(r"\s*(-?[\d.]+|nan|-?inf) LUFS / (-?[\d.]+|nan|-?inf) dBTP", value)
+        if m:
+            out.update({"lufs": float(m.group(1)), "true_peak_dbtp": float(m.group(2))})
+    return out
+
+
+def _modern_standby(sleep_states: str | None) -> bool | None:
+    """Whether `powercfg /a` lists "Standby (S0 Low Power Idle)" among the states AVAILABLE on this PC (its
+    first part; the second lists the ones that are not). None when powercfg gave nothing."""
+    if not sleep_states:
+        return None
+    available = re.split(r"(?im)^.*not available.*$", sleep_states, maxsplit=1)[0]
+    return "S0 Low Power Idle" in available
+
+
+def _when(raw: Any) -> datetime:
+    """A ledger line's `at` as an aware time (the oldest possible when it is missing or unreadable)."""
+    try:
+        return datetime.fromisoformat(str(raw)).astimezone()
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=UTC)
 
 
 def _loads(raw: Any) -> Any:
@@ -1201,10 +1477,16 @@ def start(args: argparse.Namespace, env: KitEnv) -> Kit:
 
         kit.mark = gpu.simulated_mark(gpu.smi_source(Paths(home)))
         kit.state.setdefault("started", kit.iso())
-        kit.state.update({"version": info.version, "kind": info.kind, "simulated": kit.mark,
-                          "dry_run": args.dry_run})  # fmt: skip
+        older = sorted({str(s.get("version")) for s in kit.state.get("steps", {}).values()
+                        if isinstance(s, dict) and s.get("version") and s.get("version") != info.version})
+        line = f"the install is {info.version} at {home}"
+        if older:  # one state for every version: an older kit's steps stay done, its nights are collected
+            line += f"; going on from the kit of {', '.join(older)} (its steps and armed nights are kept)"
+        versions = list(dict.fromkeys([*kit.state.get("versions", []), info.version]))
+        kit.state.update({"version": info.version, "versions": versions, "kind": info.kind,
+                          "simulated": kit.mark, "dry_run": args.dry_run})  # fmt: skip
         kit.state.setdefault("steps", {})["K0"] = {"result": "PASS", "done": True, "at": kit.iso(),
-                                                   "line": f"the install is {info.version} at {home}"}
+                                                   "version": info.version, "line": line}
         kit.save()
     except BaseException:
         kit.close()
@@ -1246,13 +1528,39 @@ def main(argv: list[str] | None = None, *, env: KitEnv | None = None) -> int:
                 return 0
             kit.state["confirmed"] = True
             kit.save()
-        env.say(f"PASS    {kit.label('K0')}: the install is {kit.version} at {kit.home}")
-        return kit.run()
+        env.say(f"PASS    {kit.label('K0')}: {kit.state['steps']['K0']['line']}")
+        with _window_close_is_an_interrupt():
+            return kit.run()
     except KeyboardInterrupt:
         env.say(stopped)
         return 130
     finally:
         kit.close()
+
+
+@contextlib.contextmanager
+def _window_close_is_an_interrupt() -> Any:
+    """Closing the console window (CTRL_CLOSE_EVENT, which the C runtime raises as SIGBREAK) or Ctrl+Break is
+    handled like Ctrl+C: Windows then gives the process a few seconds, enough for `Kit.put_back`."""
+    import signal
+
+    sig = getattr(signal, "SIGBREAK", None)
+    if sig is None:
+        yield
+        return
+
+    def interrupt(_signum: int, _frame: Any) -> None:
+        raise KeyboardInterrupt("the window was closed")
+
+    try:
+        before = signal.signal(sig, interrupt)
+    except ValueError:  # not the main thread: nothing to install
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(sig, before)
 
 
 if __name__ == "__main__":

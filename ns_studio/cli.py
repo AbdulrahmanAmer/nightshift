@@ -379,6 +379,13 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
         for dj in due:
             echo(f"{dj.channel.slug}: {dj.count} x {dj.fmt} ({dj.plan.describe()})")
         return
+    try:  # the GPU kit's two nights are over and nobody ran the kit again: this night puts them back
+        said = importlib.import_module("ns_supervisor.kitnights").expire_if_due(env.paths, now, env.log)
+    except ImportError:
+        said = None
+    if said:
+        echo(said)
+        return
     notifier = notifications.nightly_notifier(env.paths, env.log)
     try:
         report = run_daily(env, now=now, notifier=notifier)

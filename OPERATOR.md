@@ -255,9 +255,10 @@ left plugged in and on or asleep (not shut down) for the next two nights, and 15
    - **FAIL**: the line says the one thing to do (for example "install the newest NVIDIA driver, restart the PC").
      Do it, then double-click GPU-KIT.cmd again: it goes on from that step.
    - **NOT RUN**: a step that waits for a step before it.
-4. When the video is made, the window shows where it is and asks three questions about it (does the picture move all
-   the way through, is the narration clear and steady, do the captions match the words). Type **y**, or **n** and
-   what you saw, or **later**, and press Enter.
+4. When the video is made, the window says how many questions only you can answer are open (about the video, the
+   paste check, and later the two hand checks and the morning note). Type **a** and press Enter to answer them now,
+   or just press Enter (or wait 10 minutes) to leave them for the next time. Each question takes **y**, or **n** and
+   what you saw, or **later**.
 5. If Automatic runs were off, the kit switches them on for two nights and says so. Its last lines say when to come
    back, for example "Run GPU-KIT.cmd again after Saturday 14 November 09:00".
 
@@ -269,24 +270,35 @@ left plugged in and on or asleep (not shut down) for the next two nights, and 15
 2. Its last line is "Send this one file: ...zip (size)". Send that file to the person who gave you Nightshift, as you
    send the diagnostics zip.
 
-**The paste check (about 10 minutes, any day after the video)**: follow `dev/kit/K8_PASTE_CHECK.md` (in the
-`dev/kit` folder next to GPU-KIT.cmd): upload the kit's video to YouTube Studio as **Private**, paste its title, description and
-tags, and the kit asks you what Studio accepted. The video is never made public.
+**The paste check (about 10 minutes, any day after the video)**: follow `K8_PASTE_CHECK.md` (the kit's question
+gives its full path): upload the kit's video to YouTube Studio as **Private**, paste its title, description and tags,
+and the kit asks you what Studio accepted. The video is never made public.
+
+**Two hand checks (about 20 minutes each, on two other evenings, optional for the first zip)**: the kit's questions
+give the full path of `night-task-end.txt` and of the folder to work in. They are done on a separate test install
+of Nightshift, never on your own. The first shows what Windows does when the nightly run reaches its time limit, the
+second whether a short sleep during a night is noticed. The files the steps save in that folder go into the zip.
 
 Good to know:
 
 - You can close the window at any time. Double-click GPU-KIT.cmd again and it goes on from the step it reached. It
-  never makes a second video or a second channel, and it changes Automatic runs at most once each way.
+  never makes a second video or a second channel, and it changes Automatic runs at most once each way. A newer
+  candidate installed in between goes on with the same nights.
+- The kit's channel is never used by a nightly run, even if the window was closed while its video was being made.
+- If you never run the kit again after the two nights, the third night switches Automatic runs off by itself (only
+  when they were off before the kit), makes nothing that night and leaves a note on the Queue page.
+- If you switch Automatic runs yourself in Settings after the kit switched them on, the kit leaves them as you set
+  them.
 - A line starting with **REFUSED** means the kit did not start and changed nothing; it says why and what to do (for
   example: another GPU kit window is still open, or this is not the install with the graphics card).
 - What the kit changes: its own channel "GPU kit (test video)", which stays paused (its video waits in the Queue: post
   it or reject it as you like), and Automatic runs for two nights. It reads your power and sleep settings and never
   changes them.
 - The zip holds the PC's record (graphics card, driver, disk, sleep settings), the test and proof results, the video's
-  facts and one picture of its frames (one a minute), both nights' records, logs and Windows' power events of those nights, the
-  diagnostics zip and your answers. It never holds the video or the models. Before it is written, the stock-footage
-  keys, any token, your Windows user name, your Nightshift folder's path and the PC's name are replaced by `***` or a
-  placeholder.
+  facts and one picture of its frames (one a minute), both nights' records, logs and Windows' power events of those
+  nights, the diagnostics zip, the hand checks' files and your answers. It never holds the video or the models.
+  Before it is written, the stock-footage keys, any token, your Windows user name, your Nightshift folder's path, the
+  PC's name and the account's id are replaced by `***` or a placeholder, however a file spells them.
 
 ## Make your first video (about 20 minutes)
 
