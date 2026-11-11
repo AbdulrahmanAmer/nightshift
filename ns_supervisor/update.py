@@ -194,8 +194,22 @@ class UpdateResult:
     settings: str = ""
 
 
+def note_headings(version: str) -> list[str]:
+    """The changelog headings that hold a version's notes, best first: its own (`[0.1.15-rc5]`), and for a
+    release candidate (`X.Y.Z-rcN`, also written `X.Y.ZrcN`) the section of the release it previews
+    (`[0.1.15]`): a candidate's changelog describes it under that heading (D-53: an update to a candidate
+    showed no notes). Never `[Unreleased]` and never another version's section."""
+    names = [version]
+    base, mark, number = version.lower().partition("rc")
+    release = base.rstrip("-")
+    if mark and number.isdigit() and release.count(".") == 2 and all(p.isdigit() for p in release.split(".")):
+        names += [f"{release}-rc{number}", release]
+    return list(dict.fromkeys(f"[{name}]" for name in names))
+
+
 def release_notes(app: Path, version: str) -> str:
-    """The `## [<version>]` section of `<app>/CHANGELOG.md` (heading line included), else an empty string.
+    """The section of `<app>/CHANGELOG.md` that holds `version`'s notes (heading line included; the first
+    heading of `note_headings` that the file has), else an empty string.
 
     `notes` lists what an update carried over; this is what the owner wants to read afterwards, what changed.
     A missing or unreadable changelog, or one without that version, is not an error: the update worked.
@@ -207,16 +221,20 @@ def release_notes(app: Path, version: str) -> str:
         text = (app / "CHANGELOG.md").read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError):
         return ""
-    lines: list[str] = []
-    inside = False
+    wanted = note_headings(version)
+    found: dict[str, list[str]] = {}
+    section: list[str] | None = None
     for line in text.splitlines():
         if line.startswith("## "):
-            if inside:
-                break
-            inside = line[3:].strip().startswith(f"[{version}]")
-        if inside:
-            lines.append(line.rstrip())
-    return "\n".join(lines).strip()[:RELEASE_NOTES_MAX]
+            heading = line[3:].strip()
+            name = next((w for w in wanted if heading.startswith(w)), None)
+            section = found.setdefault(name, []) if name is not None and name not in found else None
+        if section is not None:
+            section.append(line.rstrip())
+    for name in wanted:
+        if name in found:
+            return "\n".join(found[name]).strip()[:RELEASE_NOTES_MAX]
+    return ""
 
 
 def sha256_file(path: Path) -> str:

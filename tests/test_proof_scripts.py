@@ -18,7 +18,6 @@ import inspect
 import os
 import shutil
 import sys
-import types
 from pathlib import Path
 from typing import Any
 
@@ -109,11 +108,11 @@ def test_f_b7_fails_when_a_rejected_output_leaves_a_file_in_the_outbox(
 ):
     from ns_studio import review
 
-    def copy_not_move(src: str, dst: str) -> str:
-        return str(shutil.copy2(src, dst))
+    def copy_not_move(src: Path, dst: Path) -> None:
+        shutil.copy2(src, dst)
 
-    with monkeypatch.context() as patched:  # the reject route COPIES the files (`review.reject`'s move)
-        patched.setattr(review, "shutil", types.SimpleNamespace(move=copy_not_move))
+    with monkeypatch.context() as patched:  # the reject route COPIES the files (`review.move_one`, D-57)
+        patched.setattr(review, "move_one", copy_not_move)
         broken = proof_home.run("f_b7_review_reject")
     assert_fails_at(broken, "the files MOVED to rejected/")
     # failed, then retried: with the route as the product has it, the same proof on the same home passes

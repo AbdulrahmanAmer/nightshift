@@ -39,12 +39,25 @@ SCRIPTS = "Scripts" if sys.platform == "win32" else "bin"
 windows = pytest.mark.skipif(sys.platform != "win32", reason="the engine's lock and launcher are Windows")
 
 #: The engine stand-in: takes the home's engine lock like `ns_supervisor.app.main`, says so, then either
-#: ends by itself after `late` seconds or never ends (`late` < 0). "ns_supervisor.app" is on its command line.
-ENGINE = (
-    "import sys, time; from pathlib import Path; from ns_common.singleton import FileLock; "
-    "lock = FileLock(Path(sys.argv[2])); lock.acquire(); print('held', flush=True); "
-    "late = float(sys.argv[3]); time.sleep(late if late >= 0 else 600)"
-)
+#: ends by itself `late` seconds later or never ends (`late` < 0). With a fourth argument (a file) the `late`
+#: seconds count from the moment that file exists, not from the start: a test makes it when the update begins
+#: to stop Nightshift, so "late" is late by the same amount however slow the machine was until then (counted
+#: from the start, a loaded machine found the engine already gone before the stop began).
+#: "ns_supervisor.app" is on its command line.
+ENGINE = """
+import sys, time
+from pathlib import Path
+from ns_common.singleton import FileLock
+lock = FileLock(Path(sys.argv[2]))
+lock.acquire()
+print('held', flush=True)
+late = float(sys.argv[3])
+after = Path(sys.argv[4]) if len(sys.argv) > 4 else None
+give_up = time.monotonic() + 600
+while after is not None and not after.exists() and time.monotonic() < give_up:
+    time.sleep(0.05)
+time.sleep(late if late >= 0 else 600)
+"""
 
 
 def venv_python(paths: Paths, name: str) -> Path:
@@ -79,12 +92,15 @@ class Started:
                 return
             time.sleep(0.05)
 
-    def engine(self, paths: Paths, late: float) -> subprocess.Popen[str]:
+    def engine(self, paths: Paths, late: float, after: Path | None = None) -> subprocess.Popen[str]:
+        """`after`: a file from whose appearance the `late` seconds count (see ENGINE)."""
         exe = venv_python(paths, "supervisor")
         lock = paths.home / "run" / "supervisor.lock"
         lock.parent.mkdir(parents=True, exist_ok=True)
+        counted_from = [str(after)] if after is not None else []
         proc = subprocess.Popen(
-            [str(exe), "-c", ENGINE, "ns_supervisor.app", str(lock), str(late)], cwd=str(ROOT),
+            [str(exe), "-c", ENGINE, "ns_supervisor.app", str(lock), str(late), *counted_from],
+            cwd=str(ROOT),
             env={**os.environ, "PYTHONPATH": str(ROOT)}, stdout=subprocess.PIPE, text=True,
         )
         self._note(proc)
@@ -168,10 +184,20 @@ def test_an_engine_that_stops_late_is_waited_for_and_the_rollback_goes_on(
     tmp_path: Path, started: Any
 ) -> None:
     app, paths = updated(tmp_path)
-    engine = started.engine(paths, late=6.0)
+    stop_began = tmp_path / "stop-began"
+    engine = started.engine(paths, late=3.0, after=stop_began)   # 3 s after the stop begins; the bound: 10 s
     said: list[str] = []
-    err = raised(lambda: update.rollback_app(app, real_stop(paths, said), paths=paths))
+    env = real_stop(paths, said)
+    product_stop = env.stop
+
+    def stop() -> None:
+        stop_began.write_text("the update asked Nightshift to stop", encoding="ascii")
+        product_stop()
+
+    env.stop = stop
+    err = raised(lambda: update.rollback_app(app, env, paths=paths))
     assert err is None, f"the rollback was refused: {err}"
+    assert stop_began.exists(), "the rollback never asked Nightshift to stop"
     assert gone(engine, 0) and engine.returncode == 0, "it was ended instead of waited for"
     waiting = [s for s in said if s.startswith("Waiting for Nightshift to stop: ")]
     assert waiting and f"(process {engine.pid}" in waiting[0], said      # the launcher, by name and pid

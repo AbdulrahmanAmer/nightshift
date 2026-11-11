@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -96,3 +97,29 @@ def test_thumbnail_of_very_short_clip_falls_back_to_first_frame(tmp_home: Path):
     video = ffmpeg.make_test_clip(tmp_home / "tiny.mp4", width=160, height=90, seconds=0.2)
     out = thumbnail(paths, "j-20261101-aaaa/c1", video)
     assert out.exists() and out.stat().st_size > 100
+
+
+# ---------------------------------------------------------------------------------------------- D-57
+def test_a_video_being_played_can_be_moved_away_between_two_blocks(tmp_path: Path):
+    """A browser takes the first blocks of a video, stops reading and keeps the connection while the page
+    shows the player. The answer held the file open across that pause, so on Windows Reject could not move
+    the video (WinError 32). No handle is open between two blocks now: the move works, and the answer ends."""
+    f, data = make_file(tmp_path)
+    body = open_range(f, None, chunk=1000).body
+    assert next(body) == data[:1000]  # the player has its first block and waits
+    moved = tmp_path / "rejected.mp4"
+    os.replace(f, moved)  # what Reject does; Windows refuses it while an ordinary handle is open on the file
+    assert moved.read_bytes() == data and not f.exists()
+    assert list(body) == [], "the answer ends where the file went away"
+
+
+def test_blocks_are_read_from_the_answers_own_offset(tmp_path: Path):
+    """Each block is a fresh open and a seek: the bytes and their order are what one open handle gave."""
+    f, data = make_file(tmp_path)
+    blocks = list(open_range(f, "bytes=1000-3999", chunk=700).body)
+    assert [len(b) for b in blocks] == [700, 700, 700, 700, 200] and b"".join(blocks) == data[1000:4000]
+    # a file that became shorter while it was being sent ends the answer at its end (no endless loop)
+    body = open_range(f, None, chunk=2000).body
+    assert next(body) == data[:2000]
+    f.write_bytes(data[:2500])
+    assert b"".join(body) == data[2000:2500]
