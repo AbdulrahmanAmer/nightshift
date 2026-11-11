@@ -135,6 +135,8 @@ class Check:
     verdict: str
     detail: str = ""
     seconds: float = 0.0
+    #: The FULL check was the one made (`_decide_now` sets it): only then may the full-check mark be answered.
+    full: bool = False
 
     @property
     def damaged(self) -> bool:
@@ -720,7 +722,9 @@ def ensure_sound(paths: Paths, log: NsLogger | None, note: NoteFn) -> Check:
 def _decide_now(paths: Paths, log: NsLogger | None, rec: dict[str, Any] | None) -> Decision:
     """Gather the evidence from the disk and ask `decide`. The live check is the FULL one while the mark of a
     damage answer in use waits (`want_full_check`)."""
-    live = assess(paths, full=full_check_path(paths).exists())
+    full = full_check_path(paths).exists()
+    live = assess(paths, full=full)
+    live.full = full  # a mark left WHILE a quick check ran is not answered by it: it waits for the next start
     state = record_state(paths, rec) if rec is not None else None
     d = decide(live, state, lambda: survey_copies(paths, log))
     if log is not None and d.act not in (Act.KEEP,):
@@ -754,7 +758,9 @@ NOT_CHECKED_WAY_OUT = (
 )
 COPY_WAY_OUT = (
     "Close any program that is using the folder data\\backup (a backup tool, a virus scan), then close every "
-    "Nightshift window (Stop All) and open the Dashboard: Nightshift looks again."
+    "Nightshift window (Stop All) and open the Dashboard: Nightshift looks again. If nothing is using that "
+    "folder and this note returns, move the copy it names out of data\\backup (keep the file): Nightshift "
+    "then uses the next newest copy. If it names no copy, run 'ns doctor --bundle' and send the zip."
 )
 
 
@@ -763,7 +769,9 @@ def _settled(paths: Paths, log: NsLogger | None, note: NoteFn, d: Decision) -> C
     and, from the `NOT_CHECKED_SAID_AFTER`-th start in a row, said (NS-W214; the same words wait once)."""
     if d.act is Act.KEEP:
         write_check(paths, d.live, log, not_checked_starts=0, row=d.row)
-        if d.live.verdict == OK and full_check_path(paths).exists():
+        # Only a check that WAS the full one answers the mark. A mark another process left while this start's
+        # quick check ran (the night stopping at that moment) stays, and the next start checks in full.
+        if d.live.verdict == OK and d.live.full:
             clear_full_check(paths, log)
             _say(note, FULL_CHECK_PASSED, log)
         return d.live
