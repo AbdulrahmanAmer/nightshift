@@ -69,7 +69,7 @@ OWN_PAGE_MARKS = {"sec-fetch-site": "same-origin", "sec-fetch-mode": "cors", "se
 # ---------------------------------------------------------------------------------------------- helpers
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
-    """The check's clock, fixed (the notes say "last at 09:00")."""
+    """The check's clock, fixed (the notes say "by 09:00")."""
     c = Clock(datetime(2026, 11, 10, 9, 0, 0))
     if loopback is not None:
         monkeypatch.setattr(loopback, "wall_clock", c)
@@ -262,7 +262,13 @@ def test_a_websocket_upgrade_from_another_local_page_is_closed(tmp_home: Path):
 OWN = f"http://{OWN_HOST}"
 TABLE: tuple[tuple[str, str, dict[str, str], str, str, bool], ...] = (
     ("program, no marks", OWN_HOST, {}, "POST", "/api/engine/stop_all", True),
-    ("program, a form body", OWN_HOST, {"content-type": "text/plain"}, "POST", "/api/engine/stop_all", False),
+    ("program, a form body", OWN_HOST, {"content-type": "text/plain", "content-length": "3"}, "POST", "/api/engine/stop_all", False),
+    # D-50: PowerShell 5.1's POST without -Body (an empty urlencoded form: no form at all), and no length at all
+    ("program, form type, no body", OWN_HOST, {"content-type": "application/x-www-form-urlencoded", "content-length": "0"}, "POST", "/api/engine/stop_all", True),
+    ("program, form type, no length", OWN_HOST, {"content-type": "text/plain"}, "POST", "/api/engine/stop_all", True),
+    ("program, form type, chunked", OWN_HOST, {"content-type": "text/plain", "transfer-encoding": "chunked"}, "POST", "/api/engine/stop_all", False),
+    ("a page, form type, no body", OWN_HOST, {"content-type": "application/x-www-form-urlencoded", "content-length": "0", "origin": f"http://127.0.0.1:{OTHER}", "sec-fetch-site": "same-site"}, "POST", "/api/engine/stop_all", False),
+    ("a page without Origin, form type, no body", OWN_HOST, {"content-type": "text/plain", "content-length": "0", "sec-fetch-site": "cross-site"}, "POST", "/api/engine/stop_all", False),
     ("own page, POST", OWN_HOST, {"origin": OWN, "sec-fetch-site": "same-origin"}, "POST", "/api/engine/stop_all", True),
     ("own page, upload form", OWN_HOST, {"origin": OWN, "sec-fetch-site": "same-origin", "content-type": "multipart/form-data; boundary=x"}, "POST", "/api/update/file", True),
     ("own page, GET (no Origin)", OWN_HOST, {"sec-fetch-site": "same-origin"}, "GET", "/api/settings", True),
@@ -302,7 +308,8 @@ def test_the_origin_table_row_by_row():
             wrong.append(f"{what}: {'answered' if got is None else 'refused (' + got.why + ')'}")
         # the engine and the voice service: the same code, no own origin; a browser is never answered there
         engine = loopback.decide(headers, loopback.NO_BROWSER, method, path)
-        if (engine is None) != (answered and not [k for k in marks if k != "content-type"]):
+        framing = ("content-type", "content-length", "transfer-encoding")   # not browser marks
+        if (engine is None) != (answered and not [k for k in marks if k not in framing]):
             wrong.append(f"{what} at the engine: {'answered' if engine is None else 'refused'}")
     assert wrong == [], "; ".join(wrong)
 
@@ -333,8 +340,9 @@ def test_the_note_counts_only_the_refused_and_claims_nothing_else(tmp_home: Path
     settle()
     said = [n["message"] for n in notify.read_notes(Paths.from_env())]
     assert said == [
-        f"NS-E207: A web page open in your browser tried 3 times to control Nightshift (from {page}, last at "
-        "09:00). Nightshift refused those 3 requests, so none of them ran. If you do not know that page, close it."
+        f"NS-E207: A web page open in your browser tried at least 3 times to control Nightshift (from {page}, by "
+        "09:00). Nightshift refused every one of those requests, so none of them ran. If you do not know that page, "
+        "close it."
     ]
     assert reached.actions == []
     for text in said:
@@ -355,5 +363,5 @@ def test_no_note_text_claims_more_than_the_refusals():
     for refusal in cases:
         for more in (False, True):
             text, _mark = loopback.note_text(refusal, 4, at, more=more)
-            assert "Nightshift refused those 4 requests, so none of them ran." in text, text
+            assert "Nightshift refused every one of those requests, so none of them ran." in text, text
             assert "nothing was changed" not in text and "Every request" not in text, text

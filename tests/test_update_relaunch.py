@@ -17,13 +17,19 @@ from ns_supervisor.procs import UNDER_ENGINE_ENV
 class FakeClient:
     """`/status` answers once `up` is True; `start()` is what brings it up (the fake engine launch)."""
 
-    def __init__(self, up: bool = True) -> None:
+    def __init__(self, up: bool = True, dashboard: bool = True) -> None:
         self.up = up
+        self.dashboard = dashboard          # the engine's dashboard service runs (D-51: restarted only then)
         self.warmed: list[str] = []
         self.events: list[str] = []
 
     def is_up(self) -> bool:
         return self.up
+
+    def status(self) -> dict[str, Any]:
+        if not self.up:
+            raise NsError("NS-E202", "the engine does not answer")
+        return {"services": {"dashboard": {"state": "ready" if self.dashboard else "stopped"}}}
 
     def warmup(self, service: str) -> str:
         self.warmed.append(service)

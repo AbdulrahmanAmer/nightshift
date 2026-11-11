@@ -208,9 +208,15 @@ def control_lock_held(paths: Paths) -> bool:
 
 # ------------------------------------------- 3: a foreign holder: refused, named, Nightshift started again
 class Restarts(Recorder):
-    """A relauncher that saw Nightshift running before the update (`Relaunch.wanted`)."""
+    """A relauncher that saw Nightshift running before the update (`Relaunch.wanted`) and starts it again
+    (`Relaunch.started`, which the result's last sentence is decided by: D-51)."""
 
     wanted = True
+    started = False
+
+    def restart(self) -> None:
+        super().restart()
+        self.started = True
 
 
 @windows
@@ -536,3 +542,124 @@ def test_an_own_process_that_cannot_be_ended_gets_no_shortcut_promise(tmp_path: 
     assert "restart" not in relaunch.calls, "a start was tried while its own engine holds the lock"
     said = st["message"]
     assert update_job.RESTART_HINT not in said and "restart the PC, then open Nightshift" in said, said
+
+
+# ====================== D-51: a run over an engine that hung BEFORE it leaves Nightshift as it was found
+class World:
+    """The engine as the update's client sees it (`up`: `/status` answers; `dashboard`: its service runs) and
+    what the relaunch started (`calls`, `warmed`)."""
+
+    def __init__(self, up: bool, dashboard: bool) -> None:
+        self.up, self.dashboard = up, dashboard
+        self.calls: list[str] = []
+        self.warmed: list[str] = []
+
+    def handler(self, req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/warmup":
+            self.warmed.append(json.loads(req.content)["service"])
+            return httpx.Response(200, json={"state": "ready"})
+        if not self.up:                                     # hung or not running: nothing answers
+            raise httpx.ConnectError("no answer")
+        if req.url.path == "/shutdown":
+            self.up = False                                 # an engine that answers stops when asked
+            return httpx.Response(200, json={"ok": True})
+        state = "ready" if self.dashboard else "stopped"
+        return httpx.Response(200, json={"state": "ready", "services": {"dashboard": {"state": state}}})
+
+    def start(self, how: str, dashboard: bool) -> Any:
+        def go() -> None:
+            self.calls.append(how)
+            self.up, self.dashboard = True, dashboard
+        return go
+
+
+D51_OUTCOMES = (
+    "done", "failed before the swap", "failed after the swap", "failed after the swap, venvs left",
+)
+
+
+@windows
+@pytest.mark.parametrize("outcome", D51_OUTCOMES)
+@pytest.mark.parametrize("dashboard", [True, False], ids=["dashboard up", "dashboard not"])
+@pytest.mark.parametrize("engine_was", ["answers", "hung", "not running"])
+def test_d51_the_table_what_is_started_again_and_what_the_last_line_says(
+    tmp_path: Path, started: Any, monkeypatch: pytest.MonkeyPatch, engine_was: str, dashboard: bool,
+    outcome: str,
+) -> None:
+    """Each row of the D-51 table through `run_worker` with the real `Relaunch` and the real stop
+    (`control.stop`): a hung engine is a real process that holds this home's engine lock and answers nothing;
+    a dashboard of this install is a real process `run/supervisor.json` records. Every one of them is ended
+    by the stop (or at the end of the test) by its recorded pid."""
+    from ns_common.errors import NsError
+    from ns_supervisor import stopping
+    from ns_supervisor.relaunch import Relaunch
+
+    monkeypatch.setattr(stopping, "STOP_WAIT_S", 1.0)
+    paths = Paths(tmp_path / "ns")
+    (paths.home / "run").mkdir(parents=True)
+    world = World(up=engine_was == "answers", dashboard=dashboard and engine_was == "answers")
+    hung = started.engine(paths, late=-1) if engine_was == "hung" else None
+    dash = started.foreign(paths) if dashboard and engine_was != "answers" else None
+    if hung is not None or dash is not None:
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])    # the record of an engine that died
+        dead.wait(timeout=60)
+        record = {"pid": hung.pid if hung is not None else dead.pid,
+                  "children": {"dashboard": dash.pid} if dash is not None else {}}
+        (paths.home / "run" / "supervisor.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def safe_kill(pid: int) -> None:                        # the stop's kill of a recorded pid: ours only
+        if pid not in started.family:
+            pytest.fail(f"the stop aimed at a process this test did not start: {pid}")
+        try:
+            family = [*started.family[pid].children(recursive=True), started.family[pid]]
+        except psutil.Error:
+            family = [started.family[pid]]
+        for p in family:
+            try:
+                p.kill()
+            except psutil.Error:
+                pass
+
+    client = SupervisorClient("http://sup", client=httpx.Client(transport=httpx.MockTransport(world.handler)))
+    relaunch = Relaunch(paths=paths, client=client, window_open=lambda: False,
+                        start_engine=world.start("engine", True),
+                        start_window=lambda: pytest.fail("no window was open"), wait_s=10.0)
+    if hasattr(relaunch, "start_quiet"):
+        relaunch.start_quiet = world.start("quiet", False)
+    said: list[str] = []
+
+    def body() -> update_job.Outcome:
+        said.extend(control.stop(paths, client, kill=safe_kill, say=said.append))
+        if outcome == "done":
+            return update_job.Outcome("Now on 0.2.0 (was 0.1.0).", "0.1.0", "0.2.0")
+        if outcome == "failed before the swap":
+            raise NsError("NS-E706", "These programs still run from Nightshift's Python environments: "
+                          "python.exe (process 1). Nothing was changed. Close them and run the update again.")
+        if outcome == "failed after the swap":
+            raise NsError("NS-E702", "The update to 0.2.0 failed at the check of the new version; 0.1.0's "
+                          "program is in place again, with its Python environments.")
+        raise NsError("NS-E702", "The update to 0.2.0 failed at the refresh of the Python environments; "
+                      "0.1.0's program is back, but the Python environment 'studio' could not be refreshed. "
+                      f"{update_job.NOT_STARTED} To finish, run the update again.", venvs_left=["studio"])
+
+    code = update_job.run_worker(paths, body, relaunch=relaunch)
+    st = update_job.read_status(paths)
+    message = str(st["message"])
+    wanted = engine_was in ("answers", "hung") or dashboard
+    starts = wanted and outcome != "failed after the swap, venvs left"
+    assert code == (0 if outcome == "done" else 1), st
+    assert world.calls == ((["engine"] if dashboard else ["quiet"]) if starts else []), (world.calls, said)
+    assert world.warmed == (["dashboard"] if starts and dashboard else []), world.warmed
+    if outcome == "failed after the swap, venvs left":
+        assert message.endswith(f"{update_job.NOT_STARTED} To finish, run the update again."), message
+    elif starts:
+        assert message.endswith(update_job.STARTED_AGAIN) and world.up, message
+    else:
+        assert message.endswith(getattr(update_job, "NOT_RUNNING", "<no sentence>")) and not world.up, message
+    for proc in (hung, dash):
+        if proc is not None:
+            assert gone(proc), f"process {proc.pid} was not ended by the stop: {said}"
+    if hung is not None:                                    # the cause is said before the waiting
+        cause = said.index("The engine does not answer; its own processes are still running.")
+        waiting = [i for i, s in enumerate(said) if s.startswith("Waiting for Nightshift to stop")]
+        assert waiting and cause < waiting[0], said
