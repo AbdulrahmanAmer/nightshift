@@ -50,6 +50,22 @@ def nightly_notifier(paths: Paths, log: NsLogger) -> Notifier | None:
     return notifier
 
 
+def db_note(paths: Paths) -> Callable[[str], object]:
+    """The `note` of `ns_common.db.open_studio_db` and `open_assistant_db` (card db-integrity): a morning note
+    through the notes' one owner (`ns_supervisor.notify.leave_note`), left out while the same words already
+    wait (a restore finished by a second start, a refusal met by every window). Not gated by Settings >
+    Notifications, which is about the Windows notification of a run: what a restore lost, or why the database
+    cannot be used, is said in the Dashboard's bell whatever that switch says."""
+
+    def leave(message: str) -> object:
+        from ns_supervisor import notify
+
+        return notify.leave_note(paths, TITLE, message,
+                                 once=lambda notes: any(n["message"] == message for n in notes))
+
+    return leave
+
+
 def output_counts(db: Db, job_ids: Sequence[str]) -> tuple[int, int]:
     """(masters, Shorts) the given jobs put in the review queue."""
     if not job_ids:
@@ -95,7 +111,47 @@ def nightly_message(report: dict[str, Any], masters: int, shorts: int) -> str | 
         parts.append(left)
     if report.get("vram"):
         parts.append(vram_part())
+    if any(f.get("code") == "NS-E127" for f in failures):
+        parts.append(model_part())
     return "; ".join(parts) if parts else None
+
+
+def model_part() -> str:
+    """The toast's part of a night that met a damaged model file (card model-file-damaged)."""
+    return ("a model file is damaged (NS-E127): run INSTALL.cmd again and choose Repair; tonight's other "
+            f"videos wait for the next nightly run{IF_NIGHTLY_ON}")
+
+
+def model_note(found: dict[str, Any] | None) -> str | None:
+    """Card model-file-damaged, M7: the morning note of a night that met a damaged or missing model file
+    (``found``: the night's ``model_damaged``): the file and its size in the words of the check (the engine's
+    NS-E127, or the night's pre-check), what became of the night, and the way out. None when it met none."""
+    if not isinstance(found, dict):
+        return None
+    said = str(found.get("said") or "A model file is damaged").rstrip(".")
+    return (
+        f"{said}. Run INSTALL.cmd again from the Nightshift zip and choose Repair: it checks every model "
+        "file by hash and downloads a damaged one again; nothing else is changed. Tonight's videos were not "
+        f"made: they wait for the next nightly run{IF_NIGHTLY_ON} (a video that failed has Retry in the "
+        "Queue)."
+    )
+
+
+def model_aside_note(found: dict[str, Any] | None) -> str | None:
+    """Card model-file-damaged: the morning note about a damaged or missing model file that no nightly video
+    loads (the voice design model, the face finder; ``found``: the night's ``model_aside``).
+    It stopped nothing, and says so; the way out is the same Repair. None when there is none."""
+    if not isinstance(found, dict) or not found.get("said"):
+        return None
+    said = str(found["said"]).rstrip(".")
+    return (
+        # "does not work", not "fails": with the face finder gone the Clipper still cuts, without its search
+        # for faces (`clipper.detect.load_detector` gives None), while "design a voice" is refused (NS-E314)
+        f"{said}. The nightly videos do not load this file, so it stopped no video; what does load it (such "
+        "as designing a voice, or the Clipper's search for faces) does not work until it is fixed. Run "
+        "INSTALL.cmd again from the Nightshift zip and choose Repair: it checks every model file by hash and "
+        "downloads a damaged or missing one again; nothing else is changed."
+    )
 
 
 def vram_part() -> str:

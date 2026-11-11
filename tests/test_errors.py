@@ -154,3 +154,11 @@ def test_no_hint_tells_the_owner_to_tune_for_a_busy_card():
     for code, entry in table.items():
         if "graphics card" in entry.message and "memory" in entry.message:
             assert "ns tune" not in entry.hint, code
+
+
+def test_ns_e202_names_the_model_check():
+    """Card model-file-damaged: a model that does not start points at `ns doctor`'s model rows and at Repair;
+    a damaged file has its own code (NS-E127) with Repair as the way out."""
+    hint = describe("NS-E202").hint
+    assert "'ns doctor'" in hint and "model files" in hint and "choose Repair" in hint, hint
+    assert "SHA256" in describe("NS-E127").message and "choose Repair" in describe("NS-E127").hint

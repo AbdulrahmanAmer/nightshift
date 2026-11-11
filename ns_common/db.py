@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import contextlib
+import os
 import secrets
 import sqlite3
+import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ns_common.errors import NsError
 from ns_common.paths import contracts_dir
+
+if TYPE_CHECKING:
+    from ns_common.logging import NsLogger
+    from ns_common.paths import Paths
 
 # How often `claim_job_id` draws again before it gives up. An id has 65536 values per name and day, so 64
 # refusals in a row mean the claim itself is broken (a folder that cannot be made), not bad luck.
@@ -104,18 +112,51 @@ class Db:
         return self.connect().execute(sql, params).fetchone()
 
     def backup(self, backup_dir: Path, keep: int = 14, today: date | None = None) -> Path:
+        """The nightly copy `studio-<date>.db` (card db-integrity 4b.3), written whole and checked first.
+
+        SQLite's backup API writes `studio-<date>.db.tmp`; the copy must pass `PRAGMA integrity_check` (a copy
+        of a damaged page is as damaged as its source) before it is renamed over that date's file. Only then
+        are the copies older than the newest `keep` deleted, and the `.tmp` a killed backup left. A copy that
+        fails its check, or cannot be written whole (a full disk), is deleted and `BackupFailed` says why: the
+        older copies all stay, and that date's earlier copy too."""
+        from ns_common.dbrestore import check, is_damage_error
+
         today = today or datetime.now(UTC).date()
         backup_dir.mkdir(parents=True, exist_ok=True)
         target = backup_dir / f"studio-{today:%Y%m%d}.db"
-        dest = sqlite3.connect(target)
+        tmp = target.with_name(target.name + ".tmp")
         try:
-            self.connect().backup(dest)
-        finally:
-            dest.close()
+            tmp.unlink(missing_ok=True)
+            dest = sqlite3.connect(tmp)
+            try:
+                self.connect().backup(dest)
+            finally:
+                dest.close()
+            found = check(tmp, full=True, fixed=True)
+            if found.verdict != "ok":
+                failed = BackupFailed(f"the copy failed its check ({found.verdict}: {found.detail})")
+                failed.damaged = found.verdict == "damaged"  # positive: the live file is checked in full next
+                raise failed
+            with open(tmp, "r+b") as fh:
+                os.fsync(fh.fileno())
+            os.replace(tmp, target)
+        except BackupFailed:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            raise
+        except (OSError, sqlite3.Error) as e:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            failed = BackupFailed(f"the copy could not be written ({type(e).__name__}: {e})")
+            failed.damaged = is_damage_error(e)  # SQLite answered CORRUPT while reading the live file
+            raise failed from e
         existing = sorted(backup_dir.glob("studio-*.db"))
         stale = existing[:-keep] if len(existing) > keep else []
         for old in stale:
             old.unlink()
+        for left in backup_dir.glob("studio-*.db.tmp"):  # a backup killed mid-way on another date
+            with contextlib.suppress(OSError):
+                left.unlink()
         return target
 
     def close(self) -> None:
@@ -129,3 +170,63 @@ class Db:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+
+class BackupFailed(Exception):
+    """`Db.backup` made no copy (it failed its check, or could not be written); the older copies stay.
+    `damaged`: the copy's full check answered damage (the source's pages are damaged)."""
+
+    damaged = False
+
+
+class UnusableDb(Db):
+    """A database this process could not put right (NS-E209): every use raises that error.
+
+    The dashboard keeps answering with it (503 and the sentence) instead of exiting, so the owner reads
+    why and what to do; it never opens the file."""
+
+    def __init__(self, path: Path, error: NsError) -> None:
+        super().__init__(path)
+        self.error = error
+
+    def connect(self) -> sqlite3.Connection:
+        raise self.error
+
+    def migrate(self) -> None:
+        raise self.error
+
+
+#: The files this process has already checked (`open_studio_db`): once per process and file.
+_checked: set[str] = set()
+_checked_lock = threading.Lock()
+
+
+def open_studio_db(paths: Paths, log: NsLogger | None, *, note: Callable[[str], object]) -> Db:
+    """The one opener of `studio.db` (card db-integrity): checked once per process before the first use.
+
+    A damaged file is set aside and replaced by the newest good nightly copy, the videos made since then are
+    put back in the Queue, and `note` leaves the owner's morning note NS-W213
+    (`ns_common.dbrestore.ensure_sound`); NS-E209 when it cannot be replaced (another process has it open, a
+    full disk). A file held by another program, or written by a newer program, is not damage: it is opened as
+    before. Returns the `Db`, not yet connected; the caller migrates it as before."""
+    from ns_common.dbrestore import ensure_sound
+
+    key = os.path.normcase(os.path.abspath(paths.db_path))
+    with _checked_lock:
+        if key not in _checked:
+            ensure_sound(paths, log, note)
+            _checked.add(key)
+    return Db(paths.db_path)
+
+
+def open_assistant_db(paths: Paths, log: NsLogger | None, *, note: Callable[[str], object]) -> Db:
+    """The opener of `assistant.db`: a damaged one is set aside in data/damaged and a new one starts (no copy
+    of it is kept: its loss is the conversation history only), with a morning note."""
+    from ns_common.dbrestore import ensure_assistant_sound
+
+    key = os.path.normcase(os.path.abspath(paths.assistant_db))
+    with _checked_lock:
+        if key not in _checked:
+            ensure_assistant_sound(paths, log, note)
+            _checked.add(key)
+    return Db(paths.assistant_db)

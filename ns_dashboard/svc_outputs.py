@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -293,7 +292,8 @@ class OutputsService:
         They go to the `rejected` folder of the Nightshift home, under channel, day and job (the video, its
         sheet and thumbnails), and the row keeps the new path, so a rejected video is not left among the
         ones waiting to be posted. None when the files could not be moved (the row is then rejected in
-        place and the failure is logged).
+        place and the failure is logged), except for a file another program holds open: that is NS-E331 as
+        an `ApiError` (409), with nothing moved and the row untouched (D-57).
         """
         from ns_studio import review
 
@@ -302,6 +302,12 @@ class OutputsService:
                 return review.reject(self.s.paths, self.s.db, output_id, reason)  # type: ignore[arg-type]
         except (OSError, StudioError) as e:
             self.s.log.warn("reject_move_failed", str(e), output_id=output_id)
+            if isinstance(e, StudioError) and e.code == "NS-E331":
+                # a file of the video is held open (D-57): `review.reject` put back what it had moved and did
+                # not touch the row. Rejecting the row "in place" here would leave every file in the Outbox
+                # under a row no later Reject moves (a second rejection only changes the note), and the
+                # owner would never read what to close. The page shows it; Reject again runs the move again.
+                raise ApiError(409, "NS-E331", f"{e.message} ({e.detail})", hint=e.hint) from e
             return None
 
     def _move_back_to_outbox(self, output_id: str, row: sqlite3.Row) -> Path | None:
@@ -314,6 +320,8 @@ class OutputsService:
         cut short finishes the move. A video that is gone from `rejected` (and not already back in the
         Outbox), or an Outbox file that would be overwritten, is an `NsError` NS-E326 and nothing changes.
         """
+        from ns_studio import review
+
         paths = self.s.paths
         src = Path(row["path"])
         if not is_within(paths.rejected, src) or src.resolve() == paths.rejected.resolve():
@@ -342,8 +350,8 @@ class OutputsService:
                 target = dest.parent / p.name
                 if target.exists():  # the same file is already back (an earlier move was cut short)
                     p.unlink()
-                else:
-                    shutil.move(str(p), str(target))
+                else:  # one step, never a copy left behind by a file a player holds open (D-57)
+                    review.move_one(p, target)
             self.s.db.execute(
                 "UPDATE outputs SET status = 'approved', path = ? WHERE output_id = ?",
                 (str(dest), output_id),

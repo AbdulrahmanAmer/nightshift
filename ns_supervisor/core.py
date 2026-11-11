@@ -29,7 +29,7 @@ from ns_common.errors import NsError, describe
 from ns_common.logging import NsLogger
 from ns_common.models import Runtime
 from ns_common.paths import Paths
-from ns_supervisor import notify, presence, procs, vram
+from ns_supervisor import modelcheck, notify, presence, procs, vram
 from ns_supervisor.gpu import GpuProbe, NullGpuProbe, SmiSource, simulated_mark, smi_source, source_probe
 from ns_supervisor.lock import GpuLock
 from ns_supervisor.schedule_cfg import read_run_time, seconds_until_next_run
@@ -138,8 +138,11 @@ class Supervisor:
         update_check: Callable[[], dict[str, Any] | None] | None = None,
         in_use: Callable[[], bool] | None = None,
         process_probe: Callable[[int], float | None] | None = None,
+        model_files: modelcheck.FileCheck | None = None,
     ) -> None:
         self.paths = paths
+        # model-file-damaged: the check of a failed load's model files, once per file in this engine
+        self.model_files = model_files or modelcheck.FileCheck(paths)
         self.runtime = runtime
         self.cfg = config or SupervisorConfig()
         self.resolver: Resolver = resolver or (lambda name, alias: build_service(runtime, paths, name, alias))
@@ -421,10 +424,22 @@ class Supervisor:
                 self.write_state()
                 self._emit(rt, "stopped")
             failed = isinstance(e, NsError) and e.code in ("NS-E202", "NS-E203")
+            note = ""
+            if isinstance(e, NsError) and failed and not rt.abort and not self.shutting_down:
+                # model-file-damaged M6: the file decides first (a hash that does not match is proof); a
+                # damaged file is never told as memory, and keeps no lower bound of memory (no vram record)
+                found = await asyncio.to_thread(self.model_files.after_failure, rt.name, d.cmd)
+                if found.damaged is not None:
+                    self.log.error("model_file_damaged", found.damaged.detail, code=found.damaged.code,
+                                   service=rt.name, original=e.code)  # fmt: skip
+                    raise found.damaged from e
+                note = found.note
             if isinstance(e, NsError) and failed and not rt.abort and before is not None:
                 said = await self._vram_after_failure(rt, d, e, before)  # V7: the failure says why, truly
                 if said is not None:
                     raise said from e
+            if isinstance(e, NsError) and note:
+                raise NsError(e.code, f"{e.detail}; model files: {note}") from e
             raise
         rt.state = "ready"
         rt.starting_since = None
@@ -453,6 +468,11 @@ class Supervisor:
             if len(rt.crashes) >= self.cfg.crash_max:
                 rt.state = "error"
                 self._emit(rt, "error")
+                # after failed starts the verdict is known and nothing is hashed; after crashes at work the
+                # files are hashed here once (bounded, `modelcheck.BOUND_S`)
+                found = await asyncio.to_thread(self.model_files.after_failure, rt.name, d.cmd)
+                if found.damaged is not None:
+                    raise found.damaged
                 raise NsError(
                     "NS-E202",
                     f"{rt.name} crashed {len(rt.crashes)}x in {self.cfg.crash_window_s:.0f}s: {rt.error}",

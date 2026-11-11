@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,45 @@ def test_a_second_rejection_only_changes_the_note(tmp_home: Path):
     again = dash.outputs.reject(oid, "still too slow")
     assert again["review_note"] == "still too slow" and again["path"] == first["path"]
     assert Path(again["path"]).exists()
+
+
+def test_reject_of_a_video_another_program_holds_says_so_and_changes_nothing(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """D-57, the dashboard's side (review of ecaf6fc; written, NOT RUN). `review.reject` puts everything back
+    and raises NS-E331 when a file is held open. The dashboard swallowed that and rejected the row "in
+    place": every file stayed in the Outbox under a row that no later Reject moves, and the owner never read
+    what to close. Now the page gets NS-E331 (409), the row is as it was, and Reject again moves the files."""
+    from ns_studio import review
+
+    dash = make(tmp_home)
+    paths = dash.state.paths
+    oid = seed_output(dash.state.db, paths, title="The Doorbell Camera")
+    was = dash.outputs.detail(oid)
+    before = Path(was["path"])
+    files = sorted(p.name for p in before.parent.iterdir() if p.is_file())
+    real = os.replace
+
+    def replace(a: Path, b: Path) -> None:  # Windows while a player has the Outbox video open
+        if Path(a).name == before.name and paths.rejected not in Path(a).parents:
+            raise PermissionError(13, "The process cannot access the file because it is being used")
+        real(a, b)
+
+    with monkeypatch.context() as held:
+        held.setattr(review.os, "replace", replace)
+        held.setattr(review, "MOVE_WAIT_S", 0)
+        with pytest.raises(ApiError) as refused:
+            dash.outputs.reject(oid, "Hook is boring")
+    assert (refused.value.status, refused.value.code) == (409, "NS-E331")
+    assert before.name in refused.value.message and "press Reject again" in (refused.value.hint or "")
+    now = dash.outputs.detail(oid)
+    assert (now["status"], now["path"]) == (was["status"], was["path"]) and now["status"] != "rejected"
+    assert sorted(p.name for p in before.parent.iterdir() if p.is_file()) == files, "nothing left the Outbox"
+    assert not [p for p in paths.rejected.rglob("*") if p.is_file()], "nothing was left in rejected"
+    # the player is closed: the same Reject now moves the files and changes the row
+    rej = dash.outputs.reject(oid, "Hook is boring")
+    assert rej["status"] == "rejected" and paths.rejected in Path(rej["path"]).parents
+    assert not before.exists()
 
 
 def test_reject_with_the_files_already_gone_still_rejects(tmp_home: Path):

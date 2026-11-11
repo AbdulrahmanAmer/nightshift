@@ -14,7 +14,9 @@ from typing import TYPE_CHECKING, Any
 
 from ns_common import first_start
 from ns_common.atomic import read_text_retry, write_text_atomic
-from ns_common.db import Db
+from ns_common.db import Db, UnusableDb, open_studio_db
+from ns_common.dbrestore import DAMAGED_CODE as DB_DAMAGED
+from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 
@@ -83,8 +85,20 @@ class LockedDb:
 
 
 def open_db(paths: Paths) -> LockedDb:
-    """Open and migrate `studio.db` (the shared schema already has `dashboard_jobs`)."""
-    db = Db(paths.db_path)
+    """Open and migrate `studio.db` (the shared schema already has `dashboard_jobs`).
+
+    Checked first (card db-integrity, `open_studio_db`): a damaged file is replaced by the newest good copy
+    and the owner told (NS-W213). When it cannot be (NS-E209: another window has it open, a full disk) the
+    dashboard still starts, on an `UnusableDb`: every page that reads the database answers 503 with NS-E209's
+    sentence and way out, the job worker does not start, and the bell holds the same words."""
+    from ns_studio.notifications import db_note
+
+    try:
+        db = open_studio_db(paths, NsLogger("dashboard", paths.logs), note=db_note(paths))
+    except NsError as e:
+        if e.code != DB_DAMAGED:
+            raise
+        return LockedDb(UnusableDb(paths.db_path, e))
     db.migrate()
     return LockedDb(db)
 

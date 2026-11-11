@@ -15,7 +15,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ns_common.db import Db
+from ns_common.db import open_assistant_db
 from ns_common.paths import Paths
 
 #: A claim this old was left by a caller that died while answering; another caller may take it over.
@@ -30,7 +30,10 @@ class AssistantStore:
     """Thread-safe access to the assistant database."""
 
     def __init__(self, paths: Paths) -> None:
-        self.db = Db(paths.assistant_db)
+        from ns_studio.notifications import db_note
+
+        # db-integrity: a damaged file is set aside in data/damaged and a new one starts, with a morning note
+        self.db = open_assistant_db(paths, None, note=db_note(paths))
         self._lock = threading.RLock()
         with self._lock:
             self.db.migrate()  # contracts/schema.sql: assistant_messages, conversations, messages, actions, queued_messages

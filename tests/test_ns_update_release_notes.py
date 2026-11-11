@@ -113,3 +113,45 @@ def test_the_cli_result_line_and_state_file_carry_the_release_notes(
     r = invoke(home, "update", "--github", "--worker")
     assert json.loads(r.output.strip().splitlines()[-1])["release_notes"] == "## [99.0.0]\n- big"
     assert update_job.read_status(Paths(home))["release_notes"] == "## [99.0.0]\n- big"
+
+
+# ---------------------------------------------------------------------------------------------- D-53
+# A candidate's changelog describes it under the heading of the release it previews (`## [0.1.15]` for
+# 0.1.15-rc4), so an update TO a candidate showed no "What is new".
+def test_a_candidate_reads_its_release_section(tmp_path: Path) -> None:
+    (tmp_path / "CHANGELOG.md").write_text(CHANGELOG, encoding="utf-8")
+    final = update.release_notes(tmp_path, "0.2.0")
+    assert final.startswith("## [0.2.0] - 2026-11-10") and "quiet clips" in final
+    for candidate in ("0.2.0-rc3", "0.2.0rc3", "v0.2.0-rc3", "0.2.0-RC3"):
+        assert update.release_notes(tmp_path, candidate) == final, candidate
+    # a release with no section of its own gets nothing: never [Unreleased], never an older section
+    for other in ("0.3.0-rc1", "0.3.0", "0.2.1-rc1", "0.2-rc1", "rc3", "0.2.0-rcX"):
+        assert update.release_notes(tmp_path, other) == "", other
+
+
+def test_a_candidates_own_heading_comes_before_its_releases(tmp_path: Path) -> None:
+    final_heading = "## [0.2.0] - 2026-11-10"
+    rc3_section = "\n".join(["## [0.2.0-rc3] - 2026-11-09", "", "- only in rc3", "", final_heading])
+    own = CHANGELOG.replace(final_heading, rc3_section)
+    (tmp_path / "CHANGELOG.md").write_text(own, encoding="utf-8")
+    assert update.release_notes(tmp_path, "0.2.0-rc3").startswith("## [0.2.0-rc3]")
+    assert "- only in rc3" in update.release_notes(tmp_path, "0.2.0rc3")
+    assert update.release_notes(tmp_path, "0.2.0-rc4").startswith("## [0.2.0] - ")  # rc4 has none of its own
+    assert update.release_notes(tmp_path, "0.2.0").startswith("## [0.2.0] - ")
+
+
+def test_a_zip_update_to_a_candidate_puts_its_release_section_in_the_result(tmp_path: Path) -> None:
+    app = make_app(tmp_path)
+    z = make_zip(tmp_path, "0.2.0-rc1", extra={"CHANGELOG.md": CHANGELOG})
+    res = update.update_app(z, app, Env().env(), paths=Paths(tmp_path / "ns"))
+    assert res.release_notes.startswith("## [0.2.0] - 2026-11-10") and "quiet clips" in res.release_notes
+
+
+def test_this_versions_changelog_has_notes_an_update_will_show() -> None:
+    """The repository's own VERSION against its own CHANGELOG.md: whatever is released from this tree shows
+    its notes after the update (a candidate: the section of the release it previews)."""
+    root = Path(__file__).resolve().parents[1]
+    version = (root / "VERSION").read_text(encoding="utf-8").strip()
+    notes = update.release_notes(root, version)
+    release = version.lower().split("-rc")[0].split("rc")[0]
+    assert notes.startswith(f"## [{version}]") or notes.startswith(f"## [{release}]"), (version, notes[:80])

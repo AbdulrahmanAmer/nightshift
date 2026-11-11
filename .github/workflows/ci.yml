@@ -1,7 +1,7 @@
 name: ci
 
 # Owner: C10 (docs/ENGINEERING.md section 7). Required status checks on main: lint, types, test, ui-build, powershell-parse, scope-check.
-# `test` is the job that gathers the test shards (test-shard (1/8) ... (8/8)); see the comment above it.
+# `test` is the job that gathers the test shards (test-shard (1/12) ... (12/12)); see the comment above it.
 # A pull request that changes documents only (H-11, dev/ci_changes.py) runs the light path: the `changes` job decides,
 # `test-docs` runs the tests that read documents, types and ui-build say "not applicable", the shards, test-collect
 # and bundle do not run, and every required check still reports. Any doubt runs everything.
@@ -103,16 +103,16 @@ jobs:
         if: needs.changes.outputs.docs_only != 'true'
 
   # The unit tests run as a matrix of shards (H-3, H-3b): dev/ci_shards.py gives each shard whole test files, split
-  # by measured seconds (dev/ci_shard_weights.json, refreshed from real JUnit timings), so each shard runs about 9.5
-  # minutes of a suite of about 76 (SHARDS in dev/ci_shards.py is the count). The required check `test` further
+  # by measured seconds (dev/ci_shard_weights.json, refreshed from real JUnit timings), so each shard runs about 8.5
+  # minutes of a suite of about 97 (SHARDS in dev/ci_shards.py is the count). The required check `test` further
   # down is the job that says whether all of them passed. On a docs-only change they do not run (`test` then
   # gathers `test-docs` instead).
   test-shard:
-    name: test-shard (${{ matrix.shard }}/8)
+    name: test-shard (${{ matrix.shard }}/12)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: windows-latest
-    # Predicted: about 9.5 minutes of tests plus about 3 of setup (the slowest shard, dev/ci_shards.py plan), 12.5 in
+    # Predicted: about 8.5 minutes of tests plus about 3 of setup (the slowest shard, dev/ci_shards.py plan), 11.5 in
     # all; tests/test_ci_workflow.py keeps the timeout at least twice the prediction of every shard, with room for
     # NEW_FILE_ROOM test files that have no measured weight yet (at 25 minutes one new test file turned every pull
     # request red, three times on 2026-11-09 and 2026-11-10).
@@ -120,7 +120,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     env:
       # Turns on the tests marked `network` (tests/test_downloader_network.py): real downloads from GitHub and
       # Hugging Face to prove pause/resume/Range/SHA256 against the real servers. Unset on a laptop = skipped.
@@ -179,7 +179,7 @@ jobs:
       - name: Unit tests (the files of this shard, everything but the real-network ones)
         if: ${{ !cancelled() }}
         shell: bash
-        run: python dev/ci_shards.py run --shard ${{ matrix.shard }} --of 8 -- -q -rs -m "not network" --junitxml=report-shard-${{ matrix.shard }}.xml
+        run: python dev/ci_shards.py run --shard ${{ matrix.shard }} --of 12 -- -q -rs -m "not network" --junitxml=report-shard-${{ matrix.shard }}.xml
       # The _online pin checks (tests/test_resolve_manifest.py) skip when a real host is in an outage that outlasts
       # three retries. Say how many did, as a warning; where NS_REQUIRE_ONLINE is set this step fails on any.
       # The final `test` job counts them again across all shards.
@@ -268,7 +268,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # THE required check `test` (branch protection names it; the shards are test-shard (1/8) ... (8/8)). The job
+  # THE required check `test` (branch protection names it; the shards are test-shard (1/12) ... (12/12)). The job
   # runs whatever happened before it (`always()`): a skipped required check would count as passed. Its steps
   # run unless the run was cancelled (`!cancelled()`), so a superseded run costs one step, not a checkout, a
   # Python and the gate; the last step then fails the job, so a cancelled run never shows a green `test`. The
@@ -328,11 +328,11 @@ jobs:
       - name: Predicted time per shard
         if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
         shell: bash
-        run: python dev/ci_shards.py plan --of 8 --limit 720 --summary
+        run: python dev/ci_shards.py plan --of 12 --limit 720 --summary
       - name: The node ids the shards ran are exactly the node ids collected unsharded
         if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
         shell: bash
-        run: python dev/ci_shards.py verify --of 8 --collected collected/collected.txt --reports reports --summary
+        run: python dev/ci_shards.py verify --of 12 --collected collected/collected.txt --reports reports --summary
       - name: Online checks skipped for an upstream outage (all shards)
         if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
         shell: bash

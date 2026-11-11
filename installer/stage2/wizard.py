@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from installer.stage2 import model_repair
 from installer.stage2.answers import AnswersError, find_answers, load_raw
 from installer.stage2.base import Step
 from installer.stage2.bridge import BridgeUi, SetupStopped
@@ -113,10 +114,12 @@ class Wizard:
     def _run(self) -> int:
         ctx = self.ctx
         ctx.resumed = ctx.state.any_done()
+        was_complete = ctx.state.state.completed_at is not None    # read before `begin` clears it: a Repair
         ctx.state.begin(ctx.profile, ctx.dev_mode)
         dropped = ctx.reconcile_flags()
         if dropped:
             ctx.log.warn("stale_flags_dropped", f"flags of an install that no longer exists: {dropped}")
+        model_repair.begin(ctx, was_complete=was_complete)
         ctx.log.info(
             "wizard_start", resumed=ctx.resumed, simulate=ctx.simulate, unattended=ctx.unattended,
             dev_mode=ctx.dev_mode,

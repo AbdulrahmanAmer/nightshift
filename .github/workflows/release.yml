@@ -22,16 +22,16 @@ jobs:
   # same three jobs in ci.yml. No `-m` filter here: the network-marked tests are collected and (without
   # NS_NETWORK_TESTS) skipped exactly as they were in the single job; ci.yml's own tag run covers them.
   test-shard:
-    name: test-shard (${{ matrix.shard }}/8)
+    name: test-shard (${{ matrix.shard }}/12)
     runs-on: windows-latest
-    # About 9.5 minutes of tests plus about 3 of setup per shard (dev/ci_shards.py plan); the same timeout as ci.yml,
+    # About 8.5 minutes of tests plus about 3 of setup per shard (dev/ci_shards.py plan); the same timeout as ci.yml,
     # which tests/test_ci_workflow.py keeps at least twice the prediction of every shard. SHARDS in dev/ci_shards.py
     # is the count; tests/test_ci_workflow.py fails when this file and ci.yml disagree on it or on the proof.
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     steps:
       - run: git config --global core.longpaths true
       - uses: actions/checkout@v4
@@ -46,7 +46,7 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - name: Tests (the files of this shard)
         shell: bash
-        run: python dev/ci_shards.py run --shard ${{ matrix.shard }} --of 8 -- -q --junitxml=report-shard-${{ matrix.shard }}.xml
+        run: python dev/ci_shards.py run --shard ${{ matrix.shard }} --of 12 -- -q --junitxml=report-shard-${{ matrix.shard }}.xml
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@v4
@@ -136,7 +136,7 @@ jobs:
       - name: The node ids the shards ran are exactly the node ids collected unsharded
         if: ${{ !cancelled() }}
         shell: bash
-        run: python dev/ci_shards.py verify --of 8 --collected collected/collected.txt --reports reports --summary
+        run: python dev/ci_shards.py verify --of 12 --collected collected/collected.txt --reports reports --summary
       - name: Twenty slowest tests
         if: ${{ !cancelled() }}
         shell: bash
@@ -236,6 +236,29 @@ jobs:
         shell: pwsh
         run: ./dev/make_bundle.ps1 -Version $env:TAG -WebView2Dir $env:WEBVIEW2_DIR
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Who made the package (card update-signing): the release key signs both zips, and an installed Nightshift
+      # installs an update only when its .sig verifies with a key it pins (ns_common/release_keys.py). The key is
+      # given to this one step and to nothing else in this workflow. dev/sign_release.py --release decides what a
+      # run without the key does (a candidate of a commit that pins no key is published unsigned, with a warning in
+      # the run summary; a final tag, or any commit that pins keys, fails here), never prints the key, and runs the
+      # shipped verifier on what it signed: a signature no installed Nightshift could check fails the run.
+      - name: Sign
+        shell: pwsh
+        env:
+          NS_RELEASE_SIGNING_KEY: ${{ secrets.NS_RELEASE_SIGNING_KEY }}
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          if ($env:NS_RELEASE_SIGNING_KEY) {
+            python -m pip install --require-hashes -r dev/sign-requirements.txt
+            if ($LASTEXITCODE -ne 0) { throw 'could not install the pinned signing library (dev/sign-requirements.txt)' }
+          }
+          python dev/sign_release.py --release $env:TAG "dist/Nightshift-Update-$version.zip" "dist/Nightshift-Setup-$version.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'the release was not signed: the lines above say why' }
+
       - name: Publish GitHub Release
         shell: pwsh
         run: |
@@ -246,6 +269,10 @@ jobs:
             "dist/Nightshift-Update-$version.zip",
             "dist/Nightshift-Update-$version.zip.sha256"
           )
+          # the signatures, when the Sign step made them (it leaves none behind for an unsigned candidate)
+          foreach ($zip in @("dist/Nightshift-Setup-$version.zip", "dist/Nightshift-Update-$version.zip")) {
+            if (Test-Path -LiteralPath "$zip.sig") { $assets += "$zip.sig" }
+          }
           # A tag with a prerelease part (v0.1.15-rc1) is a release candidate: a GitHub prerelease, never "latest", so the
           # updater (it reads /releases/latest) never offers it (H-12). A plain vX.Y.Z is published as before.
           $candidate = $version.Contains('-')

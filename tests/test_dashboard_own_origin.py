@@ -97,7 +97,7 @@ class Reached:
         monkeypatch.setattr(EngineService, "stop_all", lambda _self: self.actions.append("stop_all") or {"ok": True})
         monkeypatch.setattr(
             LibraryService, "update_apply_file",
-            lambda _self, name, zip_fh, sha_fh: self.actions.append(f"update {name}") or {"ok": True},
+            lambda _self, name, zip_fh, sha_fh, sig_fh=None: self.actions.append(f"update {name}") or {"ok": True},
         )
 
 

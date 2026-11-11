@@ -15,13 +15,14 @@ import sys
 import tempfile
 import zipfile
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 import installer.stage2.commands as commands
 import installer.stage2.shortcut_owner as so
-from installer.stage2.web import venvrepair
+from installer.stage2.web import uvpin, venvrepair
 from ns_common import (
     __version__,
     commandline,
@@ -165,6 +166,88 @@ def _add_setup_evidence(
                 _add_file(z, f, f"setup/bootstrap/{f.name}", skipped)
 
 
+def _add_database_evidence(z: zipfile.ZipFile, paths: Paths, skipped: list[str]) -> None:
+    """db-integrity: the last check, a restore in progress and the last restore (`run/db-*.json`), and the
+    NAMES and sizes of the set-aside files in data/damaged (never the files: they hold the owner's data)."""
+    from ns_common import dbrestore
+
+    for src in (dbrestore.check_path(paths), dbrestore.record_path(paths), dbrestore.restored_path(paths)):
+        if src.is_file():
+            _add_file(z, src, f"run/{src.name}", skipped)
+    folder = dbrestore.damaged_dir(paths)
+    try:
+        names = sorted(folder.iterdir()) if folder.is_dir() else []
+        lines = [f"{p.name}  {p.stat().st_size} bytes" for p in names if p.is_file()]
+    except OSError as e:
+        lines = [f"data/damaged could not be listed: {e}"]
+    if lines:
+        z.writestr("data-damaged.txt", "".join(f"{line}\n" for line in lines))
+
+
+def database_row(paths: Paths, now: datetime | None = None) -> tuple[str, bool, str]:
+    """Row "database" (db-integrity): what the last check at a start found (`run/db-check.json`), and a
+    restore of the last `RESTORED_SHOWN_DAYS` days. Read only: `ns doctor` never checks nor restores it."""
+    from ns_common import dbrestore
+
+    if dbrestore.record_path(paths).exists():
+        return ("database", False, "a replacement of the damaged database stopped mid-way; opening the "
+                "Dashboard finishes it")
+    chk = dbrestore.read_json(dbrestore.check_path(paths))
+    if chk is None:
+        ok, said = True, "not checked yet (it is checked when Nightshift starts)"
+    else:
+        at = _when(chk.get("at"))
+        result = str(chk.get("result"))
+        if result in (dbrestore.OK, dbrestore.NEW):
+            ok, said = True, f"ok (checked {at})"
+        elif result in (dbrestore.HELD, dbrestore.NEWER, dbrestore.SLOW):
+            try:
+                starts = int(chk.get("not_checked_starts") or 1)
+            except (TypeError, ValueError):
+                starts = 1
+            if starts >= dbrestore.NOT_CHECKED_SAID_AFTER:  # a bound: never "ok" for ever
+                ok, said = False, (f"could not be checked at the last {starts} starts ({chk.get('detail')}); "
+                                   f"{dbrestore.newest_copy_words(paths)}; close every Nightshift window and "
+                                   "any other program that uses the Nightshift folder, then open the "
+                                   "Dashboard")
+            else:
+                ok, said = True, f"not checked {at} ({chk.get('detail')}); it is checked at the next start"
+        elif result == "restore_failed":
+            ok, said = False, str(chk.get("detail"))
+        else:
+            ok, said = False, f"found damaged {at}; opening the Dashboard replaces it with the newest copy"
+    nights = dbrestore.read_json(dbrestore.backup_state_path(paths))
+    if nights is not None and nights.get("failed_nights"):
+        ok = False
+        said += (f"; no nightly copy was made on the last {nights.get('failed_nights')} night(s) "
+                 f"({nights.get('last_error')}); {dbrestore.newest_copy_words(paths)}")
+    if dbrestore.full_check_path(paths).exists():
+        said += "; it answered 'damaged' while in use: the next start checks it in full"
+    done = dbrestore.read_json(dbrestore.restored_path(paths))
+    if done is not None:
+        restored: datetime | None = None
+        try:
+            restored = datetime.fromisoformat(str(done["restored_at"]))
+            age_days = ((now or datetime.now(UTC)) - restored).total_seconds() / 86400
+        except (KeyError, ValueError, TypeError):
+            age_days = None
+        if restored is not None and age_days is not None and age_days < dbrestore.RESTORED_SHOWN_DAYS:
+            on = restored.astimezone().strftime("%Y-%m-%d")
+            if done.get("backup") and done.get("backup_time") is not None:
+                made = datetime.fromtimestamp(float(done["backup_time"])).strftime("%Y-%m-%d")
+                said += f"; restored from the backup of {made} on {on}"
+            else:
+                said += f"; made new on {on} (no good backup), the videos put back from their folders"
+    return ("database", ok, said)
+
+
+def _when(raw: object) -> str:
+    try:
+        return datetime.fromisoformat(str(raw)).astimezone().strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return "at an unknown time"
+
+
 def build_bundle(
     paths: Paths,
     *,
@@ -209,6 +292,7 @@ def build_bundle(
                 _add_file(z, src, arc, skipped)
             elif arc in ("install_state.json", "runtime.json", "verify-report.json"):
                 skipped.append(f"{arc}: not found")
+        _add_database_evidence(z, paths, skipped)
         _add_setup_evidence(
             z, paths, skipped, setup_dir or setup_data_dir(), temp_dir or Path(tempfile.gettempdir())
         )
@@ -253,6 +337,7 @@ def diagnose(
     profile = rt.profile if rt is not None else None    # None: the install's kind is unknown
     st, state_row = install_state_row(paths)
     rows.append(state_row)
+    rows.append(database_row(paths))
     for venv in ("studio", "supervisor"):
         py = paths.venvs / venv / "Scripts" / "python.exe"
         rows.append((f"venv {venv}", py.exists(), str(py)))
@@ -285,8 +370,10 @@ def diagnose(
     rows.append(commands_row(paths))
     rows += stock_key_rows(paths)
     app = Path(st.app_path) if st.app_path else repo_root()
+    rows += model_rows(paths, app)
     rows.append(program_folders(paths, app, on_wait))
     rows.append(python_environments(paths, app))
+    rows.append(uv_row(paths, app))
     return rows
 
 
@@ -339,6 +426,76 @@ def stock_key_rows(
         else:
             rows.append((f"stock key {p}", True, f"could not be checked now ({a.code}): {a.sentence}"))
     return rows
+
+
+#: The row that says when the model files were last read by hash (card model-file-damaged, M2).
+HASH_ROW = "model files last checked by hash"
+
+
+def model_rows(paths: Paths, app: Path) -> list[tuple[str, bool, str]]:
+    """M1, M2 (card model-file-damaged): one row per kind of model file of this install (language, story,
+    embed, voice, whisper, face finder), from stat calls and the check record only, so plain `ns doctor` stays
+    fast: missing, a stopped download (it continues), the wrong size, or recorded damaged are FAIL rows with
+    the way out; then when the files were last read by hash, with how long `ns verify --downloads` takes."""
+    from installer.stage2 import verify_downloads as vd
+    from installer.stage2.downloader import human_bytes
+    from installer.stage2.web import modelmarks
+
+    try:
+        items = vd.model_items(paths, app)
+    except Exception as e:  # noqa: BLE001 - a row, never a traceback (no answers yet, an unreadable manifest)
+        return [("model files", True, f"{WARN}not checked: {e}")]
+    damaged = modelmarks.recorded_damage(paths.home)
+    groups: dict[str, list[vd.DownloadItem]] = {}
+    for item in items:  # "language model files", "voice model files" (not the runtime rows "llm/embed model")
+        kind = vd.role(item, paths)
+        groups.setdefault("voice model files" if kind == "voice models" else f"{kind} files", []).append(item)
+    rows: list[tuple[str, bool, str]] = []
+    for label, group in groups.items():
+        bad: list[str] = []
+        notes: list[str] = []
+        size = present = 0
+        for item in group:
+            row = vd.check_item(item, quick=True)
+            present += row.size is not None
+            where = modelmarks.key_of(paths.home, Path(item.dest)).replace("/", "\\")
+            found = damaged.get(modelmarks.key_of(paths.home, Path(item.dest)))
+            if row.status in (vd.MISSING, vd.BAD):
+                bad.append(f"{row.status} ({where}{f': {row.detail}' if row.detail else ''}). {row.fix}")
+            elif found is not None:
+                bad.append(f"damaged ({where}: its SHA256 did not match at the check of "
+                           f"{found.get('checked_at')}). {vd.REPAIR.format(what=vd.what(item))}")
+            elif row.status == vd.NO_PIN and item.size:
+                notes.append(f"{Path(item.dest).name}: its size is right; it has no pinned SHA256, so it "
+                             "cannot be checked by hash (NS-W113)")
+            size += row.size or 0
+        ok = f"{present} file{'s' if present != 1 else ''} present, {human_bytes(size)}, sizes as downloaded"
+        rows.append((label, not bad, " ".join(bad) or "; ".join([ok, *notes])))
+    rows.append(hash_row(paths, items))
+    return rows
+
+
+def hash_row(paths: Paths, items: list[Any]) -> tuple[str, bool, str]:
+    """M2: when the model files were last read by hash (the oldest of them), or never, with the estimate of
+    a full check (the speed measured here, else 500 MB/s on an SSD, 120 MB/s on a hard disk)."""
+    from installer.stage2 import verify_downloads as vd
+    from installer.stage2.downloader import human_bytes, pinned_sha256
+
+    pinned = [i for i in items if pinned_sha256(i.sha256) and not i.stub and Path(i.dest).is_file()]
+    if not pinned:
+        return (HASH_ROW, True, "no model file with a pinned SHA256 here")
+    total = sum(vd._size(Path(i.dest)) for i in pinned)
+    bps, where = vd.default_speed(paths)
+    estimate = f"about {vd.duration_text(total / bps)} for {human_bytes(total)} here, at {vd.speed_text(bps)}"
+    seen = [vd.last_hashed(paths, i) for i in pinned]
+    never = sum(1 for s in seen if s is None)
+    if never:
+        part = "" if never == len(pinned) else f" for {never} of {len(pinned)} files"
+        return (HASH_ROW, True, f"{WARN}never{part}. Run 'ns verify --downloads' ({estimate}, {where}).")
+    first = min(s for s in seen if s)
+    oldest = f"{first[:10]} {first[11:16]} UTC"
+    return (HASH_ROW, True, f"{oldest} (the oldest of {len(pinned)} files); 'ns verify --downloads' checks "
+                            f"them again ({estimate}, {where})")
 
 
 def runtime_rows_of(paths: Paths) -> tuple[Runtime | None, list[tuple[str, bool, str]]]:
@@ -433,6 +590,14 @@ def python_environments(paths: Paths, app: Path) -> tuple[str, bool, str]:
 
 #: A row that is not a failure but needs the owner: printed as `[WARN]` by `ns doctor`.
 WARN = "WARN: "
+
+
+def uv_row(paths: Paths, app: Path) -> tuple[str, bool, str]:
+    """The row "uv" (item uv-pin-on-update): the install's uv against the version the program in `app` pins
+    (`manifest.json` `bins.uv`). They differ after an update or rollback that was killed between its uv swap
+    and its program swap; the row says so with the way out. It runs `uv --version` and changes nothing."""
+    ok, text = uvpin.doctor_line(paths.home, app)
+    return ("uv", True, text if ok else WARN + text)
 
 
 def commands_row(

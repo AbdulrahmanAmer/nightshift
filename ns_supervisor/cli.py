@@ -407,7 +407,8 @@ def cmd_update(
     what = "The update"
     if zip_path is not None:
         try:
-            new_version, _prefix = update.verify_package(zip_path.resolve())    # a bad zip: nothing started
+            # F1: a zip that is damaged or not signed by a key this version trusts: nothing is started
+            new_version, _prefix = update.verify_package(zip_path.resolve())
         except NsError as e:
             raise _die(e) from e
         what = f"The update to {new_version}"
