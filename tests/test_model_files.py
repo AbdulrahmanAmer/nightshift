@@ -443,7 +443,7 @@ def test_the_setup_window_over_a_finished_install_with_a_damaged_model_opens_the
     model.write_bytes(content("a.gguf") + b"!")  # changed since setup verified it
     from tests.test_installer_web_controller import Setup
 
-    state = Setup(tmp_path, monkeypatch).snap()  # (one window: a second one finds the step already reopened)
+    state = Setup(tmp_path, monkeypatch).snap()  # (the first window built over the damaged install)
     steps = {st["id"]: st["status"] for st in state["steps"]}
     assert state["run"] != "finished" and steps["s03_download_models"] == "pending", steps
     assert all(s in ("done", "skipped") for k, s in steps.items() if k != "s03_download_models"), steps

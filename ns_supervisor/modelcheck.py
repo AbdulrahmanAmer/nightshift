@@ -24,6 +24,7 @@ checked, and the sentence says so.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -60,8 +61,9 @@ def files_for(service: str, cmd: list[str], items: list[DownloadItem]) -> list[D
     """The planned model files a service loads: the ``-m`` file of llama-server (llama, embed), every voice
     model of a real voice engine (tts), whisper's files (whisper). A file outside the plan is not checked."""
     if service in ("llama", "embed"):
-        wanted = {cmd[i + 1].lower() for i, a in enumerate(cmd[:-1]) if a == "-m"}
-        return [i for i in items if str(i.dest).lower() in wanted]
+        # runtime.json may spell the path with forward slashes or another case: compare normalised paths
+        wanted = {os.path.normcase(str(Path(cmd[i + 1]))) for i, a in enumerate(cmd[:-1]) if a == "-m"}
+        return [i for i in items if os.path.normcase(str(Path(i.dest))) in wanted]
     if service == "tts":
         if "--engine" in cmd and cmd[cmd.index("--engine") + 1:][:1] == ["fake"]:
             return []

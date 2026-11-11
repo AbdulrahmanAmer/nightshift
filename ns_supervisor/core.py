@@ -468,7 +468,8 @@ class Supervisor:
             if len(rt.crashes) >= self.cfg.crash_max:
                 rt.state = "error"
                 self._emit(rt, "error")
-                # (the files of a failed start were checked then: the verdict is known, nothing is hashed)
+                # after failed starts the verdict is known and nothing is hashed; after crashes at work the
+                # files are hashed here once (bounded, `modelcheck.BOUND_S`)
                 found = await asyncio.to_thread(self.model_files.after_failure, rt.name, d.cmd)
                 if found.damaged is not None:
                     raise found.damaged

@@ -665,14 +665,14 @@ class SetupController:
             # a Repair (card model-file-damaged): a model file recorded damaged, gone or changed since setup
             # verified it, or a damaged copy a Repair set aside, is setup's work. Done would leave it so: the
             # models step runs again (Continue), and on a run over a finished install it checks every model by
-            # hash (`model_repair`)
+            # hash (`model_repair`). Only this window's view changes: opening it writes nothing (the wizard
+            # asks the step itself, and a window closed without Continue leaves the install as it was)
             self._models_owed = modelmarks.repair_owed(self.home)
             if self._models_owed:
                 others_done = False
                 for st in steps:
                     if st["id"] == MODELS_STEP:
                         st["status"], st["finishedAt"] = "pending", None
-                self._persist_step(MODELS_STEP, "pending", None)
         if others_done:
             for st in steps:                               # a console install made no samples: not unfinished
                 if st["id"] in WINDOW_ONLY_STEPS and st["status"] == "pending":
