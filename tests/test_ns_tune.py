@@ -301,7 +301,7 @@ def test_the_tune_line_is_true_when_the_smallest_context_was_slower_or_did_not_l
 ) -> None:
     said = ns_tune(tmp_path / "a", monkeypatch, Flat(factor={16384: 0.8}), "cpu-dev", False)
     assert f"context 32768 tokens: the smallest that {FITS} is 16384" in said
-    assert "more than 5 % slower or did not load" in said
+    assert "more than 5 % slower in every measurement, or did not load, so this one is used" in said
     assert f"smallest that {FITS};" not in said
 
 
@@ -311,3 +311,135 @@ def test_the_gpu_profile_says_nothing_new_about_the_context(
     said = ns_tune(tmp_path, monkeypatch, Flat(), "gpu", True)
     assert "memory this PC needs" not in said and "context 32768 tokens" not in said
     assert said.rstrip().splitlines()[-1] == "Saved to runtime.json."
+
+
+# ---------------------------------------------------------------------------------------------- D-52
+# QA on rc4 typed `ns tune` twice on a processor-only PC: run 1 saved 32768 (its first load, cold, stood for
+# the floor at 6.0 tok/s against 11.2), run 2 saved 16384 (6.3, 6.3, 6.1, 6.2). One measurement per candidate,
+# the first of them cold: the 5 % rule decided on noise.
+Speeds = dict[tuple[int, str], list[float | None]]
+
+
+class ByCandidate:
+    """A runner that answers per context candidate, in the order that candidate is asked (the last answer
+    repeats; None: that load fails). The run's FIRST call answers `cold` whatever it is asked (stage 1's
+    load); a call with MTP on answers 1.0, so it never wins and the context stage's choice stays."""
+
+    def __init__(self, cold: float, speeds: Speeds) -> None:
+        self.calls: list[LlamaFlags] = []
+        self.cold = cold
+        self.left = {k: list(v) for k, v in speeds.items()}
+
+    def __call__(self, rt: Runtime) -> tuple[float, float]:
+        f = rt.llama.flags
+        self.calls.append(f)
+        if len(self.calls) == 1:
+            return self.cold, 60.0
+        if f.spec_type:
+            return 1.0, 5.0
+        answers = self.left[(f.ctx, f.kv_type)]
+        t = answers.pop(0) if len(answers) > 1 else answers[0]
+        if t is None:
+            raise NsError("NS-E202", "out of memory")
+        return t, 5.0
+
+
+def chosen_context(tmp_path: Path, runner: ByCandidate, profile: str = "cpu-dev") -> tuple[int, str]:
+    paths, rt = install(tmp_path, profile, False)
+    out = tune.tune(paths, rt, runner)
+    assert out.ok and out.flags is not None, out.warnings
+    assert load_runtime(paths).llama.flags == out.flags
+    return out.flags.ctx, out.flags.kv_type
+
+
+def flat(speed: float) -> Speeds:
+    return {(c, kv): [speed] for c in (16384, 32768) for kv in ("f16", "q8_0")}
+
+
+def test_the_first_load_of_a_run_is_never_a_sample(tmp_path: Path) -> None:
+    """The run's first load is the cold one (the model file is not in memory yet): 6.0 where every later load
+    measures 10.0. It decides nothing: the processor profile keeps the floor with q8_0, exactly as when every
+    load measures the same, and the gpu profile its roomiest."""
+    runner = ByCandidate(6.0, flat(10.0))
+    assert chosen_context(tmp_path / "cpu", runner) == (16384, "q8_0")
+    asked = [(f.ctx, f.kv_type) for f in runner.calls if not f.spec_type]
+    # stage 1 once (cold, not counted), then every candidate twice, the floor's own included
+    assert asked[0] == (16384, "f16") and len(asked) == 1 + 4 * tune.CPU_REPEATS, asked
+    assert asked[1:] == [(c, kv) for c in (16384, 32768) for kv in ("f16", "q8_0") for _ in range(2)], asked
+    gpu = ByCandidate(6.0, flat(10.0))
+    assert chosen_context(tmp_path / "gpu", gpu, "gpu") == (32768, "f16")
+    assert len([f for f in gpu.calls if not f.spec_type]) == 1 + 4      # once each on the gpu profile
+
+
+def test_on_the_cpu_profile_a_larger_context_wins_only_when_faster_in_every_measurement(
+    tmp_path: Path,
+) -> None:
+    floor: Speeds = {(16384, "f16"): [10.0, 10.0], (16384, "q8_0"): [10.0, 10.0]}
+    # faster in one measurement only (10.4 is within 5 % of the floor's 10.0): the floor is kept
+    once = {**floor, (32768, "f16"): [10.6, 10.4], (32768, "q8_0"): [10.6, 10.4]}
+    assert chosen_context(tmp_path / "once", ByCandidate(8.0, once)) == (16384, "q8_0")
+    # more than 5 % faster in both measurements: the larger one is used (q8_0 before f16 among equals)
+    both = {**floor, (32768, "f16"): [10.6, 10.6], (32768, "q8_0"): [10.6, 10.6]}
+    assert chosen_context(tmp_path / "both", ByCandidate(8.0, both)) == (32768, "q8_0")
+    # ... but not against a floor measurement that was as fast once (one of the floor's four reached 10.3)
+    near = {**both, (16384, "q8_0"): [10.0, 10.3]}
+    assert chosen_context(tmp_path / "near", ByCandidate(8.0, near))[0] == 16384
+    # one of the larger one's two loads fails: that candidate is not compared at all
+    fails = {**floor, (32768, "f16"): [12.0, None], (32768, "q8_0"): [None]}
+    assert chosen_context(tmp_path / "fails", ByCandidate(8.0, fails)) == (16384, "q8_0")
+    # the floor itself does not load a second time in either KV type: a larger one that does is used (D-44)
+    no_floor: Speeds = {
+        (16384, "f16"): [None], (16384, "q8_0"): [10.0, None],
+        (32768, "f16"): [9.0, 9.0], (32768, "q8_0"): [9.0, 9.0],
+    }  # fmt: skip
+    assert chosen_context(tmp_path / "nofloor", ByCandidate(8.0, no_floor)) == (32768, "q8_0")
+
+
+def test_the_d52_numbers_choose_the_same_context_twice(tmp_path: Path) -> None:
+    """QA's two runs replayed: the cold 6.0 first, then numbers near 9.9, 11.2 and 10.1 with the scatter two
+    warm loads of one candidate show; and the second run's 6.3, 6.3, 6.1, 6.2. Both keep 16384."""
+    run1: Speeds = {
+        (16384, "f16"): [9.8, 10.1], (16384, "q8_0"): [9.9, 10.0],
+        (32768, "f16"): [11.2, 10.3], (32768, "q8_0"): [10.1, 10.2],
+    }  # fmt: skip
+    run2: Speeds = {
+        (16384, "f16"): [6.3, 6.2], (16384, "q8_0"): [6.3, 6.3],
+        (32768, "f16"): [6.1, 6.4], (32768, "q8_0"): [6.2, 6.1],
+    }  # fmt: skip
+    assert chosen_context(tmp_path / "run1", ByCandidate(6.0, run1))[0] == 16384
+    assert chosen_context(tmp_path / "run2", ByCandidate(6.3, run2))[0] == 16384
+
+
+def test_nothing_loads_a_second_time_keeps_what_loaded_once(tmp_path: Path) -> None:
+    """Every stage 2 load fails (a PC at the edge of its memory): the flags that did load in stage 1 are kept,
+    the floor with f16, and the line says the floor was chosen."""
+    nothing: Speeds = {(c, kv): [None] for c in (16384, 32768) for kv in ("f16", "q8_0")}
+    paths, rt = install(tmp_path, "cpu-dev", False)
+    out = tune.tune(paths, rt, ByCandidate(7.0, nothing))
+    assert out.ok and out.flags is not None and (out.flags.ctx, out.flags.kv_type) == (16384, "f16")
+    assert out.context_note.startswith("context 16384 tokens: the smallest that ")
+
+
+def test_pick_context_alone() -> None:
+    cpu, gpu = rt_for(profile="cpu-dev"), rt_for()
+    f16, q8 = LlamaFlags(ctx=16384, kv_type="f16"), LlamaFlags(ctx=16384, kv_type="q8_0")
+    big = LlamaFlags(ctx=32768, kv_type="f16")
+    # cpu-dev: each of the larger one's measurements must be more than 5 % above each of the floor's
+    assert tune.pick_context(cpu, [(f16, [10.0, 10.0]), (big, [10.6, 10.5])], 16384)[0] is f16
+    assert tune.pick_context(cpu, [(f16, [10.0, 10.0]), (big, [10.6, 10.6])], 16384)[0] is big
+    three = [(f16, [10.0, 10.0]), (q8, [10.0, 10.2]), (big, [10.6, 10.6])]
+    assert tune.pick_context(cpu, three, 16384)[0] is q8          # one floor measurement was as fast once
+    assert tune.pick_context(cpu, [(big, [3.0, 3.0])], 16384)[0] is big           # the floor did not load
+    flags, speed = tune.pick_context(cpu, [(f16, [10.0, 12.0]), (q8, [9.0, 9.0])], 16384)
+    assert flags is f16 and speed == 11.0                 # f16's slowest (10.0) is more than 5 % above q8_0's
+    # gpu: one measurement each, the roomiest within 5 % of the fastest, as before
+    assert tune.pick_context(gpu, [(f16, [50.0]), (big, [49.0])], 16384)[0] is big
+    assert tune.pick_context(gpu, [(f16, [50.0]), (big, [40.0])], 16384)[0] is f16
+
+
+def test_the_dry_run_says_how_often_each_context_is_measured() -> None:
+    cpu = "\n".join(tune.matrix_lines(rt_for(profile="cpu-dev")))
+    assert "each measured 2 times" in cpu and "its speed is not counted" in cpu
+    assert "about 12+ llama-server loads" in cpu           # 1 + 4 candidates x 2 + 3 MTP
+    gpu = "\n".join(tune.matrix_lines(rt_for()))
+    assert "each measured" not in gpu and "about 8+ llama-server loads" in gpu    # 1 + 4 + 3
