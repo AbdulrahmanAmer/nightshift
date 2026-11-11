@@ -19,8 +19,18 @@ named (closing them is no advice). Programs are named by process name only, neve
 
 What a model needs: the largest of the last `KEEP` measured loads of the same service, variant, model file,
 context and flags (`run/vram-need.json`: total used after `ready` minus total used just before the spawn,
-which works under WDDM too), else the estimate
-`model file MiB + ctx / 1024 x KV_MB_PER_1K_CTX + LOAD_OVERHEAD_MB`.
+which works under WDDM too), or the lower bound a failed load left (`min_mb`), else the estimate
+`model file MiB + ctx / 1024 x KV_MB_PER_1K_CTX + LOAD_OVERHEAD_MB`, which ignores what `-ngl` and
+`--n-cpu-moe` keep off the card and so NEVER refuses a load: a never-measured model is tried, and measured.
+
+The rule (`judge`): a load is refused (or a nightly waits) ONLY when a MEASURED need does not fit a SETTLED
+reading because of memory OTHER programs hold, and would fit an idle card. Settled (`settled`, `check`): after
+one of our tenants stops, the card is read again (every 0.5 s, at most 10 s) until its memory came back;
+without one, until the reading stops falling; a reading still waiting for our own memory never refuses.
+Others: used minus our known MiB minus what an idle card of this PC keeps (`record_idle`: the smallest reading
+seen with nothing of ours on it, else `IDLE_ALLOWANCE_MB`) and, for a studio holder, its own context
+(`HOLDER_CONTEXT_MB`). A need that does not fit even an idle card is a tuning matter (NS-E203), never "another
+program".
 """
 
 from __future__ import annotations
@@ -28,6 +38,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -36,7 +47,7 @@ from typing import Any
 
 from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.paths import Paths
-from ns_supervisor.gpu import SmiSource, labelled
+from ns_supervisor.gpu import SmiSource, labelled, simulated_mark
 from ns_supervisor.services import ServiceDef
 
 #: Memory a load must leave free beyond its need (a window opening, the driver's own growth).
@@ -54,6 +65,19 @@ WAIT_MIN_S, WAIT_MAX_S = 60, 1800
 KV_MB_PER_1K_CTX = 64
 #: Compute buffers and the CUDA context of a load, beyond the weights and the KV cache.
 LOAD_OVERHEAD_MB = 700
+#: What an idle card of this PC keeps in use (Windows' desktop, the driver) before Nightshift has read its own
+#: idle card (`record_idle`): the GPU PC showed 812 MiB idle (tests/fixtures/supervisor).
+IDLE_ALLOWANCE_MB = 1024
+#: The studio's own CUDA context (whisper ran in its process), which a WDDM driver never reports per process:
+#: allowed for when the GPU holder is a studio process that named its pid.
+HOLDER_CONTEXT_MB = 512
+#: After one of our tenants stops, how long the card is read again for its memory to come back (as `ns verify`
+#: polls 10 x 0.5 s), how often, and what counts as "stopped falling" and as "given back".
+SETTLE_S, SETTLE_POLL_S = 10.0, 0.5
+SETTLE_READS = round(SETTLE_S / SETTLE_POLL_S)  # 20: the settle never reads more often than this
+SETTLE_STEP_MB, SETTLE_SLACK_MB = 64, 256
+#: A stop of ours this long before a check is past: its memory had its time (a later reading is the card's).
+RELEASE_STALE_S = 30.0
 #: Measured loads kept per model (the need is the largest of them).
 KEEP = 3
 READ_TIMEOUT_S = 5.0
@@ -206,54 +230,114 @@ def estimate_mb(d: ServiceDef, model_dir: str | None = None) -> int:
 @dataclass(frozen=True)
 class Need:
     mb: int
-    measured: bool  # False: the estimate
+    measured: bool  # a measured load (or a failed load's lower bound); False: the estimate (never refuses)
+    lower: bool = False  # "more than `mb`": the model did not start with `mb` + margin free
 
 
 def _need_file(paths: Paths) -> Path:
     return paths.home / "run" / NEED_FILE
 
 
-def _entries(paths: Paths) -> list[dict[str, Any]]:
-    """The measured loads; a missing, torn or foreign file is none (the estimate is used, as before any)."""
+def _load(paths: Paths) -> dict[str, Any]:
+    """`run/vram-need.json`; a missing, torn or foreign file is empty (estimates and the idle allowance)."""
     try:
         data = json.loads(read_text_retry(_need_file(paths), "utf-8-sig"))
     except (OSError, ValueError):
-        return []
-    entries = data.get("entries") if isinstance(data, dict) else None
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _entries(data: dict[str, Any]) -> list[dict[str, Any]]:
+    entries = data.get("entries")
     return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
 
 
+def _save(paths: Paths, data: dict[str, Any]) -> None:
+    path = _need_file(paths)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_text_atomic(path, json.dumps({"version": 1, **data}, indent=2) + "\n")
+
+
 def need(paths: Paths, d: ServiceDef, model_dir: str | None = None) -> Need:
-    """The largest of the last `KEEP` measured loads of this exact model, else the estimate."""
+    """The largest of the last `KEEP` measured loads of this exact model (and of a failed load's lower bound,
+    `min_mb`), else the estimate (`measured` False: it never refuses a load)."""
     key = need_key(d)
-    for e in _entries(paths):
+    for e in _entries(_load(paths)):
         if all(e.get(k) == v for k, v in key.items()):
             mbs = [int(m) for m in e.get("mb") or [] if isinstance(m, int) and m > 0][-KEEP:]
-            if mbs:
-                return Need(max(mbs), True)
+            low = e.get("min_mb") if isinstance(e.get("min_mb"), int) and e["min_mb"] > 0 else None
+            if mbs or low:
+                top = max([*mbs, low or 0])
+                return Need(top, True, lower=low is not None and low >= max(mbs, default=0))
     return Need(estimate_mb(d, model_dir), False)
 
 
-def record(paths: Paths, d: ServiceDef, mb: int, mark: str | None, now: datetime) -> None:
-    """Keep one measured load (`mb` > 0) of `d`'s model; a simulated card's number says so (`card`). Raises
-    OSError when the file cannot be written (the caller logs it; the next load measures again)."""
-    if mb <= 0:
-        return
+def _mine(data: dict[str, Any], d: ServiceDef) -> dict[str, Any]:
     key = need_key(d)
-    entries = _entries(paths)
+    entries = _entries(data)
+    data["entries"] = entries
     mine = next((e for e in entries if all(e.get(k) == v for k, v in key.items())), None)
     if mine is None:
         mine = dict(key)
         entries.append(mine)
-    mine["mb"] = [*[m for m in mine.get("mb") or [] if isinstance(m, int)], int(mb)][-KEEP:]
-    mine["at"] = now.strftime(_STAMP)
+    return mine
+
+
+def _stamp(entry: dict[str, Any], mark: str | None, now: datetime) -> None:
+    entry["at"] = now.strftime(_STAMP)
     if mark is not None:
-        mine["card"] = mark
+        entry["card"] = mark  # measured on the simulated card: never evidence of a real one
     else:
-        mine.pop("card", None)
-    path = _need_file(paths)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    write_text_atomic(path, json.dumps({"version": 1, "entries": entries}, indent=2) + "\n")
+        entry.pop("card", None)
+
+
+def record(paths: Paths, d: ServiceDef, mb: int, mark: str | None, now: datetime) -> None:
+    """Keep one measured load (`mb` > 0) of `d`'s model; a load that worked ends a failed load's lower bound.
+    Raises OSError when the file cannot be written (the caller logs it; the next load measures again)."""
+    if mb <= 0:
+        return
+    data = _load(paths)
+    mine = _mine(data, d)
+    mine["mb"] = [*[m for m in mine.get("mb") or [] if isinstance(m, int)], int(mb)][-KEEP:]
+    mine.pop("min_mb", None)
+    _stamp(mine, mark, now)
+    _save(paths, data)
+
+
+def record_failure(paths: Paths, d: ServiceDef, free_mb: int, mark: str | None, now: datetime) -> None:
+    """A load that failed to start with `free_mb` free: its need is more than that minus the margin, so the
+    next check compares that lower bound (`min_mb`) instead of the estimate. Raises OSError as `record`."""
+    low = free_mb - MARGIN_MB + 1
+    if low <= 0:
+        return
+    data = _load(paths)
+    mine = _mine(data, d)
+    old = mine.get("min_mb")
+    mine["min_mb"] = max(old if isinstance(old, int) else 0, low)
+    _stamp(mine, mark, now)
+    _save(paths, data)
+
+
+def idle_mb(paths: Paths) -> int | None:
+    """What this PC's card showed in use with nothing of Nightshift's on it (the smallest such reading)."""
+    idle = _load(paths).get("idle")
+    mb = idle.get("mb") if isinstance(idle, dict) else None
+    return mb if isinstance(mb, int) and mb >= 0 else None
+
+
+def record_idle(paths: Paths, used_mb: int, mark: str | None, now: datetime) -> bool:
+    """Keep `used_mb`, read with nothing of ours on the card, when it is the smallest seen yet (a reading
+    taken while a game was open is higher, and the next quiet one replaces it). True when it was written."""
+    data = _load(paths)
+    old = data.get("idle")
+    if isinstance(old, dict) and isinstance(old.get("mb"), int) and old["mb"] <= used_mb:
+        return False
+    idle: dict[str, Any] = {"mb": int(used_mb)}
+    _stamp(idle, mark, now)
+    data["idle"] = idle
+    data["entries"] = _entries(data)
+    _save(paths, data)
+    return True
 
 
 # ------------------------------------------------------------------------------------------ the check
@@ -276,16 +360,25 @@ def _minutes(seconds: float) -> str:
 
 @dataclass(frozen=True)
 class Verdict:
-    """The check's answer: may the load go ahead, and the numbers and names its words are made of."""
+    """The check's answer and the numbers and names its words are made of. `refuse` only when a MEASURED need
+    does not fit a SETTLED reading because of memory OTHER programs hold, and it would fit without them."""
 
-    ok: bool
     need: Need
     reading: Reading
-    free_mb: int  # total minus what others hold (our own known MiB taken off)
-    others_mb: int  # used minus our own known MiB: other programs and Windows
+    free_mb: int  # total minus used (our own known MiB taken off)
+    others_mb: int  # used minus our own known MiB minus what an idle card and our holder's context keep
+    allowance_mb: int  # what an idle card of this PC keeps (+ the studio holder's own context)
+    fits: bool
+    settled: bool
+    oversize: bool  # does not fit even an idle card: a tuning matter, never "another program"
+    refuse: bool
     named: tuple[Program, ...] = ()  # other programs, not system ones, not ours
     mark: str | None = None
     what: str = "the model"
+
+    @property
+    def ok(self) -> bool:
+        return not self.refuse
 
     def programs(self) -> str:
         """`(game.exe, chrome.exe; Windows does not say how much each uses)`, with numbers where the driver
@@ -305,8 +398,11 @@ class Verdict:
                 f"{gb(self.reading.total_mb)} {self.programs()}")  # fmt: skip
 
     def needs(self) -> str:
-        about = "" if self.need.measured else "about "
-        return f"{self.what} needs {about}{gb(self.need.mb)}"
+        if not self.need.measured:
+            return f"{self.what} needs about {gb(self.need.mb)} (not measured yet)"
+        if self.need.lower:
+            return f"{self.what} needs more than {gb(self.need.mb)} (it did not start with that much free)"
+        return f"{self.what} needs {gb(self.need.mb)} (measured on its last load)"
 
     def detail(self, waited_s: float | None = None) -> str:
         """NS-E208's detail (the caller's error, the morning note): what held the memory, what was needed."""
@@ -316,11 +412,30 @@ class Verdict:
             text += f"; Nightshift waited {_minutes(waited_s)} for it"
         return labelled(self.mark, text) or text
 
+    def too_big(self) -> str:
+        """NS-E203's detail when even an idle card cannot hold the need: tuning, no program blamed."""
+        text = (f"{self.needs()} with {gb(MARGIN_MB)} to spare, more than the graphics card's "
+                f"{gb(self.reading.total_mb)} holds beside what Windows keeps "
+                f"({gb(self.allowance_mb)})")  # fmt: skip
+        return labelled(self.mark, text) or text
+
     def waiting(self) -> str:
         """The Queue's sentence while a nightly acquire waits (`/status` `gpu_wait.said`)."""
         text = (f"Waiting for the graphics card's memory: {self.others(now=True)}, and {self.needs()}. "
                 "Close them and the run goes on.")  # fmt: skip
         return labelled(self.mark, text) or text
+
+    def why_tried(self) -> str | None:
+        """Why a load that does not fit the reading goes ahead anyway (None when it fits or is refused)."""
+        if self.fits or self.refuse:
+            return None
+        if not self.need.measured:
+            return "the need is only estimated (a model is tried and measured before a check can refuse it)"
+        if self.oversize:
+            return "the measured need does not fit even an idle card (a tuning matter: NS-E203 if it fails)"
+        if not self.settled:
+            return "the memory Nightshift gave back had not come free within the settle time"
+        return "no memory beyond what an idle card keeps is held by other programs"
 
     def numbers(self) -> dict[str, Any]:
         return {"need_mb": self.need.mb, "need_measured": self.need.measured, "free_mb": self.free_mb,
@@ -328,11 +443,26 @@ class Verdict:
                 "names": [p.name for p in self.named]}  # fmt: skip
 
 
-def judge(reading: Reading, want: Need, ours: Collection[int], *, mark: str | None, what: str) -> Verdict:
-    """Free = total minus (used minus our own known MiB); the load goes ahead when free >= need + margin."""
+def judge(
+    reading: Reading,
+    want: Need,
+    ours: Collection[int],
+    *,
+    allowance_mb: int,
+    settled: bool,
+    mark: str | None,
+    what: str,
+) -> Verdict:
+    """THE rule. Free = total - used (+ our own MiB where the driver gives it). Others = used - our own known
+    MiB - `allowance_mb` (what an idle card of this PC keeps, and the studio holder's own context). It fits
+    at free >= need + margin. It is refused only when it does not fit AND the need is measured AND the reading
+    is settled AND others hold memory AND it would fit an idle card (not `oversize`)."""
     own = sum(p.mb or 0 for p in reading.programs if p.pid in ours)
-    others = max(0, reading.used_mb - own)
-    free = reading.total_mb - others
+    free = reading.total_mb - reading.used_mb + own
+    others = max(0, reading.used_mb - own - allowance_mb)
+    fits = free >= want.mb + MARGIN_MB
+    oversize = want.mb + MARGIN_MB > reading.total_mb - allowance_mb
+    refuse = not fits and want.measured and settled and others > 0 and not oversize
     named = [p for p in reading.programs if p.pid not in ours and p.name.lower() not in SYSTEM]
     named.sort(key=lambda p: -(p.mb or 0))
     unique: dict[str, Program] = {}
@@ -343,9 +473,27 @@ def judge(reading: Reading, want: Need, ours: Collection[int], *, mark: str | No
             unique[p.name.lower()] = Program(q.pid, q.name, both)
         else:
             unique[p.name.lower()] = p
-    return Verdict(
-        free >= want.mb + MARGIN_MB, want, reading, free, others, tuple(unique.values()), mark, what
-    )
+    return Verdict(want, reading, free, others, allowance_mb, fits, settled, oversize, refuse,
+                   tuple(unique.values()), mark, what)  # fmt: skip
+
+
+#: What the memory of our own process that was just stopped is: (total used just before the stop, the MiB
+#: its model was measured to take, or None when it never was).
+Release = tuple[int, int | None]
+
+
+def settled(used: int, prev: int | None, release: Release | None) -> bool:
+    """Is a reading what others hold now, with nothing of ours still on its way out? With a release of ours
+    pending: used has fallen by that model's measured MiB (within `SETTLE_SLACK_MB`), or, its MiB unknown,
+    has fallen at all and stopped falling. Without one: it stopped falling (two readings within
+    `SETTLE_STEP_MB`)."""
+    falling = prev is None or prev - used > SETTLE_STEP_MB
+    if release is None:
+        return not falling
+    before, gone = release
+    if gone is not None:
+        return used <= before - gone + SETTLE_SLACK_MB
+    return used <= before - SETTLE_SLACK_MB and not falling
 
 
 def check(
@@ -354,21 +502,48 @@ def check(
     d: ServiceDef,
     ours: Collection[int],
     *,
-    mark: str | None = None,
     model_dir: str | None = None,
+    holder_mb: int = 0,
+    release: Release | None = None,
+    programs: bool = False,
+    sleep: Callable[[float], None] = time.sleep,
+    poll_s: float = SETTLE_POLL_S,
 ) -> Verdict | None:
     """Is there room for `d`'s model now? None: no reading (the caller loads as before and says once that
-    the memory was not checked). Blocking (nvidia-smi): call it off the event loop."""
+    the memory was not checked). Blocking (nvidia-smi, the settle reads): call it off the event loop.
+
+    Settling: while a release of ours is pending, or the load does not fit, the card is read again every
+    `poll_s` for at most `SETTLE_S` (`settled`). `programs`: list who is on the card whatever the answer
+    (the words of a failed load); otherwise only when the load is refused."""
+    mark = simulated_mark(smi)
     want = need(paths, d, model_dir)
     mem = read_memory(smi)
     if mem is None:
         return None
-    used, total = mem
-    verdict = judge(Reading(total, used), want, ours, mark=mark, what=model_words(d))
-    if verdict.ok:  # (our own MiB taken off could only add room)
+    stored = idle_mb(paths)
+    allowance = (stored if stored is not None else IDLE_ALLOWANCE_MB) + holder_mb
+    # bounded twice: at most SETTLE_READS readings AND SETTLE_S of real time (`time.monotonic`, which no
+    # injected clock stops); it logs nothing, whatever the readings do
+    deadline = time.monotonic() + SETTLE_S
+    prev: int | None = None
+    n = 1
+    while True:
+        used, total = mem
+        calm = settled(used, prev, release)
+        verdict = judge(Reading(total, used), want, ours, allowance_mb=allowance, settled=calm, mark=mark,
+                        what=model_words(d))  # fmt: skip
+        if calm or (verdict.fits and release is None) or n >= SETTLE_READS or time.monotonic() >= deadline:
+            break
+        sleep(poll_s)
+        nxt = read_memory(smi)
+        if nxt is None:
+            break
+        prev, mem, n = used, nxt, n + 1
+    if not (verdict.refuse or (programs and not verdict.fits)):
         return verdict
-    full = Reading(total, used, read_programs(smi), True)  # short: who is on it; our own known MiB taken off
-    return judge(full, want, ours, mark=mark, what=model_words(d))
+    full = Reading(verdict.reading.total_mb, verdict.reading.used_mb, read_programs(smi), True)
+    return judge(full, want, ours, allowance_mb=allowance, settled=verdict.settled, mark=mark,
+                 what=model_words(d))  # fmt: skip
 
 
 def test_wait_s(environ: Mapping[str, str], test_install: Callable[[], bool]) -> tuple[float, str | None]:

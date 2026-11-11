@@ -207,12 +207,23 @@ class HttpAcquirer:
         self._client = client or httpx.Client()
 
     def acquire(
-        self, service: Service, owner: str, *, model_alias: str | None = None, timeout_s: int = 7200
+        self,
+        service: Service,
+        owner: str,
+        *,
+        model_alias: str | None = None,
+        timeout_s: int = 7200,
+        pid: int | None = None,
+        vram_wait: bool = False,
     ) -> Endpoint:
-        """Block until the supervisor grants `service` to `owner`."""
+        """Block until the supervisor grants `service` to `owner`; `pid`, `vram_wait`: as SupervisorClient."""
         body: dict[str, Any] = {"service": service, "owner": owner, "wait": True, "timeout_s": timeout_s}
         if model_alias:
             body["model_alias"] = model_alias
+        if pid is not None:
+            body["pid"] = pid
+        if vram_wait:
+            body["vram_wait"] = True
         try:
             r = self._client.post(f"{self.base_url}/acquire", json=body, timeout=timeout_s + 30)
             if r.status_code == 409:

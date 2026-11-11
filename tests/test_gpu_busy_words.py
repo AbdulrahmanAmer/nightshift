@@ -91,8 +91,15 @@ def shown(case: str, tmp_home: Path, engine: TestClient) -> tuple[str, dict[str,
             client.acquire("tts", f"studio:{ctx.job_id}", timeout_s=0)
 
         report = daily.run_daily(jobs.open_env(light=True), now=NOW, rng=random.Random(1), run_fn=busy)
-        failure = report["failures"][0]
-        return f"{failure['error']} {describe(failure['code']).hint}", {"code": failure["code"]}
+        # vram-busy: the job that met the busy card is not a failure; it waits for the next night, and what
+        # the owner reads is its Queue card (its words, its code and the code's hint)
+        (waiting,) = [i for i in report["interrupted_jobs"] if i["state"] == "waiting"]
+        import json
+
+        row = db.one("select message, params_json from dashboard_jobs where kind='run' and params_json like ?",
+                     (f"%{waiting['job_id']}%",))  # fmt: skip  (the card names the studio job in its result)
+        error = json.loads(row["params_json"])["result"]["error"]
+        return f"{row['message']} {error['hint']}", {"code": error["code"]}
     if case == "dashboard job at the GPU gate":
         gate = make_gpu_gate(lambda: engine.get("/status").json(), sleeper=lambda s: None, poll_s=10, max_wait_s=30)
         rec = dashboard_job(tmp_home, lambda ctl: None, gpu_gate=gate)

@@ -144,6 +144,10 @@ OUT_OF_TIME_REASON = "out_of_time"
 #: model was to load (card vram-busy, NS-E208): its card says so, with NS-E208, and the nightly continues it.
 VRAM_OWNER = "other programs held the graphics card's memory"
 VRAM_CODE = "NS-E208"
+#: The `owner` of a record the nightly closed because the graphics card stayed in use by another task for
+#: the whole wait (NS-E201): a new job waits for the next night as a half-made one does (card vram-busy).
+CARD_BUSY_OWNER = "the graphics card was in use by another task"
+CARD_BUSY_CODE = "NS-E201"
 
 Liveness = Literal["live", "dead", "interrupted", "ended", "unknown"]
 
@@ -929,11 +933,11 @@ def _card_text(
     """
     at = f"Interrupted at {stage}" if stage else "Interrupted"
     cause = "its channel was paused" if owner == PAUSED_OWNER else "the PC or Nightshift stopped"
-    if owner == VRAM_OWNER:
-        cause = "other programs were using the graphics card's memory"
     nightly = origin == NIGHTLY_ORIGIN
     during = "during the night's run" if nightly else "while this job ran"
     stopped = f"{at}: {cause} {during}."
+    if owner in (VRAM_OWNER, CARD_BUSY_OWNER):  # the card was not free: the error table's own sentence
+        stopped = f"{at} {during}: {describe(VRAM_CODE if owner == VRAM_OWNER else CARD_BUSY_CODE).message}"
     if owner == OUT_OF_TIME_OWNER:
         stopped = _left_words(stage, limit_s)
         if resume == "pending" and reason is None and nightly:
@@ -989,6 +993,8 @@ def _card_error(
         return {"code": OUT_OF_TIME, "hint": describe(OUT_OF_TIME).hint, "stage": stage}
     if owner == VRAM_OWNER:
         return {"code": VRAM_CODE, "hint": describe(VRAM_CODE).hint, "stage": stage}
+    if owner == CARD_BUSY_OWNER:
+        return {"code": CARD_BUSY_CODE, "hint": describe(CARD_BUSY_CODE).hint, "stage": stage}
     hint = INTERRUPTED_HINT if origin == NIGHTLY_ORIGIN else INTERRUPTED_HINT_BY_HAND
     return {"code": INTERRUPTED_CODE, "hint": hint, "stage": stage}
 

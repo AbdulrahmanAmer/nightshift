@@ -7,6 +7,8 @@ under WDDM), so its check, its wait and its words run unchanged above it. The pr
 `game.exe` into `run\\fake_gpu.json`, holding all but 256 MiB of what is free, and then:
 1. a start that is not the nightly (owner `dashboard:proof-vram`, as a Dashboard job's start or Nightshift
    Code) is refused at once with NS-E208 naming `game.exe`, and nothing is loaded;
+   (each model was loaded once with the card free before, so its need is MEASURED: an estimate never
+   refuses a load);
 2. the nightly's load (`vram_wait: true`, as `studio run --daily` asks) waits, `/status` says
    `gpu_wait` with the Queue's sentence; the proof frees the memory in the file and the load goes ahead;
 3. the same with the memory left held and a short `timeout_s` (the night's own time for the wait): NS-E208,
@@ -93,6 +95,13 @@ def run(ctx):
         isinstance(total, int) and isinstance(used, int), "the card's memory is read", total=total, used=used
     )
     game = int(total or 0) - int(used or 0) - 256  # all but 256 MiB of what is free: no model fits beside it
+    # Only a MEASURED need refuses a load (an estimate never does): each model is loaded once with the card
+    # free, which measures it, as a first night would.
+    for service, alias in (("llama", "code"), ("tts", None)):
+        code, got = engine(ctx, "POST", "/acquire", {"service": service, "owner": "proof-measure",
+                                                     "model_alias": alias, "wait": False})  # fmt: skip
+        engine(ctx, "POST", "/release", {"service": service, "owner": "proof-measure"})
+        ctx.check(code == 200, f"{service} loads once with the card free (its need is measured)", got=got)
     write_card(ctx.home, game)
     ctx.step("game.exe holds the card's memory", game_mb=game, total_mb=total)
 
@@ -153,8 +162,8 @@ def run(ctx):
               owner=st.get("gpu_owner"), wait=st.get("gpu_wait"))  # fmt: skip
 
     engine(ctx, "POST", "/release", {"service": "llama", "owner": NIGHTLY})
+    write_card(ctx.home, game)  # (the game first: the stop below then gives back only the model's memory)
     engine(ctx, "POST", "/stop_all", {})
-    write_card(ctx.home, game)
     t0 = time.monotonic()
     code, got = engine(ctx, "POST", "/acquire", {**body, "timeout_s": 5})
     took = round(time.monotonic() - t0, 2)
@@ -169,3 +178,8 @@ def run(ctx):
     ctx.check(st.get("gpu_owner") is None, "the card is free again after the nightly gave up",
               owner=st.get("gpu_owner"))  # fmt: skip
     write_card(ctx.home, 0)
+    kept = Path(ctx.home) / "run" / "vram-need.json"
+    need = ctx.read_json(kept) if kept.exists() else None
+    measured = [e.get("service") for e in (need or {}).get("entries", []) if e.get("mb")]
+    ctx.check({"llama", "tts"} <= set(measured), "both measured needs are kept in run/vram-need.json",
+              need=need)  # fmt: skip

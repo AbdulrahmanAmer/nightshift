@@ -114,6 +114,7 @@ def fast_config(**over: Any) -> SupervisorConfig:
         "monitor_interval_s": 0.05,
         "auto_exit_idle_s": 3600.0,
         "vram_poll_s": 0.02,  # a load waiting for the card's memory looks again at once (the clock decides)
+        "vram_settle_poll_s": 0.0,  # the settle re-reads after our own tenant stopped: no real sleep
     }
     base.update(over)
     return SupervisorConfig(**base)

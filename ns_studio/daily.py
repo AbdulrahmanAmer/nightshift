@@ -752,13 +752,13 @@ def _card_busy(
     """A job met a busy card (`CARD_BUSY`): it waits for the next nightly run, it has not failed. `_attempt`'s
     failure entry is taken out (no red line beside "waiting" on the card, no failure in the toast), the job is
     left interrupted at its stage, and its `interrupted_jobs` entry says `waiting` (with the engine's words
-    naming the programs, for NS-E208). A NEW job that met NS-E208 is closed the way a killed one is (its Queue
-    card first, then the record, owner `VRAM_OWNER`), so the next night continues it; a new job that met
-    NS-E201 stays a failure, as before. The first NS-E208 of the night is kept as `report["vram"]` for the
-    morning note and the toast."""
+    naming the programs, for NS-E208). A NEW job is closed the way a killed one is (its Queue card first,
+    then the record, owner `VRAM_OWNER` for NS-E208, `CARD_BUSY_OWNER` for NS-E201: one behaviour for one
+    "card not free" state), so the next night continues it. The first NS-E208 of the night is kept as
+    `report["vram"]` for the morning note and the toast."""
     mine = [f for f in report["failures"] if f["job_id"] == job_id and f["code"] in CARD_BUSY]
     vram = next((f for f in mine if f["code"] == VRAM), None)
-    if not resumed and vram is None:
+    if not mine:
         return
     report["failures"] = [f for f in report["failures"] if f not in mine]
     said = str(vram.get("said") or "") if vram is not None else None
@@ -767,8 +767,8 @@ def _card_busy(
     else:
         rec = ownership.read_record(env.paths, job_id) or {}
         try:
-            closed = ownership._close_job(env.paths, env.db, {**rec, "id": job_id}, night.clock.now(),
-                                          ownership.VRAM_OWNER)  # fmt: skip
+            owner = ownership.VRAM_OWNER if vram is not None else ownership.CARD_BUSY_OWNER
+            closed = ownership._close_job(env.paths, env.db, {**rec, "id": job_id}, night.clock.now(), owner)
         except Exception as e:  # noqa: BLE001 - the record says failed; Retry and `studio run --resume` remain
             env.log.warn("vram_job_not_closed", str(e), job_id=job_id)
             report["failures"].extend(mine)
@@ -976,7 +976,8 @@ def _tonight(
             if code in CARD_BUSY:
                 gpu_busy = code
                 failed = report["failures"][-1] if report["failures"] else {}
-                if code == VRAM and failed.get("code") == VRAM:  # the job waits too: not counted as skipped
+                if failed.get("code") == code and failed.get("job_id") != "(not created)":
+                    # the job waits for the next night (NS-E201 and NS-E208 alike): not counted as skipped
                     _card_busy(env, report, night, str(failed["job_id"]), ch.slug, None, resumed=False,
                                has_card=False)  # fmt: skip
                     _skip_rest(report, code, ch.slug, dj.count - n - 1)

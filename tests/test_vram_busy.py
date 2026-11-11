@@ -9,6 +9,12 @@ otherwise. The night goes through `daily.run_daily` on the fake-services home of
 
 Numbers of the card (written out here, so the tests read on a base that has none): margin 512 MiB, the wait
 1800 s, a stub service with no model file and no context needs the estimate's 700 MiB.
+
+The rule since review c913351: only a MEASURED need, compared with a SETTLED reading, refuses a load (or makes
+a nightly wait), and only for memory OTHER programs hold. So a test of a refusal first gives the model a
+measured need (`Engine.measured`, the file `run/vram-need.json` as a load would leave it); an estimate never
+refuses (`test_a_first_load_is_tried_with_the_manifests_real_sizes_on_a_16_gb_card`). A reading that does
+not fit is read once more to see that it stopped falling, so a refusal takes two readings.
 """
 
 from __future__ import annotations
@@ -141,6 +147,37 @@ class Engine:
                     out.append(rec)
         return out
 
+    def measured(
+        self, mb: int, service: str = "llama", *, idle: int | None = None, low: int | None = None
+    ) -> None:
+        """`run/vram-need.json` as an earlier load of this table's `service` left it: measured at `mb` (a
+        failed load's lower bound `low`), and the idle card at `idle` MiB."""
+        d = self.sup.resolver(service, "code")
+        cmd = list(d.cmd)
+        flags: list[str] = []
+        skip = False
+        for a in cmd[1:]:
+            if skip:
+                skip = False
+            elif a in ("-m", "-c", "--port", "--host", "--alias"):
+                skip = True
+            else:
+                flags.append(a)
+        entry: dict[str, Any] = {
+            "service": d.name, "variant": d.variant, "model": cmd[cmd.index("-m") + 1] if "-m" in cmd else "",
+            "ctx": int(cmd[cmd.index("-c") + 1]) if "-c" in cmd else None, "flags": " ".join(flags),
+            "mb": [mb] if mb else [],
+        }  # fmt: skip
+        if low:
+            entry["min_mb"] = low
+        f = self.paths.home / "run" / "vram-need.json"
+        data = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {"version": 1, "entries": []}
+        data["entries"].append(entry)
+        if idle is not None:
+            data["idle"] = {"mb": idle}
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(data), encoding="utf-8")
+
     def vram_events(self) -> list[dict[str, Any]]:
         return [e["data"] for e in self.events if e["data"].get("event") == "vram_wait"]
 
@@ -156,6 +193,7 @@ async def refused(eng: Engine, service: str, owner: str, **kw: Any) -> NsError:
 # ------------------------------------------------------------------------------------------ 1
 def test_a_load_with_room_goes_ahead(tmp_path: Path) -> None:
     eng = Engine(tmp_path, [card(STUB_NEED + MARGIN, [(4242, "C", "game.exe", 0)])])
+    eng.measured(STUB_NEED)
     got = eng.run(lambda: eng.acquire("llama", "opencode", model_alias="code"))
     assert got["endpoint"].startswith("http://127.0.0.1:")
     assert eng.starts == ["llama"]
@@ -164,6 +202,7 @@ def test_a_load_with_room_goes_ahead(tmp_path: Path) -> None:
 
 def test_a_load_without_room_is_refused_before_the_process_starts(tmp_path: Path) -> None:
     eng = Engine(tmp_path, [card(STUB_NEED + MARGIN - 1, [(4242, "C", "game.exe", 0)], per="mb")])
+    eng.measured(STUB_NEED)
     e = eng.run(lambda: refused(eng, "llama", "opencode", model_alias="code"))
     assert e.code == "NS-E208", str(e)
     assert eng.starts == [], "the starter was called for a load that had no room"
@@ -178,16 +217,17 @@ def test_a_studio_owner_waits_and_loads_when_the_memory_comes_free(tmp_path: Pat
     eng: Engine
 
     def on_read(n: int) -> None:
-        if n > 1:
+        if n > 2:  # (the second reading is the check's own: it stopped falling)
             eng.clock.t += 120  # the poll
         seen[n] = (eng.sup.status().get("gpu_wait"), list(eng.starts))
 
-    eng = Engine(tmp_path, [busy, busy, card(8000)], on_read=on_read)
+    eng = Engine(tmp_path, [busy, busy, busy, card(8000)], on_read=on_read)
+    eng.measured(STUB_NEED)
     eng.run(lambda: eng.acquire("llama", "studio:night-1", model_alias="story", vram_wait=True))
     assert eng.starts == ["llama"], "loaded once, after the memory came free"
-    assert sorted(seen)[:3] == [1, 2, 3], f"the card was read {len(seen)} times, not busy, busy, free"
-    assert seen[3][1] == [], "nothing was started before the third reading"
-    wait = seen[2][0]
+    assert sorted(seen)[:4] == [1, 2, 3, 4], f"the card was read {len(seen)} times, not busy x3, free"
+    assert seen[4][1] == [], "nothing was started before the fourth reading"
+    wait = seen[3][0]
     assert wait is not None, "/status says gpu_wait while waiting"
     assert wait["said"].startswith("Waiting for the graphics card's memory: other programs are using"), wait
     assert "game.exe" in wait["said"] and "chrome.exe" in wait["said"]
@@ -207,11 +247,12 @@ def test_a_studio_owner_gives_up_after_the_bound(tmp_path: Path, last: int) -> N
     reads_at: list[float] = []
 
     def on_read(n: int) -> None:
-        if n > 1:
-            eng.clock.t = 1000.0 + times[min(n - 2, len(times) - 1)]
+        if n > 2:  # (the first two are the check's own)
+            eng.clock.t = 1000.0 + times[min(n - 3, len(times) - 1)]
         reads_at.append(eng.clock.t - 1000.0)
 
     eng = Engine(tmp_path, [card(500, [(4242, "C", "game.exe", 10000)])], on_read=on_read)
+    eng.measured(STUB_NEED)
     e = eng.run(lambda: refused(eng, "llama", "studio:night-1", model_alias="story", vram_wait=True))
     assert e.code == "NS-E208", str(e)
     assert eng.clock.t - 1000.0 == WAIT_S, "given up at 1800 s of waiting, not before"
@@ -228,9 +269,10 @@ def test_an_interactive_owner_is_refused_at_once(tmp_path: Path, owner: str) -> 
     """Only the nightly says it may wait (`vram_wait`); everyone else, a dashboard job's studio child too, is
     refused at the first reading."""
     eng = Engine(tmp_path, [card(100, [(4242, "C", "game.exe", 12000)])])
+    eng.measured(STUB_NEED)
     e = eng.run(lambda: refused(eng, "llama", owner, model_alias="code"))
     assert e.code == "NS-E208" and eng.starts == []
-    assert eng.smi.reads == 1, "no wait: one reading"
+    assert eng.smi.reads == 2, "no wait: the reading and the one that shows it stopped falling"
     assert eng.vram_events() == []
 
 
@@ -250,6 +292,7 @@ def test_the_owner_vanishing_during_the_wait_releases_the_card(tmp_path: Path) -
     eng = Engine(
         tmp_path, [card(100, [(4242, "C", "game.exe", 12000)])], on_read=on_read, process_probe=probe
     )
+    eng.measured(STUB_NEED)
     e = eng.run(
         lambda: refused(eng, "llama", "studio:night-1", model_alias="story", vram_wait=True, pid=4321)
     )
@@ -267,6 +310,7 @@ def test_our_own_processes_are_not_blamed(tmp_path: Path) -> None:
     fit; with it, it does (both told apart by one reading each)."""
 
     async def scene(eng: Engine, short: int) -> NsError | None:
+        eng.measured(STUB_NEED)
         await eng.acquire("tts", "studio:night-1")
         tts_pid = eng.sup.services["tts"].proc.pid  # type: ignore[union-attr]
         rows = [(tts_pid, "C", "python.exe", 300), (4321, "C", "python.exe", 300),
@@ -299,6 +343,7 @@ def test_programs_windows_does_not_measure_are_named_without_numbers(tmp_path: P
     rows = [(4242, "C", "game.exe", 9000), (5150, "C+G", "chrome.exe", 2000)]
     eng = Engine(tmp_path, [card(100, rows)])  # per process `[N/A]`, as under WDDM
     eng.smi.garbage = True
+    eng.measured(STUB_NEED)
     e = eng.run(lambda: refused(eng, "llama", "opencode", model_alias="code"))
     assert e.code == "NS-E208"
     assert "game.exe, chrome.exe" in e.detail or "chrome.exe, game.exe" in e.detail, e.detail
@@ -308,6 +353,7 @@ def test_programs_windows_does_not_measure_are_named_without_numbers(tmp_path: P
 
 def test_no_program_listed_says_so(tmp_path: Path) -> None:
     eng = Engine(tmp_path, [card(100)])
+    eng.measured(STUB_NEED)
     e = eng.run(lambda: refused(eng, "llama", "opencode", model_alias="code"))
     assert e.code == "NS-E208" and "Windows did not say which program" in e.detail, e.detail
 
@@ -321,6 +367,7 @@ def test_the_need_is_measured_after_a_load_and_kept(tmp_path: Path) -> None:
         await eng.sup.stop_all()
         need = json.loads((eng.paths.home / "run" / "vram-need.json").read_text(encoding="utf-8"))
         out: list[Any] = [need]
+        eng.clock.t += 60  # a later start: the memory of the model stopped above had its time to come back
         eng.smi.cards, eng.smi.reads = [card(9400 + MARGIN - 1)], 0
         out.append(await refused(eng, "llama", "opencode", model_alias="code"))
         eng.smi.cards, eng.smi.reads = [card(9400 + MARGIN)], 0
@@ -342,6 +389,7 @@ def test_the_need_is_measured_after_a_load_and_kept(tmp_path: Path) -> None:
             eng2.smi.cards, eng2.smi.reads = [card(TOTAL - 800), card(TOTAL - 800, llama=mb)], 0
             await eng2.acquire("llama", "opencode", model_alias="code")
             await eng2.sup.stop_all()
+        eng2.clock.t += 60
         eng2.smi.cards, eng2.smi.reads = [card(7000 + MARGIN - 1)], 0
         return await refused(eng2, "llama", "opencode", model_alias="code")
 
@@ -363,6 +411,8 @@ def test_the_need_is_measured_after_a_load_and_kept(tmp_path: Path) -> None:
 def test_without_a_measurement_the_estimate_is_the_file_size_plus_the_context(
     tmp_path: Path, short: int
 ) -> None:
+    """Both ends of the estimate (file + ctx / 1024 x 64 + 700). It decides nothing: one MiB short, the load
+    is still tried (an estimate never refuses), and the log says why."""
     model = tmp_path / "model.gguf"
     with model.open("wb") as f:
         f.truncate(10 * 1024 * 1024)  # 10 MiB
@@ -378,11 +428,14 @@ def test_without_a_measurement_the_estimate_is_the_file_size_plus_the_context(
         return None
 
     e = eng.run(scene)
+    assert e is None and eng.starts == ["llama"], "an estimate refused a load"
+    tried = eng.log("vram_tried")
     if short:
-        assert e is not None and e.code == "NS-E208" and "needs about 1.2 GB" in e.detail, e
-        assert eng.starts == []
+        (line,) = tried
+        assert line["data"]["need_mb"] == need and line["data"]["need_measured"] is False, line
+        assert "only estimated" in line["msg"], line
     else:
-        assert e is None and eng.starts == ["llama"]
+        assert tried == [], "it fits: nothing to say"
 
 
 # ------------------------------------------------------------------------------------------ 11
@@ -429,6 +482,7 @@ def test_stop_all_shutdown_or_release_end_the_wait_at_once(tmp_path: Path, how: 
     import dataclasses
 
     eng = Engine(tmp_path, [card(100, [(4242, "C", "game.exe", 12000)])])
+    eng.measured(STUB_NEED)
     if "vram_poll_s" in {f.name for f in dataclasses.fields(eng.sup.cfg)}:
         eng.sup.cfg = dataclasses.replace(eng.sup.cfg, vram_poll_s=30.0)
 
@@ -471,6 +525,7 @@ def test_the_lease_is_not_reclaimed_during_the_wait(tmp_path: Path) -> None:
             eng.smi.cards = [free]
 
     eng = Engine(tmp_path, [card(100, [(4242, "C", "game.exe", 12000)])], on_read=on_read)
+    eng.measured(STUB_NEED)
 
     async def scene() -> None:
         task = asyncio.create_task(
@@ -489,8 +544,9 @@ def test_the_lease_is_not_reclaimed_during_the_wait(tmp_path: Path) -> None:
 
 def test_a_warmup_is_checked_never_waits_and_only_logs(tmp_path: Path) -> None:
     eng = Engine(tmp_path, [card(100, [(4242, "C", "game.exe", 12000)])])
+    eng.measured(STUB_NEED)
     state = eng.run(lambda: eng.sup.warmup("llama"))
-    assert state == "stopped" and eng.starts == [] and eng.smi.reads == 1
+    assert state == "stopped" and eng.starts == [] and eng.smi.reads == 2
     (line,) = eng.log("vram_busy")
     assert line["data"].get("owner") is None and "game.exe" in line["msg"]
 
@@ -508,6 +564,7 @@ def test_the_engine_route_says_ns_e208_and_takes_vram_wait(tmp_path: Path) -> No
         eng.clock.t += 1  # each look at the card is a second later: the 3 s bound passes
 
     eng = Engine(tmp_path, [card(100, [(4242, "C", "game.exe", 12000)])], on_read=tick)
+    eng.measured(STUB_NEED)
     with TestClient(create_app(eng.sup), base_url="http://127.0.0.1:18099") as tc:
         r = tc.post("/acquire", json={"service": "llama", "owner": "opencode", "model_alias": "code"})
         assert r.status_code == 409 and r.json()["code"] == "NS-E208" and "game.exe" in r.json()["detail"]
@@ -519,6 +576,8 @@ def test_the_engine_route_says_ns_e208_and_takes_vram_wait(tmp_path: Path) -> No
 
 
 def test_the_nightly_acquirer_alone_asks_to_wait_and_names_its_process() -> None:
+    """Only the nightly asks to wait; the nightly and a dashboard job's studio child name their process, so
+    their own context is never "another program" (and the card is freed when the process dies)."""
     import os
 
     from ns_common.acquire import Endpoint
@@ -539,11 +598,14 @@ def test_the_nightly_acquirer_alone_asks_to_wait_and_names_its_process() -> None
     acq = StudioAcquirer(Runtime.default("gpu"), Paths(Path.cwd() / "unused"), client=Client(),
                          ensure=lambda _c: None, beat_s=3600)  # fmt: skip
     acq.acquire("llama", "studio:a")
-    acq.vram_wait = True  # what the nightly sets (`daily.run_daily`)
+    acq.send_pid = True  # what a dashboard job's child sets (`ns_dashboard.studio_job`)
     acq.acquire("llama", "studio:b")
+    acq.vram_wait = True  # what the nightly sets (`daily.run_daily`)
+    acq.acquire("llama", "studio:c")
     acq.stop_beat()
     assert "vram_wait" not in calls[0] and "pid" not in calls[0], calls
-    assert calls[1].get("vram_wait") is True and calls[1].get("pid") == os.getpid(), calls
+    assert calls[1].get("pid") == os.getpid() and "vram_wait" not in calls[1], calls
+    assert calls[2].get("vram_wait") is True and calls[2].get("pid") == os.getpid(), calls
 
 
 # ------------------------------------------------------------------------------------------ 12: the night
@@ -653,3 +715,190 @@ def test_a_half_made_job_that_meets_ns_e208_waits_with_the_engines_words(
     assert (ownership.read_record(paths, dead) or {}).get("state") == "interrupted"
     assert report.get("vram", {}).get("said") == said
     assert len([n for n in _notes(tmp_home) if "NS-E208" in n["message"]]) == 1
+
+
+# ------------------------------------------------------------------------------------------ review c913351
+@pytest.mark.parametrize("entry", ["story_llm", "llm_balanced", "llm_best"])
+def test_a_first_load_is_tried_with_the_manifests_real_sizes_on_a_16_gb_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
+) -> None:
+    """Review blocker 1. The GPU PC's card (16,311 MiB, 800 in use idle) and the manifest's real model sizes
+    (given where the estimate reads a file's size: nothing is written to disk) at the 16K context: their
+    estimates (file + 1 GB of KV + 700) are above what the card has free, the story model's and the best
+    tier's above the card itself. Never measured, each is TRIED (the nightly
+    does not wait, nobody is refused), measured (13,000 MiB here: what -ngl and --n-cpu-moe keep on the card)
+    and the measurement is kept for the next check."""
+    manifest = json.loads((Path(__file__).resolve().parents[1] / "manifest.json").read_text(encoding="utf-8"))
+    size = int(manifest["profiles"]["gpu"][entry]["bytes"])
+    model = tmp_path / f"{entry}.gguf"
+    model.write_bytes(b"GGUF")
+    from ns_supervisor import vram
+
+    real_mib = vram._mib
+    monkeypatch.setattr(vram, "_mib", lambda p: -(-size // 2**20) if Path(p) == model else real_mib(p))
+    gpu_pc = gpu.Card(total_mb=16311, base_mb=800, services={"llama": 13000})
+    eng = Engine(tmp_path, [gpu_pc], table=StubTable(extra={"llama": ["-m", str(model), "-c", "16384"]}))
+    eng.run(lambda: eng.acquire("llama", "studio:night-1", model_alias="story", vram_wait=True))
+    assert eng.starts == ["llama"], "the model was not tried"
+    assert eng.vram_events() == [] and eng.log("vram_busy") == [], "an estimate held the night back"
+    estimate = -(-size // 2**20) + 16384 * 64 // 1024 + 700
+    (tried,) = eng.log("vram_tried")
+    assert tried["data"]["need_mb"] == estimate and tried["data"]["need_measured"] is False, tried
+    kept = json.loads((eng.paths.home / "run" / "vram-need.json").read_text(encoding="utf-8"))
+    (mine,) = [e for e in kept["entries"] if e["model"] == str(model)]
+    assert mine["mb"] == [13000], mine
+
+
+@pytest.mark.parametrize("held_reads", [2, 99])
+def test_memory_our_stopped_tenant_still_holds_is_not_another_programs(
+    tmp_path: Path, held_reads: int
+) -> None:
+    """Review blocker 2. The voice model is loaded (measured 9,000 MiB); Nightshift Code asks for llama
+    (measured 6,000), so the swap stops the voice service. Under WDDM nothing says whose memory the card
+    still shows: the reading stays 9.8 GB for `held_reads` polls after the stop. 2: it comes back and llama
+    loads, no NS-E208. 99 (never within the 10 s): still no NS-E208 ("other programs" would be false); the
+    load is tried and the log says why."""
+    idle = card(TOTAL - 800, tts=9000)  # while the voice service runs, the card lists it with 9,000 MiB
+    held = card(TOTAL - 9800)  # it has stopped; its memory is still in use, listed under no process
+    mark: dict[str, int | None] = {"n": None}
+    eng: Engine
+
+    def on_read(n: int) -> None:
+        if mark["n"] is not None:
+            k = n - mark["n"]  # 1: the reading just before the stop
+            eng.smi.cards = [held] if 2 <= k <= held_reads + 1 else [idle]
+
+    eng = Engine(tmp_path, [idle], on_read=on_read)
+
+    async def scene() -> None:
+        await eng.acquire("tts", "studio:voice-preview")  # loads; measured 9,000
+        await eng.sup.release("tts", "studio:voice-preview")
+        eng.measured(6000)
+        mark["n"] = eng.smi.reads
+        await eng.acquire("llama", "opencode", model_alias="code")
+
+    eng.run(scene)
+    assert eng.starts == ["tts", "llama"] and eng.log("vram_busy") == [], eng.log("vram_busy")
+    if held_reads > 20:
+        (tried,) = eng.log("vram_tried")
+        assert "had not come free" in tried["msg"], tried
+
+
+def test_a_measured_need_larger_than_the_card_is_a_tuning_matter_not_another_program(
+    tmp_path: Path,
+) -> None:
+    """A measured need (17,000 MiB) that no idle card of 16,000 could hold: never a wait nor "another
+    program"; it is tried, and when it fails the error is NS-E203, whose hint says ns doctor, then ns tune."""
+    table = StubTable(extra={"llama": ["--exit-immediately"]})
+    eng = Engine(tmp_path, [card(15000, [(4242, "C", "game.exe", 200)])], table=table)
+    eng.measured(17000)
+    e = eng.run(lambda: refused(eng, "llama", "studio:night-1", model_alias="story", vram_wait=True))
+    assert e.code == "NS-E203", str(e)
+    assert "more than the graphics card's" in e.detail and "game.exe" not in e.detail, e.detail
+    assert eng.starts == ["llama"] and eng.vram_events() == []
+
+
+def test_the_studios_own_context_is_not_another_program(tmp_path: Path) -> None:
+    """The nightly's studio process (its pid named at the acquire) keeps whisper's CUDA context, 400 MiB that
+    WDDM never reports per process. llama is measured at 6,500 on an 8,000 MiB card whose idle is 800: with
+    that context it does not fit, without it it would, and nothing else is on the card. Not "another
+    program": no wait, no NS-E208; the load is tried."""
+    eng = Engine(tmp_path, [card(8000 - 1200, total=8000)], process_probe=lambda p: 1.0)
+    eng.measured(6500, idle=800)
+    eng.run(lambda: eng.acquire("llama", "studio:night-1", model_alias="story", vram_wait=True, pid=4321))
+    assert eng.starts == ["llama"]
+    assert eng.vram_events() == [] and eng.log("vram_busy") == []
+
+
+@pytest.mark.parametrize("code", ["NS-E201", "NS-E208"])
+def test_a_new_nightly_job_waits_the_same_on_both_busy_card_codes(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch, code: str
+) -> None:
+    """One state, one behaviour: a NEW nightly job that meets a busy card (another task, NS-E201, or other
+    programs' memory, NS-E208) is not a failure: it stays interrupted at its stage, its line says waiting,
+    the rest of the night is skipped, and the next night continues it."""
+    from ns_studio import daily, jobs, ownership
+    from tests import d31_driver as driver
+    from tests.test_interrupted_nightly import _setup
+
+    paths, _db = _setup(tmp_home)
+    driver.install(monkeypatch)
+    met: list[str] = []
+
+    def busy(ctx: Any) -> list[str]:
+        met.append(ctx.job_id)
+        raise NsError(code, "held")
+
+    report = daily.run_daily(jobs.open_env(light=True), rng=random.Random(1), run_fn=busy)
+    assert report["failures"] == [], report["failures"]
+    (entry,) = report["interrupted_jobs"]
+    assert entry["job_id"] == met[0] and entry["state"] == "waiting", entry
+    rec = ownership.read_record(paths, met[0]) or {}
+    assert rec.get("state") == "interrupted" and rec.get("owner") in (
+        ownership.CARD_BUSY_OWNER, ownership.VRAM_OWNER
+    ), rec
+    made: list[str] = []
+
+    def works(ctx: Any) -> list[str]:
+        made.append(ctx.job_id)
+        return ["d31_c"]
+
+    daily.run_daily(jobs.open_env(light=True), rng=random.Random(2), run_fn=works)
+    assert made and made[0] == met[0], "the next night continues the job that waited"
+
+
+def _lines(eng: Engine) -> int:
+    files = eng.paths.logs.glob("supervisor-*.jsonl")
+    return sum(len(f.read_text(encoding="utf-8").splitlines()) for f in files)
+
+
+def test_the_wait_ends_with_a_clock_that_never_moves_and_logs_two_lines(tmp_path: Path) -> None:
+    """Firmware rule for every loop: the engine's clock never advances and the card never changes. The
+    nightly's wait (3 s of its acquire's time) still ends, on real time and on its count of looks, with
+    NS-E208, and it logged exactly two lines (its start and its end), not one per look."""
+    import time as real_time
+
+    eng = Engine(tmp_path, [card(100, [(4242, "C", "game.exe", 12000)])])
+    eng.measured(STUB_NEED)
+    t0 = real_time.monotonic()
+
+    async def scene() -> tuple[NsError, int]:
+        before = _lines(eng)
+        e = await refused(
+            eng, "llama", "studio:night-1", model_alias="story", vram_wait=True, timeout_s=3
+        )
+        return e, _lines(eng) - before
+
+    e, logged = eng.run(scene)
+    took = real_time.monotonic() - t0
+    assert e.code == "NS-E208" and took < 20, (str(e), took)
+    assert [r["event"] for r in eng.log("vram_wait")] == ["vram_wait"] and len(eng.log("vram_busy")) == 1
+    assert logged == 2, f"{logged} lines for one wait"
+    assert eng.smi.reads < 400, f"{eng.smi.reads} looks at the card for a 3 s wait"
+
+
+def test_the_settle_ends_when_our_memory_never_comes_back_and_logs_one_line(tmp_path: Path) -> None:
+    """The settle after one of our tenants stopped: the reading never falls and the engine's clock never
+    moves. It ends after its 20 readings (or 10 s of real time), the load is tried, one line says why."""
+    stuck = card(TOTAL - 9800)
+    eng: Engine
+    armed = {"on": False}
+
+    def on_read(n: int) -> None:
+        if armed["on"]:
+            eng.smi.cards = [stuck]
+
+    eng = Engine(tmp_path, [card(TOTAL - 800, tts=9000)], on_read=on_read)
+
+    async def scene() -> int:
+        await eng.acquire("tts", "studio:voice-preview")
+        await eng.sup.release("tts", "studio:voice-preview")
+        eng.measured(6000)
+        armed["on"], first = True, eng.smi.reads
+        await eng.acquire("llama", "opencode", model_alias="code")
+        return eng.smi.reads - first
+
+    reads = eng.run(scene)
+    assert eng.starts == ["tts", "llama"]
+    assert reads <= 1 + 20 + 1 + 3, f"{reads} readings (the stop's, at most 20 settling, the measurement)"
+    assert len(eng.log("vram_tried")) == 1
