@@ -43,7 +43,7 @@ import yaml
 # (imported here, never inside a function: after the swap `<app>` holds another release's files, and an
 # import made then would load that release's module into this updater)
 from installer.stage2 import shortcut_owner
-from installer.stage2.web import deplock, venvrepair
+from installer.stage2.web import deplock, filesdir, uvpin, venvrepair
 from ns_common import __version__, config_compat, config_snapshot, first_start, rollback_intent
 from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.devmode import is_dev
@@ -1264,6 +1264,7 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
     new, prev = _sibling(app, ".new"), _sibling(app, ".prev")
     replaced = current_version(prev) if prev.is_dir() else ""
     log.info("update_start", old=old_version, new=new_version, zip=str(zip_path))
+    uv = uv_for(uvpin.pin_in_zip(zip_path, prefix), paths, log, env.say, zip_path=zip_path)  # NS-E708
     env.stop()
     update_job.step(paths, WAITING_FOR_PROGRAMS, update_job.unchanged_sentence(old_version))
     wait_no_holders(paths, env.holder_wait_s, earlier=earlier, say=env.say)
@@ -1276,6 +1277,7 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
             config_snapshot.discard(config_snapshot.path_for(app))
         if recorded:          # (the new program never got to <app>: its record would be stale)
             drop_record(paths, log)
+        uv_undo(uv, log)      # (and its uv goes with it: U6)
 
     try:
         shutil.rmtree(new, ignore_errors=True)
@@ -1289,6 +1291,7 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
         write_app_marker(new, log)
         saved = _save_settings_copy(app, prev, paths, log)  # last step before <app>.prev is replaced
         drop_stale_record(paths, app, log)
+        uv_swap(uv, paths, log, env.say, UV_UPDATE_STOPPED.format(**names))  # U5: before the record
         try:        # W5: what the next start replays if the sync after the swap does not finish
             recorded = write_record(paths, new, app, by="update", log=log)
         except OSError as e:
@@ -1342,6 +1345,7 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
         log.error("update_failed", str(e))
         detail = e.detail if isinstance(e, NsError) else f"{type(e).__name__}: {e}"
         update_job.step(paths, f"Putting {old_version} back.", RESTORE_STOPPED.format(**names))
+        uv_back = uv_undo(uv, log)      # U7: the old program's uv first; the restore's re-sync runs with it
         try:        # the record now says what the OLD program needs, before it is put back
             recorded = write_record(paths, prev, app, by="restore", log=log)
         except OSError as e4:
@@ -1355,7 +1359,7 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
         if saved is not None:  # (a copy this update did not write is not its to discard: None keeps it)
             copy_path = config_snapshot.path_for(app) if saved.wrote else None
             put_back = _put_settings_back(paths, saved.files, log, copy_path)
-        failed = f"The update to {new_version} failed at {at}: {_sentence(detail)}{put_back} "
+        failed = f"The update to {new_version} failed at {at}: {_sentence(detail)}{put_back}{uv_back} "
         try:
             env.sync(app)
             clear_record(paths, app, log)
@@ -1455,6 +1459,8 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             # stops here and says so; the owner decides whether to go back. (The interrupted run never
             # synced the venvs for the program now in place: that is done here, still under the lock.)
             here, back = _shown_version(app), _shown_version(prev)
+            uv = uv_for(uvpin.pin_of(app), paths, log, env.say, target=here)  # (of the program in place)
+            uv_swap(uv, paths, log, env.say, "", soft=True)
             try:
                 recorded = write_record(paths, app, app, by="rollback", log=log)
             except OSError as e:     # (the earlier rollback is finished already: said by the way out)
@@ -1504,6 +1510,7 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
         readable_as = config_snapshot.program_version(prev)
         if readable_as == "-":
             restored_version = UNKNOWN_VERSION
+        uv = uv_for(uvpin.pin_of(prev), paths, log, env.say, target=restored_version)  # U8: before any change
         left_fingerprint = app_fingerprint(app)  # the program that is about to become <app>.prev
         copy, why_not, slot = _read_settings_copy(app, prev)
         live, live_error = _live_settings(paths, log)
@@ -1558,6 +1565,7 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
                 "NS-E702",
                 f"could not record the rollback ({e}). {_undo_settings(app, paths, intent, log)}",
             ) from e
+        uv_swap(uv, paths, log, env.say, ROLLBACK_PREPARE_STOPPED, soft=True)  # U5: before the record
         try:        # W5: what the next start replays if the sync after the swap does not finish
             recorded = write_record(paths, prev, app, by="rollback", log=log)
         except OSError as e:
@@ -1572,6 +1580,7 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             _swap_programs(app, prev, tmp)
         except OSError as e:
             if app.is_dir() and app_fingerprint(app) == left_fingerprint:  # the folders are as they were
+                uv_undo(uv, log)
                 drop_record(paths, log)
                 raise NsError(
                     "NS-E702",
@@ -1619,7 +1628,8 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             e, target=now, other=old_version, way_out=twice, paths=paths,
         ) from e
     log.info("rollback_done", old=old_version, restored=now)
-    return UpdateResult(old_version, now, ["rolled back", *notes], settings=prepared.sentence)
+    said = (prepared.sentence + uv.stays).lstrip()   # (a uv that could not be had is said with the settings)
+    return UpdateResult(old_version, now, ["rolled back", *notes], settings=said)
 
 
 def _undo_settings(app: Path, paths: Paths, intent: rollback_intent.Intent, log: NsLogger) -> str:
@@ -1692,6 +1702,71 @@ def finish_entry_points(moved: list[tuple[Path, Path]]) -> None:
     others lose their moved-aside copy."""
     restore_entry_points(moved)
     discard_entry_points(moved)
+
+
+# --------------------------------------------------------------------------------------------------------
+# the uv a program pins (item uv-pin-on-update): `installer.stage2.web.uvpin` holds the steps U1 to U8
+#: `if_stopped_here` of an update's uv swap (with `UV_STOPPED`): true until the program swap's own step.
+UV_UPDATE_STOPPED = "The update stopped before it changed the program or your settings: {old} is in place."
+#: Added to the sentence in force when the process dies between the uv swap and the program swap.
+UV_STOPPED = (
+    " Its tool for installing Python packages (uv) may now be version {want} instead of {was}: run the same "
+    "command again and it puts the right one in place first, or run INSTALL.cmd again and choose Repair."
+)
+
+
+def uv_for(
+    pin: dict[str, str], paths: Paths, log: NsLogger, say: Callable[[str], None], *,
+    zip_path: Path | None = None, target: str = "",
+) -> uvpin.Plan:
+    """U1 to U4: the uv that the program about to be in `<app>` pins, checked and ready to swap in, before
+    anything is changed. An update (`zip_path`) that cannot have it is refused with NS-E708, before Nightshift
+    is stopped; a rollback keeps the uv there is and says so in its last sentence (`Plan.stays`)."""
+    files = filesdir.beside(zip_path.parent) if zip_path is not None else None
+    try:
+        return uvpin.prepare(pin, paths.home, files_root=files, say=say)
+    except uvpin.NotHad as e:
+        log.warn("uv_pin_not_had", str(e))
+        want = pin.get("version", "")
+        if zip_path is not None:
+            raise NsError("NS-E708", f"This update needs uv {want}. {e} {NOTHING_CHANGED}") from e
+        now = uvpin.report(home_uv(paths.home))[1] or "the version it has"
+        why = f"{target} pins {want} and it could not be had"
+        return uvpin.Plan(paths.home, stays=f" uv stays at {now} ({why}); {target} runs with it.")
+
+
+def uv_swap(
+    plan: uvpin.Plan, paths: Paths, log: NsLogger, say: Callable[[str], None], stopped: str, *,
+    soft: bool = False,
+) -> None:
+    """U5: the prepared uv into `bin\\uv`, before the repair record and the program swap. `stopped` is the
+    sentence in force, which stays true with `UV_STOPPED` added. A rename that stays refused is an `OSError`
+    for an update (nothing changed yet: its caller says so) and, with `soft` (a rollback), leaves the uv."""
+    if not plan.how:
+        return
+    was = plan.was or "none"
+    if_stopped = stopped + UV_STOPPED.format(want=plan.want, was=was)
+    update_job.step(paths, f"Putting uv {plan.want} in place.", if_stopped.strip())
+    try:
+        said = plan.swap(rename_with_retry)
+    except OSError as e:
+        back = plan.undo()
+        log.warn("uv_swap_refused", f"{e}{back}")
+        if not soft:
+            raise
+        plan.stays = f" uv stays at {was} (uv {plan.want} could not be put in place: {e})."
+        return
+    say(said)
+    log.info("uv_swapped", want=plan.want, was=was)
+
+
+def uv_undo(plan: uvpin.Plan, log: NsLogger) -> str:
+    """U6, U7: the uv that was there before the swap, back in `bin\\uv`; the sentence for the error ("" when
+    nothing had been swapped). Never raises."""
+    back = plan.undo(rename_with_retry)
+    if back:
+        log.warn("uv_put_back", back.strip())
+    return back
 
 
 @dataclass
