@@ -312,13 +312,16 @@ CHANGED_SINCE = (
 
 @dataclass(frozen=True)
 class _Checked:
-    """A package that passed the check: its VERSION, member prefix and SHA256, and the id of the key that
-    signed it (empty: this version trusts no key yet, so only the SHA256 was checked)."""
+    """A package that passed the check: its VERSION, member prefix and SHA256, the id of the key that
+    signed it (empty: this version trusts no key yet, so only the SHA256 was checked), and the uv it pins
+    (`bins.uv` of its manifest.json), read from the same bytes that were hashed (B3: never from the file
+    again, which the dashboard can still replace)."""
 
     version: str
     prefix: str
     sha256: str
     key: str
+    uv_pin: dict[str, str] = field(default_factory=dict)
 
 
 def _check_package(zip_path: Path, say: Callable[[str], None] | None) -> _Checked:
@@ -330,24 +333,32 @@ def _check_package(zip_path: Path, say: Callable[[str], None] | None) -> _Checke
     gets `NO_KEY_NOTE`. G3 to G5: `<zip>.sig` must be there, name a trusted key and be that key's signature
     of this file name, VERSION and SHA256 (`sigcheck.check_package`); otherwise `NS-E707` with the sentence
     of `SIGNATURE_REFUSALS`. G6: `say` gets the line that names the key. `say` is the worker's log; the
-    terminal's own first check passes none, so each update says it once."""
+    terminal's own first check passes none, so each update says it once.
+
+    B3 (item uv-pin-on-update): the zip is read ONCE into memory (an update zip is a few MB); the SHA256 is
+    of those bytes and the uv pin is read from those bytes, so the pin is the signed one whatever happens to
+    the file afterwards (the W4b re-check still guards the extraction, which reads the file again)."""
     if not zip_path.is_file():
         raise NsError("NS-E701", f"{zip_path} does not exist")
     want = read_sidecar(zip_path)
     if want is None:
         raise NsError("NS-E701", f"missing or unreadable {zip_path.name}.sha256")
-    got = sha256_file(zip_path)
+    data = zip_path.read_bytes()
+    got = hashlib.sha256(data).hexdigest()
     if got != want:
         raise NsError("NS-E701", f"SHA256 mismatch for {zip_path.name}: expected {want[:12]}, got {got[:12]}")
     try:
         version, prefix = sigcheck.package_version(zip_path)
     except ValueError as e:
         raise NsError("NS-E701", str(e)) from e
+    # (a prefix read from a file exchanged since can only miss the manifest in these bytes: no pin, no uv)
+    pin = uvpin.pin_in_bytes(data, prefix)
+    del data
     told = say or (lambda line: None)
     keys = releases.trusted_keys()
     if not keys:
         told(NO_KEY_NOTE)
-        return _Checked(version, prefix, got, "")
+        return _Checked(version, prefix, got, "", pin)
     try:
         key = sigcheck.check_package(zip_path, version, got, keys)
     except sigcheck.BadSignature as e:
@@ -356,7 +367,7 @@ def _check_package(zip_path: Path, say: Callable[[str], None] | None) -> _Checke
         )
         raise NsError("NS-E707", words, reason=e.kind) from e
     told(SIGNED_NOTE.format(key=key))
-    return _Checked(version, prefix, got, key)
+    return _Checked(version, prefix, got, key, pin)
 
 
 def verify_package(zip_path: Path) -> tuple[str, str]:
@@ -1383,9 +1394,8 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
     replaced = current_version(prev) if prev.is_dir() else ""
     signed = checked.key or "no key trusted yet: sha256 only"
     log.info("update_start", old=old_version, new=new_version, zip=str(zip_path), signed_by=signed)
-    uv = uv_for(    # NS-E708, NS-E706: before Nightshift is stopped
-        uvpin.pin_in_zip(zip_path, prefix), paths, log, env.say, zip_path=zip_path, earlier=earlier,
-        older=uvpin.pin_of(prev),
+    uv = uv_for(    # NS-E708, NS-E706: before Nightshift is stopped; the pin of the bytes checked (B3)
+        checked.uv_pin, paths, log, env.say, zip_path=zip_path, earlier=earlier, older=uvpin.pin_of(prev)
     )
     try:
         env.stop()

@@ -36,6 +36,7 @@ imports httpx and ``ns_supervisor.releases`` when it is called, which only the u
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -106,10 +107,11 @@ def pin_of(program: Path) -> dict[str, str]:
         return {}
 
 
-def pin_in_zip(zip_path: Path, prefix: str = "") -> dict[str, str]:
-    """``bins.uv`` of the ``manifest.json`` inside an update zip, read without unpacking the zip."""
+def pin_in_bytes(data: bytes, prefix: str = "") -> dict[str, str]:
+    """``bins.uv`` of the ``manifest.json`` inside an update zip given as its bytes: the bytes the updater
+    hashed and checked (``update._check_package``), never the file read a second time."""
     try:
-        with zipfile.ZipFile(zip_path) as z:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
             return _pin(json.loads(z.read(prefix + MANIFEST).decode("utf-8-sig")))
     except (OSError, KeyError, ValueError, zipfile.BadZipFile):
         return {}

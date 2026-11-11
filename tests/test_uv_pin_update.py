@@ -385,6 +385,41 @@ def test_an_unforeseen_error_while_getting_the_rollbacks_uv_keeps_the_uv(
     assert not (inst.bin / "uv.next").exists() and not rollback_intent.path_for(inst.app).exists()
 
 
+def test_a_zip_exchanged_after_the_check_never_gets_its_uv_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, net: Net
+) -> None:
+    """B3 (written, NOT RUN): the pin comes from the bytes `_check_package` hashed. A zip replaced under the
+    same name right after the check (the dashboard still takes an upload) pins uv 0.15.0 with a uv zip of
+    its own in `files`: that uv is never unpacked, fetched or run; W4b then refuses the changed file."""
+    inst, z = install(tmp_path), package(tmp_path)
+    assert update._check_package(z, None).uv_pin["version"] == "0.14.0"
+    evil_sha = uv_zip(tmp_path / "files" / "uv-0.15.0.zip", "0.15.0", text="uv 0.15.0 (not signed)\n")
+    (tmp_path / "evil").mkdir()
+    evil = make_zip(tmp_path / "evil", extra={"manifest.json": manifest("0.15.0", evil_sha)})
+    real_check, real_run = update._check_package, uvpin.run_version
+    ran: list[str] = []
+
+    def exchanged(zip_path: Path, say: object) -> object:
+        checked = real_check(zip_path, say)  # type: ignore[arg-type]
+        zip_path.write_bytes(evil.read_bytes())     # replaced right after the check, same name
+        return checked
+
+    def run(exe: Path) -> tuple[int, str]:
+        code, out = real_run(exe)
+        ran.append(out)
+        return code, out
+
+    monkeypatch.setattr(update, "_check_package", exchanged)
+    monkeypatch.setattr(uvpin, "run_version", run)
+    with pytest.raises(NsError) as ei:
+        update.update_app(z, inst.app, Env().env(), paths=inst.paths)
+    assert ei.value.code == "NS-E702" and "was changed after Nightshift checked it" in ei.value.detail
+    assert not any("0.15.0" in out for out in ran), ran   # the unsigned pin's uv never ran
+    assert any("0.14.0" in out for out in ran)            # the signed pin's uv was the one checked
+    assert not (inst.paths.home / "cache" / "uv-0.15.0.zip").exists() and net.calls == []
+    assert inst.uv() == "0.13.6" and not list(inst.bin.glob("uv.*")) and inst.version() == "0.1.0"
+
+
 def test_the_repair_record_names_the_uv_that_matches_the_program(tmp_path: Path) -> None:
     inst, z = install(tmp_path), package(tmp_path)
     inst.venv()
