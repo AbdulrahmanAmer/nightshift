@@ -331,7 +331,7 @@ def test_update_state_file_is_read_from_run_update_state_json(tmp_home: Path):
     dash, state = make(tmp_home)
     assert dash.library.update_state()["state"] == "idle"
     f = state.paths.home / "run" / "update_state.json"
-    f.parent.mkdir(parents=True)
+    f.parent.mkdir(parents=True, exist_ok=True)  # the dashboard's start checked studio.db: run/db-check.json
     f.write_text(json.dumps({"state": "running", "old": "0.1.0", "new": "0.1.1", "message": "Installing"}), encoding="utf-8")
     assert dash.library.update_state() == {"state": "running", "old": "0.1.0", "new": "0.1.1", "message": "Installing", "updated_at": None}
     f.write_text("{not json", encoding="utf-8")
@@ -535,7 +535,7 @@ def test_morning_notes_are_listed_and_cleared(tmp_home: Path):
     dash, state = make(tmp_home)
     assert dash.engine.notes() == []
     f = state.paths.home / "run" / "morning_note.json"
-    f.parent.mkdir(parents=True)
+    f.parent.mkdir(parents=True, exist_ok=True)  # the dashboard's start checked studio.db: run/db-check.json
     f.write_text(json.dumps({"notes": [{"at": "2026-11-03T03:30:00", "title": "Nightshift", "message": "2 videos are ready"}, "junk"]}), encoding="utf-8")
     # FN-2: an entry that is no note makes the file a damaged one: it is kept aside and the bell says so
     first, said = dash.engine.notes()
