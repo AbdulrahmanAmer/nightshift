@@ -391,6 +391,51 @@ def test_no_uv_next_is_left_when_the_update_is_refused_for_running_programs(
     assert inst.uv() == "0.13.6" and not list(inst.bin.glob("uv.*")) and inst.version() == "0.1.0"
 
 
+def test_a_running_uv_refuses_the_update_before_nightshift_is_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, net: Net
+) -> None:
+    """NOT RUN. D-39a's holder check covers `bin\\uv`: NS-E706 naming the program, before the stop."""
+    inst, z = install(tmp_path), package(tmp_path)
+    asked: list[Path | None] = []
+
+    def running(paths: Paths, venv: str | None = None, *, root: Path | None = None) -> list[update.Holder]:
+        asked.append(root)
+        return [update.Holder(4242, "uv.exe", "12:00:00")] if root == inst.bin / "uv" else []
+
+    monkeypatch.setattr(update, "holders", running)
+    e = Env()
+    with pytest.raises(NsError) as ei:
+        update.update_app(z, inst.app, e.env(), paths=inst.paths)
+    detail = ei.value.detail
+    assert ei.value.code == "NS-E706" and "uv.exe (process 4242, started 12:00:00)" in detail
+    assert "Nothing was changed" in detail and "Nightshift was not stopped." in detail
+    assert "run the update again" in detail and "restart the PC" in detail  # what the owner does next
+    assert e.calls == [] and asked == [inst.bin / "uv"]
+    assert inst.uv() == "0.13.6" and not list(inst.bin.glob("uv.*")) and inst.version() == "0.1.0"
+
+
+def test_a_uv_that_cannot_be_opened_is_could_not_look_not_damaged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, net: Net
+) -> None:
+    """NOT RUN. A uv another program holds open does not answer --version: it is not replaced or fetched."""
+    inst, z = install(tmp_path), package(tmp_path)
+    exe = inst.bin / "uv" / "uv.exe"
+    exe.write_text("no answer\n", encoding="utf-8")  # (the stand-in's --version fails for this content)
+    monkeypatch.setattr(uvpin, "held", lambda path: "PermissionError: used by another process")
+    e = Env()
+    with pytest.raises(NsError) as ei:
+        update.update_app(z, inst.app, e.env(), paths=inst.paths)
+    detail = ei.value.detail
+    assert ei.value.code == "NS-E706" and "could not look at its uv" in detail and str(exe) in detail
+    assert "Nothing was changed" in detail and "Nightshift was not stopped." in detail
+    assert e.calls == [] and net.calls == [] and not list(inst.bin.glob("uv.*"))
+    assert not (inst.paths.home / "cache" / "uv-0.14.0.zip").exists() and inst.version() == "0.1.0"
+    # the same uv, not held and not running, is a damaged one: it is replaced
+    monkeypatch.setattr(uvpin, "held", lambda path: None)
+    update.update_app(z, inst.app, Env().env(), paths=inst.paths)
+    assert inst.uv() == "0.14.0" and inst.version() == "0.2.0"
+
+
 def test_a_left_over_uv_next_is_cleared_by_the_next_update_or_rollback(tmp_path: Path) -> None:
     """NOT RUN. After a kill (no handler ran): the next update clears it even when its program pins no uv,
     and so does the next rollback (`uvpin.prepare` settles first)."""

@@ -988,7 +988,7 @@ class Holder:
         return f"{self.program} (process {self.pid}, started {self.started})"
 
 
-def holders(paths: Paths, venv: str | None = None) -> list[Holder]:
+def holders(paths: Paths, venv: str | None = None, *, root: Path | None = None) -> list[Holder]:
     """The programs on this PC that run from `<home>\\venvs` (or from one venv of it).
 
     A program counts when its image is in there (a venv's `python.exe`, `ns.exe`, `studio.exe`) or when a
@@ -999,7 +999,8 @@ def holders(paths: Paths, venv: str | None = None) -> list[Holder]:
     D-39). The update worker itself is not exempt: its copy lives under `run\\updater`, and one that had to
     fall back to the venv's own interpreter must not rewrite that venv. A process that cannot be read
     (another user's) is not ours and is skipped."""
-    root = os.path.normcase(os.path.abspath(paths.venvs / venv if venv else paths.venvs)) + os.sep
+    base = root if root is not None else (paths.venvs / venv if venv else paths.venvs)  # (`root`: bin\uv)
+    root = os.path.normcase(os.path.abspath(base)) + os.sep
     found: list[Holder] = []
     for proc in psutil.process_iter(["pid", "exe", "cmdline", "create_time"]):
         exe = str(proc.info.get("exe") or "")
@@ -1714,6 +1715,11 @@ def finish_entry_points(moved: list[tuple[Path, Path]]) -> None:
 # the uv a program pins (item uv-pin-on-update): `installer.stage2.web.uvpin` holds the steps U1 to U8
 #: `if_stopped_here` of an update's uv swap (with `UV_STOPPED`): true until the program swap's own step.
 UV_UPDATE_STOPPED = "The update stopped before it changed the program or your settings: {old} is in place."
+#: What the owner does when the install's uv is running or held open by another program (NS-E706).
+UV_HELD_WAY_OUT = (
+    "Wait a minute (ns doctor and setup's Repair run uv for a short time) and close the program that holds "
+    "it, then run the update again. If it is still held then, restart the PC and run the update again."
+)
 #: Added to the sentence in force when the process dies between the uv swap and the program swap.
 UV_STOPPED = (
     " Its tool for installing Python packages (uv) may now be version {want} instead of {was}: run the same "
@@ -1730,7 +1736,22 @@ def uv_for(
     is stopped; a rollback keeps the uv there is and says so in its last sentence (`Plan.stays`)."""
     files = filesdir.beside(zip_path.parent) if zip_path is not None else None
     try:
-        return uvpin.prepare(pin, paths.home, files_root=files, say=say)
+        plan = uvpin.prepare(pin, paths.home, files_root=files, say=say)
+        # D-39a's holder check for `bin\uv`: a uv that still runs cannot be renamed. Looked at here, before
+        # Nightshift is stopped, so the refusal (NS-E706) leaves everything running as it was
+        dirs = [uvpin.uv_dir(paths.home, s) for s in (("", ".prev") if plan.how == "prev" else ("",))]
+        busy = [h for d in dirs for h in holders(paths, root=d)] if plan.how else []
+        if busy:
+            plan.undo()
+            raise uvpin.Held(f"uv is still running from {dirs[0]}: {'; '.join(str(h) for h in busy)}.")
+        return plan
+    except uvpin.Held as e:     # held or running is "could not look or replace", never "damaged"
+        log.warn("uv_held", str(e))
+        if zip_path is not None:
+            raise NsError(
+                "NS-E706", f"{e} {NOTHING_CHANGED} Nightshift was not stopped. {UV_HELD_WAY_OUT}"
+            ) from e
+        return uvpin.Plan(paths.home, stays=f" uv stays as it is: {e}")
     except uvpin.NotHad as e:
         log.warn("uv_pin_not_had", str(e))
         want = pin.get("version", "")

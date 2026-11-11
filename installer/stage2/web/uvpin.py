@@ -51,6 +51,21 @@ class NotHad(Exception):
     """The pinned uv could not be had; ``str()`` is the owner's sentence (the detail of NS-E708)."""
 
 
+class Held(Exception):
+    """The install's uv could not be looked at or replaced because another program holds it or it is running:
+    never taken for a damaged uv (nothing is fetched or replaced for it). ``str()`` is the owner's text."""
+
+
+def held(exe: Path) -> str | None:
+    """Why ``exe`` cannot be opened for reading (another program holds it); None when it can be."""
+    try:
+        with exe.open("rb") as fh:
+            fh.read(2)
+    except OSError as e:
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
 def uv_dir(home: Path, suffix: str = "") -> Path:
     """``<home>\\bin\\uv`` (suffix ``.prev``, ``.next`` or ``.swap`` for its siblings)."""
     return home / "bin" / f"uv{suffix}"
@@ -321,6 +336,9 @@ def prepare(
     plan.want, plan.was = want, have
     if runs and have == want:
         return plan
+    why = held(uv / EXE) if (uv / EXE).is_file() and not runs else None
+    if why is not None:     # "could not look", not "damaged": nothing is fetched or replaced for it
+        raise Held(f"Nightshift could not look at its uv, because another program holds {uv / EXE} ({why}).")
     if not (uv / EXE).is_file() and not any((home / "venvs").glob("*/Scripts/python.exe")):
         say("this install has no uv of its own and no Python environment to fill: nothing to bring")
         return plan
