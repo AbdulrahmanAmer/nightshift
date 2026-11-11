@@ -1,8 +1,8 @@
 {
  "about": "Seconds per test file for dev/ci_shards.py: the median over the JUnit reports of real CI runs. A file not listed is placed by hash and counts as the larger of the mean and the median of these. Refresh: python dev/ci_shards.py refresh --run latest (or --run <id>, or --junit <folder of report-shard-*.xml>)",
  "measured": {
-  "source": "run 42668170598, plus 8 files not in it (the three newest test files, the four test_p10_* files and test_tiny_story_length.py) from run 42686504308 (main, f4f3948) ; plus tests/test_diskneed.py, tests/test_installer_disk_need.py and tests/test_job_disk_room.py (PR 189) from run 42687368408; plus tests/test_prove.py at 4.0 s, an ESTIMATE (not yet in any CI report) until the next refresh after this branch has run in CI",
-  "files": 375
+  "source": "run 42668170598, plus 8 files not in it (the three newest test files, the four test_p10_* files and test_tiny_story_length.py) from run 42686504308 (main, f4f3948) ; plus tests/test_diskneed.py, tests/test_installer_disk_need.py and tests/test_job_disk_room.py (PR 189) from run 42687368408; plus tests/test_prove.py at 4.0 s, an ESTIMATE (not yet in any CI report) until the next refresh after this branch has run in CI; plus the four tests/test_gpu_kit*.py part files at 8.4 s a collected case and tests/test_gpu_kit_parts.py at 0.1 s, ESTIMATES from the bands of run 43038567089 (orchestrator/block-e, 479c1c2: its shard 4 held all 151 kit cases in one file and reached the job's 30-minute limit) until the next refresh",
+  "files": 380
  },
  "shard_extra_seconds": {
   "1": 15
@@ -131,6 +131,11 @@
   "tests/test_gate_m0.py": 0.2,
   "tests/test_gpu_busy_words.py": 3.6,
   "tests/test_gpu_dlls.py": 0.1,
+  "tests/test_gpu_kit.py": 327.6,
+  "tests/test_gpu_kit_2.py": 319.2,
+  "tests/test_gpu_kit_3.py": 310.8,
+  "tests/test_gpu_kit_4.py": 310.8,
+  "tests/test_gpu_kit_parts.py": 0.1,
   "tests/test_gpu_release.py": 5.4,
   "tests/test_home_for_process.py": 2.4,
   "tests/test_hygiene.py": 2.9,

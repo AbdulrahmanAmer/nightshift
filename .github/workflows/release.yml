@@ -22,7 +22,7 @@ jobs:
   # same three jobs in ci.yml. No `-m` filter here: the network-marked tests are collected and (without
   # NS_NETWORK_TESTS) skipped exactly as they were in the single job; ci.yml's own tag run covers them.
   test-shard:
-    name: test-shard (${{ matrix.shard }}/8)
+    name: test-shard (${{ matrix.shard }}/12)
     runs-on: windows-latest
     # About 9.5 minutes of tests plus about 3 of setup per shard (dev/ci_shards.py plan); the same timeout as ci.yml,
     # which tests/test_ci_workflow.py keeps at least twice the prediction of every shard. SHARDS in dev/ci_shards.py
@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     steps:
       - run: git config --global core.longpaths true
       - uses: actions/checkout@v4
@@ -46,7 +46,7 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - name: Tests (the files of this shard)
         shell: bash
-        run: python dev/ci_shards.py run --shard ${{ matrix.shard }} --of 8 -- -q --junitxml=report-shard-${{ matrix.shard }}.xml
+        run: python dev/ci_shards.py run --shard ${{ matrix.shard }} --of 12 -- -q --junitxml=report-shard-${{ matrix.shard }}.xml
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@v4
@@ -136,7 +136,7 @@ jobs:
       - name: The node ids the shards ran are exactly the node ids collected unsharded
         if: ${{ !cancelled() }}
         shell: bash
-        run: python dev/ci_shards.py verify --of 8 --collected collected/collected.txt --reports reports --summary
+        run: python dev/ci_shards.py verify --of 12 --collected collected/collected.txt --reports reports --summary
       - name: Twenty slowest tests
         if: ${{ !cancelled() }}
         shell: bash
