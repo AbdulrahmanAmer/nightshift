@@ -110,6 +110,20 @@ def _copy(src: Path, dst: Path) -> None:
     lock(dst)
 
 
+def db_checked(paths: Paths) -> None:
+    """`studio.db` through its one opener (`open_studio_db`: checked once per process; a damaged file is
+    replaced by the newest good nightly copy, with the owner's note; NS-E209 when it cannot be)."""
+    from ns_common.db import open_studio_db
+    from ns_common.logging import NsLogger
+    from ns_supervisor import notify
+
+    def note(message: str) -> object:
+        return notify.leave_note(paths, "Nightshift", message,
+                                 once=lambda notes: any(n["message"] == message for n in notes))
+
+    open_studio_db(paths, NsLogger("supervisor", paths.logs), note=note).close()
+
+
 def make_backup(
     paths: Paths, out: Path | None = None, *, now: datetime | None = None, notes: list[str] | None = None
 ) -> Path:
@@ -130,6 +144,8 @@ def make_backup(
         "the keys for any account to read. The keys stay in Credential Manager and in this PC's own copy; "
         "enter them again in Settings > Keys after a restore on another PC."
     )
+    if paths.db_path.is_file():  # db-integrity: a damaged studio.db is replaced first, never zipped as it is
+        db_checked(paths)
 
     def fill(z: zipfile.ZipFile) -> None:
         for tree in TREES:

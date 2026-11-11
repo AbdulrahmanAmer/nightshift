@@ -530,8 +530,9 @@ def test_a_damaged_assistant_database_is_set_aside_and_started_fresh(tmp_home: P
     paths = home()
     first = AssistantStore(paths)
     cid = first.new_conversation("hello")
-    first.close() if hasattr(first, "close") else first.db.close()
+    first.close()
     damage_page3(paths.assistant_db)
+    getattr(dbmod, "_checked", set()).clear()  # the dashboard's next start: a new process checks again
 
     store = None
     try:
