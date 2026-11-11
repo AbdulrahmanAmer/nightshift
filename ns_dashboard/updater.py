@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ns_common.atomic import read_text_retry
+from ns_common.commandline import render
 from ns_common.paths import Paths
 
 Runner = Callable[[list[str], int], tuple[int, str, str]]
@@ -129,8 +130,8 @@ class RealUpdateAdapter:
 
         Nothing is decided (None) when `runtime.json`, `install_state.json` or `manifest.json` is missing, torn
         or invalid (NsError, OSError, or ValueError, which a pydantic ValidationError and a bad UTF-8 read
-        are): the request goes on and `ns models get` reports the problem itself, as before (its no-install
-        fallback is `models_get.get_model`'s, defect D-35).
+        are): the request goes on and `ns models get` reports the problem itself (NS-E203 naming the file, or NS-E123
+        when no install is found at all; it never assumes a profile, defect D-35).
         """
         from ns_common.config import load_manifest, load_runtime
         from ns_common.errors import NsError
@@ -201,7 +202,10 @@ def classify_update(result: dict[str, Any]) -> dict[str, Any]:
         state, message = "up_to_date", "You have the newest version."
     else:
         state, message = "unknown", "The update check finished but did not say whether a new version exists."
-    return {**result, "state": state, "up_to_date": state == "up_to_date", "message": message}
+    notes = result.get("notes")
+    if isinstance(notes, list):         # an update's JSON is not rendered by `ns`: its commands are, here (FN-3)
+        result = {**result, "notes": [render(n) if isinstance(n, str) else n for n in notes]}
+    return {**result, "state": state, "up_to_date": state == "up_to_date", "message": render(message)}
 
 
 def ns_command(paths: Paths, *args: str) -> list[str]:
@@ -305,15 +309,19 @@ def read_update_state(
         return out
     was_running = raw["state"] == "running"
     try:
-        from ns_supervisor.update_job import effective_status
+        from ns_supervisor.update_job import effective_status, settled, where
 
-        raw = effective_status(raw, alive=alive, now=now())  # `running` with a dead worker is `failed`
+        # `running` with a dead worker is `failed`, said by the step it died in or read from the disk; one
+        # whose environments were finished since (D-48: nothing is left to do) is `done`, said as such
+        raw = settled(paths, effective_status(raw, alive=alive, now=now(), describe=lambda: where(paths)))
     except ImportError:
         if was_running and _stale(raw, now):
             raw = {**raw, "state": "failed", "message": STALE_MESSAGE}
     for key in ("old", "new", "message", "updated_at"):
         value = raw.get(key)
         out[key] = str(value) if value is not None else None
+    if out["message"]:      # the page shows it now: stored with the plain words, rendered here (FN-3)
+        out["message"] = render(out["message"], paths.home)
     out["state"] = raw["state"]
     if isinstance(raw.get("release_notes"), str) and raw["release_notes"]:
         out["release_notes"] = raw["release_notes"]       # added only when there is some: the shape is unchanged

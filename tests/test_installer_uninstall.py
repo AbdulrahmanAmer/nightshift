@@ -40,7 +40,13 @@ def _present(home: Path) -> set[str]:
 
 def test_dry_run_deletes_nothing_and_lists_actions(tmp_path: Path):
     home = _make_home(tmp_path)
-    proc = _run(home, "-DryRun", "-DeleteModels", "-DeleteData")
+    # the PC is described (its task, its variable, its toast key) and the Desktop is a folder here: the dry
+    # run reads nothing of this PC, and what it lists does not depend on what this PC holds
+    machine = tmp_path / "machine.json"
+    machine.write_text(json.dumps({"task": None, "userHome": str(home), "toastKey": False}), encoding="utf-8")
+    (tmp_path / "desktop").mkdir()
+    described = ("-StateFile", str(machine), "-DesktopDir", str(tmp_path / "desktop"))
+    proc = _run(home, "-DryRun", "-DeleteModels", "-DeleteData", *described)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert _present(home) == set(ALL_DIRS)
     assert "[dry-run] delete folder" in proc.stdout and "venvs" in proc.stdout
@@ -140,6 +146,25 @@ def test_the_console_uninstall_removes_the_program_folder_and_the_update_swap_fo
     assert _present(home) == set(ALL_DIRS) - {"venvs", "bin", "run", "state", "tmp"}
 
 
+def test_the_console_uninstall_removes_what_an_interrupted_rollback_left_and_the_shortcut_script(
+    tmp_path: Path,
+):
+    """Card 206-carried: app.swap, every app.swap-left-<stamp> and <home>/nightshift-launch.ps1 go too."""
+    home = _make_home(tmp_path)
+    left = [home / "app.swap", home / "app.swap-left-20261110-0312", home / "app.swap-left-20261110-0312-2"]
+    for f in left:
+        (f / "ns_common").mkdir(parents=True)
+        (f / "VERSION").write_text("0.1.15", encoding="utf-8")
+    stub = home / "nightshift-launch.ps1"
+    stub.write_text("# stub", encoding="ascii")
+    dry = _run(home, "-SkipSystem", "-DryRun")
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert all(f"[dry-run] delete folder {f}" in dry.stdout for f in [*left, stub]) and stub.exists()
+    proc = _run(home, "-SkipSystem")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert not any(f.exists() for f in [*left, stub])
+
+
 def test_the_console_uninstall_removes_the_settings_copy_an_update_keeps_beside_app_prev(tmp_path: Path):
     """F-10a: app.prev-config.zip holds the owner's settings files; it goes with the program backup."""
     home = _make_home(tmp_path)
@@ -169,10 +194,16 @@ def test_with_keepbin_the_program_folder_stays_for_the_windows_deferred_cleanup(
     assert all(f.exists() for f in folders)
 
 
-def _path_probe(tmp_path: Path, home: Path, start: str, dry: bool = False) -> list[str]:
-    """Run Remove-UserPathEntry (cut out of uninstall.ps1) against a throw-away key below HKCU."""
+def _path_probe(
+    tmp_path: Path, home: Path, start: str, dry: bool = False, *, kind: str = "ExpandString",
+    directory: Path | None = None,
+) -> list[str]:
+    """Run Remove-UserPathEntry (cut out of uninstall.ps1) against a stand-in for the user's Environment key:
+    an object with GetValue, GetValueKind, SetValue and Close that keeps the value and its kind in memory. The
+    registry of this PC is never opened (card FN-3; before it, these probes wrote a scratch key below HKCU).
+    `directory`: the entry to remove (default: the FFmpeg fallback's)."""
     probe = tmp_path / "path-probe.ps1"
-    ffmpeg = home / "bin" / "ffmpeg"
+    wanted = directory or home / "bin" / "ffmpeg"
     lines = [
         "$ErrorActionPreference = 'Stop'",
         "Set-StrictMode -Version Latest",
@@ -182,26 +213,24 @@ def _path_probe(tmp_path: Path, home: Path, start: str, dry: bool = False) -> li
         "$start = $text.IndexOf('function Remove-UserPathEntry')",
         "$end = $text.IndexOf('# ---- where is the install')",
         "Invoke-Expression $text.Substring($start, $end - $start)",
-        r"$sub = 'Software\NightshiftTest\' + [guid]::NewGuid().ToString('N')",
-        "$null = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($sub)",
-        "try {",
-        "    $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($sub, $true)",
-        f"    $k.SetValue('Path', '{start}', [Microsoft.Win32.RegistryValueKind]::ExpandString)",
-        "    $k.Close()",
-        f"    $r = Remove-UserPathEntry -Directory '{ffmpeg}' -SubKey $sub",
-        "    $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($sub)",
-        "    $opt = [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames",
-        "    'result=' + $r",
-        "    'path=' + $k.GetValue('Path', $null, $opt)",
-        "    'kind=' + $k.GetValueKind('Path')",
-        "    $k.Close()",
-        "} finally {",
-        "    [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($sub, $false)",
-        "}",
+        "$store = @{ value = [string]$env:NS_PROBE_PATH; kind = [string]$env:NS_PROBE_KIND; writes = 0 }",
+        "$k = New-Object psobject",
+        "$k | Add-Member ScriptMethod GetValue { param($n, $d, $o) $store.value }",
+        "$k | Add-Member ScriptMethod GetValueKind { param($n) "
+        "[Microsoft.Win32.RegistryValueKind]$store.kind }",
+        "$k | Add-Member ScriptMethod SetValue { param($n, $v, $t) "
+        "$store.value = $v; $store.kind = [string]$t; $store.writes++ }",
+        "$k | Add-Member ScriptMethod Close { }",
+        "$r = Remove-UserPathEntry -Directory $env:NS_PROBE_DIR -Key $k",
+        "'result=' + $r",
+        "'path=' + $store.value",
+        "'kind=' + $store.kind",
+        "'writes=' + $store.writes",
     ]
     probe.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    env = {**os.environ, "NS_PROBE_PATH": start, "NS_PROBE_KIND": kind, "NS_PROBE_DIR": str(wanted)}
     proc = subprocess.run([str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(probe)],
-                          capture_output=True, text=True, timeout=120)
+                          capture_output=True, text=True, timeout=120, env=env)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     return proc.stdout.splitlines()
 

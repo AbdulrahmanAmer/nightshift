@@ -212,12 +212,11 @@ def test_failed_probes_must_be_in_a_row_a_good_probe_starts_the_count_again(
 ) -> None:
     paths, job_id = running_job
     pids.alive.clear()
-    monkeypatch.setattr(ownership, "FileLock", UnopenableLock)
-    for _ in range(ownership.UNPROBED_LIMIT - 1):
-        assert ownership.lock_held(paths, job_id) is True
-    monkeypatch.undo()  # the file opens again: free (nobody holds it)
-    monkeypatch.setattr(ownership, "_pid_alive", pids)
-    assert ownership.lock_held(paths, job_id) is False
+    with monkeypatch.context() as m:
+        m.setattr(ownership, "FileLock", UnopenableLock)
+        for _ in range(ownership.UNPROBED_LIMIT - 1):
+            assert ownership.lock_held(paths, job_id) is True
+    assert ownership.lock_held(paths, job_id) is False  # the file opens again: free (nobody holds it)
     monkeypatch.setattr(ownership, "FileLock", UnopenableLock)
     for _ in range(ownership.UNPROBED_LIMIT - 1):
         assert ownership.lock_held(paths, job_id) is True, "the earlier failures do not count any more"

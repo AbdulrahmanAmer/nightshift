@@ -189,3 +189,18 @@ def test_the_engine_status_says_the_context_llama_runs_with(tmp_path: Path) -> N
     services = sup.status()["services"]
     assert services["llama"].get("ctx") == 8192
     assert services["embed"].get("ctx", "missing") is None
+
+
+def test_the_tune_reads_the_context_nightshift_code_refuses_below_not_a_copy_of_it() -> None:
+    """D-44: `ns tune` on a processor-only PC with Nightshift Code installed never goes below the number the
+    Code launcher refuses below (D-34), which setup writes as the model's limit."""
+    import re
+
+    from installer.stage2.steps.s07_configs import MIN_CODE_CONTEXT
+    from ns_supervisor import tune
+
+    assert tune.CODE_MIN_CONTEXT == MIN_CODE_CONTEXT
+    script = Path(__file__).resolve().parents[1] / "launchers" / "nightshift-code.ps1"
+    launcher = script.read_text(encoding="ascii")
+    found = re.search(r"^\$minCtx = (\d+)$", launcher, re.M)
+    assert found is not None and found.group(1) == str(MIN_CODE_CONTEXT)

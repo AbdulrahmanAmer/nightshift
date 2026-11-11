@@ -10,23 +10,30 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import sys
+import threading
+import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import FastAPI  # pyright: ignore[reportMissingImports]
 from fastapi.responses import JSONResponse, StreamingResponse  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, Field, StrictInt
 
+from installer.stage2.web import venvrepair
 from ns_common import first_start
 from ns_common.atomic import sweep_stale_tmp
-from ns_common.config import load_runtime
+from ns_common.config import load_install_state, load_runtime
 from ns_common.errors import NsError, describe
+from ns_common.logging import NsLogger
+from ns_common.loopback import NO_BROWSER, LoopbackGuard
 from ns_common.models import Runtime
-from ns_common.paths import Paths
+from ns_common.paths import Paths, repo_root
 from ns_common.secret_file import relock_existing
 from ns_common.singleton import AlreadyRunning, FileLock
-from ns_supervisor import notify, tmpsweep, update_check
+from ns_supervisor import launch_reach, notify, tmpsweep, update_check
 from ns_supervisor.core import Supervisor, SupervisorConfig
 from ns_supervisor.health_cfg import read_health_timeout
 from ns_supervisor.scheduled import overdue_scheduled_jobs
@@ -197,12 +204,38 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
+    # FN-1: before any route, for every method: a request a browser made, or one addressed to a name other
+    # than this PC's, gets 403 NS-E207. A page that keeps trying is told to the owner in a morning note.
+    app.add_middleware(
+        LoopbackGuard,
+        rule=NO_BROWSER,
+        log=sup.log,
+        # the day's count and the note are one step under the notes lock (`notify.leave_chosen_note`)
+        tell=lambda choose, at: notify.leave_chosen_note(sup.paths, "Nightshift", choose, now=at),
+    )
     return app
 
 
 def engine_lock(paths: Paths) -> FileLock:
     """``run/supervisor.lock``: held while an engine of this home lives (the OS drops it on a crash)."""
     return FileLock(paths.home / "run" / "supervisor.lock")
+
+
+def refuse_unfinished(paths: Paths) -> int:
+    """D-39b, the engine's own gate (a start that did not come through `client.ensure_running`, e.g. a
+    launcher's `Start-NsSupervisor` or a hand-typed `python -m ns_supervisor.app`): `venvrepair.REFUSED_EXIT`
+    when an update left the environments of this program unfinished, said on stderr, in the log and once as
+    a morning note; 0 when it may start. Nothing else has been done by then."""
+    st = load_install_state(paths)
+    why = venvrepair.start_refusal(paths.home, Path(st.app_path) if st.app_path else repo_root())
+    if why is None:
+        return 0
+    sys.stderr.write(f"NS-W210: {why}\n")
+    NsLogger("supervisor", paths.logs).warn("start_refused_unfinished_venvs", why, code="NS-W210")
+    with contextlib.suppress(OSError):
+        notify.leave_note(paths, "Nightshift", why,
+                          once=lambda notes: any(n["message"] == why for n in notes))
+    return venvrepair.REFUSED_EXIT
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -220,6 +253,9 @@ def main(argv: list[str] | None = None) -> int:
 
     paths = Paths.from_env()
     paths.logs.mkdir(parents=True, exist_ok=True)
+    refused = refuse_unfinished(paths)
+    if refused:
+        return refused
     lock = engine_lock(paths)
     try:
         lock.acquire()
@@ -231,6 +267,9 @@ def main(argv: list[str] | None = None) -> int:
         # a crash between a write and its swap leaves a ~ns*.tmp in config/ (with every key blob, for
         # secrets.dpapi); the next key write sweeps them too, this catches the ones nothing writes again
         sweep_stale_tmp(paths.config)
+        # notes that could not be written when they were left (a writer that hung, a full disk) wait in the
+        # spool: the start moves them into the notes the bell shows, each once (never raises)
+        notify.drain_spool(paths)
         return _serve(args, paths)
     finally:
         lock.release()
@@ -275,14 +314,16 @@ def _with_hint(code: str, line: str) -> str:
 
 
 def _note_once(paths: Paths, log: Any, message: str, code: str, about: str) -> None:
-    """Leave `message` as a morning note unless a note with the same code about the same file still waits."""
-    waiting = notify.read_notes(paths)
-    if any(n.get("message", "").startswith(f"{code}:") and about in n.get("message", "") for n in waiting):
-        return
+    """Leave `message` as a morning note unless a note with the same code about the same file still waits
+    (the owner of the notes decides that under its lock: two starts at once say it once)."""
+
+    def waits(notes: list[notify.Note]) -> bool:
+        return any(n["message"].startswith(f"{code}:") and about in n["message"] for n in notes)
+
     try:
-        notify.leave_note(paths, "Nightshift", message)
-    except OSError as e:  # a note must never stop an engine start
-        log.warn("morning_note_failed", str(e))
+        notify.leave_note(paths, "Nightshift", message, once=waits)
+    except OSError as e:  # neither the notes nor their spool took it (notify logged it); never stop a start
+        log.warn("morning_note_failed", str(e), message=message)
 
 
 def _serve(args: argparse.Namespace, paths: Paths) -> int:
@@ -291,6 +332,9 @@ def _serve(args: argparse.Namespace, paths: Paths) -> int:
     # F-10c: before the engine reads a settings file, an interrupted rollback is finished or undone and the
     # first start after an older updater takes the settings copy (both never raise)
     first_start.ensure(paths.config)
+    # card launcher-reach: an install an older updater brought here gets the launch script, shortcuts and a
+    # task action that go through it (a thread: it never delays or stops the engine)
+    launch_reach.start(paths, first_start.program_dir())
     try:
         runtime = load_runtime(paths)
     except NsError:
@@ -305,17 +349,48 @@ def _serve(args: argparse.Namespace, paths: Paths) -> int:
     sup = Supervisor(paths, runtime, config=cfg, update_check=update_check.make_job(paths))
     relock_secret_files(paths, sup.log)
     app = create_app(sup, start_dashboard=not args.headless)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(
+        app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=GRACEFUL_S,
+    ))
 
     async def serve() -> None:
         task = asyncio.create_task(server.serve())
         waiter = asyncio.create_task(sup.exit_requested.wait())
         await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        exit_watchdog(EXIT_BOUND_S, log=sup.log)        # D-46: from here on the exit is bounded
         server.should_exit = True
         await task
 
     asyncio.run(serve())
     return 0
+
+
+#: D-46. The engine's way out had two waits without a bound: uvicorn waits for every request still running
+#: (an `/events` stream, a `/acquire` that waits for the GPU) unless `timeout_graceful_shutdown` is set, and
+#: at the very end the interpreter joins every `asyncio.to_thread` worker, one stuck in a blocking call
+#: included. An engine that had stopped its services and closed its port then stayed alive holding
+#: `run/supervisor.lock`, so no new engine could start and an update refused on its venv launcher.
+GRACEFUL_S = 5
+#: Once exit was requested, the process ends within this, whatever is still waiting (its services were
+#: stopped and its state file removed by then; its Job Object ends any child left).
+EXIT_BOUND_S = 20.0
+
+
+def exit_watchdog(bound_s: float, *, log: Any = None, end: Any = None) -> threading.Thread:
+    """A daemon thread that ends this process `bound_s` from now unless it has ended by itself. Daemon: it
+    never keeps the process alive; when the process is still there, it is what ends it (`os._exit(0)`)."""
+    finish = end or os._exit
+
+    def run() -> None:
+        time.sleep(bound_s)
+        if log is not None:
+            with contextlib.suppress(Exception):
+                log.warn("exit_forced", f"the engine had not ended {bound_s:g} s after it was asked to stop")
+        finish(0)
+
+    thread = threading.Thread(target=run, name="exit-watchdog", daemon=True)
+    thread.start()
+    return thread
 
 
 if __name__ == "__main__":

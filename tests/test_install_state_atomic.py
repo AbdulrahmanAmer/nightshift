@@ -60,10 +60,10 @@ def test_a_crash_during_the_swap_leaves_the_old_file_whole(
     def die(src: object, dst: object) -> None:
         raise OSError("power lost")
 
-    monkeypatch.setattr(atomic.os, "replace", die)
-    with pytest.raises(OSError):
-        atomic.write_text_atomic(target, '{"v": 2, "padding": "' + "x" * 100_000 + '"}')
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        m.setattr(atomic.os, "replace", die)
+        with pytest.raises(OSError):
+            atomic.write_text_atomic(target, '{"v": 2, "padding": "' + "x" * 100_000 + '"}')
     assert json.loads(target.read_text(encoding="utf-8")) == {"v": 1}
 
 

@@ -7,13 +7,14 @@ is at the keyboard and fall back to their defaults (or fail for required values)
 from __future__ import annotations
 
 import re
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from installer.stage2 import reinstall
+from installer.stage2 import commands, reinstall
 from installer.stage2.answers import (
     AnswersError,
     InstallerAnswers,
@@ -30,6 +31,7 @@ from installer.stage2.diskplan import ctx_need, free_bytes_of
 from installer.stage2.downloader import human_bytes
 from installer.stage2.errors import make_error
 from installer.stage2.secrets import KEY_NAMES, PEXELS_KEY, PIXABAY_KEY, any_key_stored
+from installer.stage2.steps.s09_shortcuts_scheduler import desktop, home_var_now
 from installer.stage2.sysinfo import (
     choose_default_home,
     drive_type,
@@ -37,17 +39,75 @@ from installer.stage2.sysinfo import (
     local_drives,
     recommended_tier,
 )
+from installer.stage2.web import shortcuts_view
 from installer.stage2.web.pathcheck import FOLDER_FOREIGN, folder_kind, foreign_warning, layout_problem
-from installer.stage2.winenv import HOME_VAR, get_user_env, set_user_env
+from installer.stage2.winenv import HOME_VAR, run_ps, set_user_env, user_path
 from ns_common import diskneed
 from ns_common.errors import NsError
 from ns_common.pathrules import ascii_problem
+from ns_supervisor import schedule
+from ns_supervisor.schedule_cfg import MODE_DISABLED, read_schedule_mode, schedule_file
 
 PRESET_VOICES = ("Ryan", "Aiden", "Serena", "Vivian")
 PEXELS_URL = "https://www.pexels.com/api/"
 PIXABAY_URL = "https://pixabay.com/api/docs/"
 NO_KEY_NOTICE = "No stock footage key yet. Setup continues; add a Pixabay key (free) later in Settings"
 RUN_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+#: Setup's one optional question (owner, 2026-11-10). Enter is no; an unattended install without the answer
+#: `nightly` is no. Asked on a first install only: later runs leave Automatic runs as Settings has them.
+NIGHTLY_QUESTION = "Run Nightshift by itself every night? You can turn this on later in Settings."
+#: Wizard flag: True while this install has not decided about Automatic runs yet (see `first_install`).
+FIRST_INSTALL = "first_install"
+
+
+def _look_at_task(ctx: StepContext) -> schedule.TaskState | None:
+    """Setup's own look at the 'Nightshift Daily' task, through the wizard's runner (the programs that hold
+    `ns` may not exist yet). `ScheduleError` unless Windows answered: an empty answer is not "no task"."""
+    try:
+        res = run_ps(
+            ctx.runner, schedule.build_read_script(), tag="ps:task-read", timeout=schedule.READ_TIMEOUT_S
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        raise schedule.ScheduleError(f"{type(e).__name__}: {e}") from e
+    if not res.ok or not res.stdout.strip():
+        raise schedule.ScheduleError(res.text[-200:] or "PowerShell gave no answer")
+    return schedule.parse_task_state(res.stdout)
+
+
+def desktop_of_another(ctx: StepContext) -> list[str]:
+    """The other Nightshift folders the Desktop shortcuts open now, seen from this install's home (card
+    second-install-takeover); empty when they are this install's, nobody's, or the Desktop cannot be found
+    (the scheduler step says that)."""
+    try:
+        folder = desktop(ctx)
+    except NsError:
+        return []
+    seen = shortcuts_view.look(folder, ctx.paths.home, ctx.app_path)
+    return list(seen["paths"]) if seen["state"] in shortcuts_view.KEPT else []
+
+
+def first_install(ctx: StepContext) -> bool:
+    """Whether this run is the first install for setup's question about Automatic runs. Decided once per
+    install and kept in the wizard flag `first_install` (a resumed run keeps the answer; the scheduler step
+    sets it False when it has acted).
+
+    First means: setup never recorded a scheduler decision here (wizard flag `schedule`; the uninstaller
+    deletes the flag file, and flags of a removed install read as unset) and no record says Automatic runs are
+    on. Before that is read, a record is settled against Windows, quietly: 0.1.14's uninstall removed the task
+    and left `config/schedule.json` saying on, which is nobody's choice and must not reach `ns verify` (its
+    note "switched off outside Nightshift" would be untrue). When Windows does not answer, nothing is
+    changed and the record is believed: such a home counts as installed, and setup changes nothing there.
+    A dev install's `disabled` record is not a choice either.
+    """
+    known = ctx.flag(FIRST_INSTALL)
+    if isinstance(known, bool):
+        return known
+    if not ctx.dev_mode and schedule_file(ctx.paths).exists():
+        schedule.sync_record(ctx.paths, log=ctx.log, quiet=True, read=lambda: _look_at_task(ctx))
+    first = ctx.flag("schedule") is None and read_schedule_mode(ctx.paths) in ("none", MODE_DISABLED)
+    ctx.set_flag(FIRST_INSTALL, first)
+    ctx.log.info("nightly_first_install", first=first)
+    return first
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -122,10 +182,13 @@ class S01Questions(Step):
 
     @staticmethod
     def _asked(ctx: StepContext, key: str, prompt: str, default: str | None = None) -> str | None:
-        """Value from answers.json, else asked when someone is there, else the default."""
+        """Value from answers.json, else asked when someone is there, else the default. A key the answers
+        name, also as blank (`load_raw` reads "" as None), is an answer: it is never asked for."""
         val = ctx.raw_answers.get(key)
         if val not in (None, ""):
             return str(val)
+        if key in ctx.raw_answers:
+            return default
         if ctx.ui.interactive:
             return ctx.ui.ask(prompt, default)
         return default
@@ -135,6 +198,8 @@ class S01Questions(Step):
     def check(self, ctx: StepContext) -> bool:
         """True when a valid answers file from an earlier run exists, its secrets are stored and the answers
         in use (``--answers``, next to INSTALL.cmd, the window's choices) do not change it (D-14)."""
+        if ctx.state.is_done(self.id):
+            first_install(ctx)  # a run over an install: its home is settled, so the question is decided here
         if ctx.ui.bridge and not ctx.state.is_done(self.id):
             return False        # the setup window writes a first answers.json before this step has run
         f = self._answers_file(ctx)
@@ -152,6 +217,12 @@ class S01Questions(Step):
         if reinstall.new_keys(ctx):
             return False  # a key the key store does not hold: run() checks and stores it (D-14)
         reinstall.forget_kept(ctx)  # nothing differs: the window's copy of the earlier answers is used up
+        if ctx.raw_answers.get("shortcuts_here") is True:
+            # The answers handed to THIS run say yes to moving the Desktop shortcuts here (a file next to
+            # INSTALL.cmd, `--answers`): it is this run's to act on, though nothing else changed. The saved
+            # answers never keep it (the scheduler step removes it), so only a file the owner hands in again
+            # says it again.
+            ans = ans.model_copy(update={"shortcuts_here": True})
         ctx.answers = ctx.constrain(ans)
         return True
 
@@ -247,6 +318,10 @@ class S01Questions(Step):
             # Both keys are optional (Pexels stopped giving out new keys; Settings takes a key later).
             for name, label, url, validator, _code in specs:
                 provided = ctx.raw_answers.get(name)
+                # A key the answers name, also as "" (read as None), is answered: "" is skip. Only a key they
+                # leave out is asked for, and only where a person can answer (the Ui is not interactive in an
+                # unattended run).
+                named = name in ctx.raw_answers
                 value = provided or ctx.store.get(name)
                 if value and not provided:
                     # a key saved by an earlier setup or in Settings: when the service rejects it now, setup
@@ -267,7 +342,7 @@ class S01Questions(Step):
                             value = None
                 elif value:
                     validator(client, str(value))
-                elif ctx.ui.interactive:
+                elif ctx.ui.interactive and not named:
                     ctx.ui.say(f"{label} key (free, optional, Enter to skip): {url}")
                     for attempt in range(3):
                         value = ctx.ui.ask(f"Paste your {label} API key", "", secret=True).strip()
@@ -374,9 +449,15 @@ class S01Questions(Step):
         home = self._pick_home(ctx, tier, custom_need)
         ctx.relocate(home)
         ctx.paths.ensure()
+        first = first_install(ctx)  # after the home is final: the record and the flags are that home's
         if drive_type(ctx.preflight, home) == "HDD":
             ctx.warn("NS-W106", str(home))
-        if not set_user_env(ctx.runner, HOME_VAR, str(home)):
+        # NIGHTSHIFT_HOME that names another Nightshift folder (one that exists, or whose drive is not there
+        # now) is that install's: it is not set here. The scheduler step decides it with the Desktop
+        # shortcuts and says so; one yes moves both. When Windows does not say what it holds, it is left too.
+        var_state, var_name = home_var_now(ctx)
+        var_theirs = var_state in ("unread", *shortcuts_view.KEPT)
+        if not var_theirs and not set_user_env(ctx.runner, HOME_VAR, str(home)):
             raise make_error("NS-E121", "could not set the NIGHTSHIFT_HOME user variable")
         merged["home_path"] = str(home)
 
@@ -412,11 +493,32 @@ class S01Questions(Step):
                 raise AnswersError("run_time must be HH:MM (24 hour clock)")
             run_time = ctx.ui.ask("Please use HH:MM, for example 03:00", "03:00")
         merged["run_time"] = run_time
+        # The one optional question, off by default. The window asks it itself (its switch), an answers file
+        # answers with `nightly`; nobody at the keyboard means no. A no is not written down: no answer and no
+        # are the same thing for the scheduler step.
+        asks = first and raw.get("nightly") is None and ctx.ui.interactive and not ctx.ui.bridge
+        if asks and not ctx.dev_mode and ctx.ui.confirm(NIGHTLY_QUESTION, False):
+            merged["nightly"] = True
+        # A second Nightshift on this PC: the Desktop shortcuts of another install are kept unless the owner
+        # says yes here (Enter is no), in the window (its switch) or in the answers file (`shortcuts_here`).
+        # A no is not written down. Asked whenever the questions run and another install holds the Desktop.
+        # The same yes moves NIGHTSHIFT_HOME and the `ns` and `studio` commands (card FN-3), so the question
+        # is asked when any of them is another install's.
+        if raw.get("shortcuts_here") is None and ctx.ui.interactive and not ctx.ui.bridge:
+            theirs = desktop_of_another(ctx)
+            var_named = var_name if var_state in shortcuts_view.KEPT else None
+            now = None if ctx.dev_mode else user_path(ctx.runner)  # a dev install never takes the commands
+            cmds = commands.others_commands(now.value if now else None, home)
+            asked = shortcuts_view.question(theirs, var_named, cmds)
+            if (theirs or var_named or cmds) and ctx.ui.confirm(asked, False):
+                merged["shortcuts_here"] = True
 
         if "install_code" in raw and raw["install_code"] is not None:
             merged["install_code"] = bool(raw["install_code"])
-        else:
+        elif ctx.ui.interactive:
             merged["install_code"] = ctx.ui.confirm("Install Nightshift Code (offline assistant)?", True)
+        else:
+            merged["install_code"] = True       # nobody to ask: the question's own default
 
         flag = raw.get("include_voicedesign")
         merged["include_voicedesign"] = None if flag is None else bool(flag)
@@ -467,6 +569,8 @@ class S01Questions(Step):
                 ["Voice", f"{ans.voice.mode}: {ans.voice.speaker or ans.voice.description}"],
                 ["Long videos per week", str(ans.masters_per_week)],
                 ["Nightly run time", ans.run_time],
+                *([["Run by itself every night", "yes" if ans.nightly else "no (Settings switches it on)"]]
+                  if ctx.flag(FIRST_INSTALL) is True and not ctx.dev_mode else []),
                 ["Nightshift Code", "yes" if ans.install_code else "no"],
                 ["Voice design model", voicedesign_row(ctx, ans)],
                 ["LLM size", f"custom: {ans.llm_custom.file}" if ans.llm_custom else ans.llm_tier],
@@ -481,8 +585,13 @@ class S01Questions(Step):
             raise AnswersError("config/answers.json was not written")
         if not ctx.paths.config.is_dir():
             raise make_error("NS-E121", f"{ctx.paths.home} was not created")
-        current = get_user_env(ctx.runner, HOME_VAR)
-        if current != str(ctx.paths.home):
+        # The variable names this install, or another Nightshift folder (one that exists, or whose drive is
+        # not there now): that install's, left until the owner's yes (the scheduler step says so), or it
+        # could not be read. A variable that is unset or names a deleted folder is nobody's: it is set here
+        # (a Repair after the other install was uninstalled comes this way without `run`), and only a
+        # refused write is a failed step.
+        var_state, current = home_var_now(ctx)
+        if var_state in ("none", "gone") and not set_user_env(ctx.runner, HOME_VAR, str(ctx.paths.home)):
             raise make_error("NS-E121", f"NIGHTSHIFT_HOME is {current!r}, expected {str(ctx.paths.home)!r}")
         ctx.log.info("answers_verified", tier=ans.llm_tier, stock_key=any_key_stored(ctx.store))
         if not self._ran:

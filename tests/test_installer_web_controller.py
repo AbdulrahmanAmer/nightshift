@@ -11,6 +11,7 @@ from installer.stage2.web import answers_view, controller, preflight, samples
 from installer.stage2.web.controller import Config, SetupController
 from installer.stage2.web.fakes import ScriptedEngine, fake_effects, sample_handover
 from installer.stage2.web.model import ENGINE_STEPS, STEP_ORDER
+from ns_common.new_fields import plain_disk_dict
 from ns_common.paths import Paths
 from ns_common.secret_file import store_secret
 
@@ -437,6 +438,7 @@ def test_a_second_run_resumes_what_the_first_one_finished(tmp_path, monkeypatch)
     cfg_dir.mkdir(parents=True)
     saved = answers_view.draft_to_answers(draft(first.home))
     answers_view.write_answers(cfg_dir / "answers.json", saved)
+    written = (cfg_dir / "answers.json").read_text(encoding="utf-8")     # as the file is on disk (F-10c form)
     (cfg_dir / "install_state.json").write_text(json.dumps({
         "version": "0.1.0", "app_path": str(ROOT), "profile": "gpu", "started_at": "2026-11-02T21:00:00",
         "completed_at": None,
@@ -465,7 +467,18 @@ def test_a_second_run_resumes_what_the_first_one_finished(tmp_path, monkeypatch)
     assert second.ctl.do_action("start")[0] == 200                   # no new answers needed
     state = second.until(lambda st: st["run"] == "finished")
     assert state["phase"] == "done"
-    assert json.loads((cfg_dir / "answers.json").read_text(encoding="utf-8")) == saved      # left alone
+    # left alone, byte for byte (`saved` holds `nightly: None` and `nightly_seen: None`, which the writer
+    # leaves out of the file since F-10c, so the dict is not what is on disk)
+    assert (cfg_dir / "answers.json").read_text(encoding="utf-8") == written
+    # and the file still holds the owner's answers: `saved` without the answers the writer leaves out
+    # while they are None (F-10c; its other None values stay in the file) and with the key fields blank
+    left_out = ("nightly", "nightly_seen", "shortcuts_here")
+    held = {k: v for k, v in saved.items() if not (k in left_out and v is None)}
+    held |= {"pexels_api_key": "", "pixabay_api_key": ""}
+    assert json.loads((cfg_dir / "answers.json").read_text(encoding="utf-8")) == held
+    # left alone: what the window wrote (an answer added after 0.1.14 is written only when it is in use)
+    on_disk = plain_disk_dict("answers.json", dict(saved))
+    assert json.loads((cfg_dir / "answers.json").read_text(encoding="utf-8")) == on_disk
 
 
 # ------------------------------------------------------------------- INSTALL.cmd over a finished install

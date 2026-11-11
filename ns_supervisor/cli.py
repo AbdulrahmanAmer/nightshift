@@ -1,21 +1,23 @@
 """C2 `ns` console tool (spec 15.9). Thin wiring: each command delegates to its own module."""
 
+import dataclasses
 import json
 import os
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
 from ns_common import __version__
-from ns_common.config import load_runtime
+from ns_common.commandline import render
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
-from ns_common.paths import Paths
+from ns_common.paths import Paths, home_env
 from ns_supervisor import (
     backup,
     control,
     doctor,
+    homecheck,
     models_get,
     notify,
     relaunch,
@@ -27,11 +29,21 @@ from ns_supervisor import (
     updater_copy,
     verify,
 )
-from ns_supervisor.client import SupervisorClient, ensure_running
+from ns_supervisor.client import SupervisorClient, ensure_running, start_gate
 from ns_supervisor.schedule_cfg import read_run_time
 from ns_supervisor.services import venv_python
 
-app = typer.Typer(help="Nightshift runtime tools", add_completion=False)
+
+def echo(message: object = "", **kw: Any) -> None:
+    """`typer.echo` for every line this CLI prints, with the `ns ...` and `studio ...` a sentence names
+    given as this install's owner types them (FN-3, `ns_common.commandline.render`). A JSON line is
+    printed as it is: the program that reads it renders what it shows."""
+    text = message if isinstance(message, str) else str(message)
+    if text[:1] not in ("{", "[") and not text.startswith("setup: "):
+        text = render(text)
+    typer.echo(text, **kw)
+
+app = typer.Typer(help="Nightshift runtime tools", add_completion=False, cls=homecheck.InstallGuardGroup)
 schedule_app = typer.Typer(help="The nightly scheduled task 'Nightshift Daily'", add_completion=False)
 app.add_typer(schedule_app, name="schedule")
 models_app = typer.Typer(help="Optional model downloads (VoiceDesign, the story model)", add_completion=False)
@@ -41,10 +53,10 @@ app.add_typer(models_app, name="models")
 def _die(e: NsError | str, code: int = 1) -> typer.Exit:
     """Print an error (with its fix hint) and return the exit to raise."""
     if isinstance(e, NsError):
-        typer.echo(f"{e}", err=True)
-        typer.echo(f"Hint: {e.definition.hint}", err=True)
+        echo(f"{e}", err=True)
+        echo(f"Hint: {e.definition.hint}", err=True)
     else:
-        typer.echo(e, err=True)
+        echo(e, err=True)
     return typer.Exit(code)
 
 
@@ -55,15 +67,20 @@ def _client(paths: Paths) -> SupervisorClient:
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
-        typer.echo(f"ns {__version__}")
+        echo(f"ns {__version__}")
+        return
+    try:    # D-35: no install named or found: NS-E123 before any command opens or writes a home
+        homecheck.check_root(ctx)
+    except NsError as e:
+        raise _die(e) from e
 
 
 @app.command("stop")
 def cmd_stop() -> None:
     """Stop the engine and every model process (what 'Nightshift - Stop All' runs)."""
     paths = Paths.from_env()
-    for line in control.stop(paths, _client(paths)):
-        typer.echo(line)
+    for line in control.stop(paths, _client(paths), say=echo):    # (setup's Repair stops Nightshift here)
+        echo(line)
 
 
 @app.command("doctor")
@@ -71,15 +88,29 @@ def cmd_doctor(
     bundle: Annotated[bool, typer.Option("--bundle", help="Write the diagnostics zip.")] = False,
     out_dir: Annotated[Path | None, typer.Option("--out-dir", hidden=True)] = None,
 ) -> None:
-    """Check the install; with --bundle, collect logs and reports into a zip to send back."""
+    """Check the install; with --bundle, collect logs and reports into a zip to send back.
+
+    The check also runs what every start of Nightshift runs: it finishes or undoes an interrupted
+    `ns update --rollback` and says what it did in the row "program folders"."""
     paths = Paths.from_env()
     if bundle:
-        out = doctor.build_bundle(paths, out_dir=out_dir, app=control.app_path(paths))
-        typer.echo(f"Diagnostics written to {out}")
+        try:
+            app: Path | None = control.app_path(paths)
+        except OSError:     # install_state.json cannot be opened: the zip is still written (bundle_notes)
+            app = None
+        out = doctor.build_bundle(paths, out_dir=out_dir, app=app)
+        echo(f"Diagnostics written to {out}")
+        for line in doctor.bundle_notes(paths):
+            echo(line)
         return
     bad = 0
-    for name, ok, detail in doctor.diagnose(paths, _client(paths)):
-        typer.echo(f"[{'ok' if ok else 'FAIL'}] {name}: {detail}")
+    def waiting() -> None:  # (the start check waits up to 60 s behind an update or a rollback)
+        echo("Waiting for another Nightshift program (an update or a rollback) to finish, up to 60 s")
+
+    for name, ok, detail in doctor.diagnose(paths, _client(paths), on_wait=waiting):
+        warn = ok and detail.startswith(doctor.WARN)    # not a failure, but the owner has something to do
+        mark = "WARN" if warn else ("ok" if ok else "FAIL")
+        echo(f"[{mark}] {name}: {detail.removeprefix(doctor.WARN) if warn else detail}")
         bad += 0 if ok else 1
     if bad:
         raise typer.Exit(1)
@@ -95,14 +126,16 @@ def _stop_started_engine(client: SupervisorClient) -> None:
         if client.is_up():
             client.shutdown(30)
             if not control.wait_down(client, 45):
-                typer.echo("The verify engine is slow to exit.", err=True)
+                echo("The verify engine is slow to exit.", err=True)
     except NsError as e:
-        typer.echo(f"Could not stop the verify engine: {e}", err=True)
+        echo(f"Could not stop the verify engine: {e}", err=True)
 
 
 @app.command("verify")
 def cmd_verify(
-    quick: Annotated[bool, typer.Option("--quick", help="Health, one completion, one voice only.")] = False,
+    quick: Annotated[
+        bool, typer.Option("--quick", help="Health, one completion, one sentence per installed voice mode.")
+    ] = False,
     downloads: Annotated[
         bool,
         typer.Option(
@@ -116,25 +149,38 @@ def cmd_verify(
     if downloads:
         from installer.stage2 import verify_downloads
 
-        raise typer.Exit(verify_downloads.run(paths, control.app_path(paths), typer.echo))
-    rt = control.runtime_or_default(paths)
+        raise typer.Exit(verify_downloads.run(paths, control.app_path(paths), echo))
+    try:        # nothing is started on settings that cannot be read: NS-E125 names the file and the way out
+        rt = control.read_runtime(paths)
+    except NsError as e:
+        raise _die(e) from e
+    client = _client(paths)
+    try:        # D-39b: refused before anything is written (no report, no schedule change)
+        start_gate(paths, client)
+    except NsError as e:
+        echo(f"Could not start the engine: {e}", err=True)
+        echo(f"Hint: {e.definition.hint}", err=True)
+        raise typer.Exit(1) from e
     if quick:
         _settle_schedule(paths)
-    client = _client(paths)
     started_here = not client.is_up()
     try:
         ensure_running(client, paths, headless=True)
     except NsError as e:
-        typer.echo(f"Could not start the engine: {e}", err=True)
+        echo(f"Could not start the engine: {e}", err=True)
     try:
-        report = verify.run_verify(paths, rt, client, quick=quick)
+        report = verify.run_verify(paths, rt, client, quick=quick, progress=echo)
     finally:
         if started_here:
             _stop_started_engine(client)
     f = verify.write_report(paths, report)
     for line in verify.format_lines(report):
-        typer.echo(line)
-    typer.echo(f"Report: {f}")
+        echo(line)
+    try:   # a voice that did not speak: its sentence waits as a morning note, once (verify.leave_voice_notes)
+        verify.leave_voice_notes(paths, report.checks)
+    except Exception:  # the exit code and the report do not depend on it
+        pass
+    echo(f"Report: {f}")
     if not report.passed:
         raise typer.Exit(1)
 
@@ -146,26 +192,32 @@ def cmd_tune(
     """Find the fastest llama-server flags for this PC and save them to runtime.json."""
     paths = Paths.from_env()
     try:
-        rt = load_runtime(paths)
+        rt = control.read_runtime(paths)
     except NsError as e:
         raise _die(e) from e
     if dry_run:
         for line in tune.matrix_lines(rt):
-            typer.echo(line)
+            echo(line)
         return
+    try:        # D-48: it starts llama-server and saves runtime.json: not on unfinished environments
+        start_gate(paths)
+    except NsError as e:
+        raise _die(e) from e
     if rt.dev_mode:
-        typer.echo("Dev mode: the language model is a fake, so there is nothing to tune.")
+        echo("Dev mode: the language model is a fake, so there is nothing to tune.")
         return
     if not rt.llama.model_path:
         raise _die("runtime.json has no llama model_path; run the installer first.")
     with tune.gpu_reservation(_client(paths)):
         outcome = tune.tune(paths, rt, tune.ProcessRunner(paths))
     for w in outcome.warnings:
-        typer.echo(f"warning: {w}")
+        echo(f"warning: {w}")
     if not outcome.ok or outcome.flags is None:
         raise _die("tune: no configuration loaded; runtime.json was left unchanged. See logs\\tune-*.json.")
-    typer.echo(f"Best: {outcome.tok_s:.1f} tok/s with {outcome.flags.model_dump_json()}")
-    typer.echo("Saved to runtime.json.")
+    echo(f"Best: {outcome.tok_s:.1f} tok/s with {outcome.flags.model_dump_json()}")
+    if outcome.context_note:
+        echo(outcome.context_note)
+    echo("Saved to runtime.json.")
 
 
 def _settle_schedule(paths: Paths) -> None:
@@ -187,11 +239,15 @@ def _settle_schedule(paths: Paths) -> None:
 
 
 def _stop_engine(paths: Paths) -> None:
-    control.stop(paths, _client(paths))
+    """D-46: an update, rollback or resync stops Nightshift as one sequence (`stopping`): ask the engine, wait
+    for it AND every program of the environments (the holder check's list), end what is ours by its recorded
+    process, and only then does the holder check refuse, naming what is left. Each line goes to the log."""
+    for line in control.stop(paths, _client(paths), holders=lambda: update.holders(paths), say=echo):
+        echo(line)
 
 
 def _sync(paths: Paths, app_dir: Path) -> None:
-    update.resync_venvs(app_dir, paths)
+    update.resync_venvs(app_dir, paths, say=echo)     # (a wait for a file in use is shown)
 
 
 def _reregister(paths: Paths, app_dir: Path) -> list[str]:
@@ -223,6 +279,7 @@ def _apply_update(
         verify=lambda a: update.verify_quick(a, venv_python(paths, "supervisor")),
         reregister=lambda a: _reregister(paths, a),
         settle=lambda: control.wait_down(_client(paths)),
+        say=echo,
     )
     if rollback:
         res = update.rollback_app(app_dir, env, paths=paths)
@@ -233,10 +290,10 @@ def _apply_update(
         current = update.current_version(app_dir)
         if not releases.is_newer(rel.version, current):
             msg = f"Already on the newest version ({current})."
-            typer.echo(msg)
-            typer.echo(json.dumps({"updated": False, "old": current, "new": current}))
+            echo(msg)
+            echo(json.dumps({"updated": False, "old": current, "new": current}))
             return update_job.Outcome(msg, current, current, updated=False)
-        typer.echo(f"Downloading {rel.zip_name} ...")
+        echo(f"Downloading {rel.zip_name} ...")
         res = update.update_app(releases.download(rel, paths.data / "updates"), app_dir, env, paths=paths)
     else:
         assert zip_path is not None
@@ -244,13 +301,13 @@ def _apply_update(
     msg = f"Now on {res.new_version} (was {res.old_version})."
     if res.settings:        # a rollback says what became of the settings files (the dashboard shows it)
         msg += " " + res.settings
-    typer.echo(msg)
+    echo(msg)
     for n in res.notes:
-        typer.echo(f"  {n}")
+        echo(f"  {n}")
     result: dict[str, object] = {"updated": True, "old": res.old_version, "new": res.new_version}
     if res.release_notes:
         result["release_notes"] = res.release_notes
-    typer.echo(json.dumps(result))
+    echo(json.dumps(result))
     return update_job.Outcome(msg, res.old_version, res.new_version, updated=True,
                               release_notes=res.release_notes)
 
@@ -273,6 +330,15 @@ def cmd_update(
         bool,
         typer.Option("--detach", help="Start the update in the background and return at once."),
     ] = False,
+    wait: Annotated[
+        bool,
+        typer.Option(
+            "--wait",
+            help="Follow the update and exit with its result (0 done, 1 otherwise). Only for a program "
+            "that does not run from Nightshift's own Python environments; `ns` itself cannot wait.",
+        ),
+    ] = False,
+    watched: Annotated[bool, typer.Option("--watched", hidden=True)] = False,
     worker: Annotated[bool, typer.Option("--worker", hidden=True)] = False,
     log: Annotated[Path | None, typer.Option("--log", hidden=True)] = None,
     home: Annotated[Path | None, typer.Option("--home", hidden=True)] = None,
@@ -281,7 +347,11 @@ def cmd_update(
     """Apply a release zip (verified, with automatic rollback), go back one version, or use GitHub.
 
     The update runs in a detached worker process, so stopping the engine (or closing the dashboard that
-    started it) cannot kill it half way through the swap.
+    started it) cannot kill it half way through the swap. This command never waits for it (D-39): it runs
+    from the supervisor venv and holds `Scripts\\ns.exe` open for as long as it lives, which the worker's
+    re-sync has to replace. It checks what can be checked without changing anything, starts the worker
+    with its own pid to wait for, opens the progress window (a terminal; `--detach` and the dashboard get
+    none) and returns.
     """
     if sum([zip_path is not None, rollback, check, github, git]) != 1:
         raise _die("give exactly one of: a zip file, --rollback, --check, --github, --git", 2)
@@ -289,9 +359,22 @@ def cmd_update(
         raise _die("--channel must be one of: " + ", ".join(update.CHANNELS), 2)
     if channel != "stable" and not git:
         raise _die("--channel main works with --git only", 2)
+    if wait and detach:
+        raise _die("--wait and --detach cannot be used together", 2)
     if home is not None:
-        os.environ["NIGHTSHIFT_HOME"] = str(home)
+        os.environ.update(home_env(home))   # named on the command line: for this process and its children
     paths = Paths.from_env()
+    if wait and not worker and update_job.runs_from_venvs(paths):
+        # (refused before anything is started: a --wait that returned early would report a result it
+        # does not know, and one that stayed would hold the files the update replaces: D-39)
+        raise _die(
+            "--wait cannot be used with Nightshift's own ns: this command runs from the Python environments "
+            "the update replaces, so it has to end before the update goes on. Nothing was started. In a "
+            "script, run the same command with --detach instead; its JSON line names 'follow', a script "
+            "to run with: powershell -NoProfile -ExecutionPolicy Bypass -File <follow>. That prints the "
+            "progress and exits 0 when the update is done, 1 otherwise.",
+            2,
+        )
     if check:
         _update_check(update.current_version(control.app_path(paths)))
         return
@@ -306,32 +389,54 @@ def cmd_update(
             old_version=update.current_version(control.app_path(paths)),
             relaunch=relaunch.default_relaunch(paths),
             cleanup=discard_copy,
+            watched=watched,
         )
         raise typer.Exit(code)
     forwarded: list[str] = []
+    what = "The update"
     if zip_path is not None:
         try:
-            update.verify_package(zip_path.resolve())     # a bad zip is reported here, nothing is started
+            new_version, _prefix = update.verify_package(zip_path.resolve())    # a bad zip: nothing started
         except NsError as e:
             raise _die(e) from e
+        what = f"The update to {new_version}"
         forwarded.append(str(zip_path.resolve()))        # the worker starts in another folder
     if rollback:
+        app_dir = control.app_path(paths)
+        nothing = update.rollback_refusal(app_dir)       # read-only, like the zip check: nothing is started
+        if nothing is not None:
+            raise _die(NsError("NS-E702", f"{nothing} {update.where_now(paths, app_dir)}"))
+        what = "The rollback"
         forwarded.append("--rollback")
     if github:
         forwarded.append("--github")
     if git:
         forwarded += ["--git", "--channel", channel]
+    running = update_job.busy(paths)                     # one update, rollback or repair at a time
+    if running is not None:
+        raise _die(NsError("NS-E705", running))
     background = detach or update_job.under_engine()
+    if watched or wait or not background:               # somebody shows this run's result as it ends
+        forwarded.append("--watched")
     try:
-        pid, log_file = update_job.launch(paths, forwarded, wait_pid=os.getpid() if background else None)
+        # (--wait: this process is outside the venvs and stays, so the worker has nobody to wait for)
+        pid, log_file = update_job.launch(paths, forwarded, wait_pid=None if wait else os.getpid())
     except NsError as e:
         raise _die(e) from e
+    if wait:
+        raise typer.Exit(update_job.follow(paths, pid, log_file, echo))
     if background:
-        typer.echo(f"The update runs in the background; Nightshift will close. Progress: {log_file}")
-        status = str(update_job.status_file(paths))
-        typer.echo(json.dumps({"started": True, "log": str(log_file), "status": status}))
+        echo(f"The update runs in the background; Nightshift will close. Progress: {log_file}")
+        started: dict[str, object] = {
+            "started": True, "log": str(log_file), "status": str(update_job.status_file(paths)), "pid": pid,
+        }
+        script = update_job.write_wait_script(paths, pid, log_file)
+        if script is not None:
+            started["follow"] = str(script)
+        echo(json.dumps(started))
         return
-    raise typer.Exit(update_job.follow(paths, pid, log_file, typer.echo))
+    window = update_job.start_follower(paths, pid, log_file)
+    echo(update_job.handover_sentence(what, log_file, window=window))
 
 
 def _update_check(current: str) -> None:
@@ -341,10 +446,10 @@ def _update_check(current: str) -> None:
     except NsError as e:
         raise _die(e) from e
     if result["update_available"]:
-        typer.echo(f"Version {result['latest']} is available (you have {current}). Run: ns update --github")
+        echo(f"Version {result['latest']} is available (you have {current}). Run: ns update --github")
     else:
-        typer.echo(f"Up to date ({current}).")
-    typer.echo(json.dumps(result))
+        echo(f"Up to date ({current}).")
+    echo(json.dumps(result))
 
 
 @app.command("backup")
@@ -359,9 +464,9 @@ def cmd_backup(
         raise _die(e) from e
     except OSError as e:  # a full disk, a folder that refuses files: a sentence, not a traceback
         raise _die(f"The backup could not be written: {e}") from e
-    typer.echo(f"Backup written to {f}")
+    echo(f"Backup written to {f}")
     for line in notes:
-        typer.echo(line)
+        echo(line)
 
 
 @app.command("restore")
@@ -384,7 +489,7 @@ def cmd_restore(
     except NsError as e:
         raise _die(e) from e
     for ln in lines:
-        typer.echo(ln)
+        echo(ln)
 
 
 def _schedule_call(
@@ -400,9 +505,42 @@ def _schedule_call(
             msg = schedule.remove(paths)
         else:
             msg = schedule.show(paths)
+    except schedule.ScheduleUnrecorded as e:
+        # Windows has the task and Nightshift's record does not: not "nothing changed" (NS-E204)
+        raise _die(NsError("NS-W208", f"schedule {fn_name}: {e}")) from e
     except schedule.ScheduleError as e:
-        raise _die(NsError("NS-E204", f"schedule {fn_name}: {e}")) from e
-    typer.echo(msg)
+        # registering failed (NS-E204: register it), or removing or reading it (NS-E206: Task Scheduler)
+        code = schedule.REGISTER_FAILED if fn_name == "install" else schedule.SWITCH_OFF_FAILED
+        raise _die(NsError(code, f"schedule {fn_name}: {e}")) from e
+    echo(msg)
+
+
+#: The line `ns schedule install --setup` ends with: `setup: ` and `schedule.SetupResult` as JSON. Setup's
+#: scheduler step (installer s09) reads it; the words for the owner are setup's.
+SETUP_PREFIX = "setup: "
+
+
+def _schedule_setup(
+    time: str | None, setup: str, nightly: str | None, seen: str | None, was: str | None
+) -> None:
+    """`ns schedule install --setup first|again`: setup's decision about Automatic runs, as one JSON line.
+
+    Exit 0 whatever Windows did (the result says it: setup never stops on the task); NS-E204 only for a
+    wrong call or a dev install.
+    """
+    answers = {"yes": True, "no": False, None: None}
+    if setup not in ("first", "again") or nightly not in answers or not time:
+        usage = "schedule install --setup: first or again, with --time; --nightly yes or no"
+        raise _die(NsError("NS-E204", usage))
+    paths = Paths.from_env()
+    try:
+        res = schedule.setup_apply(
+            paths, control.app_path(paths), first=setup == "first", nightly=answers[nightly], seen=seen,
+            run_time=time, was=was,
+        )
+    except schedule.ScheduleError as e:
+        raise _die(NsError("NS-E204", f"schedule install --setup: {e}")) from e
+    echo(SETUP_PREFIX + json.dumps(dataclasses.asdict(res)))
 
 
 @schedule_app.command("install")
@@ -419,6 +557,10 @@ def schedule_install(
         bool,
         typer.Option("--enable", help="Switch the task on, even if you switched it off in Task Scheduler."),
     ] = False,
+    setup: Annotated[str | None, typer.Option("--setup", hidden=True)] = None,      # setup's own call:
+    nightly: Annotated[str | None, typer.Option("--nightly", hidden=True)] = None,  # see _schedule_setup
+    seen: Annotated[str | None, typer.Option("--seen", hidden=True)] = None,
+    was: Annotated[str | None, typer.Option("--was", hidden=True)] = None,
 ) -> None:
     """Register the daily task (wake the PC, run whether logged on or not, stop after 6 h).
 
@@ -428,6 +570,12 @@ def schedule_install(
     """
     if enable and disabled:
         raise _die(NsError("NS-E204", "schedule install: --enable and --disabled cannot be used together"))
+    if setup is not None:
+        if enable or disabled:
+            usage = "schedule install: --setup cannot be used with --enable or --disabled"
+            raise _die(NsError("NS-E204", usage))
+        _schedule_setup(time, setup, nightly, seen, was)
+        return
     _schedule_call("install", time, disabled, enable)
 
 
@@ -465,10 +613,10 @@ def models_get_cmd(
         raise _die(f"unknown model {what!r}; choose one of: {', '.join(models_get.KINDS)}", 2)
     paths = Paths.from_env()
     try:
-        result = models_get.get_model(what, paths, control.app_path(paths), typer.echo, everything=everything)
+        result = models_get.get_model(what, paths, control.app_path(paths), echo, everything=everything)
     except NsError as e:
         raise _die(e) from e
-    typer.echo(json.dumps(result))
+    echo(json.dumps(result))
 
 
 def main() -> None:

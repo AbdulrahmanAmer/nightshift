@@ -1,7 +1,8 @@
 """The three bootstrap steps that used to live in stage1 (docs/design/installer-ui.md 1.6).
 
-``b01_tools`` makes sure the Visual C++ runtime, FFmpeg and Windows Terminal are there (winget first; the
-runtime and FFmpeg have a pinned direct download behind it), ``b02_home`` creates the install folder, the
+``b01_tools`` makes sure the Visual C++ runtime, FFmpeg and Windows Terminal are there (the pinned file from
+the ``files`` folder beside INSTALL.cmd when it is there and its SHA256 matches; else winget first, with a
+pinned direct download of the runtime and FFmpeg behind it), ``b02_home`` creates the install folder, the
 NIGHTSHIFT_HOME user variable and the program folder ``<home>\\app``, ``b03_setup_env`` creates
 ``venvs\\studio`` with uv. Git is not a tool setup needs. Each step has ``check`` (already satisfied?),
 ``run`` and ``verify`` like the wizard's ``Step``. Every outside effect goes through the ``Boot`` object, so
@@ -25,10 +26,13 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 
+import installer.stage2.shortcut_owner as shortcut_owner
+import ns_common.testguard as testguard
 import ns_common.vcruntime as vcruntime
-from installer.stage2.web import appcopy, pathcheck
+from installer.stage2.web import appcopy, deplock, filesdir, pathcheck, venvrepair
 from ns_common.atomic import copy_atomic, write_stream_atomic
 from ns_common.avblock import is_blocked_error, looks_blocked
+from ns_common.psquote import ps_literal
 from ns_common.uv import looks_full, uv_env, venv_args
 
 HOME_VAR = "NIGHTSHIFT_HOME"
@@ -75,6 +79,7 @@ def real_cmd(
     timeout: float | None = None,
 ) -> CmdResult:
     """Run a command without a shell and capture its output (exit 127: not found, 124: timeout)."""
+    testguard.refuse_machine_writes(list(argv))     # a test run starts no UAC prompt and changes no PC state
     try:
         proc = subprocess.run(
             list(argv), cwd=str(cwd) if cwd else None, env={**os.environ, **(env or {})}, capture_output=True,
@@ -109,8 +114,12 @@ def refresh_path_from_registry(environ: dict[str, str] | None = None) -> None:
         (environ if environ is not None else os.environ)["PATH"] = ";".join(parts)
 
 
+USER_ENVIRONMENT = "the user's own environment variables (HKCU, Environment)"
+
+
 def set_user_variable(name: str, value: str) -> bool:
     """Set a user environment variable in ``HKCU\\Environment`` and tell Windows about it."""
+    testguard.refuse_real(USER_ENVIRONMENT, "Pass a fake (Effects(set_home_var=...)).")
     try:
         import winreg
     except ImportError:
@@ -140,6 +149,7 @@ def add_user_path_entry(directory: str) -> bool:
     The launchers, the shortcuts and the nightly task start with the user's environment, so a tool that only
     lives under the install folder (the FFmpeg fallback) is found by them and by the programs they start.
     """
+    testguard.refuse_real(USER_ENVIRONMENT, "Pass a fake (Effects(add_user_path=...)).")
     try:
         import winreg
     except ImportError:
@@ -170,10 +180,9 @@ def run_elevated_exe(exe: Path, args: Sequence[str], timeout: float = ELEVATED_W
     ``Start-Process -Verb RunAs`` is the only way for a normal process to start an installer that demands
     elevation (CreateProcess answers error 740). A declined or closed prompt comes back as exit 1223.
     """
-    quoted = ",".join("'" + a.replace("'", "''") + "'" for a in args)
-    target = str(exe).replace("'", "''")
+    quoted = ",".join(ps_literal(a) for a in args)
     script = (
-        "try { $p = Start-Process -FilePath '" + target + "' -ArgumentList " + quoted
+        "try { $p = Start-Process -FilePath " + ps_literal(str(exe)) + " -ArgumentList " + quoted
         + " -Verb RunAs -Wait -PassThru -ErrorAction Stop; exit $p.ExitCode } "
         + "catch { [Console]::Error.WriteLine($_.Exception.Message); exit " + str(ERROR_CANCELLED) + " }"
     )
@@ -414,6 +423,9 @@ class Boot:
     copy_app: Callable[..., appcopy.CopyResult] = appcopy.install_app
     # install_state.json and the other files the setup window rewrites on opening, as they were before (F-10a)
     settings_before: Mapping[str, bytes] | None = None
+    # the ``files`` folder beside INSTALL.cmd (``filesdir.beside(app_path)``), None when there is none: a
+    # pinned program in it whose SHA256 matches is used before winget and before any download (D-17)
+    files_dir: Path | None = None
     gate: threading.Event = field(default_factory=threading.Event)
     stop: threading.Event = field(default_factory=threading.Event)
 
@@ -465,7 +477,7 @@ class Boot:
 
 
 class B01Tools:
-    """The Visual C++ runtime, FFmpeg and Windows Terminal (winget first; direct downloads behind it)."""
+    """The Visual C++ runtime, FFmpeg and Windows Terminal (the files folder, winget, the pinned download)."""
 
     id = "b01_tools"
     title = "Free tools"
@@ -485,7 +497,9 @@ class B01Tools:
         return all(self.have(boot, key) for key, _i, _l, _r in TOOLS)
 
     def run(self, boot: Boot) -> None:
-        """Install what is missing: winget first, then the pinned download where there is one."""
+        """Install what is missing: the pinned file from the files folder when it is there (winget would
+        install its own newest build and needs the network), else winget, then the pinned download where
+        there is one."""
         boot.refresh_path()
         for key, winget_id, label, required in TOOLS:
             boot.checkpoint()
@@ -500,7 +514,10 @@ class B01Tools:
             text = ""
             fallback = {"vcruntime": self._install_vcruntime, "ffmpeg": self._install_ffmpeg}.get(key)
             then = "; trying the pinned download" if fallback is not None else ""
-            if boot.which("winget.exe"):
+            from_files = fallback is not None and self._from_files(boot, key, label)
+            if from_files:
+                pass                # the pinned file is in bin/_downloads, checked: no winget, no download
+            elif boot.which("winget.exe"):
                 boot.say(f"{label}: installing with winget")
                 res = boot.cmd(
                     ["winget.exe", "install", "--id", winget_id, "-e", *WINGET_ARGS], timeout=ELEVATED_WAIT_S
@@ -516,13 +533,14 @@ class B01Tools:
                 boot.say(f"{label}: winget is not available{then}")
             if fallback is not None:
                 try:
-                    fallback(boot)
+                    fallback(boot, from_files)
                 except BootstrapError:
                     boot.on_row(key, "failed", None)
                     raise
                 if self.have(boot, key):
-                    boot.on_row(key, "done", "installed from the pinned download")
-                    boot.say(f"{label}: installed from the pinned download")
+                    how = "the files folder" if from_files else "the pinned download"
+                    boot.on_row(key, "done", f"installed from {how}")
+                    boot.say(f"{label}: installed from {how}")
                     continue
             if required:
                 boot.on_row(key, "failed", None)
@@ -539,15 +557,52 @@ class B01Tools:
             raise BootstrapError("NS-E105", f"manifest.json pins no direct download for {key}")
         return str(url), str(digest)
 
-    def _install_vcruntime(self, boot: Boot) -> None:
-        """Download the pinned ``vc_redist.x64.exe`` and run it elevated (``/install /quiet /norestart``)."""
+    @staticmethod
+    def _dest(boot: Boot, pin_key: str, url: str) -> Path:
+        """Where the pinned file of ``vcredist`` or ``ffmpeg`` waits in ``bin\\_downloads``."""
+        return boot.downloads_dir / ("vc_redist.x64.exe" if pin_key == "vcredist" else Path(url).name)
+
+    def _from_files(self, boot: Boot, key: str, label: str) -> bool:
+        """Copy the tool's pinned file from the files folder to ``bin\\_downloads``; True when it is there.
+
+        ``filesdir.take`` copies only bytes whose SHA256 is the pin; a file that differs is said once and the
+        tool goes on to winget and the pinned download as before.
+        """
+        pin_key = "vcredist" if key == "vcruntime" else key
+        try:
+            url, digest = self._pin(boot, pin_key)
+        except BootstrapError:
+            return False
+        src = filesdir.take(
+            boot.files_dir, (filesdir.url_leaf(url),), digest, self._dest(boot, pin_key, url), boot.say,
+            then="using winget or the pinned download instead",
+        )
+        if src is None or boot.files_dir is None:
+            return False
+        boot.say(f"{label}: taken from {filesdir.label(boot.files_dir, src)} (SHA256 checked)")
+        return True
+
+    @staticmethod
+    def _fetch(boot: Boot, url: str, digest: str, dest: Path) -> None:
+        """The pinned download; a site that cannot be reached (NS-E105) also names the files folder."""
+        try:
+            boot.fetch_file(url, digest, dest, boot.say)
+        except BootstrapError as e:
+            if e.code != "NS-E105":
+                raise
+            raise BootstrapError("NS-E105", f"{e.detail} {filesdir.KIT_HINT}") from e
+
+    def _install_vcruntime(self, boot: Boot, have_file: bool = False) -> None:
+        """Download the pinned ``vc_redist.x64.exe`` (unless the files folder gave it: ``have_file``) and run
+        it elevated (``/install /quiet /norestart``)."""
         try:
             url, digest = self._pin(boot, "vcredist")
         except BootstrapError as e:
             raise BootstrapError("NS-E114", e.detail) from e
-        exe = boot.downloads_dir / "vc_redist.x64.exe"
-        boot.say("Downloading the Visual C++ runtime (about 25 MB)")
-        boot.fetch_file(url, digest, exe, boot.say)
+        exe = self._dest(boot, "vcredist", url)
+        if not have_file:
+            boot.say("Downloading the Visual C++ runtime (about 25 MB)")
+            self._fetch(boot, url, digest, exe)
         boot.say("Installing the Visual C++ runtime; click Yes when Windows asks for permission")
         res = boot.run_elevated(exe, ["/install", "/quiet", "/norestart"])
         if res.returncode in VCREDIST_OK_CODES:
@@ -562,12 +617,14 @@ class B01Tools:
             f"the Visual C++ runtime installer stopped with exit code {res.returncode}. {text}",
         )
 
-    def _install_ffmpeg(self, boot: Boot) -> None:
-        """Download the pinned static FFmpeg build, unpack both programs and put their folder on PATH."""
+    def _install_ffmpeg(self, boot: Boot, have_file: bool = False) -> None:
+        """Download the pinned static FFmpeg build (unless the files folder gave it: ``have_file``), unpack
+        both programs and put their folder on PATH."""
         url, digest = self._pin(boot, "ffmpeg")
-        archive = boot.downloads_dir / Path(url).name
-        boot.say("Downloading FFmpeg (a static build, about 190 MB)")
-        boot.fetch_file(url, digest, archive, boot.say)
+        archive = self._dest(boot, "ffmpeg", url)
+        if not have_file:
+            boot.say("Downloading FFmpeg (a static build, about 190 MB)")
+            self._fetch(boot, url, digest, archive)
         boot.say(f"Unpacking FFmpeg to {boot.ffmpeg_dir}")
         unpack_ffmpeg(archive, boot.ffmpeg_dir)
         archive.unlink(missing_ok=True)
@@ -597,7 +654,7 @@ class B02Home:
         """True when the folder tree, the variable, a uv that runs and the answers file are all there."""
         return (
             all((boot.home / d).is_dir() for d in TOP_DIRS)
-            and boot.get_home_var(HOME_VAR) == str(boot.home)
+            and (boot.get_home_var(HOME_VAR) == str(boot.home) or self._var_of_another(boot) is not None)
             and self._uv_is_pinned(boot)
             and (boot.home / "config" / "answers.json").is_file()
             and (not boot.install_app or appcopy.is_current(boot.app_path, boot.home))
@@ -788,13 +845,28 @@ class B02Home:
             boot.say(f"Updated the install: {res.old_version} -> {res.new_version}; kept {kept}")
         boot.say(f"Program folder: {appcopy.app_dir(boot.home)} (the folder you extracted can be deleted)")
 
+    @staticmethod
+    def _var_of_another(boot: Boot) -> str | None:
+        """The other Nightshift folder NIGHTSHIFT_HOME names (one that exists, or whose drive is not there
+        now); None when it names this folder, nothing, or a folder that is gone. Such a variable is that
+        install's (card second-install-takeover): this step leaves it, and setup's scheduler step moves it
+        only with the owner's yes and says which it is. Every program setup starts gets its home passed."""
+        named = (boot.get_home_var(HOME_VAR) or "").strip()
+        if not named:
+            return None
+        state = shortcut_owner.folder_state(named, boot.home)
+        return named if state in (shortcut_owner.OTHER, shortcut_owner.UNREACHABLE) else None
+
     def run(self, boot: Boot) -> None:
         """Create everything, set the variable, copy the program folder and uv, write answers.json."""
         for d in TOP_DIRS:
             (boot.home / d).mkdir(parents=True, exist_ok=True)
         boot.say(f"Install folder: {boot.home}")
         self._install_app(boot)
-        if not boot.set_home_var(HOME_VAR, str(boot.home)):
+        theirs = self._var_of_another(boot)
+        if theirs is not None:
+            boot.say(f"NIGHTSHIFT_HOME names the Nightshift at {theirs}; it is left as it is for now")
+        elif not boot.set_home_var(HOME_VAR, str(boot.home)):
             raise BootstrapError("NS-E121", "could not set the NIGHTSHIFT_HOME user variable")
         os.environ[HOME_VAR] = str(boot.home)
         if not self._uv_is_pinned(boot):
@@ -806,7 +878,7 @@ class B02Home:
         missing = [d for d in TOP_DIRS if not (boot.home / d).is_dir()]
         if missing:
             raise BootstrapError("NS-E121", f"{boot.home} lacks {', '.join(missing)}")
-        if boot.get_home_var(HOME_VAR) != str(boot.home):
+        if boot.get_home_var(HOME_VAR) != str(boot.home) and self._var_of_another(boot) is None:
             raise BootstrapError("NS-E121", "NIGHTSHIFT_HOME does not point at the install folder")
         if not (boot.home / "bin" / "uv" / "uv.exe").is_file():
             raise BootstrapError("NS-E105", "uv was not copied into the install folder (bin/uv/uv.exe)")
@@ -819,25 +891,40 @@ class B02Home:
 
 
 class B03SetupEnv:
-    """``venvs\\studio`` with the app installed in it, as stage 1 used to do."""
+    """``venvs\\studio`` with the app installed in it, as stage 1 used to do.
+
+    The packages are the ``studio`` extra as the program's ``uv.lock`` pins it (P29a, ``deplock``): exported
+    with hashes, installed with ``--require-hashes``, then the program with ``--no-deps``. A lock that is
+    missing or was not made for this ``pyproject.toml`` is NS-E124 before the venv is created.
+    """
 
     id = "b03_setup_env"
+    #: The extra the setup environment gets (s04 then fills the studio venv with its whole set, same lock).
+    EXTRAS = ("studio",)
     title = "Setup helper"
 
     def check(self, boot: Boot) -> bool:
-        """True when the venv exists and was filled from this program folder at this version."""
+        """True when the venv exists and was filled from this program folder at this version, no update left
+        a repair record, and the studio venv holds this program's Nightshift (D-39b: an update after setup
+        changes the venv, not this step's marker). b03 runs outside the venvs, so it is the step that brings
+        the studio venv to the program before the wizard, which runs from it, starts."""
         try:
-            return (
-                boot.venv_python.is_file() and boot.venv_marker.read_text(encoding="utf-8").strip()
-                == boot.venv_stamp()
-            )
+            stamped = boot.venv_marker.read_text(encoding="utf-8").strip() == boot.venv_stamp()
         except OSError:
             return False
+        if not (boot.venv_python.is_file() and stamped):
+            return False
+        why = venvrepair.unfinished(boot.home, boot.run_app, ("studio",))
+        if why is not None:
+            boot.say(f"The setup environment is filled again: {why}")
+            return False
+        return True
 
     def run(self, boot: Boot) -> None:
         """Create the venv when it is missing, then install the studio extra."""
         env = uv_env(boot.home)             # copy mode, and uv's cache on the install drive
         boot.on_row("setup_env", "active", "installing")
+        pins = self._export_pins(boot, env)     # NS-E124 here, before the venv is created or changed
         if not boot.venv_python.is_file():
             boot.say("Creating the setup environment")
             venv_dir = boot.home / "venvs" / "studio"
@@ -848,17 +935,39 @@ class B03SetupEnv:
                 raise BootstrapError(classify(text, "NS-E105"), text)
         boot.checkpoint()
         boot.say("Installing the Python packages for setup")
-        res = boot.cmd(
-            [boot.uv_exe, "pip", "install", "--python", str(boot.venv_python), "-e",
-             f"{boot.run_app}[studio]"],
-            env, boot.run_app, 3600,
-        )
-        if res.returncode != 0:
-            text = last_lines(res.stdout + "\n" + res.stderr)
-            boot.on_row("setup_env", "failed", None)
-            raise BootstrapError(classify(text, "NS-E105"), text)
+        for args in (
+            deplock.install_args(boot.venv_python, pins),       # the locked versions, hash-checked
+            deplock.app_args(boot.venv_python, boot.run_app),   # the program itself, no dependencies
+        ):
+            res = boot.cmd([boot.uv_exe, *args], env, boot.run_app, 3600)
+            if res.returncode != 0:
+                text = last_lines(res.stdout + "\n" + res.stderr)
+                boot.on_row("setup_env", "failed", None)
+                raise BootstrapError(classify(text, "NS-E105"), text)
+            boot.checkpoint()
         boot.venv_marker.write_text(boot.venv_stamp(), encoding="utf-8")
         boot.on_row("setup_env", "done", "installed")
+
+    def _export_pins(self, boot: Boot, env: Mapping[str, str]) -> Path:
+        """``logs/pins-setup.txt`` from the program's ``uv.lock``; NS-E124 when the lock is missing or stale
+        (checked without uv) or uv refuses it; any other failed export keeps the code of a failed uv call."""
+        why = deplock.problem(boot.run_app)
+        if why is None:
+            out = deplock.pins_file(boot.home / "logs", "setup")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            res = boot.cmd(
+                [boot.uv_exe, *deplock.export_args(boot.run_app, self.EXTRAS, out)], env, boot.run_app, 600
+            )
+            if res.returncode == 0:
+                return out
+            text = last_lines(res.stdout + "\n" + res.stderr)
+            code = classify(text, "NS-E105")        # a full disk or a blocked program keeps its own code
+            if code != "NS-E105" or not deplock.blames_lock(text):
+                boot.on_row("setup_env", "failed", None)
+                raise BootstrapError(code, text)
+            why = f"uv could not read the locked packages. uv said:\n{text}"
+        boot.on_row("setup_env", "failed", None)
+        raise BootstrapError("NS-E124", f"{why}\n{deplock.NO_VENV_CHANGED}")
 
     def verify(self, boot: Boot) -> None:
         """The interpreter exists."""

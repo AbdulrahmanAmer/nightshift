@@ -30,6 +30,8 @@ DRAFT = {
     "channel": {"displayName": "After Dark Tales", "niche": "horror fiction", "language": "en"},
     "homePath": "D:\\Nightshift", "llmTier": "small", "voice": {"speaker": "Ryan"},
     "modelsSource": {"kind": "internet", "path": None}, "runTime": "03:00", "mastersPerWeek": 1,
+    "nightly": True, "nightlySeen": "new",
+    "shortcutsHere": False, "shortcutsNow": {"state": "mine", "path": None, "line": None},
     "installCode": True, "theme": "dark", "pexelsKey": "demo-pexels-key", "pixabayKey": "demo-pixabay-key",
 }
 
@@ -148,7 +150,12 @@ def build(name: str, app_path: Path | None = None) -> dict[str, Any]:
                               {"label": "Night run", "detail": "03:00"},
                               {"label": "Everything else", "detail": "D:\\Nightshift"}],
                 "shortcuts": ["Nightshift Dashboard", "Nightshift Outbox", "Nightshift - Diagnostics"],
-                "runTime": "03:00", "scheduled": True,
+                "runTime": "03:00", "scheduled": True, "nightly": "on",
+                "nightlyLine": "Automatic runs: on at 03:00, every night (the PC wakes itself for it).",
+                "shortcutsLine": "Desktop shortcuts: they open this install.", "homeVarLine": None,
+                "commandsLine": "Commands: 'ns' and 'studio' work in any PowerShell or Command Prompt window "
+                "you open from now on, and open this install (their folder D:\\Nightshift\\cmd is on your "
+                "PATH).",
                 "diagnosticsZip": "C:\\Users\\Abdo\\Desktop\\nightshift-diagnostics-20261102.zip",
                 "stockKeyMissing": True, "durationS": 3480, "warnings": [],
             }

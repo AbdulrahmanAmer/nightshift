@@ -14,11 +14,13 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+import ns_common.testguard as testguard
 from installer.stage2.web import pathcheck
 
 SCRIPT = Path(__file__).resolve().parents[2] / "pick-folder.ps1"
 TIMEOUT_S = 900.0                       # a person is choosing; the dialog ends when they do
 FLAGS = 0x08000000 if os.name == "nt" else 0          # CREATE_NO_WINDOW for the powershell.exe host
+_REAL_RUN = subprocess.run              # the one `run` that opens the real dialog
 
 
 class FolderDialogError(RuntimeError):
@@ -41,6 +43,8 @@ def pick_folder(
     tmp_dir: Path | None = None,
 ) -> str | None:
     """The folder the person chose, or None when they cancelled. Raises ``FolderDialogError`` on failure."""
+    if run is _REAL_RUN:                # a test run opens no dialog on this PC; a fake `run` is let through
+        testguard.refuse_real("the real folder dialog", "Pass run=... (a stand-in for subprocess.run).")
     if not script.is_file():
         raise FolderDialogError(f"{script.name} is missing")
     fd, name = tempfile.mkstemp(prefix="ns-pick-", suffix=".txt", dir=str(tmp_dir) if tmp_dir else None)

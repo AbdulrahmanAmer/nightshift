@@ -12,7 +12,16 @@ task, the launchers and ``ns update`` all point at it. Setup therefore copies th
   are carried into the new one. Before that, the settings files of ``<home>\\config`` are copied to
   ``<home>\\app.prev-config.zip`` (``ns_common.config_snapshot``, standard library only) so the
   rollback can put them back with the program; when that copy cannot be made nothing is swapped
-  (``NS-E115``).
+  (``NS-E115``). A rollback that was interrupted (``ns_common.rollback_intent``) is finished first when its
+  older program is in place, and the program is not replaced while the newer one waits for its undo.
+* A folder ``<home>\\app.swap`` left by an interrupted rollback is given its place first
+  (``_settle_leftover_swap``): with no ``<home>\\app`` it IS the program, and this setup run is the only code
+  that can put it back (nothing else of Nightshift starts without ``app``). While it cannot be put back
+  nothing is copied (``NS-E115``, with the way out).
+* Run from the installed program folder itself (INSTALL.cmd started in ``<home>\\app``, a repair): nothing
+  is copied, swapped or saved, and the record of an interrupted rollback is not looked at here. That run is
+  a start of the program in place: the window's first settings write (``answers_view.write_answers`` and
+  every other writer call ``first_start.guard``) finishes or undoes the rollback like any other start.
 * Never copied: ``venvs`` and ``models`` (somebody extracted into the home), every ``bin`` folder except the
   bundle's ``bin\\webview2``, caches and ``node_modules``, and ``answers.json`` (the owner's input next to
   ``INSTALL.cmd``; it may hold API keys that setup moves to the keyring, so it is not duplicated).
@@ -37,7 +46,8 @@ APP_DIR = "app"
 MARKER = ".ns-app.done"
 CARRY_OVER = (".git", "config", "answers.json")
 # answers.json is the owner's input next to INSTALL.cmd and may hold API keys: it is not duplicated
-SKIP_TOP = frozenset({"venvs", "models", "answers.json"})
+# ``files`` is the folder of pinned programs beside INSTALL.cmd (D-17): setup reads it where it is
+SKIP_TOP = frozenset({"venvs", "models", "answers.json", "files"})
 KEEP_IN_BIN = frozenset({"webview2"})
 SKIP_ANYWHERE = frozenset(
     {"__pycache__", "node_modules", ".venv", ".pytest_cache", ".ruff_cache", ".mypy_cache"}
@@ -49,8 +59,8 @@ ROOT_ENTRIES = frozenset(
         "build_spec.md", "build_spec_v1.md", "changelog.md", "claude.md", "demo.cmd", "install.cmd",
         "operator.md", "readme.md", "uninstall.cmd", "version", "contracts", "dev", "docs", "installer",
         "launchers", "manifest.json", "ns_common", "ns_dashboard", "ns_studio", "ns_supervisor", "ns_tts",
-        "pyproject.toml", "tools", "tests", "bin", "answers.example.json", ".editorconfig", ".gitattributes",
-        ".gitignore", "proofs",
+        "pyproject.toml", "uv.lock", "tools", "tests", "bin", "answers.example.json", ".editorconfig",
+        ".gitattributes", ".gitignore", "proofs",
     }
 )
 RENAME_TRIES = 20
@@ -231,7 +241,7 @@ def _save_settings_copy(
         ) from e
     kept = slot.copy
     if action == config_snapshot.KEEP and kept is not None:
-        say(
+        say(        # the plain words: the window renders what it shows (FN-3), its log keeps them
             f"The settings copy for {old_version} (made {kept.created.replace('T', ' ')}) is kept in "
             f"{zip_path} for ns update --rollback: the last rollback could not put it back, so the settings "
             "files now may be a newer version's"
@@ -260,7 +270,9 @@ def _save_settings_copy(
     return True
 
 
-def _finish_interrupted_rollback(home: Path, dest: Path, say: Callable[[str], None]) -> None:
+def _finish_interrupted_rollback(
+    home: Path, dest: Path, say: Callable[[str], None], settled: str = ""
+) -> None:
     """Before the settings copy is saved: a rollback that was interrupted (`<app>.rollback-pending.json`,
     `ns_common.rollback_intent`) is finished when the older program is already in place. When the newer
     program is still in place, its settings are half way to the older version's and the record holds the
@@ -277,14 +289,51 @@ def _finish_interrupted_rollback(home: Path, dest: Path, say: Callable[[str], No
             )
         rec = rollback_intent.recover(dest, Path(home) / "config", may_undo=False)
     if rec.pending:
+        back = f"{settled} Nightshift starts again now. " if settled else ""
         raise AppCopyError(
             "NS-E115",
-            f"{rec.sentence} The program was not replaced. Start Nightshift once (it puts your settings "
-            "back as they were before the rollback) or run ns update --rollback again, then run INSTALL.cmd "
-            "again.",
+            f"{back}{rec.sentence} The program was not replaced. Start Nightshift once (it puts your "
+            "settings back as they were before the rollback) or run ns update --rollback again, then run "
+            "INSTALL.cmd again.",
         )
     if rec.sentence:
         say(rec.sentence)
+
+
+def _settle_leftover_swap(source: Path, dest: Path, say: Callable[[str], None]) -> str:
+    """Before anything is decided about ``dest``: give an ``app.swap`` a rollback left its place
+    (``rollback_intent.settle_swap``, under the copy's lock). Returns what was said (empty: nothing).
+
+    This matters most with no ``app`` at all (a power loss between the first two renames of a rollback):
+    every venv is an editable install of ``app``, so no Nightshift command, Dashboard or ``ns doctor`` can
+    start, and this setup run from a zip is the only code of ours that can. A fresh copy made beside
+    ``app.swap`` would leave the owner's program set aside and the rollback's record called stale at the
+    first start (the settings from before the rollback lost): so the folder goes back first, and while it
+    cannot (held open, not a program folder, or this very setup runs from it) nothing is copied: ``NS-E115``
+    with the way out."""
+    swap = rollback_intent.swap_for(dest)
+    if not rollback_intent.swap_waits(dest):
+        return ""
+    if same_folder(source, swap):
+        raise AppCopyError(
+            "NS-E115",
+            f"this setup was started from {swap}, the program folder an interrupted rollback left. Nothing "
+            f"was changed. Close this window, rename {swap.name} to {dest.name} in {dest.parent}, then start "
+            f"Nightshift from its shortcut (or run INSTALL.cmd from {dest}).",
+        )
+    with config_snapshot.locked(config_snapshot.path_for(dest)) as held:
+        if not held:
+            raise AppCopyError(
+                "NS-E115",
+                "another Nightshift program is using the settings copy. Close every Nightshift window and "
+                "run INSTALL.cmd again. The program was not replaced.",
+            )
+        said = rollback_intent.settle_swap(dest, for_update=True)
+    if said:
+        say(said)
+    if rollback_intent.swap_waits(dest) and not dest.exists():
+        raise AppCopyError("NS-E115", f"{said} No program was copied.")
+    return said
 
 
 def _error(e: OSError, what: str) -> AppCopyError:
@@ -306,6 +355,11 @@ def install_app(
 ) -> CopyResult:
     """Put a complete copy of ``source`` at ``<home>\\app`` (a fresh copy, or the update swap over it).
 
+    When ``source`` IS ``<home>\\app`` (setup run in place) nothing is copied or swapped and the result is
+    ``in-place``: only a missing completion marker is written. No settings copy is made and an interrupted
+    rollback is neither finished nor refused here (``_finish_interrupted_rollback`` runs on the update path
+    only); the first settings write of that setup run does it (``first_start.guard``).
+
     ``stop_engine`` is called before an existing program folder is renamed. ``settings_before`` is what the
     caller read of ``config_snapshot.SETUP_TOUCHES`` before it changed them (see ``_save_settings_copy``).
     Raises ``AppCopyError``:
@@ -322,6 +376,10 @@ def install_app(
     # (a drive root contains every folder of its drive, the home included; only its bundle entries are copied)
     if (is_inside(dest, source) and not is_drive_root(source)) or is_inside(source, dest):
         raise AppCopyError("NS-E115", f"{source} and {dest} overlap; extract the zip to a separate folder")
+    missing = not dest.exists()
+    settled = _settle_leftover_swap(source, dest, say)  # first: it can put the program folder back
+    if not (missing and dest.exists()):
+        settled = ""  # (only "the program folder is back" changes what a refusal below has to say)
     new_version = read_version(source)
     old_version = installed_version(home)
     try:
@@ -335,7 +393,7 @@ def install_app(
                 stop_engine()
             kept = _carry(dest, new)
             try:
-                _finish_interrupted_rollback(Path(home), dest, say)
+                _finish_interrupted_rollback(Path(home), dest, say, settled)
                 wrote_copy = _save_settings_copy(Path(home), dest, old_version, settings_before, say)
             except AppCopyError:
                 shutil.rmtree(new, ignore_errors=True)

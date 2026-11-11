@@ -306,7 +306,7 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
     async uninstall(): Promise<ActionResult> {
       if (!un) return no("Not available here");
       un = { ...un, running: true };
-      window.setTimeout(() => { un = un && { ...un, running: false, result: { removed: ["The nightly task", "Desktop shortcuts", "Programs and Python environments"], kept: [{ label: "AI models", path: un.models.path }, { label: "Videos and history", path: un.data.path }], stays: ["Your settings and logs", "Your stock footage keys, in Windows Credential Manager", "The Visual C++ runtime, FFmpeg and Windows Terminal, which other programs use", "The Python that setup fetched and its download cache (several GB), in your user folders"] } }; }, 2200);
+      window.setTimeout(() => { un = un && { ...un, running: false, result: { removed: ["The nightly task", "Desktop shortcuts", "Programs and Python environments"], kept: [{ label: "AI models", path: un.models.path }, { label: "Videos and history", path: un.data.path }], keys: ["forgot the Pixabay key in Credential Manager"], stays: ["Your settings and logs", "The Visual C++ runtime, FFmpeg and Windows Terminal, which other programs use", "The Python that setup fetched and its download cache (several GB), in your user folders"] } }; }, 2200);
       return { ok: true, message: null, state: undefined as unknown as SetupState };
     },
 

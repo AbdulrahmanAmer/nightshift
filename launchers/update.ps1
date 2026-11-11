@@ -12,6 +12,8 @@ $dlg.InitialDirectory = Join-Path ([Environment]::GetFolderPath('UserProfile')) 
 if ($dlg.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { exit 0 }
 
 $py = Get-NsVenvExe 'supervisor' 'python.exe'
+# What this window shows names commands by this install's full path (FN-3: the files hold the plain words)
+$nsHome = Get-NsHome
 if (-not (Test-Path -LiteralPath $py)) { Exit-NsWithPause ('Nightshift is not installed (missing ' + $py + ').') }
 
 # The swap renames the app folder, and Windows refuses while any process has it as its working directory.
@@ -22,10 +24,11 @@ Set-NsHomeLocation
 # python.exe behind it) would stay open inside venvs\supervisor for the whole update, and Windows would then
 # refuse to replace it while uv re-installs Nightshift into that venv. `--detach` returns at once, so no
 # program from venvs\supervisor is running while the worker works; the worker itself runs from a copy.
-$started = @(& $py -m ns_supervisor.cli update $dlg.FileName --detach)
+# --watched: this window follows the run to its end, so the worker opens no window of its own for a result.
+$started = @(& $py -m ns_supervisor.cli update $dlg.FileName --detach --watched)
 $startCode = $LASTEXITCODE
 if ($startCode -ne 0) {
-    Exit-NsWithPause ('The update could not start (exit code ' + $startCode + '). Your previous version is still in place.') $startCode
+    Exit-NsWithPause ('The update could not start (exit code ' + $startCode + '): the lines above say why. Nothing was changed.') $startCode
 }
 $info = $null
 try { $info = ($started | Select-Object -Last 1) | ConvertFrom-Json } catch { $info = $null }
@@ -37,25 +40,45 @@ Write-Host 'The update runs in the background. This window shows its progress.'
 $statusFile = [string]$info.status
 $logFile = [string]$info.log
 $seen = 0
+$silent = 0
 $final = $null
 $waited = 0
 while ($null -eq $final -and $waited -lt 14400) {
     if (Test-Path -LiteralPath $logFile) {
         $lines = @(Get-Content -LiteralPath $logFile -ErrorAction SilentlyContinue)
-        for ($i = $seen; $i -lt $lines.Count; $i++) { Write-Host $lines[$i] }
+        for ($i = $seen; $i -lt $lines.Count; $i++) { Write-Host (Format-NsCommands $lines[$i] $nsHome) }
         $seen = $lines.Count
     }
     $state = $null
     try { $state = Get-Content -LiteralPath $statusFile -Raw | ConvertFrom-Json } catch { $state = $null }
-    if ($null -ne $state -and $state.PSObject.Properties['state']) {
+    # Only a state that names this run's log counts: until the worker's first write the file still holds
+    # the result of the last update.
+    $mine = $false
+    if ($null -ne $state -and $state.PSObject.Properties['state'] -and $state.PSObject.Properties['log']) {
+        $mine = ([string]$state.log -eq $logFile)
+    }
+    if (-not $mine -and $info.PSObject.Properties['pid'] -and [int]$info.pid -gt 0) {
+        # No word from the worker yet: one that is gone already (another update holds the lock, or it died
+        # before its first line) will never write one.
+        if (Get-Process -Id ([int]$info.pid) -ErrorAction SilentlyContinue) { $silent = 0 } else { $silent++ }
+        if ($silent -ge 5) {
+            Exit-NsWithPause ('The update process ended without reporting a result. Its log: ' + $logFile) 1
+        }
+    }
+    if ($mine) {
         if ($state.state -eq 'done' -or $state.state -eq 'failed') {
             $final = $state
         }
         elseif ($state.state -eq 'running' -and $state.PSObject.Properties['pid']) {
-            # A worker that died without a word (killed, power loss) leaves "running" behind.
+            # A worker that died without a word (killed, power loss) leaves "running" behind, with the
+            # sentence that is true of the step it died in.
             $workerPid = [int]$state.pid
             if ($workerPid -gt 0 -and -not (Get-Process -Id $workerPid -ErrorAction SilentlyContinue)) {
-                Exit-NsWithPause 'The update process stopped before it finished. Your previous version is still in place.'
+                $left = 'The update process stopped before it finished. Its log: ' + $logFile
+                if ($state.PSObject.Properties['if_stopped_here'] -and $state.if_stopped_here) {
+                    $left = Format-NsCommands ([string]$state.if_stopped_here) $nsHome
+                }
+                Exit-NsWithPause $left
             }
         }
     }
@@ -70,9 +93,12 @@ if ($null -eq $final) {
 # the last lines of the log can arrive just after the state changes
 if (Test-Path -LiteralPath $logFile) {
     $lines = @(Get-Content -LiteralPath $logFile -ErrorAction SilentlyContinue)
-    for ($i = $seen; $i -lt $lines.Count; $i++) { Write-Host $lines[$i] }
+    for ($i = $seen; $i -lt $lines.Count; $i++) { Write-Host (Format-NsCommands $lines[$i] $nsHome) }
 }
 if ($final.state -eq 'failed') {
-    Exit-NsWithPause ('The update did not complete: ' + [string]$final.message + ' Your previous version is still in place unless the message says otherwise.') 1
+    # an update that was applied and only the restart failed did complete: said as that (D-39a review note)
+    $lead = 'The update did not complete: '
+    if ($final.PSObject.Properties['updated'] -and $final.updated -eq $true) { $lead = 'The update was applied, but Nightshift did not start again: ' }
+    Exit-NsWithPause ($lead + (Format-NsCommands ([string]$final.message) $nsHome)) 1
 }
 Read-Host 'Update finished. Press Enter to close' | Out-Null

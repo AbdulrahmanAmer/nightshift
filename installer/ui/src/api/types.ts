@@ -119,6 +119,9 @@ export interface ChoicesDraft {
   voice: { speaker: PresetVoice };
   modelsSource: { kind: "internet" | "folder" | "drive-zip"; path: string | null };
   runTime: string;                   // "03:00"
+  nightly: boolean;                  // the switch "Run Nightshift by itself every night"; off on a new install
+  nightlySeen: string;               // what Automatic runs were when the page showed the switch: "new", "off" or "on@HH:MM"; sent back unchanged
+  shortcutsHere: boolean;            // the switch "Make the Desktop shortcuts and the ns and studio commands open this install": only shown while one of them is another Nightshift folder's; off keeps them
   mastersPerWeek: 1 | 2 | 3;
   installCode: boolean;
   includeVoicedesign: boolean;       // download the voice design model now (about 2 GB); otherwise it comes with the first design
@@ -126,7 +129,10 @@ export interface ChoicesDraft {
   pexelsKey: string | null;          // null keeps the stored key (resume)
   pixabayKey: string | null;
 }
+/** Whose the Desktop shortcuts are, seen from one install folder. `mine`: this install's, or nobody's (no question). */
+export interface ShortcutsNow { state: "mine" | "other" | "unreachable"; path: string | null; line: string | null }
 export interface AnswersView extends Omit<ChoicesDraft, "pexelsKey" | "pixabayKey"> {
+  shortcutsNow?: ShortcutsNow;       // for the folder in homePath; the folder check brings it again for every folder picked
   pexelsKeySet: boolean;
   pixabayKeySet: boolean;
 }
@@ -149,6 +155,8 @@ export interface DiskCheck {
   ok: boolean;
   message: string | null;
   modelsFound: { files: number; of: number; bytes: number } | null;   // with source=1 only
+  nightlySeen?: string;              // Automatic runs in THIS folder ("new", "off", "on@HH:MM"); install folder checks only
+  shortcutsNow?: ShortcutsNow;       // whose the Desktop shortcuts are, seen from THIS folder; install folder checks only
 }
 
 /** POST /api/pick-folder: the native folder dialog, opened by the server. `check` is the DiskCheck of the picked path. */
@@ -214,8 +222,13 @@ export interface ResultView {
   appPath: string;
   installed: { label: string; detail: string }[];
   shortcuts: string[];               // "Nightshift Dashboard", ...
-  runTime: string;
-  scheduled: boolean;
+  runTime: string;                   // the time Automatic runs have when they are on, else the chosen time
+  scheduled: boolean;                // Automatic runs are on (the record of the Windows task says so)
+  nightly?: "on" | "off" | "failed" | "unrecorded"; // off is a choice; failed: setup tried to switch them on and Windows refused; unrecorded: Windows runs the task and Nightshift could not record it (NS-W208)
+  nightlyLine?: string | null;       // the sentence the end of setup says about Automatic runs
+  shortcutsLine?: string | null;     // the sentence about whose the Desktop shortcuts are (NS-W119 when another install's were kept)
+  homeVarLine?: string | null;       // the sentence about NIGHTSHIFT_HOME when it names, or named, another Nightshift folder
+  commandsLine?: string | null;      // the sentence about the ns and studio commands: on the PATH, another install's (NS-W120), or why not
   diagnosticsZip: string | null;
   stockKeyMissing: boolean;          // neither a Pexels nor a Pixabay key is stored
   durationS: number;
@@ -238,5 +251,7 @@ export interface UninstallView {
   models: { path: string; bytes: number };
   data: { path: string; bytes: number };
   running: boolean;
-  result: { removed: string[]; kept: { label: string; path: string }[]; stays: string[] } | null;
+  /** `keys`: the uninstall program's own lines about the stock-footage keys (forgotten, left for another
+   *  Nightshift folder, or what could not be removed); absent from a server that predates them. */
+  result: { removed: string[]; kept: { label: string; path: string }[]; stays: string[]; keys?: string[] } | null;
 }

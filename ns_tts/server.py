@@ -32,6 +32,7 @@ from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.languages import qwen_language
 from ns_common.logging import NsLogger
+from ns_common.loopback import NO_BROWSER, LoopbackGuard, bind_host
 from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_common.tts_timeout import TTS_TIMEOUT_CAP_S, tts_timeout_s
@@ -400,6 +401,10 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
             headers={"Content-Disposition": f'attachment; filename="{fname}"'},
         )
 
+    # FN-1: no web page calls the voice service (the studio and the dashboard's backend do): a request a
+    # browser made, or one addressed to a name other than this PC's, gets 403 NS-E207 before any route.
+    # Logged only: this service has no notes of its own (the engine and the dashboard tell the owner).
+    app.add_middleware(LoopbackGuard, rule=NO_BROWSER, log=log)
     return app
 
 
@@ -412,6 +417,12 @@ def main() -> None:
     ap.add_argument("--engine", choices=["qwentts", "reference", "fake"], default=None)
     args = ap.parse_args()
     paths = Paths.from_env()
+    from installer.stage2.web import venvrepair
+
+    why = venvrepair.home_refusal(paths.home)   # D-48 review note: a model server started by hand, gated too
+    if why is not None:
+        sys.stderr.write(f"NS-W210: {why}\n")
+        raise SystemExit(venvrepair.REFUSED_EXIT)
     fake = args.engine == "fake" or os.environ.get("NS_TTS_FAKE") == "1"
     try:
         rt = load_runtime(paths)
@@ -431,7 +442,10 @@ def main() -> None:
     library = VoiceLibrary(paths.models_tts_voices)
     port = args.port or rt.tts.port
     log.info("tts_start", engine=engine.name, port=port)
-    uvicorn.run(create_app(engine, library, log=log), host=rt.tts.host, port=port)
+    host = bind_host(rt.tts.host)  # this PC only, whatever address runtime.json names
+    if host != rt.tts.host:
+        log.warn("tts_bind_this_pc_only", f"tts.host is {rt.tts.host!r}; listening on {host}", host=host)
+    uvicorn.run(create_app(engine, library, log=log), host=host, port=port)
 
 
 if __name__ == "__main__":

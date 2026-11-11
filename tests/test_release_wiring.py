@@ -20,7 +20,7 @@ def read(rel: str) -> str:
 
 
 def test_changelog_has_a_heading_for_the_version_file():
-    # a release candidate (VERSION 0.1.15-rc3) uses the heading of the final version it previews (H-12)
+    # a release candidate (VERSION 0.1.15-rc4) uses the heading of the final version it previews (H-12)
     version = read("VERSION").strip().split("-rc", 1)[0]
     text = read("CHANGELOG.md")
     m = re.search(rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\s*$", text, re.MULTILINE)
@@ -227,6 +227,8 @@ def test_a_bundle_dry_run_puts_the_version_file_number_in_the_zip_manifest():
     version = read("VERSION").strip()
     assert f"manifest.json version: {version}" in proc.stdout
     assert f"verified: manifest.json version {version} = VERSION" in proc.stdout
+    # P29a: the zip holds the dependency lock setup and ns update install from (an entry of the file list)
+    assert re.search(r"(?m)^\s+\d+\s+uv\.lock\s*$", proc.stdout), "uv.lock is not in the bundle"
 
 
 def test_a_rerun_refreshes_the_venvs_and_the_smoke_test_when_the_manifest_version_changes(tmp_path):
@@ -437,7 +439,7 @@ def _github_api(requests: list[str]):
     return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
 
 
-def test_a_prerelease_is_not_offered_as_the_update():
+def test_a_prerelease_is_not_offered_as_the_update(tmp_home: Path):  # the check reads the install's home
     from ns_supervisor import releases
 
     requests: list[str] = []
@@ -448,7 +450,7 @@ def test_a_prerelease_is_not_offered_as_the_update():
     assert requests == ["/repos/AbdulrahmanAmer/nightshift/releases/latest"]
 
 
-def test_a_prerelease_or_draft_answered_as_the_latest_release_is_refused():
+def test_a_prerelease_or_draft_answered_as_the_latest_release_is_refused(tmp_home: Path):
     # the guard is in the code, not in the endpoint: if /releases/latest ever returned a candidate (or a
     # draft), `ns update --check`, `--github`, the stable git channel and the dashboard would offer it.
     import httpx

@@ -5,6 +5,12 @@ not load, (2) ctx x KV type, (3) `--n-cpu-moe` for MoE files, (4) MTP `--spec-dr
 only if faster than plain decoding (`NS-W302` otherwise). Speed is tokens/s from llama-server
 `/completion` timings on a fixed 400-token prompt and 300-token generation. Every attempt is recorded in
 `logs\\tune-<date>.json`; if nothing loads, runtime.json is left untouched.
+
+On the gpu profile the roomiest context among equal results wins. On `cpu-dev` (a PC that runs on the
+processor) the SMALLEST that does the work wins, then q8_0 before f16: the probe runs on an empty prompt,
+where a larger context costs nothing, but every token of context is KV memory held for the whole night
+(D-44). The floor is the smallest size that holds the largest request of every user of the model
+(`CONTEXT_USES`, `min_ctx_for`), the same whether or not an optional tool is installed.
 """
 
 from __future__ import annotations
@@ -35,7 +41,14 @@ CTX_OPTIONS = (8192, 16384, 32768)
 KV_OPTIONS = ("f16", "q8_0")
 MOE_OPTIONS = (0, 4, 8, 12, 16)
 MTP_OPTIONS = (2, 3, 4)
-EQUIVALENT = 0.95  # within 5 % of the best counts as equal; then prefer the roomier configuration
+EQUIVALENT = 0.95  # within 5 % of the best counts as equal; then the profile's preference decides
+#: The context Nightshift Code needs (D-34): `launchers/nightshift-code.ps1` refuses below it and setup
+#: writes it as the model's limit (`installer/stage2/steps/s07_configs.py` MIN_CODE_CONTEXT);
+#: `tests/test_opencode_budget.py` keeps the three equal. Its own copy here: the engine's `ns tune` does
+#: not import the installer.
+CODE_MIN_CONTEXT = 16384
+#: Why the tune keeps a processor-only PC's context small; the second half of the owner's line.
+CPU_WHY = "a larger one would take memory this PC needs for the jobs"
 MTP_GAIN = 1.03  # MTP must beat plain decoding by 3 % to be kept
 
 Runner = Callable[[Runtime], tuple[float, float]]
@@ -48,9 +61,109 @@ def is_moe(model_path: str) -> bool:
     return "a3b" in low or "moe" in low
 
 
+@dataclass(frozen=True)
+class ContextUse:
+    """One user of the language model's context and the largest request it can make: prompt, thinking and
+    answer together, in tokens (the answer limit counts the thinking). `prompts` names the prompt files of
+    `ns_studio/prompts` it sends; `tests/test_llm_context_budget.py` renders each at its largest input and
+    fails when one needs more than `tokens`."""
+
+    name: str
+    where: str
+    tokens: int
+    prompts: tuple[str, ...] = ()
+    profiles: tuple[str, ...] = ("gpu", "cpu-dev")
+
+
+#: Every user of the language model's context (D-44). Optional tools count: an install can add Nightshift
+#: Code later through Repair, and the night's context must not change with that.
+CONTEXT_USES: tuple[ContextUse, ...] = (
+    ContextUse("Nightshift Code", "launchers/nightshift-code.ps1 $minCtx", CODE_MIN_CONTEXT),
+    ContextUse(
+        "clip selection",
+        "ns_studio/clipper/stages_clip.py:SelectStage (a 720 s window, thinking)",
+        14000,
+        ("clip_select",),
+    ),
+    ContextUse(
+        "whole-story checks",
+        "ns_studio/policy (policy_check), stages_master and series.workshop (shorts_select, continuity)",
+        15000,
+        ("policy_check", "shorts_select", "continuity"),
+    ),
+    ContextUse(
+        "story writing",
+        "ns_studio/text/stages_shorts.py, stages_master.py, series/workshop.py (chapters, critic, revisions)",
+        13500,
+        (
+            "ideas",
+            "story_plan",
+            "story_draft",
+            "long_plan",
+            "chapter_draft",
+            "critic",
+            "revise",
+            "expand",
+            "split",
+            "hook",
+            "judge",
+            "workshop_concepts",
+            "workshop_regenerate",
+            "workshop_map",
+            "workshop_part_outline",
+            "workshop_revise",
+        ),
+    ),
+    ContextUse(
+        "pictures and titles",
+        "ns_studio/text (visual_plan, seo, long_seo, short_hook), ns_studio/clipper (clip_judge, clip_seo)",
+        13500,
+        ("visual_plan", "seo", "long_seo", "short_hook", "clip_judge", "clip_seo"),
+    ),
+    ContextUse(
+        "the Assistant",
+        "ns_dashboard/assistant/prompt.py:budget_for (sizes itself to the context; 16K plan)",
+        16384,
+    ),
+    ContextUse("ns verify and ns tune probes", "ns_supervisor/verify.py, ns_supervisor/benchmark.py", 1024),
+)
+
+
+def largest_use(rt: Runtime) -> ContextUse:
+    """The use of `CONTEXT_USES` with the largest request on `rt`'s profile (the first of equals)."""
+    uses = [u for u in CONTEXT_USES if rt.profile in u.profiles]
+    return max(uses, key=lambda u: u.tokens)
+
+
 def min_ctx_for(rt: Runtime) -> int:
-    """The story pipeline needs 16K on the gpu profile; cpu-dev runs 8K."""
-    return 8192 if rt.profile == "cpu-dev" else 16384
+    """The smallest of `CTX_OPTIONS` that holds the largest request of every use the install can run
+    (`largest_use`). The largest option when even that is too small, which the budget test forbids."""
+    need = largest_use(rt).tokens
+    return next((c for c in CTX_OPTIONS if c >= need), CTX_OPTIONS[-1])
+
+
+def ctx_preference(rt: Runtime) -> Callable[[LlamaFlags], tuple[Any, ...]]:
+    """Among results within 5 % of the best: gpu, the roomiest context then f16; cpu-dev, the smallest context
+    then q8_0 (half the KV memory)."""
+    if rt.profile == "cpu-dev":
+        return lambda f: (f.ctx, f.kv_type != "q8_0")
+    return lambda f: (-f.ctx, f.kv_type != "f16")
+
+
+def context_note(rt: Runtime, flags: LlamaFlags, floor: int) -> str:
+    """The line `ns tune` prints about the context it chose, for a cpu-dev PC ("" on the gpu profile): what it
+    is, which use sets the floor and why it is not larger. True in each state: the floor was chosen, or a
+    larger one because the floor was more than 5 % slower or did not load."""
+    if rt.profile != "cpu-dev":
+        return ""
+    big = largest_use(rt)
+    needs = f"every use of the language model fits in (the largest, {big.name}, needs up to {big.tokens})"
+    if flags.ctx == floor:
+        return f"context {flags.ctx} tokens: the smallest that {needs}; {CPU_WHY}."
+    return (
+        f"context {flags.ctx} tokens: the smallest that {needs} is {floor}, but that size was more than 5 % "
+        f"slower or did not load, so this one is used; {CPU_WHY}."
+    )
 
 
 def plan_matrix(rt: Runtime) -> dict[str, list[Any]]:
@@ -82,7 +195,8 @@ def matrix_lines(rt: Runtime) -> list[str]:
 def pick_winner(
     results: list[tuple[LlamaFlags, float]], prefer: Callable[[LlamaFlags], tuple[Any, ...]]
 ) -> tuple[LlamaFlags, float]:
-    """Fastest result; anything within 5 % of it is equal, and the lowest `prefer` key wins among those."""
+    """Fastest result; anything within 5 % of it is equal, and the lowest `prefer` key wins among those
+    (`ctx_preference` for the context)."""
     best = max(t for _, t in results)
     near = [(f, t) for f, t in results if t >= best * EQUIVALENT]
     return min(near, key=lambda ft: (prefer(ft[0]), -ft[1]))
@@ -109,6 +223,7 @@ class TuneOutcome:
     tok_s: float | None = None
     attempts: list[Attempt] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    context_note: str = ""
 
 
 def tune(paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = None) -> TuneOutcome:
@@ -160,7 +275,7 @@ def tune(paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = No
         t = attempt("ctx_kv", f)
         if t is not None:
             results.append((f, t))
-    current, current_tok = pick_winner(results, lambda f: (-f.ctx, f.kv_type != "f16"))
+    current, current_tok = pick_winner(results, ctx_preference(rt))
 
     # 3. --n-cpu-moe (MoE only)
     if matrix["n_cpu_moe"]:
@@ -189,6 +304,7 @@ def tune(paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = No
         lg.warn("mtp_disabled", "MTP was not faster; keeping plain decoding", code="NS-W302")
 
     out.ok, out.flags, out.tok_s = True, current, current_tok
+    out.context_note = context_note(rt, current, floor)
     new_rt = rt.model_copy(deep=True)
     new_rt.llama.flags = current
     save_runtime(paths, new_rt)

@@ -80,7 +80,9 @@ def test_answers_example_matches_exported_schema():
     jsonschema.validate({k: v for k, v in example.items() if k in known}, schema)
     # Keys the published schema does not know yet are the ones filed in CR-C1-2.
     pending = set(example) - known
-    assert pending <= {"home_path", "models_source", "llm_tier", "restore_from", "include_voicedesign"}
+    assert pending <= {
+        "home_path", "models_source", "llm_tier", "restore_from", "include_voicedesign", "shortcuts_here",
+    }
 
 
 def test_installer_ui_build_is_committed():
@@ -113,6 +115,8 @@ def test_operator_copy_covers_every_code_the_installer_can_raise():
 STDLIB_ONLY_NS_COMMON = {
     "ns_common.atomic", "ns_common.avblock", "ns_common.devmode", "ns_common.errors", "ns_common.paths",
     "ns_common.pathrules",
+    "ns_common.psquote",      # FN-5: the one way a value becomes a PowerShell string literal
+    "ns_common.testguard",    # the refusals of a test run: every runner and ns_common.paths import it
     "ns_common.uv", "ns_common.vcruntime", "ns_common.secret_file", "ns_common.secrets_names",
     "ns_common.singleton",
     "ns_common.diskneed",     # H-6: the space an install needs (diskneed raises NsError)
@@ -122,6 +126,11 @@ STDLIB_ONLY_NS_COMMON = {
     "ns_common.config_snapshot",
     "ns_common.first_start",
     "ns_common.logging",
+    # FN-1: the Host and Origin check of the engine, the voice service and the dashboard (it reads the error
+    # table for the refusal's words)
+    "ns_common.loopback",
+    # FN-3: which program a plain ns or studio reaches, and every text that names one (errors.py uses it)
+    "ns_common.commandline",
     # F-10c: the record of a rollback in progress, finished or undone by the first-start check; and the table
     # of settings fields added since 0.1.14, whose plain-dict rule the setup window's answers writer uses.
     "ns_common.rollback_intent",
@@ -129,7 +138,11 @@ STDLIB_ONLY_NS_COMMON = {
 }
 # installer.stage2.devmode (dev mode numbers, stubs, mode switch) is stdlib-only too and shared by the setup
 # server and the wizard; the test below keeps it that way.
-STDLIB_ONLY_INSTALLER = {"installer.stage2.devmode", "installer.stage2.sysinfo"}
+# installer.stage2.shortcut_owner (card launcher-reach) reads Desktop shortcuts for setup and the engine.
+STDLIB_ONLY_INSTALLER = {
+    "installer.stage2.devmode", "installer.stage2.sysinfo", "installer.stage2.shortcut_owner",
+    "installer.stage2.commands",    # card FN-3: the ns and studio command files and the user PATH rule
+}
 
 
 def test_the_ns_common_modules_the_setup_server_uses_are_really_stdlib_only():
@@ -193,12 +206,16 @@ def test_web_package_imports_only_the_standard_library():
 
 ALLOWED_WEB_IMPORTS = (
     "installer.stage2.web", "installer.stage2.web.samples", "installer.stage2.web.pathcheck",
+    "installer.stage2.web.filesdir", "installer.stage2.web.deplock", "installer.stage2.web.venvrepair",
 )
 
 
 def test_only_the_samples_helpers_are_shared_with_the_wizard():
-    # P2 may import installer.stage2.web.samples and .pathcheck (stdlib only; pathcheck is the one rule for
-    # what a folder holds, D-21); the rest of the web package is P1's.
+    # P2 may import installer.stage2.web.samples, .pathcheck and .filesdir (stdlib only; pathcheck is the one
+    # rule for what a folder holds, D-21; filesdir is the one rule for taking a pinned file from the files
+    # folder beside INSTALL.cmd, D-17; deplock is the one rule for installing from uv.lock, P29a, which b03,
+    # s04 and ns update share; venvrepair is the one rule for a venv an update left unfinished, D-39b, which
+    # s04, b03, ns update and ns doctor share); the rest of the web package is P1's.
     wizard_side = [ROOT / "installer" / "stage2" / "wizard.py", ROOT / "installer" / "stage2" / "bridge.py",
                    *sorted((ROOT / "installer" / "stage2" / "steps").glob("*.py"))]
     for f in wizard_side:

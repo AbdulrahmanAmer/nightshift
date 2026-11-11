@@ -61,7 +61,7 @@ def err(resp: Any) -> dict[str, Any]:
 def test_non_loopback_host_is_refused(env):
     client, _ = env
     r = client.get("/api/status", headers={"host": "evil.example.com"})
-    assert r.status_code == 403 and err(r)["code"] == "forbidden_host"
+    assert r.status_code == 403 and err(r)["code"] == "NS-E207"
     assert client.get("/", headers={"host": "192.168.1.9:8100"}).status_code == 403
     assert client.get("/api/status", headers={"host": "localhost:8100"}).status_code == 200
     assert client.get("/api/status", headers={"host": "[::1]:8100"}).status_code == 200
@@ -318,6 +318,7 @@ def test_run_and_clip_jobs_over_http(env, tmp_home: Path):
 @needs_multipart
 def test_clip_job_multipart_upload(env):
     client, state = env
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     seed_channel(state.db, state.paths)
     data = {"channel": "after-dark", "template": "auto", "max_clips": "3", "min_s": "20", "max_s": "60",
             "caption_style": "punch_yellow", "rights_confirmed": "true"}
@@ -334,6 +335,7 @@ def test_clip_job_multipart_upload(env):
 @needs_multipart
 def test_learn_import_multipart(env):
     client, _ = env
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     csv = b"title,views\nA,10\nB,20\n"
     r = client.post("/api/learn/import", files={"file": ("export.csv", csv, "text/csv")})
     assert r.status_code == 200
@@ -348,6 +350,7 @@ def test_learn_import_multipart(env):
 
 def test_chunked_upload_over_http(env):
     client, state = env
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     payload = bytes(range(256)) * 8
     start = client.post("/api/uploads", json={"filename": "talk.mp4", "size": len(payload)})
     assert start.status_code == 201 and start.json()["chunk_size"] == 8 * 1024 * 1024
@@ -589,3 +592,16 @@ def test_assistant_busy_engine_over_http(tmp_home: Path):
     events = sse_events(client.post("/api/assistant/chat", json={"message": "hello"}))
     assert [e["kind"] for e in events] == ["conversation", "busy", "done"]
     assert events[1]["payload"]["queued"] is True
+
+
+def test_notes_carry_ids_and_the_ui_type_has_them(env):
+    """FN-2: the bell dismisses by id, so the answer, the page's type and the page's call all carry it."""
+    from ns_supervisor import notify
+
+    client, state = env
+    notify.leave_note(state.paths, "Nightshift", "2 Shorts ready for review")
+    (note,) = client.get("/api/notes").json()
+    assert set(note) == {"id", "at", "title", "message"} and note["id"] == notify.read_notes(state.paths)[0].get("id")
+    ui = Path(__file__).resolve().parents[1] / "ns_dashboard" / "ui" / "src"
+    assert "export interface MorningNote { id: string; at: string; title: string; message: string }" in (ui / "lib" / "types.ts").read_text(encoding="utf-8")
+    assert 'api.post("/notes/clear", { ids: notes.data.map((n) => n.id) })' in (ui / "shell" / "Shell.tsx").read_text(encoding="utf-8")

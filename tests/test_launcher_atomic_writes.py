@@ -672,14 +672,40 @@ def test_stop_all_still_treats_a_garbage_or_empty_run_file_as_stale(tmp_path: Pa
 # a guard for the next writer someone adds
 # ----------------------------------------------------------------------------------------------------------
 INSTALLER = ROOT / "installer"
-FORBIDDEN_WRITES = ("WriteAllText", "WriteAllBytes", "Set-Content", "Out-File", "Add-Content",
-                    "AppendAllText",
+FORBIDDEN_WRITES = ("WriteAllText", "WriteAllBytes", "WriteAllLines", "Set-Content", "Out-File",
+                    "Add-Content", "AppendAllText", "AppendAllLines",
                     "[IO.File]::Create", "[System.IO.File]::Create", "Tee-Object")  # fmt: skip
+
+#: The one place a launcher writes a file directly: the Diagnostics shortcut's zip made without Python
+#: (D-39b) copies the logs into a scratch folder of its own, `run\diagnostics-<its pid>`, which it empties
+#: before, compresses, and removes in `finally`. Nothing else reads that folder (the name holds this process's
+#: pid), so no reader can meet a half-written copy there, and a log another program still writes is copied as
+#: it is. Exactly these lines are allowed, and only with the folder made and removed as described; any other
+#: direct write in any launcher, diagnostics.ps1 included, still fails.
+PRIVATE_SCRATCH_WRITES = {
+    "diagnostics.ps1": (
+        "$dst = [IO.File]::Create($to)",
+        "[IO.File]::WriteAllLines((Join-Path $stage 'bundle-notes.txt'), [string[]]$notes)",
+    ),
+}
+PRIVATE_SCRATCH_FOLDER = (
+    "$stage = Join-Path (Join-Path $nsHome 'run') ('diagnostics-' + $PID)",
+    "$to = Join-Path $stage $f.To",
+    "finally {\n        try { if (Test-Path -LiteralPath $stage) "
+    "{ Remove-Item -LiteralPath $stage -Recurse -Force } }",
+)
 
 
 def test_no_launcher_writes_a_file_except_through_the_helper() -> None:
     for script in sorted(LAUNCHERS.glob("*.ps1")):
         text = script.read_text(encoding="ascii")
+        allowed = PRIVATE_SCRATCH_WRITES.get(script.name, ())
+        for line in allowed:
+            assert text.count(line) == 1, (script.name, line)
+            text = text.replace(line, "")
+        if allowed:
+            for shape in PRIVATE_SCRATCH_FOLDER:
+                assert shape in text, (script.name, shape)
         for needle in FORBIDDEN_WRITES:
             assert needle not in text, (script.name, needle)
     assert ". (Join-Path $PSScriptRoot '_common.ps1')" in HOST.read_text(encoding="ascii")
@@ -687,7 +713,9 @@ def test_no_launcher_writes_a_file_except_through_the_helper() -> None:
 
 def test_no_installer_script_writes_a_file_another_process_reads_in_place() -> None:
     """stage1.ps1 (the hand-over files the setup server reads) and pick-folder.ps1 (the dialog's result file)
-    write through their own `Write-NsFileSwap`; the other installer scripts write nothing."""
+    write through their own `Write-NsFileSwap`, and so do launch.ps1 (the count of missed nights, the
+    Dashboard's notes, the Desktop note; its log line is one appended write) and uninstall.ps1 (the PC's list
+    of installs, which another install's setup reads and writes back); the others write nothing."""
     for script in sorted(INSTALLER.glob("*.ps1")):
         text = script.read_text(encoding="utf-8")
         for needle in FORBIDDEN_WRITES:
@@ -696,10 +724,12 @@ def test_no_installer_script_writes_a_file_another_process_reads_in_place() -> N
     assert "Write-NsFileSwap -Path $Out " in stage1 and "Write-NsFileSwap -Path $preflightFile " in stage1
     picker = (INSTALLER / "pick-folder.ps1").read_text(encoding="utf-8")
     assert "Write-NsFileSwap -Path $Out -Text $chosen" in picker
+    remover = (INSTALLER / "uninstall.ps1").read_text(encoding="utf-8")
+    assert "Write-NsFileSwap -Path $listFile -Text $listText" in remover
 
 
 @needs_powershell
-@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1"])
+@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1", "launch.ps1", "uninstall.ps1"])
 def test_the_installer_swap_writes_whole_files_and_leaves_the_old_one_on_failure(
     tmp_path: Path, script: str
 ) -> None:
@@ -748,7 +778,7 @@ function Start-Sleep {{
 
 
 @needs_powershell
-@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1"])
+@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1", "launch.ps1", "uninstall.ps1"])
 def test_the_installer_swap_rides_out_a_target_that_is_refused_twice_then_allowed(
     tmp_path: Path, script: str
 ) -> None:
@@ -773,7 +803,7 @@ finally {{ if ($global:holder) {{ $global:holder.Dispose() }} }}
 
 
 @needs_powershell
-@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1"])
+@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1", "launch.ps1", "uninstall.ps1"])
 def test_the_installer_swap_gives_up_on_a_target_that_stays_shut_and_leaves_the_old_file(
     tmp_path: Path, script: str
 ) -> None:

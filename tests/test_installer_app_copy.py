@@ -27,10 +27,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def make_source(root: Path, version: str = "0.1.4", **extra: str) -> Path:
     """A folder shaped like the extracted zip (plus junk that must not be copied)."""
+    from tests.test_dependency_lock import program_files  # (that module imports this one)
+
+    lock = program_files(version)
     files = {
         "INSTALL.cmd": "@echo off", "VERSION": version + "\n",
         "manifest.json": json.dumps({"version": version}),
-        "pyproject.toml": "[project]\nname='x'", "installer/stage1.ps1": "# ps", "ns_common/__init__.py": "",
+        "pyproject.toml": lock["pyproject.toml"], "uv.lock": lock["uv.lock"],
+        "installer/stage1.ps1": "# ps", "ns_common/__init__.py": "",
         "bin/webview2/WebView2Loader.dll": "MZ", "bin/llama/llama-server.exe": "MZ",
         "venvs/studio/Scripts/python.exe": "MZ", "models/llm/big.gguf": "x" * 10,
         "node_modules/pkg/index.js": "x", "ns_common/__pycache__/a.pyc": "x", ".git/HEAD": "ref: main",
@@ -457,7 +461,10 @@ def test_b03_installs_from_the_copy_not_from_the_extracted_folder(tmp_path: Path
     boot.cmd = cmd
     bootstrap.B03SetupEnv().run(boot)
     installs = [argv for argv, _cwd in seen if "pip" in argv]
-    assert installs and installs[0][-1] == f"{boot.home / 'app'}[studio]"
+    # (P29a: the locked packages first, then the program itself, both from the copy)
+    assert installs and installs[-1][-3:] == ["--no-deps", "-e", str(boot.home / "app")]
+    exports = [argv for argv, _cwd in seen if argv[1] == "export"]
+    assert exports and exports[0][exports[0].index("--project") + 1] == str(boot.home / "app")
     assert all(cwd == boot.home / "app" for _argv, cwd in seen)
     assert boot.venv_marker.read_text("utf-8").startswith(str(boot.home / "app"))
 
@@ -469,7 +476,10 @@ def fake_zip_folder(root: Path, version: str = "0.1.4") -> Path:
     manifest = (ROOT / "manifest.json").read_text(encoding="utf-8")
     (root / "manifest.json").write_text(manifest, encoding="utf-8")
     (root / "VERSION").write_text(version + "\n", encoding="utf-8")
-    (root / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    from tests.test_dependency_lock import program_files  # (that module imports this one)
+
+    for name in ("pyproject.toml", "uv.lock"):
+        (root / name).write_text(program_files(version)[name], encoding="utf-8")
     (root / "launchers").mkdir()
     (root / "launchers" / "nightshift-dashboard.ps1").write_text("# ps", encoding="utf-8")
     return root
@@ -510,7 +520,7 @@ def test_a_whole_run_puts_the_program_under_home_and_hands_that_folder_to_the_wi
     assert recorded["app_path"] == str(app)         # what ns update, the task and the shortcuts read
     assert state["appPath"] == str(app) and state["result"]["appPath"] == str(app)
     pips = [c for c in s.cmd.calls if len(c) > 2 and c[1:3] == ["pip", "install"]]
-    assert pips and pips[0][-1] == f"{app}[studio]"
+    assert pips and pips[-1][-3:] == ["--no-deps", "-e", str(app)]      # (P29a: the program, from the copy)
     shutil.rmtree(extracted)                                                # delete the folder from Downloads
     assert (app / "VERSION").is_file() and s.ctl.run_app_path == app
 
@@ -590,3 +600,51 @@ def test_the_keys_in_the_answers_file_next_to_install_cmd_are_removed_once_they_
     assert left["channel"] == raw["channel"]                               # everything else is as it was
     assert not (s.home / "app" / "answers.json").exists()                  # and the program copy never had it
     assert s.ctl._keys["pexels_api_key"] == KEY_P                          # the keyring still gets them
+
+
+# ---- card 206-carried, box 5: setup run from the installed program folder -------------------------
+@pytest.mark.parametrize("stopped", ["before the swap", "after the swap"])
+def test_an_in_place_setup_run_leaves_the_record_to_first_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stopped: str
+) -> None:
+    """INSTALL.cmd run from `<home>/app` itself (a repair) is a start of the program in place: `install_app`
+    replaces nothing and does not look at the record of an interrupted rollback; the window's first settings
+    write (`answers_view.write_answers`, which calls `first_start.guard`) then undoes or finishes it."""
+    from installer.stage2.web import answers_view
+    from ns_common import first_start, rollback_intent
+    from ns_supervisor import update
+    from tests import test_first_start_snapshot as fs
+
+    monkeypatch.setattr(update, "RENAME_PAUSE_S", 0.01)
+    first_start.reset()
+    inst = fs.Install(tmp_path, monkeypatch)
+    arm = fs._stop_at_rename(1) if stopped == "before the swap" else fs._stop_at_rename(3, after=True)
+    _, as_015_had_them = fs._interrupted(inst, monkeypatch, arm)
+    record = rollback_intent.path_for(inst.app)
+    half = fs.read_config(inst.paths)
+    names = sorted(p.name for p in inst.home.iterdir())
+    try:
+        said: list[str] = []
+        res = appcopy.install_app(inst.app, inst.home, say=said.append)
+
+        assert res.action == "in-place" and said == []
+        assert record.is_file() and fs.read_config(inst.paths) == half  # nothing about the record
+        assert sorted(p.name for p in inst.home.iterdir()) == names
+
+        inst.start()  # the window is a process of the program in place
+        answers = inst.paths.config / "answers.json"
+        answers_view.write_answers(answers, fs.load_raw(answers))
+        assert not record.exists()
+        if stopped == "before the swap":  # 0.1.15 is in place: undone, the settings as it had them
+            assert inst.version_now() == "0.1.15"
+            assert {n: b for n, b in fs.read_config(inst.paths).items() if n != "answers.json"} == {
+                n: b for n, b in as_015_had_them.items() if n != "answers.json"
+            }
+        else:  # 0.1.14 is in place: finished, the copy for going forward is 0.1.15's
+            assert inst.version_now() == "0.1.14"
+            assert fs.config_snapshot.read(inst.copy).version == "0.1.15"
+            fs.older_version_loads_everything(inst.paths)
+        events = [r["event"] for r in fs.log_lines(inst.paths)]
+        assert events.count("rollback_recovered") == 1
+    finally:
+        first_start.reset()

@@ -24,6 +24,7 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import Manifest
 from ns_common.paths import Paths
+from ns_common.runtime_read import read_runtime
 
 if TYPE_CHECKING:
     from installer.stage2.downloader import DownloadItem, PlanResult
@@ -175,11 +176,8 @@ def get_model(
     from installer.stage2 import downloader
 
     man = manifest or load_manifest(app / "manifest.json")
-    try:
-        rt = load_runtime(paths)
-        profile, engine = rt.profile, rt.tts.engine
-    except NsError:
-        profile, engine = "gpu", "qwentts"
+    rt = read_runtime(paths)   # D-35: a missing or unreadable runtime.json stops here; never "assume gpu"
+    profile, engine = rt.profile, rt.tts.engine
     items = plan_items(kind, man, profile, paths, engine=engine, everything=everything, tree=tree)
     todo = [i for i in items if not downloader.is_done(i)]
     if todo:

@@ -11,7 +11,9 @@ from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.devmode import BANNER
 from installer.stage2.errors import make_error
+from installer.stage2.web import nightly_view, shortcuts_view
 from installer.stage2.winenv import desktop_dir
+from ns_common.commandline import render
 
 NEXT_STEPS = (
     "Next: open 'Nightshift Dashboard' on your Desktop and press Run now to make your first video."
@@ -20,6 +22,10 @@ DEV_NEXT_STEPS = (
     "Dev mode: open 'Nightshift Dashboard' and press Create it now. The job runs every stage on fake engines "
     "and renders a real video into the outbox. Nothing is scheduled."
 )
+#: The flags the sentence about Automatic runs is made from (`nightly_view.summary`).
+NIGHTLY_FLAGS = ("schedule", "schedule_mode", "nightly_line", "nightly_state", "nightly_time")
+#: The flags the sentence about the Desktop shortcuts is made from (`shortcuts_view.summary`).
+SHORTCUT_FLAGS = ("shortcuts_owner", "shortcuts_line", "shortcuts_names")
 
 
 def newest_bundle(folder: Path | None) -> Path | None:
@@ -63,19 +69,31 @@ class S10Summary(Step):
         schedule = ctx.flag("schedule")
         if ctx.dev_mode:
             ui.say(f"{BANNER}.", "yellow")
-        if schedule == "installed" and ctx.flag("schedule_mode") == "disabled" and not ctx.dev_mode:
-            ui.say(
-                f"Nightly task: registered for {ans.run_time} but switched off in Task Scheduler "
-                "(kept as you had it); it does not run until you switch it on there."
-            )
-        elif schedule == "installed" and ctx.flag("schedule_mode") == "disabled":
-            ui.say(f"Nightly task: registered for {ans.run_time} but DISABLED (dev mode); it never runs.")
-        elif schedule == "installed":
-            ui.say(f"Nightly run: every night at {ans.run_time} (the PC wakes itself).")
+        if ctx.dev_mode:
+            if schedule == "installed" and ctx.flag("schedule_mode") == "disabled":
+                ui.say(f"Nightly task: registered for {ans.run_time} but DISABLED (dev mode); it never runs.")
+            elif schedule == "other" and isinstance(ctx.flag("dev_task_line"), str):
+                ui.say(ctx.flag("dev_task_line"))    # the PC's task is another install's: left as it is
+        else:
+            # one sentence, true of what the record says now: the scheduler step's own when the state is still
+            # the one it left, else the state as it is (a run in which that step had nothing to do)
+            flags = {name: ctx.flag(name) for name in NIGHTLY_FLAGS}
+            ui.say(nightly_view.summary(ctx.paths.home, flags)["line"])
+        # whose the Desktop shortcuts and NIGHTSHIFT_HOME are (a PC can hold several Nightshift folders): the
+        # scheduler step's sentence while the Desktop still is what it left, else the state as it is now
+        folder = ctx.desktop_override or desktop_dir(ctx.runner)
+        marks = {name: ctx.flag(name) for name in SHORTCUT_FLAGS}
+        ui.say(shortcuts_view.summary(ctx.paths.home, ctx.app_path, folder, marks)["line"])
+        var_line = ctx.flag("home_var_line")
+        if isinstance(var_line, str) and var_line:
+            ui.say(var_line)
+        # whose the `ns` and `studio` commands are (card FN-3): the scheduler step's sentence
+        commands_line = ctx.flag("commands_line")
+        if isinstance(commands_line, str) and commands_line:
+            ui.say(render(commands_line, ctx.paths.home))     # stored plain, said as typed now (FN-3)
         ui.say(DEV_NEXT_STEPS if ctx.dev_mode else NEXT_STEPS, "bold green")
 
         res = ctx.run_tool("ns", ["doctor", "--bundle"], timeout=900)
-        folder = ctx.desktop_override or desktop_dir(ctx.runner)
         bundle = newest_bundle(folder) if res.ok else None
         ui.bundle(bundle)
         if bundle is not None:

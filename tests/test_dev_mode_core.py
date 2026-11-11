@@ -503,9 +503,9 @@ def test_doctor_does_not_ask_a_dev_install_for_nvidia_smi(tmp_path: Path, monkey
     save_runtime(paths, dev_runtime())
     rows = {name: (ok, detail) for name, ok, detail in doctor.diagnose(paths, Down())}  # type: ignore[arg-type]
     assert rows["nvidia-smi"] == (True, "not needed (dev mode)")
-    save_runtime(paths, Runtime.default("cpu-dev"))
+    save_runtime(paths, Runtime.default("gpu"))
     rows = {name: (ok, detail) for name, ok, detail in doctor.diagnose(paths, Down())}  # type: ignore[arg-type]
-    assert rows["nvidia-smi"][0] is False
+    assert rows["nvidia-smi"][0] is False       # (a cpu-dev install says "not needed" since D-44: test_ns_doctor.py)
 
 
 def test_a_dev_install_keeps_its_task_disabled_when_anything_re_registers_it(
@@ -521,5 +521,7 @@ def test_a_dev_install_keeps_its_task_disabled_when_anything_re_registers_it(
 
     monkeypatch.setattr(pwsh, "run_powershell", capture)
     schedule.install(paths, "05:00", tmp_path)          # no disabled=True: the Settings page does this
-    assert "-ExecutionTimeLimit (New-TimeSpan -Hours 6) -Disable" in scripts[0]
+    # the task is read first (a disabled registration never lands on another install's task), then registered
+    assert "Get-ScheduledTask" in scripts[0] and "Register-ScheduledTask" not in scripts[0]
+    assert "-ExecutionTimeLimit (New-TimeSpan -Hours 6) -Disable" in scripts[1] and len(scripts) == 2
     assert read_schedule_mode(paths) == "disabled"

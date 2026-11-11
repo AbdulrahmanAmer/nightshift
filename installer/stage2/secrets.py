@@ -1,8 +1,16 @@
-"""Secret storage for the installer (component C1): the Windows keyring, service ``Nightshift``."""
+"""Secret storage for the installer (component C1): the Windows keyring, service ``Nightshift``.
+
+Run as a program it is the uninstaller's one source of what happened to the stock-footage keys
+(``python -m installer.stage2.secrets forget --home <home> [--dry-run] [--used-by <folder>]``, see
+`forget_stock_keys`): ``installer\\uninstall.ps1`` prints its lines as they are.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import argparse
+import sys
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -14,9 +22,12 @@ from ns_common.secret_file import (  # restrict_to_user lives with the file it p
     dpapi_unprotect,
     load_secret,
     restrict_to_user,
+    secret_path,
     store_secret,
+    stored_names,
 )
 from ns_common.secrets_names import KEY_NAMES, KEYRING_SERVICE, PEXELS_KEY, PIXABAY_KEY
+from ns_common.testguard import refuse_real_keyring
 
 # One definition for the studio, the installer and Settings: ``ns_common.secrets_names``.
 SERVICE = KEYRING_SERVICE
@@ -51,18 +62,21 @@ class KeyringStore:
         """Read ``Nightshift/<name>``."""
         import keyring
 
+        refuse_real_keyring(keyring)
         return keyring.get_password(SERVICE, name)
 
     def set(self, name: str, value: str) -> None:
         """Write ``Nightshift/<name>``."""
         import keyring
 
+        refuse_real_keyring(keyring)
         keyring.set_password(SERVICE, name, value)
 
     def delete(self, name: str) -> None:
         """Remove ``Nightshift/<name>`` (quietly when absent)."""
         import keyring
 
+        refuse_real_keyring(keyring)
         try:
             keyring.delete_password(SERVICE, name)
         except keyring.errors.PasswordDeleteError:
@@ -164,3 +178,171 @@ class ResilientStore:
         """The one-time warning of a keys file saved on a drive without permissions: the same channel as a
         failure (``warn`` finds the code in the line), because the owner should hear it in the same place."""
         self.warn(line if line.startswith(code) else f"{code}: {line}")
+
+
+# ---------------------------------------------------------------------------------------------------------
+# the uninstaller: what happened to the stock-footage keys, in true lines
+# ---------------------------------------------------------------------------------------------------------
+#: A key is kept in two places (`ResilientStore`): Windows Credential Manager, one per Windows account and so
+#: shared by every Nightshift folder of that account, and `config\secrets.dpapi`, this folder's own.
+LABELS = {PEXELS_KEY: "Pexels", PIXABAY_KEY: "Pixabay"}
+FILE_SHOWN = "config\\" + FILE_NAME
+#: The way out when Credential Manager kept a key: the entries `keyring` makes are named `Nightshift` and
+#: `<key name>@Nightshift`.
+BY_HAND = (
+    "open Control Panel > Credential Manager > Windows Credentials and remove every entry whose name ends "
+    "in Nightshift"
+)
+#: `main`'s exit code when Credential Manager could not be asked (no `keyring` package): the lines cover the
+#: file only, and `uninstall.ps1` looks at Credential Manager with cmdkey.
+NO_VAULT = 4
+
+
+@dataclass(frozen=True)
+class Forgotten:
+    """The uninstaller's lines about the keys, and whether Credential Manager could be asked at all."""
+
+    lines: tuple[str, ...]
+    vault_asked: bool
+
+
+def _keys(names: Sequence[str]) -> str:
+    words = [LABELS.get(n, n) for n in names]
+    return " and ".join(words) + (" keys" if len(words) > 1 else " key")
+
+
+def _why(e: BaseException) -> str:
+    return f"{type(e).__name__}: {getattr(e, 'strerror', None) or e}"
+
+
+def _remove_file(path: Path) -> None:
+    """Delete `config\\secrets.dpapi` (a seam for the tests: a file another program holds)."""
+    path.unlink()
+
+
+def forget_stock_keys(
+    paths: Paths, vault: Any, *, dry_run: bool = False, used_by: str | None = None
+) -> Forgotten:
+    """Forget the stock-footage keys of the Nightshift at `paths` and say what happened, line by line.
+
+    `vault` is Credential Manager (`KeyringStore`: `get` and `delete` by key name; `ImportError` when the
+    `keyring` package is missing). `used_by`: another Nightshift folder on this PC still uses Credential
+    Manager (the takeover's rule): its keys are left and said to be left; this folder's file goes all the
+    same. `dry_run`: nothing is removed, each line says where each key is now.
+
+    Every line is about what was found and done in this call: a key it did not see is never called
+    forgotten, a refusal is named with its error and the way to finish by hand, and when Credential Manager
+    cannot be asked nothing is said about it (`vault_asked` False: the caller looks another way).
+    """
+    held: list[str] = []
+    unreadable: dict[str, str] = {}
+    asked = True
+    for name in KEY_NAMES:
+        try:
+            if vault.get(name):
+                held.append(name)
+        except ImportError:
+            asked = False
+            break
+        except Exception as e:  # noqa: BLE001 - a vault that cannot be read is said, never guessed
+            unreadable[name] = _why(e)
+    if not asked:
+        held, unreadable = [], {}
+    file = secret_path(paths)
+    has_file = file.is_file()
+    in_file = [n for n in KEY_NAMES if n in stored_names(paths)] if has_file else []
+    lines: list[str] = []
+    if asked and used_by:
+        if unreadable:
+            why = next(iter(unreadable.values()))
+            lines.append(
+                f"Left Credential Manager as it is (it could not be read: {why}): any stock-footage keys in "
+                f"it are used by the Nightshift at {used_by}."
+            )
+        elif held:
+            lines.append(
+                f"Left the stock-footage keys in Credential Manager: the Nightshift at {used_by} uses them."
+            )
+        held, unreadable = [], {}
+    if dry_run:
+        for name in KEY_NAMES:
+            places = ["Credential Manager"] if name in held else []
+            places += [FILE_SHOWN] if name in in_file else []
+            if places:
+                lines.append(f"[dry-run] forget the {_keys([name])} ({' and '.join(places)})")
+            elif name in unreadable:
+                lines.append(
+                    f"[dry-run] remove the {_keys([name])} from Credential Manager if it is there (it cannot "
+                    f"be read now: {unreadable[name]})"
+                )
+        if has_file and not in_file:
+            lines.append(f"[dry-run] delete {file} (no key could be read in it)")
+        if asked and not lines:
+            lines.append(
+                f"[dry-run] no stock-footage keys are stored (Credential Manager and {FILE_SHOWN} hold none)"
+            )
+        return Forgotten(tuple(lines), asked)
+    forgot: list[str] = []
+    after: list[str] = []
+    for name in KEY_NAMES:
+        if name not in held and name not in unreadable:
+            continue
+        try:
+            vault.delete(name)
+        except Exception as e:  # noqa: BLE001 - the key is still there: said, with the way to remove it
+            after.append(
+                f"  could not remove the {_keys([name])} from Credential Manager ({_why(e)}): {BY_HAND}"
+            )
+            continue
+        if name in held:
+            forgot.append(name)
+        else:
+            after.append(
+                f"  removed the {_keys([name])} from Credential Manager if it was there (it could not be "
+                f"read first: {unreadable[name]})"
+            )
+    if forgot:
+        lines.append(f"  forgot the {_keys(forgot)} in Credential Manager")
+    lines += after
+    if has_file:
+        what = "no key could be read in it"
+        if in_file:
+            what = f"the copy of the {_keys(in_file)} for nightly runs"
+        try:
+            _remove_file(file)
+        except FileNotFoundError:
+            pass  # gone between the look and the removal: nothing of it is left to say
+        except OSError as e:
+            still = f", it still holds the {_keys(in_file)}" if in_file else ""
+            lines.append(f"  could not remove {file} ({_why(e)}): delete it by hand{still}")
+        else:
+            lines.append(f"  removed {file} ({what})")
+    if asked and not lines:
+        lines.append(f"  no stock-footage keys were stored (Credential Manager and {FILE_SHOWN} held none)")
+    return Forgotten(tuple(lines), asked)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """``forget --home <home> [--dry-run] [--used-by <folder>]``: print `forget_stock_keys`' lines.
+
+    Exit 0 when Credential Manager was asked, `NO_VAULT` when it could not be (the lines then cover only
+    `config\\secrets.dpapi`), 2 for a wrong call.
+    """
+    parser = argparse.ArgumentParser(prog="python -m installer.stage2.secrets")
+    sub = parser.add_subparsers(dest="command", required=True)
+    forget = sub.add_parser("forget", help="forget the stock-footage keys of one Nightshift folder")
+    forget.add_argument("--home", required=True)
+    forget.add_argument("--dry-run", action="store_true")
+    forget.add_argument("--used-by", default=None)
+    args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    out = forget_stock_keys(
+        Paths(Path(args.home)), KeyringStore(), dry_run=args.dry_run, used_by=args.used_by or None
+    )
+    for line in out.lines:
+        sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+    return 0 if out.vault_asked else NO_VAULT
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

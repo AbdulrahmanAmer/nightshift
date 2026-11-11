@@ -33,7 +33,7 @@ The setup window opens on a short welcome of its own (what Nightshift makes, wha
 4. **Downloads the AI engine and models** from their official sources, verifying every file.
 5. **Tunes itself** to your exact hardware for maximum speed.
 6. **Tests everything** and shows a pass/fail checklist.
-7. **Creates desktop shortcuts** and a nightly scheduled task that can wake the PC.
+7. **Creates desktop shortcuts**, and a nightly scheduled task that can wake the PC if you answered yes to "Run Nightshift by itself every night?" (off by default; Settings switches it on later).
 
 ### A.4 What it does after install
 - **Nightshift Studio** (runs nightly, or on demand): for each channel it
@@ -229,7 +229,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 
 ## 5. Installer / wizard (WP-A, Slice 5)
 
-**Stage 0 — `INSTALL.cmd`:** `powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\stage1.ps1" -AppPath "%~dp0."` and pauses on exit so the window stays readable.
+**Stage 0 — `INSTALL.cmd`:** `powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\stage1.ps1" -AppPath "%~dp0."` and pauses on exit so the window stays readable; it does not pause in a run that says nobody is at the keyboard (`-NoUi`, `NS_NONINTERACTIVE=1`, or `-Answers` without `-Ui`), so a script that starts it never waits for a key (D-40).
 
 **Stage 1 — `stage1.ps1`:** preflight (§1.2) → uv → Python 3.12 → Visual C++ runtime (stage 1 downloads the pinned build and runs it elevated, no winget) → setup server, whose tools step installs what is still missing (the runtime if stage 1 could not, FFmpeg, Windows Terminal: winget first, then a pinned direct download for the runtime and FFmpeg; Git is not installed, §13 D25) → create `NIGHTSHIFT_HOME` tree → bootstrap venv `venvs\studio` with `uv sync --locked --extra studio` from the repo → run `wizard.py [--answers <path>]`.
 
@@ -264,7 +264,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 
 - **Supervisor** (§15.3) handles start/stop, health checks, crash restart (max 3 in 10 min, then `error`), the **GPU lock**, and idle unload after 10 min. `embed` is CPU-only, started on demand, never locked.
 - **Shortcuts** run launchers that acquire the needed service, wait for health, then open (§15.8).
-- **Scheduled task** runs `studio run --daily`. If the GPU is held by `opencode`, it waits up to 2 h, then logs `NS-E201` and retries next cycle. If the home's drive has less room than a job writes (`ns_common/diskneed.py`, a Short about 100 MB), the nightly starts no job and writes nothing for it: the report lists the jobs as `no_room`, the morning note and the dashboard's Last night card say "not enough disk space" with the amounts, and the task exits 1 when nothing at all could be made for that reason (a night that made some videos exits 0).
+- **Scheduled task** runs `studio run --daily`. If the GPU is held by `opencode`, it waits up to 2 h, then logs `NS-E201` and retries the next night while Automatic runs are on. If the home's drive has less room than a job writes (`ns_common/diskneed.py`, a Short about 100 MB), the nightly starts no job and writes nothing for it: the report lists the jobs as `no_room`, the morning note and the dashboard's Last night card say "not enough disk space" with the amounts, and the task exits 1 when nothing at all could be made for that reason (a night that made some videos exits 0).
 - **Before the supervisor exists** (M1 development on a GPU machine) `dev\run_services_dev.ps1` starts `llama`, `embed` and `tts` in visible windows with the tuned flags. `ns_common` clients talk to fixed ports either way.
 
 ### 6.1 Process model (how models are loaded and unloaded)
@@ -1051,7 +1051,7 @@ A missing winget is a warning, not a stop: setup fetches the pinned builds itsel
 | `supervisor` | `-e <app_path>[supervisor]` (fastapi, uvicorn, psutil) and the dashboard deps; also hosts `ns_tts` (which only shells out to `bin\qwentts\`) | CPU only |
 | `tts` (**fallback only**) | created by `s08_smoke` if `qwentts.cpp` fails: `torch==<pin>+cu128` from `https://download.pytorch.org/whl/cu128`, `qwen-tts==<pin>`, `soundfile`, then `-e <app_path>[tts] --no-deps` | `torch.cuda.is_available()` + capability ≥ (12,0) check (`NS-E108`) |
 
-All venvs are created from the same repo checkout (`install_state.app_path`), so `ns update` can re-sync them with `uv pip install -e …` without re-downloading models.
+All venvs are created from the same repo checkout (`install_state.app_path`), so `ns update` can re-sync them with `uv pip install -e …` without re-downloading models. From the first release with a `uv.lock`, the packages of the `studio` and `supervisor` venvs are the locked ones: `uv export --locked` per venv into `logs\pins-<venv>.txt`, `uv pip install --require-hashes -r` that file, then `-e <app_path> --no-deps` (setup and `ns update` alike; NS-E124 when the lock is missing or stale). The `tts` venv stays on the manifest pins.
 
 ### 21.5 On-disk layout the user sees
 ```
@@ -1126,7 +1126,7 @@ Each step names the component that serves it, so coverage can be checked against
 ### J7 — Something goes wrong
 - **A run failed**: Overview shows a red card with the error code and plain message; Runs & Logs shows the stage; one click downloads the diagnostics zip to send to the developer. **C2 C9**
 - **YouTube sends a warning/strike**: owner presses **Pause** on the channel with a note; nothing is produced until Resume; README/Operator doc lists the review checklist (§18.11). **C7 C9**
-- **GPU busy** (owner coding with Nightshift Code at 03:00): the nightly run waits up to 2 h, then skips with `NS-E201` and retries the next night; Overview explains. **C2**
+- **GPU busy** (owner coding with Nightshift Code at 03:00): the nightly run waits up to 2 h, then skips with `NS-E201` and retries the next night while Automatic runs are on; Overview explains. **C2**
 - **PC was off**: the task runs as soon as the PC is on (`StartWhenAvailable`); the governor never doubles up to "catch up". **C2 C7**
 
 ### J8 — Updates and uninstall

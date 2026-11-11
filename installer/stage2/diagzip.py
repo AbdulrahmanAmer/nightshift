@@ -1,4 +1,4 @@
-"""A diagnostics zip the wizard can write by itself (standard library only).
+"""A diagnostics zip the wizard can write by itself (standard library plus two stdlib-only ns_common modules).
 
 ``ns doctor --bundle`` lives in the engine's venv, which does not exist before step s04, so a setup that fails
 early (the welcome step, the program copy, the setup environment) could not produce the file OPERATOR.md
@@ -27,6 +27,31 @@ from ns_common.atomic import (
 from ns_common.paths import Paths
 
 __all__ = ["write_console_install_report", "write_fallback_bundle"]
+
+
+def _voice_warnings(paths: Paths) -> list[str]:
+    """The sentences s08 kept in ``config/wizard_flags.json``.
+
+    Read here, not through ``state``, so this module stays standard library plus ``ns_common.atomic`` and
+    ``ns_common.paths`` (both standard library only)."""
+    try:
+        flags = json.loads(read_text_retry(paths.config / "wizard_flags.json"))
+        found = flags.get("voice_warnings") if isinstance(flags, dict) else None
+    except (OSError, ValueError):
+        return []
+    return [str(w) for w in found] if isinstance(found, list) else []
+
+
+def _step_row(st: object) -> dict[str, object]:
+    """One step of the report. A step that finished carries no error: what it kept in ``error`` is a note
+    (a damaged file setup set aside), and says so under ``note``."""
+    row = st if isinstance(st, dict) else {}
+    done, text = row.get("status") == "done", row.get("error")
+    out: dict[str, object] = {"status": row.get("status"), "finished_at": row.get("finished_at"),
+                              "error": None if done else text}
+    if done and text:
+        out["note"] = text
+    return out
 
 
 def write_console_install_report(
@@ -64,9 +89,10 @@ def write_console_install_report(
         "app_path": state.get("app_path"),
         "started_at": state.get("started_at"),
         "completed_at": state.get("completed_at"),
-        "steps": {sid: {"status": (st or {}).get("status"), "finished_at": (st or {}).get("finished_at"),
-                        "error": (st or {}).get("error")} for sid, st in steps.items()},
+        "steps": {sid: _step_row(st) for sid, st in steps.items()},
         "last_error": last_error,
+        # designed or cloned voices that did not speak in the setup test (s08): the voice, why, the way out
+        "voice_warnings": _voice_warnings(paths),
         "answers": answers,
     }
     try:

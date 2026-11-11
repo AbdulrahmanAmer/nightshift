@@ -19,15 +19,28 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 
-from ns_common import __version__, ffmpeg
+import installer.stage2.commands as commands
+import installer.stage2.shortcut_owner as so
+from installer.stage2.web import venvrepair
+from ns_common import (
+    __version__,
+    commandline,
+    config_snapshot,
+    ffmpeg,
+    first_start,
+    rollback_intent,
+    testguard,
+)
 from ns_common.atomic import read_text_retry, retry_busy, write_zip_atomic
-from ns_common.config import load_install_state, load_runtime
+from ns_common.config import load_install_state
 from ns_common.devmode import is_dev
 from ns_common.errors import NsError
-from ns_common.paths import Paths
+from ns_common.models import InstallState, Runtime
+from ns_common.paths import Paths, repo_root
+from ns_common.runtime_read import read_runtime
 from ns_common.uv import find_uv
-from ns_supervisor import procs
-from ns_supervisor.childenv import child_env
+from ns_supervisor import launch_reach, procs
+from ns_supervisor.childenv import child_env, window_flags
 from ns_supervisor.client import SupervisorClient
 
 MEDIA_SUFFIXES = frozenset(
@@ -70,6 +83,7 @@ def freeze_venv(paths: Paths, venv: str) -> str | None:
             timeout=120,
             check=False,
             env=child_env(),
+            creationflags=window_flags(),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -214,19 +228,17 @@ def build_bundle(
     return out
 
 
-def diagnose(paths: Paths, client: SupervisorClient) -> list[tuple[str, bool, str]]:
-    """Quick health table for plain `ns doctor`: (check, ok, detail-or-fix-hint)."""
+def diagnose(
+    paths: Paths, client: SupervisorClient, on_wait: Callable[[], None] | None = None
+) -> list[tuple[str, bool, str]]:
+    """Quick health table for plain `ns doctor`: (check, ok, detail-or-fix-hint). The last row runs the
+    start check (`program_folders`); `on_wait` is called once if it has to wait for another program."""
     rows: list[tuple[str, bool, str]] = []
-    try:
-        rt = load_runtime(paths)
-        rows.append(("runtime.json", True, str(paths.runtime_file)))
-        for label, model in (("llm model", rt.llama.model_path), ("embed model", rt.embed.model_path)):
-            ok = bool(model) and Path(model).is_file()
-            rows.append((label, ok, model or "not configured; run the installer or 'ns tune'"))
-    except NsError as e:
-        rows.append(("runtime.json", False, f"{e} | Hint: {e.definition.hint}"))
-    st = load_install_state(paths)
-    rows.append(("install_state", bool(st.app_path), st.app_path or "installer has not recorded app_path"))
+    rt, runtime_rows = runtime_rows_of(paths)
+    rows += runtime_rows
+    profile = rt.profile if rt is not None else None    # None: the install's kind is unknown
+    st, state_row = install_state_row(paths)
+    rows.append(state_row)
     for venv in ("studio", "supervisor"):
         py = paths.venvs / venv / "Scripts" / "python.exe"
         rows.append((f"venv {venv}", py.exists(), str(py)))
@@ -235,9 +247,207 @@ def diagnose(paths: Paths, client: SupervisorClient) -> list[tuple[str, bool, st
     rows.append(("supervisor", up, where))
     if is_dev(paths):       # docs/DEV_MODE.md: a dev install has no graphics card to ask
         rows.append(("nvidia-smi", True, "not needed (dev mode)"))
+    elif profile == "cpu-dev":
+        # D-44: an install that runs on the processor (the engine test, a PC with no NVIDIA card) has no
+        # driver to ask for; a gpu install, or one whose runtime.json cannot be read, still asks
+        rows.append(("nvidia-smi", True, "not needed (this install runs on the processor: profile cpu-dev)"))
     else:
         smi = procs.nvidia_smi_report()
         rows.append(("nvidia-smi", smi is not None, "ok" if smi is not None else "no NVIDIA driver found"))
     have_ffmpeg = ffmpeg.available()
     rows.append(("ffmpeg", have_ffmpeg, "on PATH" if have_ffmpeg else "ffmpeg/ffprobe not found"))
+    rows.append(launch_reach.doctor_row(paths))
+    rows.append(commands_row(paths))
+    app = Path(st.app_path) if st.app_path else repo_root()
+    rows.append(program_folders(paths, app, on_wait))
+    rows.append(python_environments(paths, app))
     return rows
+
+
+def runtime_rows_of(paths: Paths) -> tuple[Runtime | None, list[tuple[str, bool, str]]]:
+    """(the settings or None, the rows "runtime.json", "llm model" and "embed model"). A file that cannot be
+    used is ONE failed row with NS-E125 naming the file and what is wrong (`read_runtime`, the classifier
+    setup uses), and its hint, the way out: never a traceback."""
+    try:
+        rt = read_runtime(paths)
+    except NsError as e:
+        return None, [("runtime.json", False, f"{e} | Hint: {e.definition.hint}")]
+    rows = [("runtime.json", True, str(paths.runtime_file))]
+    for label, model in (("llm model", rt.llama.model_path), ("embed model", rt.embed.model_path)):
+        ok = bool(model) and Path(model).is_file()
+        rows.append((label, ok, model or "not configured; run the installer or 'ns tune'"))
+    return rt, rows
+
+
+#: The way out of an install_state.json that does not name the program folder.
+STATE_WAY_OUT = "run Nightshift setup again (INSTALL.cmd) and choose this install's folder"
+
+
+def install_state_row(paths: Paths) -> tuple[InstallState, tuple[str, bool, str]]:
+    """(the state, the row "install_state"). `load_install_state` already takes the last good copy of a
+    damaged file and keeps the damaged one as `.bad`; a file that cannot be opened (another program holds it,
+    a folder of that name) is a failed row naming it, not a traceback."""
+    f = paths.install_state_file
+    try:
+        st = load_install_state(paths)
+    except OSError as e:
+        why = f"{type(e).__name__}: {e}"
+        return InstallState(), ("install_state", False, f"{f} could not be read ({why}); if another program "
+                                                        f"holds it, close that program, else {STATE_WAY_OUT}")
+    if st.app_path:
+        return st, ("install_state", True, st.app_path)
+    if not f.exists() and not f.with_name(f.name + ".bad").exists():
+        return st, ("install_state", False, f"{f} does not exist: {STATE_WAY_OUT}")
+    kept = f.with_name(f.name + ".bad")
+    damaged = f" (a damaged copy was kept as {kept.name})" if kept.exists() else ""
+    return st, ("install_state", False, f"{f} does not name the program folder{damaged}: {STATE_WAY_OUT}")
+
+
+def bundle_notes(paths: Paths) -> list[str]:
+    """What `ns doctor --bundle` says after the zip: the rows of the two files every check starts from that
+    failed (runtime.json, install_state.json), so the owner reads the way out and not only the zip's name."""
+    _, rows = runtime_rows_of(paths)
+    rows = [r for r in rows if r[0] == "runtime.json"] + [install_state_row(paths)[1]]
+    return [f"[FAIL] {name}: {detail}" for name, ok, detail in rows if not ok]
+
+
+ENV_ROW = "python environments"
+
+
+def python_environments(paths: Paths, app: Path) -> tuple[str, bool, str]:
+    """The row "python environments" (D-39b): an update, rollback or resync left a venv unfinished (its
+    repair record waits for the next start), or a venv holds another Nightshift than the program in `app`
+    (an older updater left it, with no record). Read from the disk only; it changes nothing."""
+    try:
+        record = venvrepair.read(paths.home)
+    except ValueError as e:     # the launch script treats it as present: nothing starts until it is gone
+        return (ENV_ROW, False, venvrepair.pending_sentence(paths.home, app, None, str(e)))
+    if record is not None and venvrepair.matches(record, app):
+        return (ENV_ROW, False, venvrepair.pending_sentence(paths.home, app, record))
+    found = venvrepair.mixed(paths.home, app)
+    if found:
+        return (ENV_ROW, False, venvrepair.mixed_sentence(found, app))
+    stale = " (a repair record of another program is left; the next start deletes it)" if record else ""
+    return (ENV_ROW, True, f"ok: each environment holds Nightshift {venvrepair.program_version(app)}{stale}")
+
+
+#: A row that is not a failure but needs the owner: printed as `[WARN]` by `ns doctor`.
+WARN = "WARN: "
+
+
+def commands_row(
+    paths: Paths,
+    *,
+    read_user: Callable[[], tuple[str, str] | None] = commands.registry_user_path,
+    read_machine: Callable[[], str] = commands.registry_machine_path,
+) -> tuple[str, bool, str]:
+    """The row "commands" (card FN-3): which install a bare `ns` and `studio` open in a new terminal, read
+    from the command files and the PATH as Windows has it (read only; a test run reads its stand-ins)."""
+    row, home = "commands", paths.home
+    shims = commands.shim_paths(home)
+    unfit = commands.shim_problem(home)
+    if unfit is not None:               # (a hand-set folder: setup refuses such a name) no Repair changes it
+        return (row, True, f"{WARN}none: {unfit} ({commands.CODE}); start Nightshift from its shortcuts")
+    if not all(p.is_file() for p in shims):
+        missing = f"{shims[0]} or {shims[1].name} is missing ({commands.CODE})"
+        return (row, True, f"{WARN}{missing}: run INSTALL.cmd and choose Repair")
+    for _, venv, exe, _ in commands.SHIMS:
+        if not (home / "venvs" / venv / "Scripts" / exe).is_file():
+            return (row, False, commands.missing_line(home))
+    if is_dev(paths):
+        return (row, True, commands.dev_line(home))
+    now = read_user()
+    if now is None:
+        return (row, True, f"{WARN}Windows did not say what your PATH holds; run ns doctor again")
+    known = [] if testguard.under_test() else so.read_list(so.default_list())
+    found = commands.plan(now[0], home, False, known)
+    if found.state in (so.OTHER, so.UNREACHABLE):
+        kept = commands.kept_line(home, str(found.other), found.state == so.UNREACHABLE)
+        return (row, True, WARN + kept.split(" This install")[0].removeprefix("Commands: "))
+    if found.state != so.MINE:
+        return (row, True, f"{WARN}not on your PATH ({commands.CODE}): run INSTALL.cmd and choose Repair")
+    # what a new window reaches (the one check setup and every message use: `ns_common.commandline.reach`)
+    found = commandline.reach(home, user_value=now[0], machine_value=read_machine())
+    if found.ok is False:
+        return (row, True, f"{WARN}{found.why}: rename or remove it from your PATH")
+    return (row, True, "'ns' and 'studio' open this install")
+
+
+#: The log events that say the start check, an update or a rollback changed something beside the program.
+DONE_EVENTS = (first_start.SWAP_EVENT, "rollback_recovered")
+
+
+def _last_done(paths: Paths) -> str:
+    """The newest thing a start, an update or a rollback did about an interrupted rollback: a rename of a
+    leftover `app.swap` (`first_start.SWAP_EVENT` with `settled` true) or a rollback finished, undone or its
+    stale record removed (`rollback_recovered`); from the three newest log files of each, with its time.
+    Empty when there is none."""
+    newest: tuple[str, str] = ("", "")
+    for component in (first_start.LOG_COMPONENT, "update"):
+        try:
+            files = sorted(paths.logs.glob(f"{component}-*.jsonl"))[-3:]
+        except OSError:
+            continue
+        for f in files:
+            try:
+                lines = read_text_retry(f).splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                if not any(e in line for e in DONE_EVENTS):
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(rec, dict) or rec.get("event") not in DONE_EVENTS:
+                    continue
+                data = rec.get("data")
+                held = isinstance(data, dict) and data.get("settled") is False  # (a rename that failed)
+                if not held:
+                    newest = max(newest, (str(rec.get("ts", "")), str(rec.get("msg", ""))))
+    return f"{newest[1]} ({newest[0][:16].replace('T', ' ')} UTC)" if newest[1] else ""
+
+
+def program_folders(
+    paths: Paths, app: Path, on_wait: Callable[[], None] | None = None
+) -> tuple[str, bool, str]:
+    """The row "program folders": what an interrupted `ns update --rollback` left beside the program, and
+    everything this run did about it.
+
+    `ns doctor` is a start of the program like any other, so the start's own check runs first
+    (`first_start.ensure`): a leftover `app.swap` is given its place, an interrupted rollback is finished or
+    undone (settings files rewritten, its record deleted), a missing settings copy is taken. Every sentence
+    of that check is in the row ("This check: ..."), not only in the log. While another program holds the
+    copy's lock the check waits up to 60 s (`on_wait` is called once, so the terminal is not silent), and
+    the row then says it did not look. FAIL while `app.swap` is still there (held open, or not a program
+    folder), with the way out, or when a rollback could not be finished or undone; ok, naming each folder,
+    while a folder that was set aside (`app.swap-left-<stamp>`) waits for the owner to delete it; else ok,
+    with the last thing that was done before this run, if any."""
+    told: list[tuple[str, str]] = []
+    first_start.ensure(paths.config, told=told, on_wait=on_wait)
+    if any(event == "first_start_lock_busy" for event, _ in told):
+        return (
+            "program folders",
+            False,
+            f"Another Nightshift program (an update or a rollback) kept the settings copy busy for "
+            f"{config_snapshot.LOCK_WAIT_S:.0f} s, so this check did not look at the program folders and "
+            "changed nothing. Run ns doctor again when that program has finished.",
+        )
+    did = " ".join(msg for _, msg in told)
+    failed = any(event in ("rollback_recovery_failed", "first_start_check_failed") for event, _ in told)
+    waiting = rollback_intent.swap_note(app)
+    left = [rollback_intent.left_sentence(f) for f in rollback_intent.left_folders(app) if str(f) not in did]
+    # (and the settings a stale rollback record held, saved beside the program before the record went)
+    left += [
+        rollback_intent.saved_settings_sentence(f, paths.config)
+        for f in rollback_intent.saved_settings(app) if str(f) not in did
+    ]
+    now = f"This check: {did}" if did else ""
+    if waiting or left or failed:
+        said = [waiting, *left, now]
+        return ("program folders", not (waiting or failed), " ".join(part for part in said if part))
+    if now:
+        return ("program folders", True, f"ok. {now}")
+    last = _last_done(paths)
+    return ("program folders", True, f"ok. Last: {last}" if last else "ok")

@@ -7,14 +7,18 @@ import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
+
+import psutil
 
 from ns_common.atomic import read_text_retry
-from ns_common.config import load_install_state, load_runtime
+from ns_common.config import load_install_state
 from ns_common.errors import NsError
 from ns_common.models import Runtime
 from ns_common.paths import Paths, repo_root
-from ns_supervisor import procs
-from ns_supervisor.childenv import child_env
+from ns_common.runtime_read import read_runtime as read_runtime  # the one reading for the commands
+from ns_supervisor import procs, stopping
+from ns_supervisor.childenv import child_env, window_flags
 from ns_supervisor.client import SupervisorClient
 
 
@@ -25,9 +29,12 @@ def app_path(paths: Paths) -> Path:
 
 
 def runtime_or_default(paths: Paths) -> Runtime:
-    """`runtime.json`, or the gpu defaults when it does not exist yet."""
+    """`runtime.json`, or the gpu defaults when it cannot be used (missing, damaged, newer, re-encoded or
+    unreadable: `read_runtime`). Only the engine's address is taken from it, so a command that must still
+    answer (`ns doctor`, `ns stop`) finds an engine on the default port instead of stopping on the file; a
+    command that needs the settings calls `read_runtime` and says NS-E125."""
     try:
-        return load_runtime(paths)
+        return read_runtime(paths)
     except NsError:
         return Runtime.default("gpu")
 
@@ -42,6 +49,7 @@ def image_name(pid: int) -> str | None:
             timeout=15,
             check=False,
             env=child_env(),
+            creationflags=window_flags(),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -67,6 +75,39 @@ def wait_down(
     return True
 
 
+#: After `/status` went quiet, how long `stop` waits for the engine's recorded processes to be gone.
+ENGINE_EXIT_WAIT_S = 20.0
+
+
+def engine_pids(paths: Paths) -> list[int]:
+    """The supervisor's pid and its children's, as `run/supervisor.json` records them (empty: no record)."""
+    try:
+        data = json.loads(read_text_retry(paths.home / "run" / "supervisor.json"))
+        return [int(data["pid"]), *(int(v) for v in dict(data.get("children", {})).values())]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def wait_gone(
+    pids: list[int],
+    wait_s: float = ENGINE_EXIT_WAIT_S,
+    *,
+    alive: Callable[[int], bool] = psutil.pid_exists,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> list[int]:
+    """Wait until none of `pids` exists any more; returns the ones still there after `wait_s`.
+
+    An engine that stopped answering `/status` has not ended yet: its venv interpreters stay loaded for a
+    moment, and an update that goes on at once finds their files in use (D-39)."""
+    deadline = clock() + wait_s
+    left = [p for p in pids if alive(p)]
+    while left and clock() < deadline:
+        sleep(0.25)
+        left = [p for p in left if alive(p)]
+    return left
+
+
 def stop(
     paths: Paths,
     client: SupervisorClient,
@@ -74,15 +115,25 @@ def stop(
     kill: Callable[[int], None] = procs.kill_tree,
     identify: Callable[[int], str | None] = image_name,
     wait_s: float = 45,
+    exit_wait_s: float = ENGINE_EXIT_WAIT_S,
+    holders: Callable[[], list[Any]] | None = None,
+    say: Callable[[str], None] | None = None,
 ) -> list[str]:
-    """Stop the engine: `POST /shutdown` if it answers, else kill the pids recorded in run/supervisor.json.
+    """Stop the engine; returns report lines for the console.
 
-    Returns report lines for the console.
+    D-46: when the engine answers, or does not answer but its own processes still run (one that closed its
+    port and never exited holds `run/supervisor.lock`), this is `stopping.stop_nightshift`: what is ours is
+    noted, the engine is asked, everything is waited for (with `holders`, also every program that runs from
+    the environments), and what is ours and still there after `stopping.STOP_WAIT_S` is ended by its
+    recorded process. `say` gets each progress line. Otherwise the pids recorded in run/supervisor.json are
+    killed when their image is still the recorded kind (an engine that died and left its record).
     """
-    if client.is_up():
-        client.shutdown(30)
-        wait_down(client, wait_s)
-        return ["Engine stopped through the supervisor API."]
+    if client.is_up() or stopping.engine_lives(paths):
+        done = stopping.stop_nightshift(paths, client, holders=holders, say=say)
+        lines = list(done.lines)
+        if done.not_ended:
+            lines.append("Still running, and could not be ended: " + "; ".join(done.not_ended) + ".")
+        return lines
     state_file = paths.home / "run" / "supervisor.json"
     if not state_file.exists():
         return ["The engine is not running."]

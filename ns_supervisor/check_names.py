@@ -27,6 +27,10 @@ VRAM_IDLE = "vram.idle"
 #: Prefix of the per-mode TTS checks (`tts.preset`, `tts.design`, `tts.clone`).
 TTS_MODE_PREFIX = "tts."
 TTS_PRESET = "tts.preset"
+#: The `value` of the row of a designed or cloned voice that did not speak: the row is `passed` (a voice that
+#: cannot speak is a warning, never a failure of `ns verify`, an update or setup; only the preset and the
+#: engine are checks that fail) and its `log` is the sentence the owner reads.
+TALKER_WARNING_VALUE = "warning"
 
 #: Area prefixes: every check of an area starts with its prefix.
 LLAMA_PREFIX = "llama."
@@ -35,7 +39,9 @@ TTS_PREFIX = "tts."
 WHISPER_PREFIX = "whisper."
 NVENC_PREFIX = "nvenc."
 
-#: The checks `ns verify --quick` records, in order, when everything works and a preset voice exists.
+#: The checks `ns verify --quick` records, in order, when everything works and the preset is the only mode
+#: installed (a fresh install). Every further installed mode (a designed or a cloned voice) adds its own
+#: `tts.<mode>` check after `tts.preset`: quick speaks one sentence with every installed talker.
 QUICK_CHECKS: tuple[str, ...] = (
     SUPERVISOR_STATUS,
     LLAMA_START,

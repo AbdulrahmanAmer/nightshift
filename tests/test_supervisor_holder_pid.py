@@ -449,7 +449,7 @@ def test_the_acquire_route_takes_an_optional_integer_pid(tmp_path: Path) -> None
 
     sup, _clock = make(tmp_path)
     me = os.getpid()
-    with TestClient(create_app(sup, run_monitor=False)) as tc:
+    with TestClient(create_app(sup, run_monitor=False), base_url="http://127.0.0.1:18099") as tc:
         for bad in ("abc", 0, -5, 1.5):
             r = tc.post("/acquire", json={"service": "llama", "owner": "opencode", "pid": bad})
             assert r.status_code == 422, (bad, r.status_code, r.text)
@@ -482,7 +482,7 @@ def test_end_to_end_a_closed_console_lets_the_nightly_acquire_at_once(
         gpu_probe=NullGpuProbe(),
     )
     child = sleeper()
-    with TestClient(create_app(sup)) as tc:
+    with TestClient(create_app(sup), base_url="http://127.0.0.1:18099") as tc:
         body = {"service": "llama", "owner": "opencode", "model_alias": "code", "pid": child.pid}
         assert tc.post("/acquire", json=body).status_code == 200
         st = tc.get("/status").json()
@@ -508,7 +508,7 @@ def test_the_launchers_release_after_the_supervisor_released_is_harmless(
 
     sup, _clock = make(tmp_path)
     child = sleeper()
-    with TestClient(create_app(sup, run_monitor=False)) as tc:
+    with TestClient(create_app(sup, run_monitor=False), base_url="http://127.0.0.1:18099") as tc:
         body = {"service": "llama", "owner": "opencode", "model_alias": "code", "pid": child.pid}
         assert tc.post("/acquire", json=body).status_code == 200
         kill(child)
@@ -760,7 +760,7 @@ def test_the_acquire_route_refuses_a_pid_past_the_windows_range_and_a_boolean(tm
 
     table = {2**32 - 1: 5.0}
     sup, _clock = make(tmp_path, probe=lambda pid: table.get(pid))
-    with TestClient(create_app(sup, run_monitor=False)) as tc:
+    with TestClient(create_app(sup, run_monitor=False), base_url="http://127.0.0.1:18099") as tc:
         for bad in (2**32, True, "7", 2.0):
             r = tc.post("/acquire", json={"service": "llama", "owner": "opencode", "pid": bad})
             assert r.status_code == 422, (bad, r.status_code, r.text)

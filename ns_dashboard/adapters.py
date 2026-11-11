@@ -11,6 +11,7 @@ import contextlib
 import importlib
 import json
 import os
+import re
 import shutil
 import time
 from collections.abc import Callable, Collection, Iterator, Mapping
@@ -20,13 +21,16 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+import yaml
 
+import ns_common.testguard as testguard
 from ns_common.acquire import Acquirer, Service
 from ns_common.atomic import read_text_retry
-from ns_common.config import load_runtime
+from ns_common.config import load_channel, load_runtime
 from ns_common.errors import NsError
 from ns_common.errors import describe as describe_error
 from ns_common.logging import NsLogger
+from ns_common.models import VOICE_NAME_PATTERN
 from ns_common.paths import Paths
 from ns_common.secrets_names import KEYRING_SERVICE
 from ns_dashboard import studio_bridge
@@ -218,7 +222,9 @@ class BackupAdapter(Protocol):
 class ScheduleAdapter(Protocol):
     """Automatic runs: the switch and the nightly run time, applied to the Windows task.
 
-    Both answer `{applied, note}` and, when there is one, the `code` of what happened (NS-W205, NS-E204).
+    Both answer `{applied, note}` and, when there is one, the `code` of what happened
+    (NS-W205; NS-E204 for a refused switch-on or time, NS-E206 for a refused switch-off:
+    `ns_supervisor.schedule.refused_code`).
     """
 
     def apply(self, run_time: str) -> dict[str, Any]: ...
@@ -584,10 +590,17 @@ class RealVerifyAdapter:
         runtime = lazy("ns_supervisor.control", "runtime_or_default")
         ctl.check_cancel()
         ctl.progress(0.05, "Running checks")
-        report = run(self.paths, runtime(self.paths), self._controller(), quick=quick, deps=self.deps)
+        report = run(
+            self.paths, runtime(self.paths), self._controller(), quick=quick, deps=self.deps,
+            progress=lambda line: ctl.progress(0.3, line),     # one line per voice as it is spoken
+        )
         report_file = write(self.paths, report)
+        # designed or cloned voices that did not speak: a warning, never a failure; the same sentences as the
+        # command line, once as a morning note too (the Settings page shows them beside the verdict)
+        warnings = lazy("ns_supervisor.verify", "leave_voice_notes")(self.paths, report.checks)
         return {
             "checks": [c.model_dump(mode="json") for c in report.checks],
+            "warnings": warnings,
             "passed": bool(report.passed),
             "quick": quick,
             "benchmarks": dict(report.benchmarks),
@@ -658,12 +671,16 @@ class RealKeyringAdapter:
         return dict(self._file_problems)
 
     def _module(self) -> Any:
-        if self._keyring is not None:
-            return self._keyring
-        try:
-            return importlib.import_module("keyring")
-        except ImportError as e:
-            raise AdapterUnavailable("the keyring package is not installed") from e
+        module = self._keyring
+        if module is None:
+            try:
+                module = importlib.import_module("keyring")
+            except ImportError as e:
+                raise AdapterUnavailable("the keyring package is not installed") from e
+        # A test run never reads, writes or deletes the owner's real Credential Manager. The refusal is a
+        # BaseException, so the `except Exception` of get, set and delete below cannot swallow it.
+        testguard.refuse_real_keyring(module)
+        return module
 
     def get(self, name: str) -> str | None:
         """Stored secret (Credential Manager, else the DPAPI file) or None."""
@@ -923,7 +940,10 @@ class RealVoiceMaker:
                     with contextlib.suppress(Exception):  # an engine that is down holds nothing
                         self.link.release_owner(owner)
                 raise
-            ctl.progress(1.0, "The voice is ready")
+            # a name setup asked for and could not have, and a request dropped without making a voice,
+            # are said here, in the job the owner pressed
+            special = bool(done.get("message")) and (bool(done.get("renamed_from")) or not done.get("name"))
+            ctl.progress(1.0, str(done["message"]) if special else "The voice is ready")
         name = done.get("name")
         return str(name) if name else None
 
@@ -947,20 +967,42 @@ CLONE_NOTE = "Cloned from your recording"
 
 
 def read_pending_voice(paths: Paths) -> dict[str, Any] | None:
-    """`config/pending_voice.json` as the page shows it; None when absent, unreadable or already made."""
+    """`config/pending_voice.json` as the page shows it; None when absent, unreadable, already made, or
+    not needed any more.
+
+    A request under a name the voice library refuses (0.1.13 and 0.1.14 setup queued "Night Narrator";
+    `voice_setup.apply_pending_report` makes it under the name the request then records, with
+    `renamed_from`) is shown while its channel still names the name setup asked for, or cannot be read: only
+    then does Create it now have something to make or repoint. Once the channel uses another voice the card
+    goes; the next run removes the file.
+    """
     try:
         raw = json.loads(read_text_retry(paths.config / "pending_voice.json"))
     except (OSError, ValueError):
         return None
     name = raw.get("name") if isinstance(raw, dict) else None
-    if not isinstance(name, str) or not name or (paths.models_tts_voices / name / "voice.json").is_file():
+    if not isinstance(name, str) or not name:
         return None
+    before = raw.get("renamed_from")
+    asked = before if isinstance(before, str) and before else name
+    if (paths.models_tts_voices / asked / "voice.json").is_file():
+        return None
+    channel = raw.get("channel") if isinstance(raw.get("channel"), str) else None
+    if asked != name or not re.fullmatch(VOICE_NAME_PATTERN, name):
+        try:
+            voice = load_channel(paths, channel or "").voice
+            if voice.mode == "preset" or voice.name != asked:
+                return None
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, yaml.YAMLError):
+            pass  # a profile that cannot be read: the request waits, and pressing the button says why
     mode = "clone" if raw.get("mode") == "clone" else "design"
     return {
         "name": name,
         "mode": mode,
         "description": str(raw.get("description") or "") if mode == "design" else CLONE_NOTE,
-        "channel": raw.get("channel") if isinstance(raw.get("channel"), str) else None,
+        "channel": channel,
     }
 
 
@@ -1051,25 +1093,44 @@ class RealScheduleAdapter:
     def _set(self, on: bool | None, run_time: str | None) -> dict[str, Any]:
         from ns_common.errors import describe
         from ns_supervisor.control import app_path
-        from ns_supervisor.schedule import ScheduleError, ScheduleFileError, set_automatic
+        from ns_supervisor.schedule import (
+            SWITCH_OFF_FAILED,
+            ScheduleBusy,
+            ScheduleError,
+            ScheduleFileError,
+            ScheduleUnrecorded,
+            refused_code,
+            set_automatic,
+        )
         from ns_supervisor.schedule_cfg import is_on
 
         try:
             out = set_automatic(self.paths, app_path(self.paths), on=on, run_time=run_time)
-        except ScheduleFileError as e:
-            # Nightshift's own lock or record, not Windows: the elevated-PowerShell hint would be untrue
+        except ScheduleUnrecorded as e:
+            # Windows took the task, the record could not be written and the way back failed too: this page
+            # goes on saying off (or the old time), so the note must say what Windows does and how to stop it
+            w = describe("NS-W208")
+            return {
+                "applied": False, "code": "NS-W208",
+                "note": f"NS-W208: {w.message} Windows runs it at {e.run_time}. {w.hint}",
+            }
+        except (ScheduleFileError, ScheduleBusy) as e:
+            # Nightshift's own lock or record, or another change that holds the lock: Windows was not asked,
+            # so neither the elevated-PowerShell hint nor Task Scheduler would be the way out
+            code = refused_code(on)
             shown = "on" if is_on(self.paths) else "off"
             return {
-                "applied": False, "code": "NS-E204",
-                "note": f"Not saved (NS-E204): {e}. This page shows Automatic runs {shown}.",
+                "applied": False, "code": code,
+                "note": f"Not saved ({code}): {e}. This page shows Automatic runs {shown}.",
             }
         except ScheduleError as e:
+            code = refused_code(on)
             still = "on" if is_on(self.paths) else "off"
-            hint = describe("NS-E204").hint
+            did = "switch off" if code == SWITCH_OFF_FAILED else "change"
             return {
-                "applied": False, "code": "NS-E204",
-                "note": f"Not saved: Windows did not change the nightly task ({e}). Automatic runs are still "
-                        f"{still}. NS-E204: {hint}",
+                "applied": False, "code": code,
+                "note": f"Not saved: Windows did not {did} the nightly task ({e}). Automatic runs are still "
+                        f"{still}. {code}: {describe(code).hint}",
             }
         if not out.on:
             note = (
@@ -1079,13 +1140,18 @@ class RealScheduleAdapter:
             if run_time:
                 note += f". {run_time} is kept for when you switch them on"
             return {"applied": True, "note": note}
+        # the PC has one nightly task: switching on here while it ran another Nightshift folder moves it
+        moved = (
+            f". This PC has one nightly task: it now runs this Nightshift and no longer the one at "
+            f"{out.took_from}, whose Settings will show Automatic runs off"
+        ) if out.took_from else ""
         if out.mode == "interactive_only":
             w = describe("NS-W205")
             return {
                 "applied": True, "code": "NS-W205",
-                "note": f"Automatic runs are on at {out.run_time}. NS-W205: {w.message} {w.hint}",
+                "note": f"Automatic runs are on at {out.run_time}. NS-W205: {w.message} {w.hint}{moved}",
             }
-        return {"applied": True, "note": f"Automatic runs are on: every night at {out.run_time}"}
+        return {"applied": True, "note": f"Automatic runs are on: every night at {out.run_time}{moved}"}
 
 
 def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters:

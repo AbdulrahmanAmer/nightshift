@@ -147,6 +147,7 @@ def test_validate_answers_ok_errors_and_warnings(seeded: Any):
 
 def test_the_chunked_upload_answers_one_shape_at_every_step(seeded: Any):
     client, _state, _ids = seeded
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     started = client.post("/api/uploads", json={"filename": "stream.mp4", "size": 10})
     assert started.status_code == 201
     info = started.json()
@@ -213,6 +214,7 @@ def test_assistant_confirm_and_dismiss_answer_an_action(tmp_home: Path):
 @needs_multipart
 def test_learn_and_settings_imports_answer_what_the_page_reads(seeded: Any):
     client, state, _ids = seeded
+    client.headers["origin"] = "http://127.0.0.1:8100"  # as the dashboard's own page (FN-1)
     for running in state.store.running_all():  # a restore is refused while a job runs
         state.store.finish(running.job_id, "done", "Done")
     learn = client.post("/api/learn/import", files={"file": ("export.csv", b"title,views\nA,10\nB,20\n", "text/csv")})

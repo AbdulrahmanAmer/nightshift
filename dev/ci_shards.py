@@ -61,12 +61,13 @@ WEIGHTS_PATH = ROOT / "dev" / "ci_shard_weights.json"
 TESTS_DIR = ROOT / "tests"
 
 #: The number of test shards (H-3b). The workflows' test-shard matrices, check names and ``--of`` say the
-#: same number (tests/test_ci_workflow.py fails on any other). Six, not five: on the measured weights five
-#: shards are predicted at 558 to 567 s against the guard's 570 s (25 min / 2 - 180 s of setup), so one new
-#: test file in the wrong shard turns every pull request red; six leave about 100 s per shard. (Real timings
-#: for the slowest files then took that room again, so the shard timeout is 30 minutes and
-#: tests/test_ci_workflow.py asks for room for several unweighted files, not for none.)
-SHARDS = 6
+#: same number (tests/test_ci_workflow.py fails on any other). Eight, not six: with block D's tests six shards
+#: were predicted at 758 s against the guard's 720 s, and the guard also wants room for new unweighted test
+#: files in every shard (about 82 s); eight are predicted at 569 s. (Before: five shards were predicted at
+#: 558 to 567 s against 570 s, six left about 100 s. Real timings for the slowest files took that room, so the
+#: shard timeout is 30 minutes and tests/test_ci_workflow.py asks for room for several unweighted files, not
+#: for none.)
+SHARDS = 8
 
 #: What to run when a shard is predicted over its budget (printed by the guards).
 REFRESH_COMMAND = "python dev/ci_shards.py refresh --run latest"

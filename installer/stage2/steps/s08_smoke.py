@@ -1,7 +1,11 @@
 """s08_smoke: ``ns verify --quick`` and the documented fallbacks for the untestable parts (component C1).
 
 NVENC failing switches the encoder to libx264 (NS-W401); a failing TTS engine switches to the PyTorch
-reference engine and builds its venv (NS-W301, NS-E108 when torch cannot see the GPU). Whisper is tested by
+reference engine and builds its venv (NS-W301, NS-E108 when torch cannot see the GPU). ``ns verify --quick``
+speaks one sentence with every installed talker (``tts.preset``, ``tts.design``, ``tts.clone``); only the
+preset is the engine check. A designed or cloned voice that does not speak (a Repair or a reinstall over an
+existing voice library) is a warning: the install goes on, the sentence is said here, kept in the flag
+``voice_warnings`` (``install-report.json`` carries it) and shown on the setup row. Whisper is tested by
 a 3 second transcription in the studio venv (cuBLAS and cuDNN load lazily, so the model load alone proves
 nothing): on CUDA it falls back to the CPU with int8 (NS-W404, captions are slower, the install goes on)
 until the next run, which probes CUDA again and switches back when it passes; only
@@ -156,6 +160,22 @@ def blocked_rows(rows: list[dict[str, Any]] | None) -> str:
     return ""
 
 
+def warned_voices(rows: list[dict[str, Any]] | None) -> set[str]:
+    """Names of the ``tts.<mode>`` checks of designed or cloned voices that did not speak (a warning)."""
+    return {
+        str(r.get("name", "")).lower() for r in rows or []
+        if r.get("passed") and r.get("value") == names.TALKER_WARNING_VALUE
+        and str(r.get("name", "")).lower().startswith(names.TTS_MODE_PREFIX)
+    }
+
+
+def voice_warning_sentences(rows: list[dict[str, Any]] | None) -> list[str]:
+    """What ``ns verify`` wrote about those voices: the voice, the reason and the way out, one each."""
+    mine = warned_voices(rows)
+    return [str(r.get("log") or "").strip() for r in rows or []
+            if str(r.get("name", "")).lower() in mine and r.get("log")]
+
+
 def failing(report: dict[str, bool], prefix: str) -> bool:
     """True when any check of the area ``prefix`` (for example ``names.TTS_PREFIX``) failed."""
     return any(name.startswith(prefix) and not ok for name, ok in report.items())
@@ -167,7 +187,7 @@ class S08Smoke(Step):
     id = "s08_smoke"
     title = "Test everything"
     # "passed" goes before the test starts: a run killed during `ns verify` must not leave the old pass
-    clears_on_run = ("smoke", "smoke_version")
+    clears_on_run = ("smoke", "smoke_version", "voice_warnings")
 
     def check(self, ctx: StepContext) -> bool:
         """True after a passing run."""
@@ -181,6 +201,7 @@ class S08Smoke(Step):
         stop_own_engine(ctx)
         check_ports(ctx)
         warned: set[str] = set()
+        voice_warnings: list[str] = []
         whisper_load_failed = False
         wants_binary = ctx.flag("qwentts") == "binary" and not ctx.flag("tts_fallback", False)
         if wants_binary and not qwentts_binaries_ok(ctx):
@@ -198,9 +219,11 @@ class S08Smoke(Step):
                 raise make_error(
                     "NS-E202", f"ns verify --quick gave no report (exit {res.returncode}): {res.text[-300:]}"
                 )
+            voice_warnings = voice_warning_sentences(rows)
             ctx.ui.table(
                 "Smoke test", ["Check", "Result"],
-                [[name, "ok" if ok else "fail"] for name, ok in report.items()], status_col=1,
+                [[name, "fail" if not ok else "warning" if name in warned_voices(rows) else "ok"]
+                 for name, ok in report.items()], status_col=1,
             )
             blocked = blocked_rows(rows)
             if blocked:
@@ -222,6 +245,10 @@ class S08Smoke(Step):
         self._check_whisper(ctx, whisper_load_failed)
         if ctx.ensure_answers().install_code and ctx.paths.opencode_file.exists():
             confirm_local_code(ctx)              # needs the opencode.json that s07 wrote
+        for sentence in voice_warnings:     # said, logged and kept for install-report.json; setup goes on
+            ctx.ui.say(f"  ! {sentence}", style="yellow")
+            ctx.log.warn("voice_did_not_speak", sentence)
+        ctx.set_flag("voice_warnings", voice_warnings)
         ctx.set_flag("smoke", "passed")
         ctx.set_flag("smoke_version", ctx.manifest.version)
 
@@ -272,7 +299,7 @@ class S08Smoke(Step):
     def _switch_to_reference(ctx: StepContext) -> None:
         ctx.set_flag("tts_fallback", True)
         ctx.ui.say("The voice engine failed its test; switching to the PyTorch engine (about 7 GB more).")
-        ctx.download(fallback_items(ctx))
+        ctx.download(fallback_items(ctx), models_source=ctx.ensure_answers().models_source)
         ensure_tts_venv(ctx)
         update_runtime(ctx, lambda rt: setattr(rt.tts, "engine", "reference"))
         ctx.warn("NS-W301", "runtime.json now uses the reference TTS engine")

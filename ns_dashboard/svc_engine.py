@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import ns_common
-from ns_common.atomic import read_text_retry
+from ns_common.commandline import render
 from ns_common.config import load_install_state, load_runtime
 from ns_common.errors import NsError
 from ns_common.models import GpuStatus
@@ -174,7 +174,9 @@ class EngineService:
         )
         last_error = None
         if recent is not None and recent["status"] == "failed":
-            last_error = {"job_id": recent["job_id"], "message": recent["message"], "kind": recent["kind"]}
+            # stored raw in the database; shown with its commands as this owner types them (FN-3)
+            shown = render(recent["message"], self.s.paths.home) if recent["message"] else recent["message"]
+            last_error = {"job_id": recent["job_id"], "message": shown, "kind": recent["kind"]}
         settings = load_dashboard_settings(self.s.paths)
         on = schedule_is_registered(self.s.paths)
         pending = {r["channel"]: int(r["n"]) for r in self.s.db.query(
@@ -275,7 +277,7 @@ class EngineService:
             "summary": body,
             "state": state,
             "interrupted": state == "interrupted",
-            "note": note,
+            "note": render(note, self.s.paths.home) if isinstance(note, str) else note,     # shown (FN-3)
         }
 
     def runs(self, limit: int = 30) -> list[dict[str, Any]]:
@@ -286,25 +288,42 @@ class EngineService:
 
     # --- morning notes ---
     def notes(self) -> list[dict[str, Any]]:
-        """Notes the nightly run left when no toast could show (`run/morning_note.json`), oldest first."""
-        try:
-            raw = json.loads(read_text_retry(self.s.paths.home / "run" / "morning_note.json"))
-        except (OSError, ValueError):
-            return []
-        items = raw.get("notes") if isinstance(raw, dict) else None
-        if not isinstance(items, list):
-            return []
-        return [
-            {"at": str(n.get("at") or ""), "title": str(n.get("title") or ""),
-             "message": str(n.get("message") or "")}
-            for n in items
-            if isinstance(n, dict)
-        ]
+        """The waiting morning notes, oldest first, each with the `id` the bell sends back to dismiss it.
+        The notes have one owner, `ns_supervisor.notify`; this only asks it. They are stored with the plain
+        `ns ...` words and shown as this install's owner types them now (`notify.shown_notes`, FN-3)."""
+        from ns_supervisor import notify
 
-    def clear_notes(self) -> dict[str, Any]:
-        """The owner has seen the notes: remove the file."""
-        (self.s.paths.home / "run" / "morning_note.json").unlink(missing_ok=True)
-        return {"ok": True}
+        shown: list[dict[str, Any]] = [dict(n) for n in notify.shown_notes(self.s.paths)]
+        return shown
+
+    def dismiss_notes(self, body: dict[str, Any]) -> dict[str, Any]:
+        """The owner pressed Mark all read: remove the notes the bell showed, named by `ids`, and no other.
+
+        A note that arrived after the page loaded is not in `ids` and waits for the next look. A body without
+        `ids` (a page bundle of an older version in a tab that stayed open) changes nothing: 422.
+        """
+        from ns_supervisor import notify
+
+        ids = body.get("ids")
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            raise ApiError(
+                422, "invalid_options", "'ids' must be the list of the notes that were shown.",
+                hint="Reload the page and press Mark all read again.",
+            )
+        try:
+            removed = notify.dismiss(self.s.paths, ids) if ids else 0
+        except notify.NotesBusy as e:
+            raise ApiError(
+                503, "notes_busy",
+                "Another part of Nightshift is writing a note right now, so nothing was removed.",
+                hint="Press Mark all read again in a moment.",
+            ) from e
+        except OSError as e:
+            raise ApiError(
+                500, "notes_not_saved", f"The notes could not be changed, so nothing was removed: {e}",
+                hint="Press Mark all read again; if it keeps failing, make a help file in Settings.",
+            ) from e
+        return {"ok": True, "removed": removed, "left": len(notify.read_notes(self.s.paths))}
 
     # --- commands ---
     def check_warmup(self, service: str | None) -> str:

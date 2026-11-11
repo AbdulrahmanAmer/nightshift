@@ -23,10 +23,12 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+import installer.stage2.commands as commands
 import installer.stage2.devmode as devmode
 import ns_common.config_snapshot as config_snapshot
 import ns_common.diskneed as diskneed
 import ns_common.first_start as first_start
+import ns_common.testguard as testguard
 from installer.stage2.web import (
     answers_view,
     appcopy,
@@ -36,14 +38,18 @@ from installer.stage2.web import (
     labels,
     machine,
     modelcheck,
+    nightly_view,
     pathcheck,
     plan,
     preflight,
     report,
     rows,
     samples,
+    shortcuts_view,
+    venvrepair,
 )
 from installer.stage2.web.engine import EngineProcess, wizard_argv, wizard_env
+from installer.stage2.web.filesdir import beside as files_beside
 from installer.stage2.web.keys import check_key
 from installer.stage2.web.model import BOOTSTRAP_STEPS, FILE_NAMES, STEP_ORDER, STEP_PHASE
 from installer.stage2.web.store import SetupStore
@@ -55,6 +61,7 @@ from ns_common.atomic import (
     write_text_atomic,
     write_zip_atomic,
 )
+from ns_common.commandline import render
 from ns_common.errors import describe as describe_error
 from ns_common.paths import Paths
 from ns_common.secret_file import stored_names
@@ -80,6 +87,25 @@ UPDATE_STEPS = (
 )
 EXIT_ALREADY_RUNNING = 15
 EXIT_STOPPED = 130
+#: D-39b: after the engine was asked to stop, how long setup waits for every program that runs from the
+#: install's Python environments to end before it refuses (NS-E706, nothing changed), and how often it looks.
+HOLDER_WAIT_S = 60.0
+HOLDER_PAUSE_S = 2.0
+#: Said with every NS-E706 of setup: `_guard_venvs` asked the engine to stop before it looked.
+ENGINE_ASKED = (
+    " The Nightshift engine was asked to stop for setup; it starts again when setup is done, or from a "
+    "Desktop shortcut."
+)
+#: D-46: a refusal puts Nightshift back as setup found it. Said when the engine that was running before is
+#: running again; `ENGINE_ASKED` when it could not be started within `ENGINE_BACK_WAIT_S`.
+ENGINE_BACK = (
+    " Setup had stopped the Nightshift engine for this and has started it again, so Nightshift runs as "
+    "before (Retry stops it again)."
+)
+ENGINE_BACK_WAIT_S = 30.0
+#: D-46 review, blocker 2: how long this install's own processes get to end after setup asked Nightshift to
+#: stop, before setup ends them by their pid (the rest of HOLDER_WAIT_S is theirs to go).
+OWN_WAIT_S = 30.0
 DETACHED = 0x00000008 | 0x00000200      # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP (Windows only)
 SHORTCUTS = ("Nightshift Dashboard", "Nightshift Studio", "Nightshift Outbox", "Nightshift - Stop All",
              "Nightshift - Update", "Nightshift - Diagnostics")
@@ -277,8 +303,9 @@ def elevate_longpaths() -> bool:
         "'Set-ItemProperty HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem "
         "LongPathsEnabled 1 -Type DWord'"
     )
-    subprocess.run(["powershell.exe", "-NoProfile", "-Command", script], capture_output=True, check=False,
-                   timeout=300)
+    argv = ["powershell.exe", "-NoProfile", "-Command", script]
+    testguard.refuse_machine_writes(argv)           # a test run shows no UAC prompt and changes no HKLM value
+    subprocess.run(argv, capture_output=True, check=False, timeout=300)
     try:
         import winreg
 
@@ -294,10 +321,18 @@ def ignore_console(text: str, level: str) -> None:
 
 def copy_to_clipboard(text: str) -> None:
     """Put text on the Windows clipboard (clip.exe); silently does nothing when that fails."""
+    testguard.refuse_real("the Windows clipboard", "Pass a fake (Effects(clipboard=...)).")
     try:
         subprocess.run(["clip.exe"], input=text, text=True, check=False, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return
+
+
+def seen_desktop() -> Path | None:
+    """The Desktop folder whose shortcuts the window reads to say which install they open. A test run never
+    reads this PC's Desktop (what is on it is not the test's): it sees none unless the test hands one in
+    (``Effects(desktop=...)``)."""
+    return None if testguard.under_test() else desktop_dir()
 
 
 def default_uv_path(home: Path) -> str:
@@ -323,6 +358,7 @@ class Effects:
     key_check: Callable[[str, str], dict[str, Any]] = check_key
     head: modelcheck.Head = modelcheck.urllib_head
     launch: Callable[..., None] = launch_detached
+    engine_answers: Callable[[Path], bool] = venvrepair.engine_answers              # GET /status of its port
     launch_captured: Callable[..., tuple[int | None, str]] = launch_captured
     elevate_longpaths: Callable[[], bool] = elevate_longpaths
     console: Callable[[str, str], None] = ignore_console
@@ -337,7 +373,9 @@ class Effects:
     fetch_file: Callable[..., None] = bootstrap.download_file                    # pinned direct downloads
     run_elevated: Callable[..., bootstrap.CmdResult] = bootstrap.run_elevated_exe
     add_user_path: Callable[[str], bool] = bootstrap.add_user_path_entry
+    user_path: Callable[[], tuple[str, str] | None] = commands.registry_user_path   # read only
     copy_app: Callable[..., appcopy.CopyResult] = appcopy.install_app
+    desktop: Callable[[], Path | None] = seen_desktop                            # whose shortcuts are on it
     set_execution_state: Callable[[int], int] = keepawake._set_execution_state    # keep the PC awake
 
 
@@ -457,6 +495,15 @@ class SetupController:
             return appcopy.app_dir(self.home)
         return self.cfg.app_path
 
+    def folder_now(self, home: Path) -> dict[str, Any]:
+        """Automatic runs and the Desktop shortcuts as they are for the install folder `home` (the window
+        shows both under their switches, for the folder picked: `answers_view.folder_now`)."""
+        app = appcopy.app_dir(home) if self.installs_app else self.cfg.app_path
+        path = self.fx.user_path()      # whose the `ns` and `studio` commands are (the same yes moves them)
+        return answers_view.folder_now(
+            home, app, self.fx.desktop(), self.fx.get_home_var(bootstrap.HOME_VAR), path[0] if path else None,
+        )
+
     # ---- construction ----
     def _read_settings_before(self) -> dict[str, bytes] | None:
         """The settings files this window rewrites before the program copy (None when one cannot be read: the
@@ -497,6 +544,11 @@ class SetupController:
         prefill = self._prefill_raw()
         if prefill and prefill.get("home_path"):
             return Path(str(prefill["home_path"]))
+        # INSTALL.cmd started from an install's own program folder (<home>/app) opens on THAT install: the
+        # variable may name another Nightshift folder on this PC (stage 1's Resolve-NsHome: the same rule)
+        app = self.cfg.app_path
+        if app.name.lower() == "app" and (app.parent / "config").is_dir():
+            return app.parent
         if env_home:
             return Path(env_home)
         return Path(str(self.pf.get("home") or r"C:\Nightshift"))
@@ -562,9 +614,10 @@ class SetupController:
             names = stored_names(Paths(self.home))
             self._keys_stored = {"pexelsKey": PEXELS_KEY in names, "pixabayKey": PIXABAY_KEY in names}
         if raw:
+            now = self.folder_now(self.home)
             view = answers_view.answers_to_view(
                 raw, pexels_set=self._keys_stored["pexelsKey"], pixabay_set=self._keys_stored["pixabayKey"],
-                default_tier=default_tier,
+                default_tier=default_tier, nightly_now=now["nightlySeen"], shortcuts_now=now["shortcutsNow"],
             )
         tier = (view or {}).get("llmTier") or default_tier
         code = bool((view or {}).get("installCode", True))
@@ -707,8 +760,9 @@ class SetupController:
 
     # ---- logging ----
     def log(self, level: str, text: str) -> None:
-        """Add a line to the window's log, the console and the log file."""
-        line = {"t": datetime.now().strftime("%H:%M:%S"), "level": level, "text": text}
+        """Add a line to the window's log, the console and the log file. The window and the console show it
+        now, with the commands it names as this owner types them; the file keeps the plain words (FN-3)."""
+        line = {"t": datetime.now().strftime("%H:%M:%S"), "level": level, "text": render(text, self.home)}
 
         def fn(s: dict[str, Any]) -> None:
             s["log"].append(line)
@@ -716,7 +770,7 @@ class SetupController:
 
         self.store.update(fn)
         prefix = "" if level == "info" else f"{level}  "
-        self.fx.console(f"{line['t']}  {prefix}{text}", level)
+        self.fx.console(f"{line['t']}  {prefix}{line['text']}", level)
         if self._log_path is not None:
             try:
                 self._log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -817,6 +871,8 @@ class SetupController:
         view = answers_view.answers_to_view(
             raw, pexels_set=bool(self._keys["pexels_api_key"]) or self._keys_stored["pexelsKey"],
             pixabay_set=bool(self._keys["pixabay_api_key"]) or self._keys_stored["pixabayKey"],
+            nightly_now=raw.get("nightly_seen") or "new",    # the page's own answer, as it sent it
+            shortcuts_now=self.folder_now(self.home)["shortcutsNow"],     # for the folder just accepted
         )
         pf = self.pf
         new_plan = plan.build_plan(
@@ -847,7 +903,10 @@ class SetupController:
             return {"ok": False, "errors": [{"field": "homePath", "code": None,
                                              "message": f"That answers file could not be read: {e}"}]}
         default_tier = "small" if self.dev else plan.recommended_tier(float(self.pf.get("ram_gb") or 0))
-        view = answers_view.answers_to_view(raw, default_tier=default_tier)
+        now = self.folder_now(self.home)
+        view = answers_view.answers_to_view(
+            raw, default_tier=default_tier, nightly_now=now["nightlySeen"], shortcuts_now=now["shortcutsNow"],
+        )
         draft = {k: v for k, v in view.items() if k not in ("pexelsKeySet", "pixabayKeySet")}
         keys = answers_view.keys_in(raw)
         draft["pexelsKey"] = keys["pexels_api_key"]
@@ -896,10 +955,18 @@ class SetupController:
             return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb, models=found)
         view = {**(state.get("answers") or {}), **plan.need_fields(draft),
                 "llmCustom": plan.custom_entry(custom)}
-        return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb,
-                                    drive_type_fn=self.fx.drive_type, layout_fn=self._layout_problem,
-                                    existing_fn=self._existing_install_note, kind_fn=self.fx.folder_kind,
-                                    dev=self.dev, need_fn=lambda where: self._need_for(where, tier, view))
+        check = preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb,
+                                     drive_type_fn=self.fx.drive_type, layout_fn=self._layout_problem,
+                                     existing_fn=self._existing_install_note, kind_fn=self.fx.folder_kind,
+                                     dev=self.dev, need_fn=lambda where: self._need_for(where, tier, view))
+        # Automatic runs and the Desktop shortcuts belong to the folder: the page shows them for the folder
+        # it is checking, not for the one it was loaded with (two Nightshift folders on one PC)
+        folder = path.strip()
+        if answers_view.DRIVE_PATH_RE.match(folder):
+            check.update(self.folder_now(Path(folder)))
+        else:
+            check.update({"nightlySeen": "new", "shortcutsNow": dict(answers_view.NO_OTHER_INSTALL)})
+        return check
 
     def pick_folder(self, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/pick-folder``: the Windows folder dialog, then the same check as typing the path.
@@ -1287,9 +1354,12 @@ class SetupController:
                     "Press Retry to wait for it again, or close setup and run INSTALL.cmd later: "
                     "it continues where it stopped")
         self._attempts[step] = self._attempts.get(step, 0) + 1
+        # the Failed screen shows it now: the commands it names as this owner types them (FN-3); the log and
+        # install-report.json keep the plain words
         view = {
-            "step": step, "stepTitle": labels.STEP_TITLES.get(step, step), "code": code, "title": title,
-            "whatToDo": what, "detail": detail, "canSkip": optional, "attempts": self._attempts[step],
+            "step": step, "stepTitle": labels.STEP_TITLES.get(step, step), "code": code,
+            "title": render(title, self.home), "whatToDo": render(what, self.home),
+            "detail": render(detail, self.home), "canSkip": optional, "attempts": self._attempts[step],
             "at": hhmm(),
         }
 
@@ -1339,7 +1409,155 @@ class SetupController:
         with keepawake.keep_awake(self.fx.set_execution_state):     # released when the run ends or fails
             self._pipeline_run()
 
+    def _guard_venvs(self) -> FileLock | None:
+        """D-39b, the one place setup enforces it: setup (INSTALL.cmd over an install, Repair) rewrites the
+        Python environments only as the holder of ``run/update.lock`` (the lock every updater and the launch
+        script's repair take) and only when no program runs from them. Over an install that has environments:
+        take the lock (held for the whole run; ``NS-E705`` when an update, rollback, repair or another setup
+        holds it), ask the engine to stop, and wait up to ``HOLDER_WAIT_S`` for every program that runs from
+        ``<home>/venvs`` to end (``NS-E706`` naming each). Both refusals come before anything is changed.
+        Returns the lock to release when the run ends; None for a fresh install (nothing to protect)."""
+        venvs = self.home / "venvs"
+        if not venvs.is_dir():
+            return None
+        lock = FileLock(self.home / "run" / "update.lock")
+        try:
+            lock.acquire()
+        except AlreadyRunning as e:
+            who = f"process {e.owner}" if e.owner else "its process number is not known"
+            raise bootstrap.BootstrapError(
+                "NS-E705",
+                f"Another update, rollback or repair of this Nightshift is running ({who}). Nothing was "
+                f"changed. Its progress: {self.home / 'run' / 'update_state.json'}. Press Retry when it has "
+                "finished.",
+            ) from None
+        except OSError:
+            return None     # the lock file cannot be made: the steps below meet the same folder and say so
+        was_up = self.fx.engine_answers(self.home)
+        try:
+            # the INSTALLED version's `ns stop` asks the engine (0.1.14 to 0.1.15-rc4 never end one that does
+            # not exit): what is this install's own and still there is ended below, by this bundle's rule
+            bootstrap.B02Home._stop_engine(self._boot())
+            start = time.monotonic()
+            deadline = start + HOLDER_WAIT_S
+            ended: set[int] = set()
+            while True:
+                res = self.fx.cmd(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", venvrepair.PROCESS_LIST],
+                    None, None, 120,
+                )
+                # fails CLOSED: a listing that did not come (PowerShell missing or refused, CIM broken) is
+                # no proof that nothing runs from the environments setup is about to rewrite
+                listed = res.returncode == 0 and any(line.strip() for line in res.stdout.splitlines())
+                procs = venvrepair.parse_listing(res.stdout) if listed else []
+                own = venvrepair.own_processes(self.home, procs)
+                own.pop(os.getpid(), None)
+                found = venvrepair.holders_in(res.stdout, venvs, (os.getpid(),)) if listed else []
+                if listed and not found and not own:
+                    return lock
+                if own and time.monotonic() - start >= OWN_WAIT_S:
+                    self._end_own(own, procs, ended, round(time.monotonic() - start))
+                if time.monotonic() >= deadline or self._stop.is_set():
+                    if not listed:
+                        why = " ".join((res.stderr or res.stdout or f"exit code {res.returncode}").split())
+                        raise bootstrap.BootstrapError(
+                            "NS-E706",
+                            "Setup could not list the running programs, so it cannot tell whether one runs "
+                            f"from Nightshift's Python environments, which it has to refresh ({why[:200]}). "
+                            "Nothing was changed. Close every Nightshift window (Studio, terminals, "
+                            "Nightshift Code, a Python prompt), then press Retry (or run INSTALL.cmd "
+                            "again). If it keeps failing, restart the PC, then press Retry (or run "
+                            "INSTALL.cmd again)." + self._engine_back(was_up),
+                        )
+                    raise bootstrap.BootstrapError("NS-E706", self._refusal(own, procs, venvs, was_up))
+                time.sleep(HOLDER_PAUSE_S)
+        except BaseException:
+            lock.release()
+            raise
+
+    @staticmethod
+    def _named(pid: int, what: str, procs: list[venvrepair.Proc]) -> str:
+        exe = next((p.exe for p in procs if p.pid == pid), "")
+        return f"{Path(exe).name or 'a program'} (process {pid}, {what})"
+
+    def _end_own(
+        self, own: dict[int, str], procs: list[venvrepair.Proc], ended: set[int], waited: int
+    ) -> None:
+        """D-46 review, blocker 2: this install's own processes still there ``OWN_WAIT_S`` after setup asked
+        Nightshift to stop (the engine that never exits, its launcher) are ended by their pid, each once."""
+        for pid, what in own.items():
+            if pid in ended:
+                continue
+            ended.add(pid)
+            try:
+                self.fx.cmd(["taskkill", "/PID", str(pid), "/T", "/F"], None, None, 30)
+            except (OSError, subprocess.SubprocessError) as e:     # (still there: the wait names it)
+                self.log("warn", f"Could not end process {pid}: {e}")
+                continue
+            self.log("warn", f"Ended Nightshift's own {self._named(pid, what, procs)}: it was still running "
+                             f"{waited} s after setup asked Nightshift to stop.")
+
+    def _refusal(self, own: dict[int, str], procs: list[venvrepair.Proc], venvs: Path, was_up: bool) -> str:
+        """The NS-E706 words once the wait is over: the programs that are not Nightshift's, named as programs
+        to close; Nightshift's own that could not be ended, named as Nightshift's, with the only way out (a
+        restart of the PC: it keeps the engine's lock, so no start can work and none is tried)."""
+        listing = "\n".join(f"{p.pid}|{p.exe}|{p.cmdline}" for p in procs)
+        foreign = venvrepair.holders_in(listing, venvs, (os.getpid(), *own))
+        said: list[str] = []
+        if foreign:
+            said.append(
+                "These programs still run from Nightshift's Python environments, and setup must not replace "
+                f"their files: {'; '.join(foreign)}. Nothing was changed. Close them, then press Retry (or "
+                "run INSTALL.cmd again)."
+            )
+        if own:
+            stuck = "; ".join(self._named(pid, what, procs) for pid, what in own.items())
+            said.append(
+                f"Nightshift's own processes did not stop when asked and could not be ended: {stuck}. "
+                "Nothing was changed. Nightshift cannot start again while they run: restart the PC, then run "
+                "INSTALL.cmd again."
+            )
+            return " ".join(said)
+        return " ".join(said) + self._engine_back(was_up)
+
+    def _engine_back(self, was_up: bool) -> str:
+        """D-46: after a refusal, start again the engine that ANSWERED before setup asked it to stop, and wait
+        up to ``ENGINE_BACK_WAIT_S`` for it to answer again (`/status`, like the update's relaunch; a lock
+        held by an engine that never exited proves nothing). The words: ``ENGINE_BACK`` when it answers,
+        ``ENGINE_ASKED`` when it does not (an engine refuses to start on environments an update left
+        unfinished: the shortcut's replay is then the way back), nothing when none answered before."""
+        if not was_up:
+            return ""
+        py = self.home / "venvs" / "supervisor" / "Scripts" / "python.exe"
+        try:
+            self.fx.launch([str(py), "-m", "ns_supervisor.app"],
+                           {bootstrap.HOME_VAR: str(self.home), **STAGE1_ONLY_ENV})
+        except OSError as e:
+            self.log("warn", f"The engine could not be started again: {e}")
+            return ENGINE_ASKED
+        deadline = time.monotonic() + ENGINE_BACK_WAIT_S
+        while not self.fx.engine_answers(self.home):
+            if time.monotonic() >= deadline:
+                return ENGINE_ASKED
+            time.sleep(0.5)
+        return ENGINE_BACK
+
     def _pipeline_run(self) -> None:
+        step_id = BOOTSTRAP_STEPS[0]
+        lock: FileLock | None = None
+        try:
+            lock = self._guard_venvs()
+        except bootstrap.BootstrapError as e:   # (not recorded in install_state.json: nothing was done)
+            self._set_failure(step_id, e.code, "", "", e.detail, False)
+            self._waiting_on = "pipeline"
+            return
+        try:
+            self._pipeline_steps()
+        finally:
+            if lock is not None:
+                lock.release()
+
+    def _pipeline_steps(self) -> None:
         step_id = BOOTSTRAP_STEPS[0]
         try:
             for step in bootstrap.bootstrap_steps():
@@ -1369,6 +1587,7 @@ class SetupController:
             bin_pins=self.manifest.get("bins") or {}, vc_missing=fx.vc_missing, fetch_file=fx.fetch_file,
             run_elevated=fx.run_elevated, add_user_path=fx.add_user_path, install_app=self.installs_app,
             copy_app=fx.copy_app, settings_before=self._settings_before,
+            files_dir=files_beside(self.cfg.app_path),
         )
 
     def _run_bootstrap_step(self, step: Any) -> None:
@@ -1483,7 +1702,7 @@ class SetupController:
         argv = wizard_argv(
             python, app_path=self.run_app_path, home=self.home, answers=self.home / "config" / "answers.json",
             preflight=out, bridge=True, simulate=self.cfg.simulate, halt_after=self.cfg.halt_after,
-            dev=self.dev,
+            dev=self.dev, files_dir=files_beside(self.cfg.app_path),
         )
         self._finished.clear()
         self._sub.clear()
@@ -1828,7 +2047,10 @@ class SetupController:
 
         def fn(s: dict[str, Any]) -> None:
             if not any(n["code"] == code for n in s["notices"]):
-                s["notices"].append({"code": code, "title": title, "whatToDo": what, "step": step})
+                s["notices"].append({   # shown now: its commands as this owner types them (FN-3)
+                    "code": code, "title": render(title, self.home), "whatToDo": render(what, self.home),
+                    "step": step,
+                })
 
         self.store.update(fn)
         self.log("warn", f"{code}  {title}" + (f" ({detail[:300]})" if detail else ""))
@@ -1856,9 +2078,15 @@ class SetupController:
 
     def _ev_verify(self, ev: dict[str, Any]) -> None:
         speaker = ((self.snapshot().get("answers") or {}).get("voice") or {}).get("speaker")
-        checks = labels.verify_rows([c for c in ev.get("checks") or [] if isinstance(c, dict)], speaker)
+        raw = [c for c in ev.get("checks") or [] if isinstance(c, dict)]
+        checks = labels.verify_rows(raw, speaker)
+        voices = labels.voice_notices(raw)
 
         def fn(s: dict[str, Any]) -> None:
+            # the voices that did not speak are notices (Verify and Done show them, with the way out); a new
+            # test replaces the earlier ones (a repaired voice leaves nothing behind)
+            s["notices"] = [n for n in s["notices"] if n.get("code") or n.get("step") != "s08_smoke"]
+            s["notices"].extend(voices)
             if s["verify"] is None:
                 s["verify"] = {"checks": [], "voice": None, "render": None, "renderNote": None,
                                "reportReady": False}
@@ -1923,6 +2151,12 @@ class SetupController:
             flags = json.loads(read_text_retry(self.home / "config" / "wizard_flags.json", "utf-8-sig"))
         except (OSError, ValueError):
             pass
+        if not isinstance(flags, dict):
+            flags = {}
+        night = nightly_view.summary(self.home, flags)
+        shortcuts = shortcuts_view.summary(self.home, self.run_app_path, self.fx.desktop(), flags)
+        var_line = flags.get("home_var_line")
+        commands_line = flags.get("commands_line")
         sizes = {g["id"]: g for g in state["plan"]["groups"]}
         models = {i["label"]: i for i in sizes["models"]["items"]}
         llm = next((i for i in sizes["models"]["items"] if i["label"].startswith("Story model")), None)
@@ -1938,7 +2172,7 @@ class SetupController:
             {"label": "Voices: presets and your own", "detail": gb(voices)},
             {"label": "Captions, memory, faces", "detail": gb(rest)},
             {"label": "Nightshift Code", "detail": "yes" if answers.get("installCode", True) else "no"},
-            {"label": "Night run", "detail": answers.get("runTime", "03:00")},
+            {"label": "Night run", "detail": self._night_detail(night)},
             {"label": "Everything else", "detail": str(self.home)},
         ]
         if self.dev:        # docs/DEV_MODE.md: stubs and fakes, no Nightshift Code, a disabled night task
@@ -1969,12 +2203,33 @@ class SetupController:
                 duration = 0
         return {
             "home": str(self.home), "outbox": str(self.home / "outbox"), "appPath": str(self.run_app_path),
-            "installed": installed, "shortcuts": list(SHORTCUTS), "runTime": answers.get("runTime", "03:00"),
-            "scheduled": flags.get("schedule") == "installed" and flags.get("schedule_mode") != "disabled",
+            "installed": installed, "shortcuts": list(SHORTCUTS),
+            # Automatic runs as the record says now, in the scheduler step's own sentence (s10 says the same)
+            "runTime": night["time"] or answers.get("runTime", "03:00"),
+            "scheduled": night["state"] == "on" and not self.dev,
+            "nightly": "off" if self.dev else night["state"],
+            "nightlyLine": (flags.get("dev_task_line") if flags.get("schedule") == "other" else None)
+            if self.dev else night["line"],
+            # whose the Desktop shortcuts and NIGHTSHIFT_HOME are, in the scheduler step's own sentences
+            "shortcutsLine": shortcuts["line"],
+            "homeVarLine": var_line if isinstance(var_line, str) else None,
+            # whose the `ns` and `studio` commands are (card FN-3), in the scheduler step's own sentence
+            "commandsLine": (
+                render(commands_line, self.home) if isinstance(commands_line, str) and commands_line else None
+            ),
             "devMode": self.dev,
             "diagnosticsZip": self._bundle or flags.get("bundle"),
             "durationS": duration, "warnings": warnings, "stockKeyMissing": not self._stock_key_stored(),
         }
+
+    @staticmethod
+    def _night_detail(night: dict[str, Any]) -> str:
+        """The "Night run" row of the Done screen: the time, off, or NS-W208's two-sided state."""
+        if night["state"] == "on":
+            return str(night["time"])
+        if night["state"] == "unrecorded":
+            return f"{night['time']} in Windows, not recorded (NS-W208)"
+        return "off"
 
     def _stock_key_stored(self) -> bool:
         """True when a stock footage key was typed in this session or is in the encrypted file from s07."""
@@ -1999,11 +2254,11 @@ class SetupController:
             return EXIT_ALREADY_RUNNING
         try:
             with keepawake.keep_awake(self.fx.set_execution_state):
-                return self._run_headless()
+                return self._run_headless_checks()
         finally:
             lock.release()
 
-    def _run_headless(self) -> int:
+    def _run_headless_checks(self) -> int:
         state = self.snapshot()
         say = self.fx.console
         for c in state["checks"]:
@@ -2022,6 +2277,20 @@ class SetupController:
         self.home = Path(str(raw.get("home_path") or self.home))
         self._started = True
         try:
+            guard = self._guard_venvs()       # D-39b: held until this run ends
+        except bootstrap.BootstrapError as e:
+            title, what = preflight.copy_for(e.code)
+            say(f"{e.code}  {title}", "error")
+            say(f"    {e.detail}", "error")
+            return EXIT_ALREADY_RUNNING if e.code == "NS-E705" else 14
+        try:
+            return self._run_headless(say)
+        finally:
+            if guard is not None:
+                guard.release()
+
+    def _run_headless(self, say: Callable[[str, str], None]) -> int:
+        try:
             for step in bootstrap.bootstrap_steps():
                 self._run_bootstrap_step(step)
         except bootstrap.BootstrapError as e:
@@ -2036,15 +2305,19 @@ class SetupController:
         venv_python = self.home / "venvs" / "studio" / "Scripts" / "python.exe"
         python = self.cfg.python if self.cfg.simulate else str(venv_python)
         app = self.run_app_path
+        # `--non-interactive` always: this run has no window and no person to answer (D-40). stdin is not
+        # inherited either, so nothing the wizard starts can wait on a console that no one is watching.
         argv = [python, "-X", "utf8", "-m", "installer.stage2.wizard", "--app-path", str(app),
-                "--answers", str(self.cfg.answers), "--preflight", str(out)]
+                "--answers", str(self.cfg.answers), "--preflight", str(out), "--non-interactive"]
         if self.cfg.simulate:
-            argv += ["--simulate-downloads", "--no-head-checks", "--non-interactive",
-                     "--home", str(self.home)]
+            argv += ["--simulate-downloads", "--no-head-checks", "--home", str(self.home)]
         if self.cfg.halt_after:
             argv += ["--halt-after", self.cfg.halt_after]
         if self.dev:
             argv.append("--dev")
+        files = files_beside(self.cfg.app_path)     # the wizard runs from <home>/app, which never holds it
+        if files is not None:
+            argv += ["--files-dir", str(files)]
         env = wizard_env(app)
         env[bootstrap.HOME_VAR] = str(self.home)
-        return subprocess.run(argv, cwd=str(app), env=env, check=False).returncode
+        return subprocess.run(argv, cwd=str(app), env=env, check=False, stdin=subprocess.DEVNULL).returncode

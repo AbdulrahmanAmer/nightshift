@@ -271,11 +271,22 @@ Rules: no test depends on wall-clock timing, GPU, the real home folder or the in
 |---|---|---|
 | `lint` | `python -m ruff check .`; PSScriptAnalyzer `-Severity Error` over `*.ps1` | yes |
 | `types` | `python -m pyright` (on a docs-only pull request: one step that says it is not applicable) | yes |
-| `test` | gathers the six `test-shard (N/6)` jobs, each `python -m pytest` over its share of the test files (`dev/ci_shards.py`, `SHARDS`, balanced by `dev/ci_shard_weights.json` measured from real JUnit timings; includes hygiene tests), and `test-collect`; passes only when all passed and together they ran the whole unsharded collection. On a docs-only pull request (`dev/ci_changes.py`: only `docs/**`, top-level `*.md`, `contracts/CHANGE_REQUESTS.md`) it gathers `test-docs` instead, the test files that read documents, and passes only when they ran and passed. Which checks each kind of pull request shows, by name: `docs/REPO_SETTINGS.md` | yes |
+| `test` | gathers the eight `test-shard (N/8)` jobs, each `python -m pytest` over its share of the test files (`dev/ci_shards.py`, `SHARDS`, balanced by `dev/ci_shard_weights.json` measured from real JUnit timings; includes hygiene tests), and `test-collect`; passes only when all passed and together they ran the whole unsharded collection. On a docs-only pull request (`dev/ci_changes.py`: only `docs/**`, top-level `*.md`, `contracts/CHANGE_REQUESTS.md`) it gathers `test-docs` instead, the test files that read documents, and passes only when they ran and passed. Which checks each kind of pull request shows, by name: `docs/REPO_SETTINGS.md` | yes |
 | `gate` | `python dev/gate_m<current>.py`; upload `logs/gate-*.json` as an artifact | yes on `main` |
 | `bundle` | On tags `v*` only: verify tag equals `pyproject` version and `ns_common.__version__`; run `dev/make_bundle.ps1`; content check (no venv, models or binaries; size < 25 MB); attach `Nightshift-<ver>.zip` and `Nightshift-<ver>.zip.sha256` to a GitHub Release with notes from `CHANGELOG.md` | on tags |
 
 **Versioning.** SemVer. Single source: `pyproject.toml` `version`; `ns_common.__version__` must equal it (a unit test asserts this); the bundle writes `VERSION` at the zip root from the tag. Milestones map to minors (`0.1.0` M0, `0.2.0` M1, `0.3.0` M2, `0.4.0` M3, `1.0.0` M4); fix passes are patches (`0.1.1`). Tags `v*` are created by the orchestrator only, on a green `main` commit.
+
+**The dependency lock.** `uv.lock` (repository root, in the bundle) pins every package of every extra with
+its hashes; setup and `ns update` install from it (`installer/stage2/web/deplock.py`) and refuse with NS-E124
+when it is missing or was not made for `pyproject.toml`. It must be made again whenever `pyproject.toml`
+changes its dependencies, its extras OR its `version` (uv writes the project version into the lock, so every
+release bump needs it): `python dev/lock_deps.py` on any machine with internet. The script runs `uv lock` with
+the uv version `manifest.json` pins (the uv that reads the lock on the target) and downloads package metadata
+only, no wheels. `python dev/lock_deps.py --check` checks without the network. CI checks every push without
+uv: `tests/test_dependency_lock.py` compares the lock with `pyproject.toml` (project version, requirements,
+extras) and fails with that command in its message; where the pinned uv is present the same file also runs
+the product's own `uv export --locked --offline` calls against the committed lock.
 
 **Changelog.** `CHANGELOG.md` in Keep a Changelog format. Each builder puts one line per `feat` or `fix` batch in its report; the orchestrator adds them under `## Unreleased`, and moves them under the new version heading before tagging. The `bundle` job fails when the heading for the tag is missing.
 

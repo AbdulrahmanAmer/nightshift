@@ -82,6 +82,6 @@ def test_the_route_exists_and_tells_the_dashboard_state(tmp_path: Path) -> None:
     from ns_supervisor.app import create_app
 
     sup, _, _ = make(tmp_path, post_run_grace_s=60, idle_unload_s=60)
-    with TestClient(create_app(sup)) as tc:
+    with TestClient(create_app(sup), base_url="http://127.0.0.1:18099") as tc:
         assert tc.post("/run_finished").json() == {"exit_scheduled": True}
         assert sup.run_finished_at is not None

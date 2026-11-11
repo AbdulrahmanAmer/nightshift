@@ -558,11 +558,14 @@ def test_an_outage_without_progress_in_between_still_uses_one_window(tmp_path: P
 def test_ns_models_get_says_the_wait_and_logs_it_instead_of_ten_minutes_of_silence(tmp_path: Path):
     """``ns models get`` and the dashboard's model download go through ``get_model`` -> ``run_plan`` with the
     EchoReporter. The dashboard shows these lines; before, a 5xx printed nothing for ten minutes."""
+    from ns_common.config import save_runtime
+    from ns_common.models import Runtime
     from ns_common.paths import Paths, repo_root
     from ns_supervisor import models_get
 
     paths = Paths(tmp_path)
     paths.ensure()
+    save_runtime(paths, Runtime.default("gpu"))    # D-35: no assumed profile
     t = FakeTime()
     client, _ = scripted([503, 504])
     item = dl.DownloadItem(name="story.gguf", url=URL, dest=tmp_path / "story.gguf", sha256=SHA)

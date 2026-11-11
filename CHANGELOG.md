@@ -9,15 +9,20 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [0.1.15] - 2026-11-10
 
-This is release candidate 0.1.15-rc3, published for testing. It is a prerelease: it is not offered as an update to a
-PC on 0.1.14, and you install it by hand (`Nightshift-Setup-0.1.15-rc3.zip` for a first install, or
-`Nightshift-Update-0.1.15-rc3.zip` through Settings > Updates > From a file). Compared with 0.1.15-rc2 it adds the
-items of block B: the Code console gives the graphics card back when it is closed and Nightshift Code fits a 16K
-context and keeps its edit tools, pausing a channel stops its queued jobs, Automatic runs is a switch, work whose lock
-file cannot be opened is no longer held for ever, assembled audio keeps full precision, a model an install cannot use
-is refused up front, an updater test source, the clip captions with a hesitation, a stage table no job rewrites, a
-true hint for NS-E301, and the tests that measure every join of a video made in parts. Below is everything merged
-since 0.1.14; each "Not covered" line is a limit the change shipped with.
+This is release candidate 0.1.15-rc4, published for testing. It is a prerelease: it is not offered as an update to a
+PC on 0.1.14, and you install it by hand (`Nightshift-Setup-0.1.15-rc4.zip` for a first install, or
+`Nightshift-Update-0.1.15-rc4.zip` through Settings > Updates > From a file). Compared with 0.1.15-rc3 it adds the
+items of block D, "install and update safety": an update or rollback typed in a terminal hands over to its own
+window, a second Nightshift on the same PC takes nothing of the first without your yes, setup asks about the nightly
+run and keeps it off unless you say yes, packages are installed from a lock, the local servers refuse requests made
+by web pages, and `ns` and `studio` work in any new terminal. 0.1.15-rc3 added the items of block B (the Code
+console gives the graphics card back when it is closed and Nightshift Code fits a 16K context and keeps its edit
+tools, pausing a channel stops its queued jobs, Automatic runs is a switch, work whose lock file cannot be opened is
+no longer held for ever, assembled audio keeps full precision, a model an install cannot use is refused up front,
+an updater test source, the clip captions with a hesitation, a stage table no job rewrites, a true hint for NS-E301,
+and the tests that measure every join of a video made in parts). Below is everything merged since 0.1.14; each
+"Not covered" line is a limit the change shipped with. "Shown by tests" means the change is covered by the test
+suite and no more is claimed.
 
 ### Setup and install
 
@@ -84,6 +89,148 @@ since 0.1.14; each "Not covered" line is a limit the change shipped with.
   decides nothing here (Get goes on as before, D-35); the hint says the voice design and story models need the GPU
   profile, which is broader than the rule; the Get button is not hidden on such an install.
 
+- Setup asks about the nightly run once, and the answer is off unless you say yes (nightly-optional, part b). On a
+  first install the setup window has the switch "Run Nightshift by itself every night", the console setup asks the
+  same question, and an answers file says `"nightly": true`; with no yes (an unattended install with no answer is a
+  no) no task is registered, and the run time you chose waits for the switch in Settings > Schedule > Automatic
+  runs. A Repair or a reinstall that keeps your data no longer changes Automatic runs: it does not switch them on
+  (the rc3 entry on the Automatic runs switch said it did; that was true of rc3 only). A task that is on is
+  registered again at its own time, a task you switched off stays off, and a new run time in the answers moves the
+  task only if you did not change the time in Settings since the last setup. The setup window's switch is used
+  only while Automatic runs still are what the window showed under it ("Now: ..."); if they changed meanwhile,
+  setup changes nothing and says so. "Uninstall, keep my data" removes the task, so the setup after it asks again.
+  If Windows accepts a task but Nightshift cannot record it, setup undoes the task or says plainly that Windows
+  runs it at that time and Nightshift could not record it (NS-W208), and the Done screen says the same. Not
+  covered: a task that was edited by hand so that it names no Nightshift folder counts as on and is left, and
+  setup says it could not tell which Nightshift it belongs to; a Repair window always answers, so an untouched
+  switch is worded "as you chose in setup" where "kept" would be truer. Shown by tests.
+- Setup says what it does with a switched-off nightly task that is not this install's (D-41). When the PC's
+  "Nightshift Daily" task is switched off, setup reads whose it is. On a first install without a yes, a task left by
+  this folder or by a Nightshift folder that has been deleted is removed, its run time kept for the switch, and
+  setup says so; a task of another Nightshift that still exists, or on a drive that is not there, or one that names
+  no folder, is left, and setup names it and says how to move it here (switch Automatic runs on in this
+  Nightshift's Settings: the PC has one nightly task, so it then runs this Nightshift, and the other one's Settings
+  show Automatic runs off). A Repair removes only a deleted Nightshift's task and leaves this folder's switched-off
+  task as you left it. Deleted, "drive not there" and "access refused" are told apart: only a folder proven absent
+  counts as deleted, so a task whose folder Windows would not let setup look into is no longer removed. Not
+  covered: `UNINSTALL.cmd` still reads a folder it may not look into as deleted, so it can remove a task that
+  setup now leaves alone; when you give another install's switched-off task back, it is registered with today's
+  settings, not its old ones. Shown by tests.
+- A setup run with an answers file no longer asks the remaining questions in the console (D-40). `INSTALL.cmd -Answers
+  <file>`, an `answers.json` next to `INSTALL.cmd`, `-NoUi` or setup input that is not a console now runs to the
+  end without waiting: a key the file names (an empty `""` means no key) is never asked for, a choice the file
+  leaves out takes its stated default, and a missing channel name or niche, a missing clone recording or a run time
+  that does not parse stops setup with the reason. The setup window is not affected, and `INSTALL.cmd -Ui` opens it
+  with your answers filled in when you want to be asked. `INSTALL.cmd -NoUi` and `-Answers` also end without
+  waiting at "Press any key"; a double-click still waits so the message can be read. A failed step is still
+  retried three times (after 5, 15 and 45 seconds), then setup writes the help bundle and exits with 3. Not
+  covered: the "Your choices" table on screen lists every value and `config\answers.json` keeps them, but
+  `install-report.json` does not mark which values were defaults; the Visual C++ runtime fallback can still show a
+  Windows permission prompt in an unattended run and waits up to 10 minutes before it stops with NS-E114. Shown by
+  tests.
+- Setup takes the pinned programs from a `files` folder when GitHub cannot be reached (D-17). A folder called `files`
+  beside `INSTALL.cmd`, made beforehand on any PC with internet by `tools\make-files-kit.ps1`, supplies uv, the
+  Python build uv installs, the Visual C++ runtime, FFmpeg, llama.cpp, the voice engine, OpenCode, yt-dlp, the window
+  files and the spaCy model; each file is checked against its SHA256 before it is used, and setup says per program
+  where it came from. If github.com gives no answer at all and the folder holds every file this PC needs, the
+  Internet row is a warning and setup goes on (before, it stopped at the Checks screen however full the folder
+  was); with an incomplete folder the row stays red and names what is missing. A file that is missing, has the
+  wrong bytes or is another version under the same name is downloaded instead, and when that fails too the error is
+  NS-E105 naming the file. Without a `files` folder nothing changes. Not covered: PyPI (the packages) and Hugging
+  Face (the models, which keep their own "Model files come from" folder) still have to answer, and PyPI silent is
+  red whatever is in the folder; a kit made without OpenCode counts as incomplete unless the answers switch
+  Nightshift Code off; `files\python` is matched by name only, so a stale 3.12 archive passes the look and uv then
+  refuses it. Shown by tests.
+- A second Nightshift on the same PC takes nothing of the first without your yes (second-install-takeover). The PC
+  has one Desktop, one nightly task, one notification registration, one `NIGHTSHIFT_HOME` and one PATH. Installing,
+  repairing or uninstalling a second Nightshift now changes them only where they belong to that install or to none,
+  or where you said yes in that run. Setup says on its last lines and on the Done screen which install the Desktop
+  shortcuts open (NS-W119); every install keeps its own full set of shortcuts in the folder `Shortcuts` inside its
+  install folder; the switch "Make the Desktop shortcuts and the ns and studio commands open this install" (the
+  console asks, an answers file says `"shortcuts_here": true`) moves the shortcuts, the commands and the PC's
+  default `NIGHTSHIFT_HOME` together, once. Shortcuts of a Nightshift folder that was deleted are taken without a
+  question, with a line that names it. `NIGHTSHIFT_HOME` is now only the PC's default: the shortcuts, the nightly
+  task and `INSTALL.cmd` or `UNINSTALL.cmd` started from an install's own `app` folder work on the install they
+  are in; `ns` or `studio` run from an install's own program works on that install when the variable is only the
+  default, and says so in one line; a value you set in that window yourself (`$env:NIGHTSHIFT_HOME = 'D:/Other'`)
+  is followed, also with one line. Uninstalling one install removes only what is its own: its task, the shortcuts
+  that open it, the variable when it names it, its own commands and PATH entry (the rest of the PATH stays exactly
+  as it was); what another install uses is left, each such line says "Left" and for which folder, and the
+  notification registration and the stored stock-footage keys stay while another install is found. The list of
+  installs (`installs.txt` in `%LOCALAPPDATA%\Nightshift`) is written whole, so another setup never reads half of
+  it. Not covered: an install made before this version is not in that list until its setup runs once; a terminal
+  opened before the default moved keeps the old value, so a `ns` run there works on the old install (it says so
+  first) and you open a new terminal; a Nightshift folder deleted by hand keeps the Desktop shortcuts, the task and
+  the variable until you say yes; uninstalling one install while another holds none of the shared things leaves
+  the other's notifications unregistered until its Repair; shortcuts pinned to the taskbar or copied to the Start
+  menu are not rewritten. Shown by tests.
+- `ns` and `studio` work in any new terminal (FN-3). Setup puts two small command files, `ns.cmd` and `studio.cmd`,
+  in the folder `cmd` inside the install folder and adds that folder to your user PATH, and its last lines and the
+  Done screen say so. After that, `ns doctor --bundle` or `studio resume <slug>` typed in any PowerShell or Command
+  Prompt window opened from then on runs against that install, whatever `NIGHTSHIFT_HOME` says in the window;
+  `ns doctor` has a row "commands" that says which install they open. A window that was open before setup does not
+  have them. The commands always open the install whose `cmd` folder they are in, so a PC with two installs has them
+  from the first `cmd` folder on the PATH: setup adds this install's folder when no other existing install's comes
+  first, otherwise it leaves your PATH alone and says which install the commands open and gives this install's
+  files by full path (NS-W120); the same yes as for the shortcuts moves them. Setup also says so when another
+  program's `ns` or `studio` comes first (the NativeScript `ns`, an Android Studio or JetBrains `studio`). While a
+  plain `ns` does not reach this install, the messages, notes and pages of this install give the command file by its
+  full path instead of the plain word, decided when the text is shown. A PATH that setup would make longer than
+  2047 characters is left as it is and setup says so; setup never cuts your PATH. A dev install never changes the
+  PATH of the PC it runs on. Not covered: another Windows administrator account has its own PATH (type the full
+  path there); a path with a space is shown with its drive outside the quotes, `D:"\My Videos\Nightshift\cmd\ns.cmd"
+  doctor`, which a Command Prompt and PowerShell both run; in Windows PowerShell 5.1 an argument with `&`, `|`, `<`,
+  `>` or `^` and no space must be quoted twice (`'"a&b"'`), and an argument with an odd number of double quotes takes
+  the rest of the line with it; 0.1.14's uninstaller does not know the commands, so after uninstalling 0.1.14 you
+  remove the `cmd` folder's PATH entry by hand; uninstalling the install that had the plain commands does not give
+  them to the other one until its Repair. Shown by tests.
+- A damaged `config\runtime.json` no longer sticks setup, and every command names it (setup-torn-runtime, D-35, and
+  one settings reader for every route). A `runtime.json` that cannot be read is set aside by setup as
+  `runtime.json.bad` in the config folder, a new one is built from your answers (settings that were only in the old
+  file are not carried over), the tuning runs again, and the console and the log say what happened; Retry works. A
+  file saved by a newer Nightshift, or edited by hand, with settings this version does not know keeps a copy as
+  `runtime.json.newer`, loses only those settings and keeps the rest; a file saved with a byte order mark or as
+  UTF-16 (Windows PowerShell 5.1 writes a mark with `Set-Content -Encoding UTF8`) is written again as plain UTF-8
+  with the same settings; going between a real install and a dev install keeps the old file as `runtime.json.other`
+  and builds the new kind from your answers. `ns doctor` names a missing or unusable file in its `runtime.json` row
+  as NS-E125 with the way out (run setup again) and no longer ends in a traceback; `ns models get`, `ns verify`,
+  `ns tune`, `studio status`, `studio run`, the voice commands and the engine read the file through the same one
+  reader and say NS-E125 with the file's path. Before, `studio run` and the engine said NS-E203 ("Service health
+  check timed out") for a missing file and an uncoded error for a damaged one, and `ns models get` with an
+  unreadable file started the 2 GB GPU voice-model download. Not covered: a file held open past the retries is
+  NS-E125 and Retry works once it is released; the numbers a newer version tuned are checked for type and range
+  only, which is why such a file is tuned again; `ns doctor` still moves a damaged `install_state.json` aside as
+  `.bad`, as every start does, and `studio status` still makes an empty job database when there is none. Shown by
+  tests.
+- `ns` and `studio` with no install found refuse with NS-E123 (D-35). In a console without `NIGHTSHIFT_HOME`, on a PC
+  whose default folder holds no install, any command that needs an install prints NS-E123 naming the folder it
+  looked in and the install the program belongs to, and writes and downloads nothing; before, `ns models get
+  voicedesign` there started the GPU voice-model download into the default folder on C:. Setup's own tools, the
+  update worker, the launchers and the nightly task name their home and are not refused, and `--help` still
+  answers. Not covered: a `NIGHTSHIFT_HOME` that names a deleted folder is taken as given; the dashboard and the
+  engine are not checked (they are started with their home set). Shown by tests.
+- Setup's voice check speaks every installed voice kind, and a voice that cannot speak no longer stops setup (P30a).
+  `ns verify --quick`, which setup step s08 runs, speaks one sentence with each installed talker: the preset, the
+  Base talker for a cloned or designed voice, and VoiceDesign; only the speed benchmark is left out of the quick
+  run. A preset that does not speak still fails the check and switches the engine (NS-W301). A cloned or designed
+  voice that does not speak is a warning row with the voice's name and the way out (Library > Voices: make the voice
+  again under another name; or Channels > Edit channel > Narrator: choose another voice), setup goes on,
+  `ns verify` leaves one morning note per sentence, and the update's result lists it; before, one broken optional
+  voice could stop a Repair or make an update roll back. Not covered: the setup window's Voice row shows the warning
+  text with no way out on screen (the morning note has it), and the Settings self-check leaves no note; a later
+  talker has up to 180 seconds, which is thinnest on the reference engine with a hard disk. Shown by tests.
+- `ns doctor` on a processor install does not ask for an NVIDIA driver, and the tune picks a context that fits (D-44).
+  On an install whose profile is `cpu-dev` the nvidia-smi row says "not needed (this install runs on the processor:
+  profile cpu-dev)" and the doctor is clean when everything works; a GPU install without a driver still fails there.
+  `ns tune` picks 16384 tokens of context on both profiles, the smallest the night's jobs and Nightshift Code work
+  with (every prompt is checked at its largest input and its answer limit against it); before, a 7.8 GB processor PC
+  was tuned to 32768, the language server took 4.4 to 4.6 GB, and a story job timed out. An install tuned earlier
+  keeps its context until `ns tune` and a restart. A clip window longer than four minutes whose answer is cut off
+  (NS-E302) is asked again once, as two halves that overlap by two minutes. Not covered: the budget counts English
+  text, so a channel in a script that takes more tokens (Cyrillic takes about 2.3 times as many) can send a prompt
+  over 16384 on a processor install; a clip moment longer than 120 seconds that crosses the middle of a split window
+  fits neither half; a story title with an emoji still becomes the outbox folder name. Shown by tests.
+
 ### Updates, files and safety
 
 - After an update the dashboard window shows the new interface, not the old one kept in its cache. The page,
@@ -110,9 +257,9 @@ since 0.1.14; each "Not covered" line is a limit the change shipped with.
   a rollback and a backup restore never switch it on or off: the update and `--quick` settle the record before an
   older updater could re-enable a disabled task, and a rollback and a restore leave `config\schedule.json` alone. Two
   windows changing it at once wait for each other (10 seconds, then NS-E204). A dev install cannot switch it on
-  ("Automatic runs cannot be switched on in a dev install."). Not covered: setup still registers the nightly task, so
-  a first install starts with Automatic runs on, and a Repair or a reinstall that keeps your data switches them back
-  on, until the setup question ships in the next candidate (`OPERATOR.md` says the same). Shown on a dev install only
+  ("Automatic runs cannot be switched on in a dev install."). Not covered in rc3 (changed in rc4: see "Setup asks about the
+  nightly run once" below): setup registered the nightly task, so a first install started with Automatic runs on,
+  and a Repair or a reinstall that kept your data switched them back on. Shown on a dev install only
   up to the dev-mode refusal (as installed: off; "on at 04:30" answered 409 and changed nothing; a time change while
   off touched no task; `ns verify --quick` passed with the task unchanged); switching on, deleting the task by hand,
   an update and a rollback were not run, because they need an engine-test install, and nothing was tried on a real
@@ -146,8 +293,8 @@ since 0.1.14; each "Not covered" line is a limit the change shipped with.
   programs. Whichever version is in `<folder>` afterwards loads its settings; the next start of the newer version
   undoes or finishes the rollback (and says so in its log), and `ns update`, `ns update --rollback` and
   `INSTALL.cmd` refuse, changing nothing, while the settings of an interrupted rollback are not back. Not covered:
-  a power cut between the two folder renames leaves no `<folder>` and nothing can start until you rename
-  `<folder>.swap` back (`OPERATOR.md` and the record say so); 0.1.14 itself cannot finish an interrupted rollback;
+  a power cut between the two folder renames leaves no `<folder>`, and in rc3 nothing could start until you renamed
+  `<folder>.swap` back (rc4's INSTALL.cmd puts it back: see the entry on an interrupted rollback below); 0.1.14 itself cannot finish an interrupted rollback;
   a window that is already open when a rollback runs saves at once, into the settings the rollback is changing
   (only a window whose first save falls in the rollback waits, up to 60 seconds, once).
 - Your API keys on a drive without file permissions (FAT or exFAT; pull request 193). Windows cannot lock
@@ -277,6 +424,150 @@ since 0.1.14; each "Not covered" line is a limit the change shipped with.
   cards already on screen keep the words they were written with; the install proof met the old wording and the wrong
   stage, and these fixes are shown by tests (one per origin: the nightly, `studio run`, Run now, a dashboard request,
   a series part, a clip) and were not run on an install again.
+
+- Stopping Nightshift for an update, a rollback or a Repair always ends (D-46, D-48). The install proof of this
+  version found a rollback refused because Nightshift's own engine hung while exiting, and Nightshift was left
+  down. Now the engine exits within 20 seconds of being asked; the update waits for Nightshift's own programs,
+  showing "Waiting for Nightshift to stop: ...", ends what belongs to THIS install and is still there, and refuses
+  (NS-E706) naming only a program that is not Nightshift's. A refusal starts Nightshift again and says so; when
+  Nightshift's own program cannot be ended it says to restart the PC. Setup's Repair does the same over 0.1.14
+  and the earlier candidates. An interrupted update that was finished or repaired now reads as finished
+  everywhere, and nothing starts a job or the engine while one is unfinished (NS-W210), whichever way the program
+  was started. A rollback that had to end an engine which no longer answered starts Nightshift again and its
+  last line says so (D-51). Shown on an install of this candidate's code before its last two fixes (D-50, D-51):
+  12 terminal rollbacks of 12, an engine hung in its own exit, and a foreign program holding a file; the D-51
+  case itself is shown by tests only.
+- An update or rollback typed in a terminal now hands over to a separate window (D-39). `ns update <zip>`,
+  `ns update --github`, `ns update --git` and `ns update --rollback` return at once and open a window, "Nightshift
+  update", that shows each step and the result; closing the terminal or that window stops nothing. The command
+  exits (with 0) before the result is known: the result is the last line of that window and of the log
+  (`logs\update-<time>.log`), and the entry of `run\update_state.json` whose `log` is the one the command printed.
+  With `--detach` no window opens and the command prints a JSON line with the worker's `pid` and a `follow` script:
+  run it with `powershell -NoProfile -ExecutionPolicy Bypass -File <follow>` to watch the progress; it exits 0 when
+  the update is done and 1 otherwise. A script that needs the result runs `--detach` and then `follow`. `--wait`
+  is refused (exit 2) when `ns` runs from Nightshift's own Python environments, because it would hold the files the
+  update replaces; before, a terminal `ns update` held its own `ns.exe`, and a rollback could fail with "rolled
+  back" while the disk held something else. Now only one update, rollback or repair runs at a time (NS-E705), and
+  nothing starts while a program still runs from the Python environments (a Studio window, a terminal running
+  `ns` or `studio`, Nightshift Code, a Python prompt): after up to a minute NS-E706 names each program and nothing
+  is changed. If the environments cannot be refreshed after the program was changed, the message says which
+  program is in place, which environment is left and how to finish, and the update does not start Nightshift: the
+  progress window opens on every route (also from Settings > Updates), a note waits on the Queue page, and Settings
+  > Updates shows the failed update or rollback until the next one. The commands such a message names are the
+  `--detach` forms, because after a rollback the `ns` you type is the older version's; for a version that has no
+  `--detach` it names INSTALL.cmd. Before it changes the program, an update or rollback writes `run\venv-repair.json`
+  (the uv commands that fill the environments) and deletes it after the last one; if it stops in between (a program
+  held a file, the packages were unreachable, the power went off), the next start from a Desktop shortcut or the
+  nightly task runs those commands first and starts Nightshift only when they worked, otherwise it says why
+  (NS-W210) and starts nothing. Nothing starts from a shortcut while an update runs, and the nightly task waits up
+  to 30 minutes for one. INSTALL.cmd and Repair take the same lock and refuse while a program runs from the
+  environments (an unattended setup exits with 15 when an update, rollback or repair holds the lock and with 14
+  when programs still run or cannot be listed). When a program holds the record open and Windows refuses to delete
+  it for 15 seconds, `run\venv-repair.done` marks it finished instead; only when neither can be written does the
+  update stop before its check and name Repair, keeping the program it put in place. The Diagnostics shortcut still
+  works after a failed repair: when `ns doctor --bundle` cannot run, it makes a smaller zip without Python (logs,
+  install state, version, the repair record and update state; no settings or keys) and says which zip it made.
+  Not covered: from 0.1.14 and the 0.1.15 candidates up to rc3 their own terminal `ns update` still fails on its
+  own `ns.exe` and cannot be changed, so update or go back with Settings > Updates, the Update shortcut or
+  `ns update ... --detach`; an environment an older updater left on another version has no record and is only named
+  (by `ns doctor`, row "python environments", and at each start), with Repair as the way out; a program the holder
+  check does not see (a path given as `--opt=<path>`, an 8.3 name, a junction home, an elevated process) ends at
+  the retries and the "not finished" message; a record kept read-only or refused by an access rule makes the next
+  update stop with NS-E702 and no way out named (an outside program has to cause it); a start in the few renames
+  between the record and the swap is let through. Shown by tests.
+- `studio run`, the voice commands, `studio dashboard` and `ns verify` read the repair record before they ask the
+  engine (D-39b with default-port-tests, D-48). While a record waits, `studio run` and the voice commands refuse
+  with NS-W210 whether or not the engine answers; `ns verify` and `studio dashboard` refuse when the engine is down
+  and go on when it answers. All of them say that an update or rollback is running now when one holds
+  `run\update.lock`, and go on when nothing waits; with
+  nothing waiting the check is a file look and no connection, so the footage-key and no-channel refusals still come
+  before any job, with their codes and messages unchanged. Not covered: a record held open by another program is
+  waited for a moment, and `install_state.json` is read when the engine is up; the engine's own start refuses
+  before it takes its lock, so a start with a record waiting while an engine already runs would say "not started"
+  (the updater writes a record only after stopping the engine, so no route is known). Shown by tests.
+- A rollback or update that is interrupted at any point leaves a program folder that can be put back (206-carried,
+  with launcher-reach below). A stale record of a failed restore now marks the settings copy as not restored, so a
+  later update keeps the copy; a leftover `app.swap` is settled and said (put back as `app`, kept as `app.prev`, or
+  renamed `app.swap-left-<date>` and never deleted, with `ns doctor` row "program folders" naming it and the way
+  out); a `VERSION` that is missing, empty or garbage counts as older than every release, so the rollback takes out
+  every setting added since 0.1.14 the same way each time and says the version "could not be read"; a setting whose
+  accepted values grew since 0.1.14 cannot ship without a rule that writes its fallback when you go back; and
+  INSTALL.cmd run after a power cut between the two folder renames (no `app` folder, `app.swap` holding the newer
+  program) puts the program folder back, tells you to start Nightshift once so the rollback is undone from its
+  record, and copies nothing. This replaces the rc3 limit that nothing could start until you renamed `app.swap`
+  back. Not covered: INSTALL.cmd of 0.1.14 or rc2 does not settle `app.swap`; with no `app`, no `app.swap` (moved
+  away by hand) and a record, INSTALL.cmd makes a fresh program and the next start calls the record stale, so the
+  settings from before the rollback are lost (the log says so); a swap folder held open is left and named, and
+  only tried once per start. Shown by tests.
+- Every Desktop shortcut and the nightly task start Nightshift through `<home>\nightshift-launch.ps1`, however the
+  install reached this version (launcher-reach). Setup writes that script, and the first start of this version
+  copies it and rewrites the six Desktop shortcuts and the task action of an install updated by 0.1.14's own updater,
+  which writes none. When `app` is missing the script says so every time, at 03:00 too: a file `Nightshift did not
+  run.txt` on the Desktop, a Windows notification, a log line (NS-W209), and after the repair a morning note that
+  names the missed nights; the note on the Desktop and the missed-night record are cleared at the next start of
+  the engine, not only by the next shortcut or night. Only shortcuts that belong to this install are rewritten, in place, keeping their name and notification
+  id; another install's, or one on a drive that is not there, are left (shortcuts of a deleted Nightshift are taken
+  only by setup, as described above); the task keeps its logon, time and on or off state. A home path with an apostrophe,
+  brackets or non-ASCII letters is covered by tests. The engine's PowerShell helpers open no windows when it runs without
+  a console. `ns doctor` has a row "launch script" that fails when a shortcut or the task could not be pointed at
+  the script; Repair fixes it. Not covered: taskbar pins and Start menu copies are not rewritten, and a deleted
+  shortcut is not made again; Windows may refuse changing the task of an install when the engine is not
+  elevated (the task then stays as it was, the row names it, and the next start tries again); a shortcut change
+  shows a `~nslnk-<pid>.tmp` file on the Desktop for a moment. Shown by tests.
+- Packages are installed from a lock (P29a). A committed `uv.lock` records the packages (all from PyPI, with
+  SHA256) that this version was tested with; setup, a Repair (INSTALL.cmd again) and every update from a locked
+  version install exactly those versions, each download checked against its hash, instead of the newest ones in the
+  allowed ranges on that day. The lists are kept as `logs\pins-<environment>.txt`. A package whose lock is missing
+  or does not belong to it is refused with NS-E124 before anything is changed; a hash or index failure is NS-E105
+  with uv's lines. `ns update --rollback` to a version from before the lock installs that version its own way.
+  Torch, the CUDA wheels and the spaCy model stay on the manifest's own hash pins and are not in the lock. Not
+  covered: an install updated by 0.1.14's own updater to this version gets floating packages (that updater knows no
+  lock), and stays unlocked until its next update or a Repair; the lock pins no Python build; a mirror (`UV_DEFAULT_INDEX`) works only when it serves PyPI's exact bytes.
+  Shown by tests.
+- The local servers refuse requests made by web pages (FN-1). The engine (port 8099), the voice service (8091) and
+  the dashboard answer only requests addressed to 127.0.0.1 or localhost; the engine and the voice service answer no
+  web page at all, and the dashboard answers a browser only from its own page: the same scheme, name and port the
+  request was addressed to (D-45). A page served by another program on this PC, on another port or under the other
+  name, is refused for reading as well as for changing anything. The dashboard also answers 415 to a body that is
+  not JSON on its JSON routes. Before, a page you visited could send a plain form POST to the engine and stop the
+  night's services. A refusal is NS-E207 and leaves one morning note naming the page (at most three pages and one
+  "more" a day, counted across the servers); a page opened from a file is named as such. Nightshift's own programs,
+  the dashboard page and its uploads work as before. A script of yours must address 127.0.0.1 or localhost and send no
+  Origin, Referer or Sec-Fetch-* header, with a JSON body or none; a tool that must post a form to the dashboard
+  sends an Origin equal to exactly the address it called (scheme, name and port). Not covered: the setup
+  server keeps its own check; llama-server and the embedding service are not guarded by this; update
+  packages are still checked for integrity only (the SHA256 beside the zip proves it arrived whole, not who made
+  it), not signed; a browser too old to mark its own requests (Firefox before 70, Edge's IE mode) is taken for a
+  program, and can send a request with no body to the routes that take none (stop everything, start a check); the
+  refusal note counts "at least" what it had seen when it was written (D-50); the fake services of fake installs
+  have no guard. Shown in a real browser (Edge) on an install of this candidate's code before its last two fixes:
+  every request from a page on another port and from a file page was refused and nothing ran.
+- Morning notes have one owner, and Mark all read removes only what you saw (FN-2). Every note any part of Nightshift
+  leaves goes through one module under one lock (the launch script takes the same lock), so two notes written at the
+  same moment are both kept, and Mark all read removes exactly the notes the bell showed; a note that arrives
+  while the page is open waits for the next look. Notes waiting to be written are kept as one small file each in a
+  spool folder (at most 50) until the next writer moves them in. At 200 waiting notes the oldest are dropped and one
+  note says how many were removed unread, so the newest note that matters is never the one lost; a routine note
+  (such as "ready for review", which the Queue and Library already list) is kept out instead of pushing out a note
+  that matters, and the count includes it. Not covered: 0.1.14 reads this file, but its first write keeps only 20
+  notes; "oldest" is the place in the file, so a note moved in from the spool ranks as new; a note can be delivered
+  twice when its spool file cannot be removed and you dismiss it meanwhile (rare); on a full disk only a log line
+  is left; Mark all read answers "busy" when the file stays held for 5 seconds. Shown by tests.
+- Five owner texts that were false in some state are now true in each (FN-4). A busy graphics card (NS-E201) no
+  longer promises a nightly run that will not come: the Queue, the toast, the paused-channel text and the Assistant
+  say "while Automatic runs are on in Settings", NS-E201 says the card was in use by another task or another model of
+  the same task, and the way out for a job stopped at night is to open the Nightshift Studio shortcut and type
+  `run --resume <id>` (Retry on its card where it has one). A failed switch-off is NS-E206 and says how to switch
+  the task off in Task Scheduler yourself, NS-E204's hint opens with Settings > Schedule > Automatic runs, and the
+  Settings key dialog says a key is kept in both Windows Credential Manager and `config\secrets.dpapi` on this PC. The
+  uninstaller says what happened to the stock-footage keys and the secrets file, per case with a way out by
+  hand, and leaves Credential Manager while another Nightshift is found. After an update, "the nightly task was
+  switched off or removed in Task Scheduler" is said only when that is what happened; when another install holds the
+  task or its folder is gone, the text names whose it is. Not covered: the case where Credential Manager fails and
+  the file succeeds still gives no warning; eight owner hints longer than 400 characters are not shortened; an
+  install the uninstaller cannot see (set up before the install list existed and holding no task, shortcut or
+  variable) loses its Credential Manager keys when another install is uninstalled and keeps its own
+  `secrets.dpapi`. Shown by tests.
 
 ### Videos and stories
 
@@ -418,6 +709,18 @@ since 0.1.14; each "Not covered" line is a limit the change shipped with.
   the Dashboard assistant, `ns verify` and `ns tune`'s benchmark raise NS-E301 with no retry at all (the hint names
   the story job); the retry is shown by tests, not on an install.
 
+- A designed or cloned voice queued by an older setup under a name the voice service refuses is created after all
+  (D-24; the rule for such names is in the rc3 entry above). If 0.1.13 or 0.1.14 setup queued "Night Narrator", the
+  next run, Library > Voices > Create it now or `studio voice apply-pending` makes the voice as "Night-Narrator",
+  points the channel at it and says so in a morning note once; the same run's job already speaks with it. If the
+  suggested name exists, or the channel's profile cannot be read or saved, the request is kept with a way out and
+  tried again, and a request whose channel now names another voice is dropped and said. The ways out the text names
+  exist: Channels > Edit channel > Narrator > Save channel, or `studio channel edit <slug> --set
+  voice.name=Night-Narrator`. Not covered: the job of that channel stops early with NS-E310 only in the one state
+  where the voice must still be chosen, and the screen shows NS-E310's general line above the name text; a voice you
+  made yourself under the suggested name between a kill and the next run is adopted; Library has no rename or
+  delete for voices. Shown by tests.
+
 ### Clips and the Assistant
 
 - Clips from a long video: the clip-picking prompt (v4) also asks the model for the moment's spoken text with
@@ -485,8 +788,8 @@ since 0.1.14; each "Not covered" line is a limit the change shipped with.
 
 ### Behind the scenes
 
-- Tests and CI: a docs-only pull request no longer runs the whole suite and the suite runs in six shards weighed
-  from real timings; CI's FFmpeg install cannot fail silently; a push to `main` is never cancelled by a newer
+- Tests and CI: a docs-only pull request no longer runs the whole suite and the suite runs in shards weighed
+  from real timings (six here, eight since rc4); CI's FFmpeg install cannot fail silently; a push to `main` is never cancelled by a newer
   one; a test fails on stray control characters in tracked text files; the dashboard and setup window now each
   load one script file (`app.js`), so the versioned entry cannot load twice.
 - Tests and CI, added since rc1: the test-shard timeout in `ci.yml` and `release.yml` is 30 minutes (it was 25),
@@ -515,6 +818,33 @@ since 0.1.14; each "Not covered" line is a limit the change shipped with.
 - Test only (B-flaky): the two uv resolver tests no longer see the stage-1 uv of the PC they run on, so
   `tests/test_uv_resolver.py` gives the same answer on a PC with Nightshift's bootstrap uv as on the CI runner; the
   `seed_output` id flake was confirmed gone (200 passes of the one test). No product code changed.
+
+- Tests and CI, block D: the suite runs in eight shards (it was six; with block D's tests six shards were predicted
+  at 758 seconds against the 720-second limit, eight at 569), the shard weights list block D's 31 new test files and
+  seven that grew, and the 720-second limit, the room rule and every timeout are unchanged. The stalled-transfer
+  test no longer counts requests: it checks that every request after the first resumes at the stall offset and
+  follows a counted, waited stall, so a slow runner cannot fail it. No product code changed.
+- Test only (machine-state-guards): a test run cannot change a scheduled task, write the registry or the user's
+  environment, use the real keyring, write to the real Desktop, Start menu or taskbar, show a notification, open a
+  window, elevate, or use the real home under `%LOCALAPPDATA%`, even when a test removes its fakes
+  (`monkeypatch.undo()`), deletes a variable or starts a child with an empty environment; the guards are inactive in
+  a normal process, and the `monkeypatch.undo()` calls in the tests were replaced by scoped ones. Not covered: a test that
+  starts PowerShell itself outside the product's two runners, COM and `-EncodedCommand` spellings the text match
+  does not know, and `Start-Process explorer` inside a PowerShell script are outside it. No product behaviour.
+- Test only (default-port-tests): no test can connect to the default engine, voice or language-model ports (8099,
+  8100, 8080), so a test run no longer reaches a real Nightshift on the same PC; such a connection fails that test by
+  name. Not covered: processes a test starts are outside it. No product behaviour.
+- Test only (D-43): every proof script in `proofs/` now runs in the test suite against a fake-services home made by
+  the product's own code, with a second case that must fail for each proof, and a test fails when a proof has none;
+  `python dev/prove.py --all --strict` exits 3 when a selected proof was skipped. This found two faults in the proofs
+  themselves (F-B7 looked for the job id in the outbox path, F-B13 unpacked a list wrongly), now fixed. No product
+  behaviour.
+- Test only (FN-5): every place that builds a single-quoted PowerShell string from a path or a name uses one quoting
+  function that also handles the typographic quotes U+2018, U+2019, U+201A, U+201B (and for the double-quote form
+  U+201C to U+201E), and a test fails on a new hand-made literal of the shapes it knows. A Windows user
+  name with a typographic apostrophe gets working shortcuts, toasts, nightly task, uninstaller and update windows. Not covered: the guard does not see a literal built in a loop, a join or a call it does not follow, and
+  the cmd.exe action of the nightly task still holds the home path as typed (a `%` or, with delayed expansion
+  switched on in the registry, a `!` in a hand-set home is read by cmd).
 
 ## [0.1.14] - 2026-11-09
 

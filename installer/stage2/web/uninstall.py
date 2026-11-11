@@ -18,15 +18,25 @@ from typing import Any
 
 from installer.stage2.web.bootstrap import HOME_VAR, get_user_variable
 from ns_common.atomic import read_text_retry
+from ns_common.psquote import ps_literal
 
 SIZE_BUDGET_S = 5.0
 NOTE_LABEL = "Windows' note of where Nightshift is installed"      # the NIGHTSHIFT_HOME variable
+#: What goes whatever is ticked. A PC has one nightly task, one Desktop and one such note, and can hold
+#: several Nightshift folders: the uninstall program leaves what another folder uses, so the list says which.
 ALWAYS = (
-    ("The nightly task", None),
-    ("Desktop shortcuts", None),
+    ("The nightly task, when it runs this install", None),
+    ("Desktop shortcuts that open this install", None),
     ("Programs and Python environments", ("venvs", "bin", "run")),
-    (NOTE_LABEL, None),
+    (f"{NOTE_LABEL}, when it names this install", None),
 )
+#: How the uninstall program starts a line about something it left for another Nightshift folder.
+LEFT = "Left "
+#: The line about the plain `ns` and `studio` commands when they were this install's and another stays (FN-3).
+COMMANDS_LEFT = "The plain 'ns' and 'studio' commands"
+#: The two places a stock-footage key is kept: every line the uninstall program prints about the keys
+#: (`installer.stage2.secrets.forget_stock_keys`, or the script's cmdkey lines) names one of them.
+KEY_PLACES = ("Credential Manager", "secrets.dpapi")
 DATA_DIRS = ("outbox", "rejected", "data", "imports", "cache")
 #: `launchers\\nightshift-host.ps1` holds this named mutex for as long as a dashboard window is open.
 HOST_MUTEX = "Global\\Nightshift.AppHost.dashboard"
@@ -39,13 +49,20 @@ REMOVE_TRIES = 120
 
 
 def stays_on_pc(home: Path) -> list[str]:
-    """What an uninstall never removes (see uninstall.ps1), in plain words, for the closing screen."""
+    """What an uninstall never removes (see uninstall.ps1), in plain words, for the closing screen. The
+    stock-footage keys are not here: the program forgets them, or leaves them for another Nightshift folder,
+    and says which (`is_key_line`); the closing screen shows its own lines about them (`keys`)."""
     return [
         f"Your settings and logs, in {home / 'config'} and {home / 'logs'}",
-        "Your stock footage keys, in Windows Credential Manager",
         "The Visual C++ runtime, FFmpeg and Windows Terminal, which other programs use",
         "The Python that setup fetched and its download cache (several GB), in your user folders",
     ]
+
+
+def is_key_line(line: str) -> bool:
+    """A line of the uninstall program about the stock-footage keys: what it forgot, removed, could not
+    remove or left for another Nightshift folder."""
+    return any(place in line for place in KEY_PLACES)
 
 
 def dir_bytes(path: Path, budget_s: float = SIZE_BUDGET_S) -> int:
@@ -84,11 +101,6 @@ def uninstall_argv(app_path: Path, home: Path, delete_models: bool, delete_data:
     return argv
 
 
-def ps_quote(value: str) -> str:
-    """Escape a value for a single-quoted PowerShell string."""
-    return value.replace("'", "''")
-
-
 def leftovers_path() -> Path:
     """Where the deferred script lists what it could not remove."""
     return Path(tempfile.gettempdir()) / LEFTOVERS_FILE
@@ -114,14 +126,22 @@ def deferred_script(home: Path, wait_pids: list[int], local_root: Path | None = 
     targets += [home / "app.prev-config.zip", home / "app.prev-config.zip.unrestored"]
     # (and the copy's lock file and the record of a rollback in progress: ns_common.rollback_intent)
     targets += [home / "app.prev-config.zip.lock", home / "app.rollback-pending.json", home / "app.swap"]
+    # (the folders a start set aside from an interrupted rollback, `rollback_intent.settle_swap`, and the
+    # script the shortcuts start, `s09_shortcuts_scheduler.STUB_NAME`)
+    targets += [*sorted(home.glob("app.swap-left-*")), home / "nightshift-launch.ps1"]
+    # (the `ns` and `studio` command files, card FN-3: they start this program, so they go with it)
+    targets += [home / "cmd"]
+    # (the settings a stale rollback record held, `rollback_intent.saved_settings`; the launch script's count
+    # of missed nights and the reach's marker are in `run`, above)
+    targets += sorted(home.glob("app.rollback-settings-*.zip"))
     if local_root is not None:
         targets += [local_root / "browser", local_root / "webview2"]
-    listed = ", ".join(f"'{ps_quote(str(t))}'" for t in targets)
-    home_dir = ps_quote(str(home))
+    listed = ", ".join(ps_literal(str(t)) for t in targets)
+    home_dir = ps_literal(str(home))
     lines = [
         "$ErrorActionPreference = 'SilentlyContinue'",
         f"foreach ($id in @({ids})) {{ if ($id -gt 0) {{ Wait-Process -Id $id -Timeout {SETUP_WAIT_S} }} }}",
-        f"$mutexName = '{HOST_MUTEX}'",
+        f"$mutexName = {ps_literal(HOST_MUTEX)}",
         f"$until = (Get-Date).AddMinutes({HOST_WAIT_MIN})",
         "while ((Get-Date) -lt $until) {",
         "    $m = $null",
@@ -141,21 +161,21 @@ def deferred_script(home: Path, wait_pids: list[int], local_root: Path | None = 
         "}",
     ]
     if local_root is not None:
-        root = ps_quote(str(local_root))
+        root = ps_literal(str(local_root))
         lines += [
-            f"$localRoot = '{root}'",
+            f"$localRoot = {root}",
             "if ((Test-Path -LiteralPath $localRoot) -and "
             "-not (Get-ChildItem -LiteralPath $localRoot -Force)) {",
             "    Remove-Item -LiteralPath $localRoot -Force",
             "}",
         ]
     lines += [
-        f"$home_ = '{home_dir}'",
+        f"$home_ = {home_dir}",
         "if ((Test-Path -LiteralPath $home_) -and -not (Get-ChildItem -LiteralPath $home_ -Force)) {",
         "    Remove-Item -LiteralPath $home_ -Force",
         "}",
         "$left = @($targets | Where-Object { Test-Path -LiteralPath $_ })",
-        f"$report = Join-Path $env:TEMP '{LEFTOVERS_FILE}'",
+        f"$report = Join-Path $env:TEMP {ps_literal(LEFTOVERS_FILE)}",
         "if ($left.Count -gt 0) {",
         "    $text = @('Nightshift could not remove these folders because a Nightshift window or program was "
         "still using them. Close it and delete them by hand:') + $left",
@@ -187,11 +207,15 @@ def host_pids(home: Path) -> list[int]:
     return pids
 
 
-def spawn_deferred(home: Path, popen: Callable[..., Any] = subprocess.Popen) -> bool:
-    """Start the detached PowerShell that finishes the removal after this window exits. True if started."""
+def spawn_deferred(
+    home: Path, popen: Callable[..., Any] = subprocess.Popen, *, keep_local: bool = False
+) -> bool:
+    """Start the detached PowerShell that finishes the removal after this window exits. True if started.
+    `keep_local`: another Nightshift folder was found on this PC, so setup's own files under
+    the LOCALAPPDATA folder ``Nightshift`` stay (the uninstall program left them too, and said so)."""
     import base64
 
-    script = deferred_script(home, host_pids(home), local_nightshift())
+    script = deferred_script(home, host_pids(home), None if keep_local else local_nightshift())
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     flags = 0x00000008 | 0x00000200 | 0x08000000      # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
     try:
@@ -230,6 +254,8 @@ class UninstallApp:
         self._running = False
         self._result: dict[str, Any] | None = None
         self._had_updater_copy = False
+        self._left: list[str] = []      # the program's own "Left ..." lines (another install uses it)
+        self._keys: list[str] = []      # the program's own lines about the stock-footage keys
         self._sizes = self._measure()
 
     def _measure(self) -> dict[str, Any]:
@@ -282,6 +308,10 @@ class UninstallApp:
             for line in proc.stdout:
                 if line.strip():
                     self._log(line.rstrip())
+                if is_key_line(line):
+                    self._keys.append(line.strip())
+                elif line.startswith((LEFT, "Another Nightshift is still installed", COMMANDS_LEFT)):
+                    self._left.append(line.strip())
             code = proc.wait()
             if code:
                 failure = f"The uninstall program stopped with exit code {code}."
@@ -291,7 +321,9 @@ class UninstallApp:
             self._log(failure)
         removed, kept = self._outcome(home, delete_models, delete_data, failed=bool(failure))
         with self._lock:
-            self._result = {"removed": removed, "kept": kept, "stays": stays_on_pc(home)}
+            self._result = {
+                "removed": removed, "kept": kept, "stays": stays_on_pc(home), "keys": list(self._keys),
+            }
             self._running = False
 
     def _outcome(
@@ -303,16 +335,33 @@ class UninstallApp:
         if failed:
             kept.append({"label": "Nightshift (the removal did not finish; run UNINSTALL.cmd again)",
                          "path": str(home)})
-        elif self._env_var(HOME_VAR) is None:
-            removed += ["The nightly task", "Desktop shortcuts", NOTE_LABEL]
         else:
-            kept.append({"label": f"{NOTE_LABEL} (could not be removed)", "path": str(home)})
+            named = self._env_var(HOME_VAR)
+            same = os.path.normcase(os.path.abspath(str(home)))
+            if named is not None and os.path.normcase(os.path.abspath(named)) == same:
+                # the note is the last thing the program removes: still naming this folder, nothing of the
+                # system part is claimed as removed (as before)
+                kept.append({"label": f"{NOTE_LABEL} (could not be removed)", "path": str(home)})
+            else:
+                # each shared thing went unless the program said it left it for another Nightshift folder
+                # (its own sentence is shown under "kept")
+                if not any(line.startswith(LEFT + "'Nightshift Daily'") for line in self._left):
+                    removed.append("The nightly task")
+                if not any(line.startswith(LEFT) and "Desktop shortcut" in line for line in self._left):
+                    removed.append("Desktop shortcuts")
+                if named is None:
+                    removed.append(NOTE_LABEL)
+            kept += [{"label": line, "path": str(home)} for line in self._left]
         if (home / "venvs").exists():
             kept.append({"label": "Python environments (a file is in use)", "path": str(home / "venvs")})
         programs = "Programs and Python environments"
         if (home / "bin").exists():
             # The window itself holds bin\webview2 DLLs: hand the last deletion to a detached PowerShell.
-            if self._deferred(home):
+            # only a line that names another Nightshift folder means the program kept setup's shared files
+            shared = self._deferred is spawn_deferred and any(
+                "the Nightshift at " in ln for ln in [*self._left, *self._keys]
+            )
+            if spawn_deferred(home, keep_local=True) if shared else self._deferred(home):
                 removed.append(
                     f"{programs} (the last files go as soon as every Nightshift window is closed; "
                     f"anything still in use then is listed in {leftovers_path()})"

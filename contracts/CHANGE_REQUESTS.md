@@ -541,3 +541,15 @@ Format per entry:
 - **Why:** the behaviour works in the studio path, but the shared model disagrees with it, and old files must still load (both fields have defaults).
 - **Workaround until applied:** none needed for the product; F-H106 is proven on the engine install in the 0.1.15 round (QA proof 5.5).
 - **Status:** open
+
+## CR-FN4-1: NS-E201's message and hint, and a new NS-E206 (block D, item FN-4)
+- **From:** builder, card FN-4 (the code audit of 2026-11-10: owner texts that are false in some state)
+- **Change:** `NS-E201` reads "The graphics card was in use by another task, or by another model of this same task, so this one could not use it." (it was "GPU is busy with another task; the nightly run gave up after waiting.", while a dashboard job, a `studio` command, Nightshift Code and a released waiter raise it too, and some of them never waited); its hint names the Queue, Retry from where it stopped, and "A nightly run tries again the next night while Automatic runs are on in Settings" (it promised "the next scheduled run" also while Automatic runs are off). New `NS-E206` "The nightly task could not be switched off, removed or read." for a refused switch-off, `ns schedule remove` and `ns schedule show`: its hint is Task Scheduler's Disable, where NS-E204's (register the task) was the opposite way out. `NS-E204`'s hint names the Settings switch first, and the command with the full path of `ns.exe` (`ns` is not on the PATH).
+- **Why:** each sentence must be true in every state it can be shown in; one fixed hint cannot serve both directions of the switch.
+- **Status:** applied on `block-d/fn4` (registered in `refs/locks/ORCH.lock`).
+
+## CR-D39-1: NS-E702 names no outcome; NS-E705, NS-E706 and NS-W210 are new (`block-d/d39a`, card D-39)
+
+- **Change:** `contracts/errors.json`: NS-E702's message was "Update failed; rolled back to the previous version." and is now "The update or rollback did not complete.", with a hint that points at the detail. The code is raised by refusals that changed nothing and by a rollback or restore that did not finish, so its fixed message may claim no outcome; every NS-E702 from `update_app`, `rollback_app` and `git_update` now ends with a sentence read from the disk (`ns_supervisor.update.where_now`). New: NS-E705 (another update, rollback or repair holds `run/update.lock`), NS-E706 (programs still run from the install's Python environments, or the command that started the update did not end), NS-W210 (registered for D-39b's next-start repair; nothing raises it yet).
+- **Readers checked:** no product code or page compares NS-E702's message text; `tests/test_errors.py::test_ns_e702_claims_no_outcome` pins the new one.
+- **Status:** applied in D-39a

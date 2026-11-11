@@ -282,20 +282,30 @@ def test_update_resync_installs_exactly_the_extras_setup_installed(tmp_path: Pat
     ctx.set_flag("tts_fallback", True)
     S04Venvs().run(ctx)
 
-    def installed(tag: str) -> str:
-        argv = next(c for c in setup_runner.calls if c.tag == tag).argv
-        spec = argv[argv.index("-e") + 1]
-        return spec[spec.index("[") :]
+    def extras(argv: list[str]) -> list[str]:
+        return [argv[i + 1] for i, word in enumerate(argv) if word == "--extra"]
+
+    def exported(venv: str) -> list[str]:  # (P29a: the extras whose locked packages setup exported)
+        return extras(next(c for c in setup_runner.calls if c.tag == f"uv export {venv}").argv)
 
     paths = ctx.paths
     for venv in ("studio", "supervisor", "tts"):
         assert paths.venvs.joinpath(venv, "Scripts", "python.exe").exists()
     cmds: list[list[str]] = []
+    update.resync_venvs(ctx.app_path, paths, uv="uv", run=lambda c: (cmds.append(c) or 0, ""))
+    by_pins = {Path(c[c.index("-o") + 1]).stem: extras(c) for c in cmds if c[1] == "export"}
+    assert by_pins == {"pins-studio": exported("studio"), "pins-supervisor": exported("supervisor")}
+    assert by_pins["pins-studio"] == ["studio", "supervisor"]
+    tts = [c for c in cmds if "-e" in c and Path(c[c.index("--python") + 1]).parts[-3] == "tts"]
+    # setup installed the program into the tts venv with --no-deps (no package of its own): so does the update
+    assert len(tts) == 1 and "--no-deps" in tts[0] and "-r" not in tts[0]
+    assert "--no-deps" in next(c for c in setup_runner.calls if c.tag == "uv pip install tts app").argv
+    # a program from before the lock (no uv.lock): the ranges of its own pyproject.toml, per venv as before
+    cmds.clear()
     update.resync_venvs(tmp_path / "app", paths, uv="uv", run=lambda c: (cmds.append(c) or 0, ""))
     by_venv = {Path(c[c.index("--python") + 1]).parts[-3]: c[4] for c in cmds}
-    assert by_venv["studio"].endswith(installed("uv pip install studio app"))
-    assert by_venv["supervisor"].endswith(installed("uv pip install supervisor app"))
-    assert by_venv["tts"].endswith(installed("uv pip install tts app"))
+    assert by_venv["studio"].endswith("[studio,supervisor]")
+    assert by_venv["supervisor"].endswith("[supervisor,tts,dashboard]") and by_venv["tts"].endswith("[tts]")
 
 
 def test_update_and_rollback_write_the_finished_folder_marker(tmp_path: Path) -> None:

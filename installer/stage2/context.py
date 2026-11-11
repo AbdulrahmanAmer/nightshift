@@ -27,6 +27,7 @@ from installer.stage2.state import (
 from installer.stage2.sysinfo import free_gb
 from installer.stage2.ui import Ui
 from installer.stage2.winenv import HOME_VAR
+from ns_common.commandline import render
 from ns_common.logging import NsLogger
 from ns_common.models import LlmCustom, Manifest
 from ns_common.paths import Paths
@@ -65,22 +66,40 @@ class StepContext:
     resumed: bool = False
     free_gb_fn: Callable[[Path], float] = free_gb
     desktop_override: Path | None = None
+    #: The PC's list of Nightshift folders (`shortcut_owner.LIST_NAME`); None is the one under LOCALAPPDATA.
+    installs_list: Path | None = None
     warnings: list[tuple[str, str]] = field(default_factory=list)
+    # sentences a step wants on its own row and in the install report (it finished, but the owner must know
+    # something): the wizard takes them when the step ends (``note_step`` / ``take_notes``)
+    notes: list[str] = field(default_factory=list)
     # setup window (bridge mode): the pause gate (set = running) and the stop request
     gate: threading.Event | None = None
     stop_requested: threading.Event = field(default_factory=threading.Event)
+    # the ``files`` folder beside INSTALL.cmd (the bundle setup was started from), None when there is none:
+    # ``download`` looks there for every pinned file before the internet (D-17)
+    files_dir: Path | None = None
 
     # ---- messages ----
     def warn(self, code: str, detail: str = "") -> None:
         """Show and record a warning (NS-W code); warnings never stop the install."""
         info = describe_code(code)
         text = f"{code}: {info.message}" + (f" ({detail})" if detail else "")
-        self.ui.say(f"  ! {text}", style="yellow")
+        # said with the commands as this owner types them now; logged with the plain words (FN-3)
+        self.ui.say(f"  ! {render(text, self.paths.home)}", style="yellow")
         if info.hint:
-            self.ui.say(f"    {info.hint}", style="dim")
+            self.ui.say(f"    {render(info.hint, self.paths.home)}", style="dim")
         self.log.warn("warning", text, code=code)
         self.warnings.append((code, detail))
         self.ui.notice(code, detail)
+
+    def note_step(self, text: str) -> None:
+        """Keep a sentence for the running step's row: it shows there and in install-report.json."""
+        self.notes.append(text)
+
+    def take_notes(self) -> list[str]:
+        """The sentences kept since the last call (the wizard asks when a step ends)."""
+        taken, self.notes = self.notes, []
+        return taken
 
     # ---- flags (wizard-internal, persisted in config/wizard_flags.json) ----
     @property
@@ -232,8 +251,15 @@ class StepContext:
         return res
 
     # ---- downloads ----
-    def download(self, items: list[DownloadItem], *, models_source: Path | str | None = None) -> PlanResult:
-        """Run a download plan with progress bars (simulated in --simulate-downloads mode)."""
+    def download(
+        self, items: list[DownloadItem], *, models_source: Path | str | None = None, programs: bool = False,
+    ) -> PlanResult:
+        """Run a download plan with progress bars (simulated in --simulate-downloads mode).
+
+        A pinned file is taken from the ``files`` folder beside INSTALL.cmd first, then from
+        ``models_source``, then from its URL (``run_plan``); a simulated run reads no folder. ``programs``:
+        the plan is pinned programs, so a site that cannot be reached also names the files folder.
+        """
         from installer.stage2.simulate import simulated_fetch
 
         fetch = None
@@ -249,7 +275,8 @@ class StepContext:
             with self.ui.reporter(total_bytes(pending(items))) as rep:
                 return run_plan(
                     items, client=client, models_source=models_source, reporter=rep, sleep=self.sleep,
-                    fetch=fetch, gate=self.gate, log=self.log,
+                    fetch=fetch, gate=self.gate, log=self.log, say=self.ui.say, kit_hint=programs,
+                    sources=[self.files_dir] if self.files_dir is not None and not self.simulate else [],
                 )
         finally:
             client.close()

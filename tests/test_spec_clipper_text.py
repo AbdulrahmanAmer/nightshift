@@ -58,13 +58,7 @@ def _status_row(feature_start: str) -> list[str]:
 def _box(box_id: str) -> str:
     line = next(ln for ln in STATUS.splitlines() if ln.startswith((f"- [ ] {box_id} ", f"- [x] {box_id} ")))
     assert line.startswith("- [ ] ") or " evidence: " in line, f"{box_id} is ticked without evidence"
-    if box_id in STAYS_OPEN:
-        assert line.startswith("- [ ] "), f"{box_id} must stay open: QA ticks it with evidence from a run"
     return line
-
-
-# Open until QA ticks them with evidence from a clip job run with the setting on (the D-38 crash is fixed).
-STAYS_OPEN = ("F-H95", "F-H127")
 
 
 FACECAM_QUESTION = "Facecam candidate limits"

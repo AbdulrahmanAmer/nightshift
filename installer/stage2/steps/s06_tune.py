@@ -9,7 +9,8 @@ from __future__ import annotations
 from installer.stage2 import reinstall
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
-from installer.stage2.runtime_cfg import ensure_baseline
+from installer.stage2.runtime_cfg import runtime_settled
+from ns_common.commandline import typed
 from ns_common.config import load_runtime
 
 
@@ -22,21 +23,18 @@ class S06Tune(Step):
     clears_on_run = ("tuned", "smoke", "smoke_version")
 
     def check(self, ctx: StepContext) -> bool:
-        """True once tuning ran (or fell back to defaults) on an earlier run, and no change that the answers
-        asked of runtime.json (a new model, the engine test) is still owed (D-14)."""
-        return (
-            ctx.flag("tuned") in ("tuned", "defaults")
-            and ctx.paths.runtime_file.exists()
-            and not ctx.flag(reinstall.PENDING_FLAG)
-        )
+        """True once tuning ran (or fell back to defaults) on an earlier run, runtime.json is there AND loads
+        as it is (a damaged one is not "done": ``run`` sets it aside and writes a new one), it was made for
+        this kind of install, and no change that the answers asked of it (a new model, the engine test) is
+        still owed (D-14). One question to the file's one mechanism: ``runtime_cfg.runtime_settled``."""
+        return ctx.flag("tuned") in ("tuned", "defaults") and runtime_settled(ctx)
 
     def run(self, ctx: StepContext) -> None:
         """Write the baseline, make runtime.json follow the answers, then call ``ns tune``."""
-        ensure_baseline(ctx)
-        # The models are downloaded and verified (s03): only now does runtime.json name the new one, so the
-        # nightly run never starts llama-server on a file that is still downloading (D-14).
-        for line in reinstall.apply_pending_runtime(ctx):
-            ctx.ui.say(line)
+        # One pass over the file. The models are downloaded and verified (s03): only now does runtime.json
+        # name the new one, so the nightly run never starts llama-server on a file that is still
+        # downloading (D-14).
+        reinstall.apply_pending_runtime(ctx)
         if ctx.dev_mode:
             ctx.ui.say("Dev mode: the language model is a fake, so there is nothing to tune.")
             ctx.set_flag("tuned", "defaults")
@@ -51,7 +49,7 @@ class S06Tune(Step):
         ctx.log.warn("tune_failed", f"exit {res.returncode}: {res.text[-300:]}")
         ctx.ui.say(
             "Tuning did not finish; Nightshift will use safe default settings. "
-            "You can run 'ns tune' again later.", "yellow",
+            f"You can run '{typed(ctx.paths.home, 'ns tune')}' again later.", "yellow",
         )
         ctx.set_flag("tuned", "defaults")
 

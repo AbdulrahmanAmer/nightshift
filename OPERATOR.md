@@ -40,7 +40,11 @@ Keep this file next to `INSTALL.cmd`.
    your channel, narrator, model and night run time (Balanced is
    preselected; on a PC with less than 32 GB of memory Small is, and the window says why), paste a stock footage key if you have one (optional), and press **Install**.
    Setup then downloads the AI models (you see every file, the speed and the time left; **Pause** and **Resume**
-   work), installs, tunes itself for 1 to 3 minutes and plays you a test voice and a short test video.
+   work), installs, tunes itself for 1 to 3 minutes and plays you a test voice and a short test video. On a PC that
+   runs on the processor (no NVIDIA card: the engine test) the tune keeps the context small, 16384 tokens (the
+   smallest that every use of the language model fits in, with or without Nightshift Code), so the jobs keep their
+   memory; an install tuned by an earlier version keeps its settings until `ns tune` is run again, then restart
+   Nightshift (the running engine reads the context when it starts).
 8. At the end the window says **Nightshift is ready**, shows the **next three steps** (open the dashboard, press
    **Create it now** once while nothing else uses the graphics card, read tomorrow morning's note and check the
    schedule) and names a **help file** (a zip) on your Desktop. Send it back (see below). **Open dashboard** starts
@@ -56,7 +60,11 @@ Keep this file next to `INSTALL.cmd`.
    never see one, check Windows **Settings -> System -> Notifications** for "Nightshift".
 
 With an `answers.json` next to `INSTALL.cmd` setup runs without a window, as before (add `-Ui` after
-`INSTALL.cmd` to open the window with your answers filled in; `-NoUi` forces the no-window run).
+`INSTALL.cmd` to open the window with your answers filled in; `-NoUi` forces the no-window run). A run with an
+answers file next to `INSTALL.cmd` or named with `-Answers` never stops to ask a question, whatever its console is: a key the file names (an empty `""` means no key)
+is not asked for, and what the file leaves out takes its default or, for the channel name and niche, stops setup with a
+message. `INSTALL.cmd -NoUi` and `INSTALL.cmd -Answers <file>` also end without waiting at "Press any key"; a
+double-click on `INSTALL.cmd` still waits, so the message can be read.
 
 You can close the setup window at any time: setup keeps running in the window called Nightshift setup, and running
 **INSTALL.cmd** again opens the setup window again. If you close the Nightshift setup window, setup stops; run **INSTALL.cmd** again and it carries on
@@ -104,6 +112,77 @@ or **Pause**, or you close the Nightshift setup window.
   every model and program, compares it with `manifest.json` and prints one line per file: `ok`, `missing` or
   `bad hash`, with what to do for each (almost always: run INSTALL.cmd again). It changes nothing and needs no
   internet. It takes a few minutes because it reads about 20 GB.
+
+## If GitHub is down on install day
+
+The models can come from a folder (**Model files come from**, above). The programs can too: setup takes them from a
+folder called `files` next to `INSTALL.cmd`, so an outage at GitHub does not stop the install.
+
+1. **Make the folder, on any PC with internet** (before install day, or on another PC while GitHub is down for
+   you). Extract the Nightshift zip there, open PowerShell in the extracted folder and run
+   `powershell -ExecutionPolicy Bypass -File tools/make-files-kit.ps1`. It reads `manifest.json`, downloads every
+   pinned program (uv, the Python build uv installs, the Visual C++ runtime, FFmpeg, every llama.cpp build with its
+   CUDA runtime, the voice engine, OpenCode, yt-dlp, the window files, the face finder and the spaCy language
+   model), checks each SHA256 and writes them to a folder called `files`, with a list in `files/files.json`. Add
+   `-Only uv,python,ffmpeg,yt-dlp,spacy,webview2` (any keys) to fetch only some of them. A file that is already
+   there and matches is kept, so you can run it again after a failure; it ends with exit code 1 and names what is
+   still missing.
+2. **Copy the folder `files` next to `INSTALL.cmd`** on the PC you are setting up.
+3. **Run INSTALL.cmd** (again, if setup had stopped: it carries on at the failed step).
+
+What setup does with it:
+
+- For each program it looks in `files` first (by the file's name), then in your models folder, then uses winget
+  where it always did, then the internet. A program it already installed is not looked for again.
+- A file is used only when its SHA256 is the one `manifest.json` pins, and setup says so once per program:
+  `llama_cpu: taken from files\llama-...zip (SHA256 checked)` in the console, the setup window's log and
+  `logs`; the window's row says *copied from your folder* or *installed from the files folder*. Python is
+  checked by uv itself, against the SHA256 uv carries for that build.
+- A file with other bytes is never used. Setup says `files\llama-...zip does not match its pin; downloading it`
+  once and goes on to the next source. Run `tools/make-files-kit.ps1` again to replace it.
+- When a program is not in the folder and its site is down, the step stops with `NS-E105` as before, and the
+  message now ends with these steps. What was copied or downloaded so far is kept.
+- The folder is read where it is. It is not copied into the install folder; delete it after setup if you like.
+- Not in the folder: the Python packages (PyPI), the models (Hugging Face: use **Model files come from**),
+  Windows Terminal, and a voice engine that `manifest.json` does not pin.
+- **Where the folder goes when you repair an install.** `files` is looked for next to the `INSTALL.cmd` you
+  run. For a new install or an update that is the folder you extracted. If you run the `INSTALL.cmd` inside the
+  install itself (`<install folder>/app/INSTALL.cmd`), put it there: `<install folder>/app/files`. An update
+  replaces `app`, so keep your own copy of the folder somewhere else.
+
+**What the PC check says about the internet** (the *Internet* row; the same in the setup window, in a run without
+a window, when you press **Check again** and when you run INSTALL.cmd again). A site that answers with an error
+(a 504, a rate limit) counts as reachable: the downloads wait for it as described above. The table is about a
+site that gives no answer at all (its name does not resolve, a firewall drops it, the connection times out
+after 10 seconds).
+
+| Site with no answer | No `files` folder | `files` holds everything this PC takes from GitHub | `files` holds only some of it |
+|---|---|---|---|
+| github.com only | red, and the row names the kit steps | **warning, setup goes on**: *github.com does not answer; setup takes the pinned programs from files\ (SHA256 checked)* | red: *the files folder lacks:* and the names of the missing files; run the kit again and press **Check again** |
+| pypi.org or files.pythonhosted.org (with or without GitHub) | red | red: *the files folder covers GitHub, but the Python packages need pypi.org and files.pythonhosted.org, so setup cannot start* | red |
+| huggingface.co, download.pytorch.org, api.github.com, api.nuget.org, the Microsoft download site, Pexels, Pixabay | warning, as before | warning, as before | warning, as before |
+
+- "Everything this PC takes from GitHub" is: uv, the llama.cpp build for this PC's driver and its CUDA runtime,
+  yt-dlp, the face finder, the spaCy language model, FFmpeg unless it is already installed, the voice engine,
+  OpenCode unless your answers switch Nightshift Code off, and the Python build under `files/python`. Each file is
+  hashed for this check, so with a large folder on a slow stick the check takes a little longer.
+- **Python** has no SHA256 in `manifest.json` (uv chooses the build and checks it when it installs it), so the
+  check asks the pinned uv which archive it wants and looks for exactly that file; an older 3.12 archive does not
+  pass. If the kit's `files.json` lists the archive, its bytes must match what the kit saved.
+- **A kit made without OpenCode** keeps the row red, because the window asks about Nightshift Code only after
+  the check. The row says so and gives both ways out: add the file with the kit, or install without Nightshift
+  Code (put `"install_code": false` in an `answers.json` next to `INSTALL.cmd` and start `INSTALL.cmd -Ui`).
+- The warning itself says that a program missing from the folder after all stops its step after a few minutes
+  of trying; the bullets below give the exact waits.
+- **With no internet at all setup does not start**, whatever the folder holds: the Python packages come from
+  PyPI and nothing replaces them. The row says so before anything is installed. With GitHub alone gone, setup
+  runs to the end as long as PyPI and the model source (Hugging Face, or your models folder) answer.
+- If a site that was only a warning is needed after all (a file is missing from the folder although the check
+  passed, or you took the folder away), that step tries for a bounded time and then stops with `NS-E105`, naming
+  the file and the kit steps: stage 1 (uv, the Visual C++ runtime) waits at most 100 seconds for the site to
+  start answering; the tools step tries three times with 120 seconds each; a program download makes three
+  tries and waits up to two minutes for the network before each counts, about eight minutes for one file. It
+  never waits forever. Add the file and run INSTALL.cmd again.
 
 ## If a row is red or a message shows an error code
 
@@ -253,7 +332,7 @@ it on. Do not use Nightshift Code while a night run is due: the graphics card ca
 Closing the Nightshift Code window any way (its X, Task Manager, signing out) gives the graphics card back within a few seconds.
 Nightshift Code needs a context of at least 16384 tokens. Its OpenCode setup is trimmed (the to-do, web fetch, task and skill tools are off and a short Nightshift prompt replaces OpenCode's long one; the read, edit and write tools stay on, because without them it cannot change a file) so that a one-line question is meant to use at most half of that context, which leaves the rest for files and the answer. With less context it does not start: it says "Nightshift Code needs 16384 tokens of context; this install has N" before it takes the graphics card. The number that counts is the one the running engine uses, because the engine reads `llama.flags.ctx` in `config/runtime.json` only when it starts. If you raise it in the file, run **Nightshift - Stop All** and start Nightshift Code again; if the engine is still running with the old number, the message says so and tells you to restart. That context is also the one the nightly run uses (there is one model server), so a bigger context needs more memory for every job. Every start brings `config/opencode.json` up to this setup and sets the model's context and name from what the engine runs and the installed model; keys you added yourself stay. To make Nightshift Code read-only, set `"edit": false` under `"tools"` in that file: every start then says that it cannot change a file and names the key. A `"patch": false` on its own is removed at the start with a note, because an earlier build wrote it and in this OpenCode it switches the edit and write tools off.
 If the graphics card is busy at that time, the run waits up to 2 hours and then skips the night (code `NS-E201`);
-it tries again the next night.
+it tries again the next night while Automatic runs are on.
 
 When the run ends you get a Windows notification ("1 master + 5 Shorts ready for review", or "run failed
 (NS-E203), open Dashboard"). Switch it off in **Settings -> Notifications**. Right after the run Nightshift shuts
@@ -264,10 +343,31 @@ its engine down by itself, unless the Dashboard is open.
 which it is: "Next run ...", "Runs at ... only while you are signed in", or "Automatic runs off". The page shows
 what Windows has, not what you clicked: if you delete or disable the task in Task Scheduler, Nightshift reads that
 as off within a minute, tells you once (`NS-W207`) and leaves the task as you set it; switch Automatic runs on in
-Settings to get the nightly run back. An update and a rollback never switch it on or off. Setup does, for now:
-a Repair or a reinstall that keeps your data registers the task again, so Automatic runs are on afterwards even
-if you had switched them off; switch them off again in Settings. A backup restore leaves them as they are. If Windows
-refuses the change, the switch stays where it was and the message says so (`NS-E204`).
+Settings to get the nightly run back. An update and a rollback never switch it on or off. A backup restore leaves
+them as they are. If Windows refuses the change, the switch stays where it was and the message says so (`NS-E204` when switching on or
+moving the time; `NS-E206` when switching off, with the way to disable the task in Task Scheduler yourself).
+
+**Setup asks once, and the answer is off unless you say yes.** On a first install the setup window has the switch
+**Run Nightshift by itself every night** (the console setup asks the same question; an answers file says
+`"nightly": true`). Without a yes no task is registered, and the run time you chose waits for the switch in Settings.
+Setup run again over an install (a repair, or a newer zip) leaves Automatic runs as Windows has them: an answers file
+changes nothing there, a nightly task that is on is registered again at its own time, and a new run time in the
+answers moves it only if you did not change the time in Settings since the last setup. The window's switch is used
+there only if Automatic runs still are what the window showed under it ("Now: ..."); if they changed meanwhile, setup
+changes nothing and its last line says so. "Uninstall, keep my data" removes the task, so the setup after it asks
+again. The last line of setup, and the Done screen, say what Automatic runs are.
+
+A PC has one "Nightshift Daily" task, and it runs the Nightshift folder it was switched on in. If a first install
+finds such a task and you did not say yes: a task left by an earlier Nightshift in the same folder, or in a folder
+that no longer exists, is removed (its time is kept for the switch); a task that runs another Nightshift folder on
+this PC is left alone, and setup names that folder and says this one does not run by itself. Switching Automatic
+runs on in one Nightshift (or saying yes in its setup) moves the task to it; the message says so, and the other
+Nightshift then shows Automatic runs off and tells you once (`NS-W207`).
+
+If Nightshift cannot write `config/schedule.json` after Windows took the task, it puts the task back as it was and
+says so (`NS-E204`, "the change was undone"). Only if that fails too it says `NS-W208`: Windows then runs the task
+while the pages still say off (or the old time) until the folder `config` can be written again; to stop the run
+before that, delete or disable "Nightshift Daily" in Task Scheduler.
 
 If Windows will not let Nightshift register the task for unattended runs, it registers it for "only while you are
 logged on" and says so at the end of setup (`NS-W205`). Then keep the PC logged in overnight (lock the screen, do not
@@ -415,6 +515,58 @@ A cloned-repo install updates with `ns update --git` (newest release) or `ns upd
 needs Git for Windows (setup does not install it: without Git the command says "install Git for this"). The
 update installs exactly the packages setup installed. The old version is kept next to it as `<folder>.prev`;
 run `ns update --rollback` to go back. If a step fails, the old version is put back and the message names the step.
+In a terminal (from 0.1.15): `ns update <zip>`, `ns update --github`, `ns update --git` and `ns update --rollback`
+return at once and open a window, **Nightshift update**, that shows each step and the result. Closing the terminal
+or that window stops nothing. The command ends before the result is known: the result is the last line of that
+window and of the log. With `--detach` no window opens. A script that needs the result runs the command with
+`--detach` and then the script its JSON line names as `follow` (`powershell -NoProfile -ExecutionPolicy Bypass
+-File <follow>`): it prints the progress and exits 0 when the update is done, 1 otherwise; or it reads the entry of
+`run/update_state.json` whose `log` is the one the command printed. `--wait` (follow and exit with the result) is
+for a program that does not run from Nightshift's own Python environments; `ns` itself refuses it, because it
+would hold the files the update replaces. Only one
+update, rollback or repair runs at a time; a second one stops with `NS-E705` and names the one that runs. Nothing
+starts while a program still runs from Nightshift's Python environments (a Studio window, a terminal that runs `ns`
+or `studio`, Nightshift Code, a Python prompt): after a wait of up to a minute the message `NS-E706` names each
+program and nothing is changed; close them and run it again. If the Python environments cannot be refreshed after
+the program was changed, the message says which program is in place, which environment is left and how to finish,
+and Nightshift is not started by the update: the progress window opens for that result on every route (also from
+Settings > Updates), a note waits on the Queue page, and Settings > Updates shows the last failed update or rollback
+until the next one. The commands such a message names are the `--detach` forms, because after a rollback the `ns`
+you type is the older version's, and from 0.1.14 to 0.1.15-rc3 only its `--detach` form works; for a version that
+has no `--detach` it names INSTALL.cmd. A failed update or rollback never says more than what is on the disk.
+Before it changes the program, an update or rollback writes `run/venv-repair.json` (the uv commands that fill the
+environments); it deletes it after the last one. When a program holds that file open at that moment and Windows
+keeps refusing the delete for 15 seconds, `run/venv-repair.done` marks it finished instead and every start reads it
+as done; only when neither can be written does the update stop before its check and say so, with Repair as the way
+out, keeping the program it put in place (it is not rolled back for that). If it stops in between (a program held a file, the packages were
+unreachable, the power went off), the next start from a Desktop shortcut or the nightly task runs those commands
+first and starts Nightshift only when they worked (a note on the Queue page says so); otherwise it says why
+(`NS-W210`) and starts nothing. Nothing starts from a shortcut while an update runs, and the nightly task waits up
+to 30 minutes for one. An environment an older updater left on another version is named by `ns doctor` (row
+"python environments") and at each start, with INSTALL.cmd's Repair as the way out. INSTALL.cmd and Repair take
+the same lock as the update and refuse while a program runs from the environments (`NS-E705`, `NS-E706`, Retry);
+an unattended setup (an answers.json beside INSTALL.cmd, or `-NoUi`) prints the same message and exits with 15
+when an update, rollback or repair holds the lock, and with 14 when programs still run from the environments or
+the running programs could not be listed (setup then refuses rather than guess). Every other start refuses as long
+as the record waits: `studio run`, the `studio voice` commands, `studio dashboard`, `ns verify` and a launcher
+started without its shortcut print `NS-W210` with the same way out before they write anything and start no engine;
+while an update is running they say that instead. After a repair that failed, the Diagnostics shortcut still opens:
+it makes the full diagnostics zip with `ns doctor --bundle`, and when that fails (the environment it runs from is
+the half-filled one) a smaller zip made without Python (the logs folder, `config/install_state.json`, `VERSION`,
+`run/venv-repair.json`, `run/update_state.json`; no settings and no keys), and says which one it made, or that none
+was made and which folder to send instead.
+From 0.1.14 and the 0.1.15 candidates up to rc3, update or go back with Settings > Updates, the Update shortcut or
+`ns update ... --detach`: their own `ns update` typed in a terminal without `--detach` fails on its own `ns.exe`
+(0.1.14's `ns update <zip>` then puts 0.1.14 back; rc3's `ns update --rollback` leaves one environment on the newer
+version: update again from Settings > Updates, then run `ns update --rollback --detach`).
+Locked packages: from the first release that carries `uv.lock`, setup, a repair (`INSTALL.cmd` again) and every
+update install the exact package versions that release was tested with (each download is checked against its
+SHA256), not the newest ones on the internet that day. The lists are kept as `logs/pins-<environment>.txt`. One
+update is the exception: the update FROM 0.1.14 (or a 0.1.15 candidate up to rc3) to a locked release is done by
+the old updater, which installs the newest versions inside the allowed ranges, as it always did. The next
+update after that one is done by the new updater and installs the locked versions.
+A package whose `uv.lock` is missing or does not belong to it is refused with NS-E124 before anything is changed:
+download it again. `ns update --rollback` to a version from before the lock installs that version its own way.
 An update also keeps a copy of your settings files (engine settings, setup answers, the nightly time, dashboard
 settings, channels and formats) as `<folder>.prev-config.zip`, and `ns update --rollback` puts them back with the old
 version, because an older version cannot always read a file a newer one saved. What you changed in those settings
@@ -466,6 +618,30 @@ update if you want a copy kept again. A damaged copy is replaced and the result 
 at all (a program holds it open) stops the update before anything changes (`NS-E702`, or `NS-E115` from
 `INSTALL.cmd`); close the program and run the update again.
 
+## If Nightshift did not run because its program folder is missing
+
+You find a file `Nightshift did not run.txt` on the Desktop, or a notification "Nightshift did not run last
+night", or a shortcut opens a window that says "Nightshift cannot start: its program folder is missing or
+incomplete". An update or a rollback was interrupted (a power cut, for example) and the folder `app` inside
+the Nightshift folder is not there. Your channels, videos, settings and models are not touched. The log
+names it NS-W209.
+
+1. Close every Nightshift window and any Explorer window that shows the Nightshift folder.
+2. If you moved the folder `app` or `app.swap` somewhere else, move it back into the Nightshift folder as
+   `app.swap` first: otherwise setup starts a fresh program folder.
+3. Run `INSTALL.cmd` from a Nightshift zip of version 0.1.15 or later and choose the same install folder.
+   Setup puts the program folder back.
+4. Nothing else. The next night runs by itself. The next time Nightshift starts, the file on the Desktop is
+   removed and the Dashboard shows one note that names the nights that were missed.
+
+Until then the task tries again every night and counts the nights in the file. To stop that, disable
+`Nightshift Daily` in Task Scheduler and enable it again after step 3.
+
+`ns doctor` has a row "launch script". It fails when Nightshift could not point a Desktop shortcut or the
+nightly task at the script that makes all of the above possible; the row says which, and `INSTALL.cmd` with
+Repair fixes it. If the row "program folders" names a file `app.rollback-settings-<date>.zip`, it holds the
+settings from before an interrupted rollback: to use them, stop Nightshift and unzip it into `config`.
+
 ## Move your settings to another PC
 
 In the Dashboard open **Settings, Your settings**. **Export** saves a zip on your Desktop with your channels, voices, run
@@ -473,17 +649,108 @@ time and what Nightshift has learned (never models or videos). On the new PC, in
 and pick that zip. What it replaces is kept first in `data/backup/pre-restore-...`. The same can be done from a command
 prompt with `ns backup` and `ns restore <zip>`.
 
+## Commands
+
+Some messages name a command, such as `ns doctor --bundle` or `studio resume <slug>`. Setup puts two small command
+files in the folder `cmd` inside the install folder (`ns.cmd` and `studio.cmd`) and adds that folder to your PATH,
+and its last lines and the Done screen say: "Commands: 'ns' and 'studio' work in any PowerShell or Command Prompt
+window you open from now on, and open this install". A window that was already open before setup does not have
+them: open a new one. The commands always open the install whose `cmd` folder they are in, whatever
+`NIGHTSHIFT_HOME` says in the window. When the commands could not be put on your PATH, or another Nightshift
+install has them, setup says so (`NS-W120`) and gives this install's own files by their full path, for example
+`D:/Nightshift/cmd/ns.cmd doctor`; that works in any window. `ns doctor` says in its row "commands" which install
+they open now. Setup also says so when another program's `ns` or `studio` comes first on your PATH (the
+NativeScript `ns`, an Android Studio or JetBrains `studio`). While a plain `ns` does not reach this install, the
+messages, notes and pages of this install name its own command file by its full path instead of the plain
+word, so the command they give is always this install's; this guide keeps the plain words: put the full path
+in their place in that case. They decide that when they are shown, so a note written before a second install
+took the commands names the right file when you read it, and they also give the full path when Windows does
+not say what your PATH holds (the Update window always does). A path with a space is given with its drive
+outside the quotes, `D:"\My Videos\Nightshift\cmd\ns.cmd" doctor`, which a Command Prompt and PowerShell both
+run as it is.
+
+- **Quotes and special characters.** In Windows PowerShell 5.1, an argument that holds `&`, `|`, `<`, `>` or `^`
+  and no space reaches the command file without quotes, so cmd.exe splits it or drops the `^` before Nightshift
+  sees it: put it in quotes twice (`'"a&b"'`). An argument with an odd number of double quotes takes the rest
+  of the command file's line with it; avoid it.
+
+- **A PowerShell opened as administrator** has the commands when it runs as your own Windows account (the usual
+  "Run as administrator"). Another administrator account has its own PATH: type the full path there.
+- **A PATH that is already long.** Setup never cuts your PATH. When adding the folder would make it longer than
+  2047 characters (the most the Windows window for environment variables can edit), it changes nothing and says
+  so: remove PATH entries you no longer use, then run INSTALL.cmd and choose Repair.
+- **A dev install** never changes the PATH of the PC it is developed on: type its command files by their full path.
+- **Going back to 0.1.14** (`ns update --rollback` to that version) keeps the commands working: they start the
+  same programs, which 0.1.14 has too. 0.1.14's own uninstaller does not know them: after uninstalling 0.1.14,
+  delete the folder `cmd` in the install folder and its entry in your PATH by hand (Start, "Edit environment
+  variables for your account", Path).
+
+## Two Nightshift installs on one PC
+
+A PC has one Desktop, one nightly task (`Nightshift Daily`), one notification registration, one `NIGHTSHIFT_HOME`
+variable and one PATH. It can hold more than one Nightshift folder. A second install takes none of these from the
+first without your yes:
+
+- **Desktop shortcuts.** When they open another Nightshift folder, setup leaves them as they are and says so on its
+  last lines and on the Done screen (`NS-W119`, with the folder). Every install also has its own full set in the
+  folder `Shortcuts` inside its install folder: open them from there, or pin them. To make the Desktop shortcuts
+  open this install, run INSTALL.cmd again, choose this folder and switch **Make the Desktop shortcuts and the ns
+  and studio commands open this install** on (the console setup asks; an answers file says `"shortcuts_here":
+  true`). The yes is used once: a
+  later repair of either install does not move them again. Shortcuts of a Nightshift folder that was deleted are
+  taken without a question, and setup says which folder they opened. A file under one of those names that
+  Nightshift did not make is left alone.
+- **NIGHTSHIFT_HOME.** The value Windows keeps for your account is only the PC's default, for a command typed in
+  a terminal that belongs to no install. The shortcuts, the nightly task, and INSTALL.cmd and UNINSTALL.cmd
+  started from an install's `app` folder always work on the install they are in. `ns` or `studio` started from
+  an install's own `venvs` folder works on that install too when the variable is only that default, and says so
+  in one line ("Nightshift: using the install in ..."). A plain `ns` or `studio` (the command files, see
+  "Commands") always opens the install whose `cmd` folder holds it. To work on another install from the same
+  terminal, type that install's own command file (`D:/Other/cmd/ns.cmd doctor`); for its `ns.exe` started by its
+  full path, setting the variable in that window first (`$env:NIGHTSHIFT_HOME = 'D:/Other'`) also works: a value
+  that differs from the PC's default was set on purpose and is followed, again with one line ("Nightshift: using
+  D:/Other: ..."). The variable follows the same yes as the shortcuts, and
+  the switch (or the console question) is offered while the shortcuts, the variable or the commands are another
+  install's; its line says what it moves. After it moved, open a new terminal: programs that are already open
+  keep the old value.
+- **The `ns` and `studio` commands.** The first Nightshift `cmd` folder on your PATH decides which install a plain
+  `ns` opens. Setup adds this install's folder when no other existing install's comes first, and otherwise leaves
+  the PATH as it is and says which install the commands open (`NS-W120`) and where this install's own are; the
+  same yes moves them here. A folder of a deleted install is replaced without a question.
+- **The nightly task.** As described under "Every night": it runs one install, and switching Automatic runs on in
+  another install's Settings moves it there. A dev install never takes another install's task.
+- **Notifications.** Both installs share the one registration; the second leaves it as it is unless you said yes.
+
+Uninstalling one of them removes only what is its own: the task when it runs that install, the Desktop shortcuts
+that open it, `NIGHTSHIFT_HOME` when it names it, its own `cmd` folder and its PATH entry (the rest of the PATH stays
+exactly as it was), and its own `Shortcuts` folder. When the plain commands were the removed install's, a line says
+how the other install gets them (its INSTALL.cmd, Repair) and gives its command files by their full path. What the other install uses is
+left, and each line that starts with "Left" says what and for which folder; the notification registration and the
+stored stock footage keys stay while another install is found. A shortcut or a task that does not say which
+Nightshift it belongs to is left too, and named. UNINSTALL.cmd started from an install's own program folder
+(`app` inside the install folder) removes that install, whatever `NIGHTSHIFT_HOME` names. Started from anywhere
+else (a repository, an extracted zip) it follows the variable only to an install that runs that copy of the
+program; otherwise it changes nothing and tells you to run the install's own UNINSTALL.cmd or to pass `-HomeDir`.
+When the other install held none of the shared things (you never said yes for it), the uninstall still knows it
+from the list setup keeps (`installs.txt` in `%LOCALAPPDATA%\Nightshift`): it keeps the notification
+registration and the stored keys, and its last lines say "Another Nightshift is still installed at ..." with what
+to run there (its INSTALL.cmd, Repair) so that `NIGHTSHIFT_HOME`, the Desktop shortcuts and the notification icon
+become its own. An install made by a version before this one is not in that list until its setup runs once.
+
 ## Uninstall
 
-Double-click **UNINSTALL.cmd** (Settings, About, Uninstall copies its full path). A window shows what goes and lets you tick the two things to delete. It removes the nightly task, shortcuts, the notification registration, programs and environments. It asks
+Double-click **UNINSTALL.cmd** (Settings, About, Uninstall copies its full path). A window shows what goes and lets you tick the two things to delete. It removes the nightly task, the shortcuts and the notification registration (each only when it is this install's: see "Two Nightshift installs on one PC"), programs and environments. It asks
 separately whether to delete the AI models (15 GB) and your videos and history. The default answer to both is
 **No**. At the end it tells you what it kept and where. The window itself still uses a few program files, so the very
 last ones are removed by a small hidden task as soon as the window closes; the list says so.
 
 Uninstall does **not** change everything on the PC. These stay, and the closing screen lists them: your settings and
-logs (`config` and `logs` in the install folder, so the folder itself stays), your stock footage keys (Windows
-Credential Manager), the Visual C++ runtime, FFmpeg and Windows Terminal (other programs use them), and the Python
-that setup fetched together with its download cache (several GB, in your user folders).
+logs (`config` and `logs` in the install folder, so the folder itself stays), the Visual C++ runtime, FFmpeg and
+Windows Terminal (other programs use them), and the Python that setup fetched together with its download cache
+(several GB, in your user folders). Your stock footage keys are removed from Windows Credential Manager and from
+`config\secrets.dpapi`, except that Credential Manager is left as it is while another Nightshift folder on this PC
+uses it; the closing screen has a line for each, saying what was removed, what was left and what could not be
+removed (with how to remove it by hand).
 
 ## Optional models
 

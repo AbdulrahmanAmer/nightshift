@@ -6,16 +6,19 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
 
+from installer.stage2.web import venvrepair
 from ns_common import ports
 from ns_common.acquire import Endpoint, Service
+from ns_common.config import load_install_state
 from ns_common.errors import NsError, load_errors
 from ns_common.models import Runtime
-from ns_common.paths import Paths
+from ns_common.paths import Paths, repo_root
 from ns_supervisor.childenv import child_env
 from ns_supervisor.procs import UNDER_ENGINE_ENV
 from ns_supervisor.services import venv_python
@@ -165,6 +168,28 @@ def spawn_supervisor(paths: Paths, *, headless: bool = True) -> None:
         raise NsError("NS-E202", f"cannot start the supervisor: {e}") from e
 
 
+def _program(paths: Paths) -> Path:
+    """The program folder the engine of this home runs (`control.app_path`, which imports this module)."""
+    st = load_install_state(paths)
+    return Path(st.app_path) if st.app_path else repo_root()
+
+
+def start_gate(paths: Paths, client: SupervisorClient | None = None) -> None:
+    """`NS-W210` when Nightshift may not start the engine now (`venvrepair.start_refusal`: a repair record
+    waits for the program in place, or an update is refreshing the environments). With `client`, an engine
+    that already answers lets it through, as `ensure_running` does. The CLI entries that will need the
+    engine (`studio run`, the voice commands, `ns verify`) call it first, so a refusal leaves nothing behind
+    (no job folder, no ledger row, no report).
+
+    The two files are read first and the engine is asked only when they refuse: with nothing pending the
+    gate costs a file check and no connection, so a command's own refusals that come after it (no footage
+    key, no channel) are said as before, without the engine being asked anything."""
+    why = venvrepair.start_refusal(paths.home, _program(paths))
+    if why is None or (client is not None and client.is_up()):
+        return
+    raise NsError("NS-W210", why)
+
+
 def ensure_running(
     client: SupervisorClient,
     paths: Paths,
@@ -173,9 +198,16 @@ def ensure_running(
     wait_s: float = 30,
     spawn: Callable[[], None] | None = None,
 ) -> None:
-    """Start the supervisor if `/status` is down and wait for it. Raises `NS-E202` if it never answers."""
+    """Start the supervisor if `/status` is down and wait for it. Raises `NS-E202` if it never answers.
+
+    D-39b: every Python route that starts the engine comes through here (`studio run` and any studio
+    command that needs a model, `studio dashboard`, `ns verify`, the relaunch after an update), so here,
+    before anything is spawned, an environment an update left unfinished stops the start: `NS-W210` with
+    the way out (`venvrepair.start_refusal`). An engine that already answers is not started, so nothing is
+    refused then."""
     if client.is_up():
         return
+    start_gate(paths)
     if spawn is None and (port := urlsplit(client.base_url).port):
         ports.ensure_free({"supervisor": port})          # a foreign program holds it: say so
     (spawn or (lambda: spawn_supervisor(paths, headless=headless)))()

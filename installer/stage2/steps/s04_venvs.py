@@ -5,6 +5,12 @@ the cuBLAS/cuDNN wheels faster-whisper needs on Windows (hash-locked: ``python.w
 ``manifest.json``) and the spaCy model wheel (hash-locked: ``python.spacy_wheel``). ``supervisor`` gets
 ``[supervisor,tts,dashboard]``. The PyTorch ``tts`` venv is created only when s02 or s08 flagged the fallback.
 
+The packages of the studio and supervisor venvs come from the program's ``uv.lock`` (P29a,
+``installer.stage2.web.deplock``): the locked set of each venv's extras is exported with hashes, installed
+with ``--require-hashes``, and the program is added with ``--no-deps``. A lock that is missing or was not
+made for this ``pyproject.toml`` stops the step with NS-E124 before any venv is created or changed. The
+``tts`` venv is outside the lock: its packages are the manifest's own pins (``fallback.ensure_tts_venv``).
+
 A dev install (``ctx.dev_mode``, docs/DEV_MODE.md) installs the ``dev-install`` extra instead of
 ``studio``: the same packages without faster-whisper, PyAV and CTranslate2, and never the cuBLAS/cuDNN wheels
 or the ``tts`` venv.
@@ -19,8 +25,14 @@ from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error, uv_error
 from installer.stage2.fallback import ensure_tts_venv
+from installer.stage2.runner import RunResult
+from installer.stage2.web import deplock, filesdir, venvrepair
+from ns_common.errors import NsError
 from ns_common.uv import uv_env, venv_args
-from ns_common.venv_extras import extras_suffix
+from ns_common.venv_extras import DEV_VENV_EXTRAS, VENV_EXTRAS
+
+#: The venvs s04 fills from the lock, in the order it fills them.
+LOCKED_VENVS = ("studio", "supervisor")
 
 #: The wheels uv unpacks for the studio, supervisor and PyTorch venvs (cuBLAS, cuDNN, torch).
 UV_CACHE_NEED_GB = 8
@@ -34,8 +46,8 @@ SPACY_MODEL_VERSION = "3.8.0"
 #: only looks it up: spaCy and torch take seconds to load). The first-party packages come from the editable
 #: install of the app, the part a killed run leaves undone. ``ns_supervisor.cli`` is the module ``ns`` runs:
 #: it pulls in typer, pydantic, httpx, yaml, rich, numpy and psutil, which the studio and supervisor venvs
-#: get from ``pip install -e app[...]`` (the top-level ``ns_*`` packages import nothing third-party). The tts
-#: venv is installed with ``--no-deps``, so it is asked only for its own packages.
+#: get from the locked set of their extras (the top-level ``ns_*`` packages import nothing third-party). The
+#: tts venv is installed with ``--no-deps``, so it is asked only for its own packages.
 VENV_PROBES: dict[str, tuple[str, ...]] = {
     "studio": ("import:ns_common", "import:ns_studio", "import:ns_supervisor.cli", "find:spacy"),
     "supervisor": ("import:ns_common", "import:ns_supervisor.cli", "import:ns_dashboard", "find:fastapi",
@@ -127,6 +139,40 @@ def cannot_load(ctx: StepContext, name: str) -> str | None:
     return f"the {name} environment cannot load Nightshift: {res.text[-200:] or 'no answer'}"
 
 
+def lock_error(what: str, res: RunResult) -> NsError:
+    """The error for a ``uv export`` that failed although ``deplock.problem`` found nothing: NS-E124 with uv's
+    last lines when uv puts it on the lock (``deplock.blames_lock``), else what any failed uv call gets (a
+    full disk NS-E104, a blocked program NS-E113, the rest NS-E105 with uv's lines)."""
+    err = uv_error(what, res)
+    if err.code == "NS-E105" and deplock.blames_lock(res.text):
+        return make_error("NS-E124", f"{err.detail}\n{deplock.NO_VENV_CHANGED}")
+    return err
+
+
+def export_pins(ctx: StepContext) -> dict[str, Path]:
+    """``logs/pins-<venv>.txt`` for the studio and supervisor venvs, from the program's ``uv.lock``.
+
+    Everything that can refuse runs here, before the first ``uv venv`` or ``uv pip install``: the lock is
+    checked against ``pyproject.toml`` (no uv, no network) and uv exports every venv's set. NS-E124 when
+    the lock is missing or stale, or when uv refuses it (``lock_error``).
+    """
+    why = deplock.problem(ctx.app_path)
+    if why is not None:
+        raise make_error("NS-E124", f"{why} {deplock.NO_VENV_CHANGED}")
+    table = DEV_VENV_EXTRAS if ctx.dev_mode else VENV_EXTRAS
+    ctx.paths.logs.mkdir(parents=True, exist_ok=True)
+    pins: dict[str, Path] = {}
+    for name in LOCKED_VENVS:
+        out = deplock.pins_file(ctx.paths.logs, name)
+        res = ctx.run_uv(
+            deplock.export_args(ctx.app_path, table[name], out), tag=f"uv export {name}", timeout=600
+        )
+        if not res.ok:
+            raise lock_error(f"uv could not read the locked packages of the {name} environment", res)
+        pins[name] = out
+    return pins
+
+
 class S04Venvs(Step):
     """Create and fill the Python environments."""
 
@@ -145,6 +191,12 @@ class S04Venvs(Step):
         if ctx.flag("venvs_app") != str(ctx.app_path):
             return False                    # the editable installs point at another program folder
         if ctx.flag("tts_fallback", False) and not ctx.flag("tts_venv_installed", False):
+            return False
+        # D-39b: an update, rollback or resync that broke off (its repair record), or an older updater that
+        # left a venv on another version: the flags are setup's own and say nothing of either
+        unfinished = venvrepair.unfinished(ctx.paths.home, ctx.app_path)
+        if unfinished is not None:
+            ctx.log.info("venv_check_failed", why=unfinished)
             return False
         for name in venv_names(ctx):
             problem = cannot_load(ctx, name)
@@ -182,24 +234,45 @@ class S04Venvs(Step):
         pin_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
         self._pip(ctx, name, ["--no-deps", "--require-hashes", "-r", str(pin_file)], tag)
 
+    def _fill(self, ctx: StepContext, name: str, pins: Path) -> None:
+        """The locked packages of ``name`` (hash-checked), then the program itself without dependencies."""
+        py = ctx.venv_python(name)
+        for args, tag in (
+            (deplock.install_args(py, pins), f"{name} locked packages"),
+            (deplock.app_args(py, ctx.app_path), f"{name} app"),
+        ):
+            res = ctx.run_uv(args, tag=f"uv pip install {tag}")
+            if not res.ok:
+                raise uv_error(f"installing {tag} failed", res)
+
     def _spacy_model(self, ctx: StepContext) -> None:
-        """The spaCy model wheel, checked against the manifest's sha256 (unchecked URL for old manifests)."""
+        """The spaCy model wheel, checked against the manifest's sha256 (unchecked URL for old manifests).
+
+        A wheel of that name and SHA256 in the ``files`` folder beside INSTALL.cmd is installed from there
+        (a GitHub outage does not stop this step). uv gets the same ``--hash`` line and checks the bytes it
+        installs, so a wheel that changed after the look is refused by uv, never installed.
+        """
         model = ctx.manifest.spacy_model
         pin = ctx.manifest.python.spacy_wheel
         if pin is None or not pin.sha256:
             self._pip(ctx, "studio", [spacy_wheel_url(model)], "studio spacy model")
             return
+        url = pin.url
+        local = filesdir.verified(ctx.files_dir, filesdir.url_leaf(pin.url), pin.sha256, ctx.ui.say)
+        if local is not None and ctx.files_dir is not None:
+            url = local.resolve().as_uri()
+            ctx.ui.say(f"{model}: taken from {filesdir.label(ctx.files_dir, local)} (SHA256 checked)")
         self._pip_locked(
-            ctx, "studio", [f"{model} @ {pin.url} --hash=sha256:{pin.sha256}"], "studio spacy model", "spacy"
+            ctx, "studio", [f"{model} @ {url} --hash=sha256:{pin.sha256}"], "studio spacy model", "spacy"
         )
 
     def run(self, ctx: StepContext) -> None:
         """Create the venvs and install the packages."""
         check_cache_space(ctx)
-        app = str(ctx.app_path)
+        # (a dev install exports the dev-install extra: no speech or GPU wheels, docs/DEV_MODE.md)
+        locked = export_pins(ctx)       # NS-E124 here, before any venv is created or changed
         self._venv(ctx, "studio")
-        dev = ctx.dev_mode      # docs/DEV_MODE.md: the dev-install extra, no speech or GPU wheels
-        self._pip(ctx, "studio", ["-e", f"{app}{extras_suffix('studio', dev=dev)}"], "studio app")
+        self._fill(ctx, "studio", locked["studio"])
         if ctx.profile == "gpu":
             pins = ctx.manifest.python.whisper_cuda
             if not pins:
@@ -208,10 +281,28 @@ class S04Venvs(Step):
         self._spacy_model(ctx)
 
         self._venv(ctx, "supervisor")
-        self._pip(ctx, "supervisor", ["-e", f"{app}{extras_suffix('supervisor', dev=dev)}"], "supervisor app")
+        self._fill(ctx, "supervisor", locked["supervisor"])
 
         if ctx.flag("tts_fallback", False):
             ensure_tts_venv(ctx)
+        # D-39b: every venv now holds this program, so a repair record (this program's, or a stale one of
+        # another) has nothing left to do. Its delete is retried; still refused, it is marked finished
+        # (venvrepair.clear). When neither can be done the record would refuse every start: the step fails
+        # with that sentence (Retry), and the done-state below is not written.
+        try:
+            how = venvrepair.clear(ctx.paths.home)
+        except OSError as e:
+            ctx.log.error("venv_record_left", str(e))
+            raise make_error(
+                "NS-W210", venvrepair.left_sentence(ctx.paths.home, ctx.app_path, str(e))
+                + " Or press Retry once the program that holds it has ended.",
+            ) from e
+        if how == "marked":
+            ctx.log.warn("venv_record_marked_finished", str(venvrepair.record_path(ctx.paths.home)))
+        # D-48: an update or rollback that was interrupted is finished now: its state says so (setup holds
+        # run/update.lock for the whole run, `controller._guard_venvs`, so no update process writes it)
+        if venvrepair.close_update_state(ctx.paths.home, ctx.app_path, venvrepair.BY_SETUP):
+            ctx.log.info("update_state_closed", by=venvrepair.BY_SETUP)
         # the done-state is written last, after every venv was filled (the wizard cleared it before the work)
         ctx.set_flag("venvs_installed", True)
         ctx.set_flag("venvs_version", ctx.manifest.version)

@@ -9,6 +9,13 @@ the command definitions in `ns_studio/cli.py`, `ns_studio/clipper/cli.py`, `ns_s
 everything; `=llm,tts,whisper,embed,clips` picks some. In `studio series` and `studio ask` the flag is a plain
 on/off switch.
 
+Where they work: both commands use the folder named by `NIGHTSHIFT_HOME`. When the variable is not set (an old
+window, a PC where setup has not run) they use `%LOCALAPPDATA%/Nightshift` only if an install is already there
+(`config/runtime.json` or `config/install_state.json`); otherwise every subcommand stops with NS-E123, names the
+folder it looked in and, when this program belongs to an install, the line to type
+(`$env:NIGHTSHIFT_HOME = '<that folder>'`), and writes nothing. `--help` and the bare command still answer. A
+variable that names an empty folder is never refused, and `ns update --home <folder>` names its own.
+
 ## studio
 
 | Command | What it does |
@@ -80,15 +87,15 @@ Some actions exist in the Dashboard and for the Assistant (`studio ask`) but hav
 |---|---|
 | `ns` | Print the version. |
 | `ns stop` | Stop the engine and every model process (what "Nightshift - Stop All" runs). |
-| `ns doctor` | Check the install; `--bundle` collects logs and reports into a diagnostics zip. |
-| `ns verify` | Check every service and benchmark them; writes `logs\verify-report.json` (`--quick` for health, one completion, one voice). |
+| `ns doctor` | Check the install; `--bundle` collects logs and reports into a diagnostics zip. The check runs what every start runs: it finishes or undoes an interrupted `ns update --rollback` and says what it did in the row "program folders". |
+| `ns verify` | Check every service and benchmark them; writes `logs\verify-report.json` (`--quick` for health, one completion, one sentence with every installed voice mode; only the speed benchmarks are left out; a designed or cloned voice that does not speak is a `[WARN]` row and a morning note, not a failure). |
 | `ns tune` | Find the fastest llama-server flags for this PC and save them to `runtime.json` (`--dry-run` prints the sweep matrix). |
-| `ns update ZIP` | Apply a release zip (verified, with automatic rollback); `ns update --rollback` goes back one version and puts back the settings files the update copied (it names them). |
+| `ns update ZIP` | Apply a release zip (verified, with automatic rollback); `ns update --rollback` goes back one version and puts back the settings files the update copied (it names them). Every form returns at once: the work runs in its own process, and in a terminal a window, "Nightshift update", shows each step and the result (`--detach`: no window; its JSON line names `follow`, a script that waits and exits 0 or 1 with the result; `--wait` follows and exits with the result, but only from a program outside Nightshift's own Python environments). One at a time (`NS-E705`), and not while a program runs from Nightshift's Python environments (`NS-E706`, which names them). |
 | `ns update --check` | Ask GitHub whether a newer release exists; prints a sentence and a JSON line (`update_available`, `current`, `latest`). Changes nothing. The engine does this once a week and shows a notification. |
 | `ns update --github` | Download `Nightshift-Update-<version>.zip` (releases up to v0.1.1: `nightshift-app-<version>.zip`, still accepted) of the newest release, verify its SHA256 (GitHub's digest, else the attached `.sha256`; nothing is installed without one) and apply it like `ns update ZIP`. |
 | `ns backup` | Back up settings, voices, the database and exemplars (`--out` sets the target zip). |
 | `ns restore ZIP` | Restore a backup; what it overwrites is kept in `data\backup\pre-restore-*` (`--all` also restores `runtime.json`). |
-| `ns schedule install` | Register the nightly task "Nightshift Daily" enabled, which is Automatic runs on (`--time HH:MM`; default: the time the task already has, else the recorded or kept time, else 03:00). A task you disabled in Task Scheduler is left exactly as it is and read as off (no `config\schedule.json`; a `--time` is kept in `config\dashboard.json`) unless you add `--enable`. `ns update` never registers a task that is not enabled now. A task registered with `--disabled` (mode `disabled`, what a dev install has) is the exception: `ns update` leaves it alone and off, while a plain `ns schedule install` registers it enabled. |
-| `ns schedule remove` | Unregister the nightly task (Automatic runs off). The run time is kept in `config\dashboard.json` for switching on again. |
+| `ns schedule install` | Register the nightly task "Nightshift Daily" enabled, which is Automatic runs on (`--time HH:MM`; default: the time the task already has, else the recorded or kept time, else 03:00). A task you disabled in Task Scheduler is left exactly as it is and read as off (no `config\schedule.json`; a `--time` is kept in `config\dashboard.json`) unless you add `--enable`. `ns update` never registers a task that is not enabled now. A task registered with `--disabled` (mode `disabled`, what a dev install has) is the exception: `ns update` leaves it alone and off, while a plain `ns schedule install` registers it enabled. If `config/schedule.json` cannot be written after Windows took the task, the task is put back as it was (`NS-E204`, "the change was undone"); if that fails too the command says `NS-W208`. Setup itself calls this command with `--setup` (hidden; it reads the task and decides by setup's rules: only a first install that said yes, or the setup window's switch against an unchanged state, changes Automatic runs). |
+| `ns schedule remove` | Unregister the nightly task (Automatic runs off). The run time is kept in `config\dashboard.json` for switching on again. If Windows refuses, it says `NS-E206` and how to disable the task in Task Scheduler. |
 | `ns schedule show` | Show the task state and next run. |
 | `ns notify TITLE MESSAGE` | Show a Windows toast (does nothing where toasts are unavailable). |

@@ -33,7 +33,9 @@ from installer.stage2.simulate import FakeRunner
 from installer.stage2.state import StateStore
 from installer.stage2.sysinfo import free_gb, load_preflight, sample_preflight
 from installer.stage2.ui import Ui
+from installer.stage2.web.filesdir import beside as files_beside
 from ns_common import __version__
+from ns_common.commandline import render
 from ns_common.config import load_manifest
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
@@ -201,8 +203,15 @@ class Wizard:
                 ui.step_status(step.id, "failed", step.title, failure.code)
                 return self._give_up(failure)
             ctx.log.info("stage_end", step=step.id, duration_s=round(time.perf_counter() - t0, 3))
-            ctx.state.mark(step.id, "done")
-            ui.step_status(step.id, "done", step.title, None)
+            notes = " ".join(ctx.take_notes())
+            if notes:
+                # finished, with something the owner must know (a damaged file set aside): the row says it
+                # (warning) and the state keeps the sentence, which the install report prints as a note
+                ctx.state.mark(step.id, "done", error=notes)
+                ui.step_status(step.id, "warning", step.title, notes)
+            else:
+                ctx.state.mark(step.id, "done")
+                ui.step_status(step.id, "done", step.title, None)
             self._current = None
             return None
 
@@ -215,7 +224,8 @@ class Wizard:
             # the site had its ten minutes: the generic "check the internet" would contradict the detail
             hint = "Run INSTALL.cmd again later: setup continues where it stopped."
         body += f"\n\nWhat to do: {hint}"
-        self.ctx.ui.panel(body, title=f"{step.title} failed")
+        # shown now: the commands it names as this owner types them (FN-3); the error keeps the plain words
+        self.ctx.ui.panel(render(body, self.ctx.paths.home), title=f"{step.title} failed")
 
     def _on_failure(self, step: Step, failure: Failure, attempts: int) -> str:
         """Decide retry / skip / quit for a failed step."""
@@ -305,7 +315,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--ui-bridge", choices=["stdio"], help="talk JSON lines to the setup window (P1) on stdio")
     p.add_argument("--dev", action="store_true",
                    help="dev install (docs/DEV_MODE.md): stub models, fake engines, no GPU packages")
+    p.add_argument("--files-dir", help="the files folder beside INSTALL.cmd (default: <app-path>/files)")
     return p.parse_args(list(argv) if argv is not None else None)
+
+
+def files_dir_of(args: argparse.Namespace, app_path: Path) -> Path | None:
+    """The folder of pinned programs this run may take files from, or None (D-17).
+
+    ``--files-dir`` when the setup window names it (the wizard then runs from ``<home>/app``, which never
+    holds the folder), else ``files`` in the program folder (the console wizard run from the bundle). A
+    folder that is not there is no folder.
+    """
+    named = getattr(args, "files_dir", None)
+    if not named:
+        return files_beside(app_path)
+    try:
+        return Path(named) if Path(named).is_dir() else None
+    except OSError:
+        return None
 
 
 def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext:
@@ -330,7 +357,13 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
 
     if bridge and not isinstance(ui, BridgeUi):
         ui = BridgeUi()
-    ui = ui or Ui(interactive=not non_interactive)
+    ui = ui or Ui()
+    if unattended:
+        # The one place that decides whether a person can answer: a run nobody answers for (an answers file
+        # outside the home, `--non-interactive`, no console) has a Ui that cannot prompt, whatever its stdin
+        # is: a redirected `< NUL` and a real console both report a tty, and a secret prompt reads the
+        # console, not stdin, so nothing piped could answer it (D-40). No step checks stdin on its own.
+        ui.interactive = False
     log = NsLogger("installer", paths.logs)
     warnings_sink: list[tuple[str, str]] = []  # the context's ``warnings`` (the store warns before it exists)
     if args.simulate_downloads:
@@ -387,6 +420,7 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
         free_gb_fn=(lambda _p: 500.0) if args.simulate_downloads else free_gb,
         gate=ui.gate if isinstance(ui, BridgeUi) else None,
         stop_requested=ui.stop if isinstance(ui, BridgeUi) else threading.Event(),
+        files_dir=files_dir_of(args, app_path),
     )
 
 

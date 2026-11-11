@@ -15,8 +15,9 @@ import sys
 import tempfile
 import threading
 import webbrowser
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from starlette.staticfiles import NotModifiedResponse, StaticFiles
 from starlette.types import Scope
 
 from ns_common.errors import NsError
+from ns_common.loopback import OWN_PAGE, Choose, LoopbackGuard, media_type
 from ns_common.paths import Paths
 from ns_dashboard import DEFAULT_PORT, media
 from ns_dashboard.adapters import Adapters
@@ -36,7 +38,6 @@ from ns_dashboard.assistant.llm import LlmProvider
 from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.events import sse_frame
 from ns_dashboard.handlers import Dashboard, build_state, default_static_dir
-from ns_dashboard.security import is_loopback_host, is_loopback_origin
 from ns_dashboard.state import AppState
 from ns_dashboard.supervisor_link import EventRelay, SupervisorLink
 from ns_dashboard.uploads import tmp_dir
@@ -135,39 +136,34 @@ class SafeJSONResponse(JSONResponse):
         return json.dumps(content, ensure_ascii=False, default=str).encode("utf-8")
 
 
-class LoopbackMiddleware:
-    """Pure ASGI middleware: refuse non-loopback `Host`/`Origin`, add security headers."""
+def refusal_notes(paths: Paths) -> Callable[[Choose, datetime], str | None]:
+    """How the loopback check tells the owner about a page that keeps trying: the morning notes of this
+    home (`run/morning_note.json`, which the bell and the Queue page read). The check's `choose` counts the
+    notes that wait and picks the note under the notes lock, so the count and the write are one step."""
+    from ns_supervisor import notify
 
-    def __init__(self, app: Any, log: Any = None) -> None:
-        self.app = app
-        self.log = log
+    def tell(choose: Choose, at: datetime) -> str | None:
+        return notify.leave_chosen_note(paths, "Nightshift", choose, now=at)
 
-    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        """Handle one ASGI connection."""
-        if scope["type"] not in ("http", "websocket"):
+    return tell
+
+
+class LoopbackMiddleware(LoopbackGuard):
+    """Pure ASGI middleware: the shared loopback check (`ns_common.loopback`, the rule for a server whose
+    own page is a browser), then the security and cache headers on every answer that passed.
+
+    A refused request gets 403 `{"error": {"code": "NS-E207", ...}}`; a page that keeps trying is told to the
+    owner in a morning note (`paths` given), as the engine does.
+    """
+
+    def __init__(self, app: Any, log: Any = None, paths: Paths | None = None) -> None:
+        tell = refusal_notes(paths) if paths is not None else None
+        super().__init__(app, rule=OWN_PAGE, log=log, tell=tell)
+
+    async def answer(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        """A request that passed the check: the app, with the headers added to its answer."""
+        if scope["type"] != "http":
             await self.app(scope, receive, send)
-            return
-        headers = {k.lower(): v for k, v in scope.get("headers", [])}
-        host = headers.get(b"host", b"").decode("latin-1")
-        origin = headers.get(b"origin")
-        origin_s = origin.decode("latin-1") if origin is not None else None
-        if not is_loopback_host(host) or not is_loopback_origin(origin_s):
-            if self.log is not None:
-                self.log.warn("request_refused", "non-loopback Host or Origin", host=host, origin=origin_s)
-            if scope["type"] == "websocket":
-                await send({"type": "websocket.close", "code": 1008})
-                return
-            err = {"code": "forbidden_host", "message": "Nightshift only answers on 127.0.0.1.", "hint": None}
-            body = json.dumps({"error": err}).encode()
-            length = str(len(body)).encode()
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 403,
-                    "headers": [(b"content-type", b"application/json"), (b"content-length", length)],
-                }
-            )
-            await send({"type": "http.response.body", "body": body})
             return
         path = scope.get("path", "")
 
@@ -191,6 +187,11 @@ async def body_json(request: Request) -> dict[str, Any]:
     raw = await request.body()
     if not raw.strip():
         return {}
+    kind = media_type(request.headers.get("content-type", ""))
+    if kind != "application/json" and not kind.endswith("+json"):
+        # a form's body (text/plain can carry JSON) is never read as JSON: the loopback check refuses a form
+        # from anywhere but the dashboard's own page, and this keeps the parser from being a way round it
+        raise ApiError(415, "not_json", "Send the request body as JSON (Content-Type: application/json).")
     try:
         data = json.loads(raw)
     except ValueError as e:
@@ -499,8 +500,8 @@ def create_app(
         return ok(await run_in_threadpool(dash.engine.notes))
 
     @app.post("/api/notes/clear")
-    async def notes_clear() -> SafeJSONResponse:
-        return ok(await run_in_threadpool(dash.engine.clear_notes))
+    async def notes_clear(request: Request) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.engine.dismiss_notes, await body_json(request)))
 
     @app.get("/api/runs")
     async def runs(request: Request) -> SafeJSONResponse:
@@ -778,7 +779,7 @@ def create_app(
     if root.is_dir():
         app.mount("/", DashboardFiles(directory=str(root), html=True), name="static")
 
-    app.add_middleware(LoopbackMiddleware, log=st.log)
+    app.add_middleware(LoopbackMiddleware, log=st.log, paths=st.paths)
     return app
 
 
@@ -805,6 +806,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--open", action="store_true", help="open the dashboard in the default browser")
     ap.add_argument("--fake-services", action="store_true", help="use fake adapters (no GPU, no models)")
     args = ap.parse_args(argv)
+    from ns_studio.gate import refusal
+
+    why = refusal()     # D-48: it runs jobs; the engine that starts it passed the same gate, a hand start not
+    if why is not None:
+        sys.stderr.write(f"NS-W210: {why}\n")
+        return 4    # (venvrepair.REFUSED_EXIT, as the engine's own refusal)
     import uvicorn
 
     configure_tmp(Paths.from_env())

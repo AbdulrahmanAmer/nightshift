@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nightshift"
-version = "0.1.15-rc3"
+version = "0.1.15-rc4"
 description = "Nightshift: local story-to-video studio for YouTube long-form + Shorts"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -93,4 +93,4 @@ select = ["E", "F", "I", "B", "UP", "TID251"]
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
-include = ["ns_common", "ns_studio", "ns_tts", "ns_supervisor", "ns_dashboard", "tools"]
+include = ["ns_common", "ns_studio", "ns_tts", "ns_supervisor", "ns_dashboard", "tools", "proofs"]

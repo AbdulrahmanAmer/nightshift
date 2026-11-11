@@ -95,6 +95,8 @@ class FakeCmd:
             if tool:
                 self.present.add(tool)
             return CmdResult(0, "installed", "")
+        if any("Get-CimInstance Win32_Process" in a for a in args):     # setup's holder check (D-39b)
+            return CmdResult(0, "4|C:\\Windows\\System32\\ntoskrnl.exe|System\n", "")
         if len(args) > 1 and args[1] == "venv":
             py = Path(args[-1]) / "Scripts" / "python.exe"
             py.parent.mkdir(parents=True, exist_ok=True)
@@ -170,6 +172,7 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
         key_check=lambda service, key: {"ok": bool(key), "code": None if key else "NS-E501", "message": None},
         head=modelcheck.fake_head,
         launch=lambda argv, env=None: launched.append(list(argv)),
+        engine_answers=lambda home: False,          # no engine of a scratch home answers (D-46 review)
         launch_captured=lambda argv, env=None, **kw: (launched.append(list(argv)), (0, ""))[1],
         elevate_longpaths=lambda: True, console=lambda text, level: console.append(text),
         uv_path=lambda home: str(uv), handover_uv=lambda: None, clipboard=lambda text: None,

@@ -16,9 +16,10 @@ from installer.stage2.answers import InstallerAnswers, blank_secrets_in_file, de
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error
-from installer.stage2.runtime_cfg import ensure_baseline, update_runtime
+from installer.stage2.runtime_cfg import runtime_is_usable, update_runtime
 from installer.stage2.secrets import KEY_NAMES
 from ns_common.atomic import write_text_atomic
+from ns_common.commandline import typed
 from ns_common.config import load_channel, load_runtime, save_channel
 from ns_common.models import Channel, Runtime, Voice
 
@@ -218,7 +219,7 @@ class S07Configs(Step):
         """True when every config exists and no answers file still holds a key."""
         ans = ctx.ensure_answers()
         slug = slugify(ans.channel.display_name)
-        if not (ctx.paths.runtime_file.exists() and ctx.paths.channel_file(slug).exists()):
+        if not (runtime_is_usable(ctx) and ctx.paths.channel_file(slug).exists()):
             return False
         if not ui_prefs_file(ctx).exists():
             return False
@@ -229,8 +230,7 @@ class S07Configs(Step):
     def run(self, ctx: StepContext) -> None:
         """Complete runtime.json, write opencode.json and the channel, store and blank the secrets."""
         ans = ctx.ensure_answers()
-        ensure_baseline(ctx)
-        update_runtime(ctx, lambda rt: apply_engine_test(ctx, rt))
+        runtime = update_runtime(ctx, lambda rt: apply_engine_test(ctx, rt))
 
         channel = channel_from_answers(ans)
         if ctx.paths.channel_file(channel.slug).exists():
@@ -242,7 +242,7 @@ class S07Configs(Step):
         write_ui_prefs(ctx, ans)
 
         if ans.install_code:
-            llama = load_runtime(ctx.paths).llama
+            llama = runtime.llama
             ctx.paths.opencode_file.parent.mkdir(parents=True, exist_ok=True)
             write_text_atomic(
                 ctx.paths.opencode_file,
@@ -271,7 +271,7 @@ class S07Configs(Step):
         if queue_voice(ctx, ans, channel):
             ctx.ui.say(
                 f"Your {channel.voice.mode} voice '{channel.voice.name}' is created the first time "
-                "Nightshift runs. To make it now: studio voice apply-pending."
+                f"Nightshift runs. To make it now: {typed(ctx.paths.home, 'studio voice apply-pending')}."
             )
 
     @staticmethod

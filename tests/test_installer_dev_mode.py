@@ -197,6 +197,12 @@ def uv_tags(runner: FakeRunner) -> list[str]:
     return [c.tag for c in runner.calls if c.tag.startswith("uv ")]
 
 
+def exported(runner: FakeRunner, venv: str) -> list[str]:
+    """The extras whose locked packages s04 exported for ``venv`` (P29a: they come from uv.lock)."""
+    argv = next(c for c in runner.calls if c.tag == f"uv export {venv}").argv
+    return [argv[i + 1] for i, word in enumerate(argv) if word == "--extra"]
+
+
 def test_s04_dev_installs_the_dev_extra_without_gpu_speech_or_tts_packages(tmp_path: Path):
     runner = FakeRunner(tmp_path / "desktop")
     ctx = dev_ctx(tmp_path, runner)
@@ -204,13 +210,13 @@ def test_s04_dev_installs_the_dev_extra_without_gpu_speech_or_tts_packages(tmp_p
     step.run(ctx)
     step.verify(ctx)
     assert uv_tags(runner) == [
-        "uv venv studio", "uv pip install studio app", "uv pip install studio spacy model",
-        "uv venv supervisor", "uv pip install supervisor app",
+        "uv export studio", "uv export supervisor",
+        "uv venv studio", "uv pip install studio locked packages", "uv pip install studio app",
+        "uv pip install studio spacy model",
+        "uv venv supervisor", "uv pip install supervisor locked packages", "uv pip install supervisor app",
     ]
-    studio = next(c for c in runner.calls if c.tag == "uv pip install studio app")
-    assert f"{ROOT}[dev-install,supervisor]" in studio.argv
-    sup = next(c for c in runner.calls if c.tag == "uv pip install supervisor app")
-    assert f"{ROOT}[supervisor,tts,dashboard]" in sup.argv
+    assert exported(runner, "studio") == ["dev-install", "supervisor"]
+    assert exported(runner, "supervisor") == ["supervisor", "tts", "dashboard"]
     everything = " ".join(a for c in runner.calls for a in c.argv).lower()
     assert "torch" not in everything and "cublas" not in everything and "whisper" not in everything
     assert not (ctx.paths.logs / "pins-whisper-cuda.txt").exists() and not ctx.venv_python("tts").exists()
@@ -221,7 +227,7 @@ def test_s04_real_mode_keeps_the_studio_extra(tmp_path: Path):
     runner = FakeRunner(tmp_path / "desktop")
     ctx = dev_ctx(tmp_path, runner, dev=False)
     S04Venvs().run(ctx)
-    assert f"{ROOT}[studio,supervisor]" in next(c for c in runner.calls if c.tag == "uv pip install studio app").argv
+    assert exported(runner, "studio") == ["studio", "supervisor"]
 
 
 # ---------------------------------------------------------------------------------------------- s05, s06, s07
@@ -306,10 +312,13 @@ def test_s09_dev_registers_the_task_disabled_and_remembers_the_time(tmp_path: Pa
 
 def test_s09_real_mode_registers_an_enabled_task(tmp_path: Path):
     runner = FakeRunner(tmp_path / "desktop")
-    ctx = make_test_context(tmp_path, raw_answers=example_answers(run_time="04:30"), resolve=True,
-                            app_path=launcher_app(tmp_path), runner=runner)
+    ctx = make_test_context(tmp_path, raw_answers=example_answers(run_time="04:30", nightly=True),
+                            resolve=True, app_path=launcher_app(tmp_path), runner=runner)
+    ctx.set_flag("first_install", True)      # a first install that said yes to the nightly question
     S09ShortcutsScheduler().run(ctx)
-    assert "--disabled" not in runner.called("ns schedule install")[0].argv and ctx.flag("schedule_mode") == "s4u"
+    argv = runner.called("ns schedule install")[0].argv
+    assert "--disabled" not in argv and argv[-4:] == ["--setup", "first", "--nightly", "yes"]
+    assert ctx.flag("schedule_mode") == "s4u"
 
 
 def test_s10_dev_names_the_mode_and_says_nothing_is_scheduled(tmp_path: Path):
@@ -346,7 +355,13 @@ def test_reset_for_mode_switch_redoes_the_later_steps_only(tmp_path: Path):
     assert devmode.reset_for_mode_switch(home, False) is True
     st = load_install_state(Paths(home))
     assert sorted(st.steps) == ["b01_tools", "s01_questions"] and st.dev_mode is False
-    assert not (home / "config" / "wizard_flags.json").exists() and not (home / "config" / "runtime.json").exists()
+    # The old mode's settings file is set aside, never deleted (setup-torn-runtime), and the old flags, `tuned`
+    # among them, are gone: the one flag left is the note that names the kept file for the tuning step's row.
+    config = home / "config"
+    assert not (config / "runtime.json").exists() and (config / "runtime.json.other").is_file()
+    flags = json.loads((config / "wizard_flags.json").read_text(encoding="utf-8"))
+    assert flags.get(devmode.OTHER_FLAG) == "runtime.json.other" and "tuned" not in flags
+    assert set(flags) <= {"_install", devmode.OTHER_FLAG}
     assert devmode.reset_for_mode_switch(home, True) is False             # nothing past the questions is done
     assert devmode.reset_for_mode_switch(tmp_path / "nowhere", True) is False
 

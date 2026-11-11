@@ -13,7 +13,7 @@ def test_runtime_roundtrip(tmp_home: Path):
     p.ensure()
     with pytest.raises(NsError) as ei:
         c.load_runtime(p)
-    assert ei.value.code == "NS-E203"
+    assert ei.value.code == "NS-E125" and "runtime.json" in str(ei.value)  # names the file (one reader)
     c.save_runtime(p, Runtime.default("cpu-dev"))
     assert c.load_runtime(p).video.encoder == "libx264"
 

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from installer.stage2.web import uninstall
+from ns_common.psquote import ps_literal
 
 APP = Path("D:/ns-app")
 
@@ -47,8 +48,9 @@ def test_the_view_lists_what_goes_and_what_stays_with_sizes(tmp_path: Path):
     view = uninstall.UninstallApp(APP, home).view()
     assert view["home"] == str(home) and view["running"] is False and view["result"] is None
     assert [a["label"] for a in view["always"]] == [
-        "The nightly task", "Desktop shortcuts", "Programs and Python environments",
-        "Windows' note of where Nightshift is installed",
+        "The nightly task, when it runs this install", "Desktop shortcuts that open this install",
+        "Programs and Python environments",
+        "Windows' note of where Nightshift is installed, when it names this install",
     ]
     assert view["always"][2]["bytes"] == 150 and view["always"][0]["bytes"] is None
     assert view["models"] == {"path": str(home / "models"), "bytes": 4000}
@@ -85,7 +87,7 @@ def test_removing_runs_the_script_logs_its_output_and_reports_what_stayed(tmp_pa
     assert deferred == [home]                                    # bin is left for the detached PowerShell
     # the closing screen is honest: what an uninstall never touches is listed, not "nothing else was changed"
     stays = " ".join(result["stays"])
-    assert "Credential Manager" in stays and "Visual C++ runtime" in stays and "download cache" in stays
+    assert "Visual C++ runtime" in stays and "download cache" in stays
     assert str(home / "config") in stays and str(home / "logs") in stays
     assert any(r.startswith("Programs and Python environments (the last files go") for r in result["removed"])
     assert logged == ["  removing D:\\ns\\venvs", "  removed shortcut Nightshift Dashboard.lnk"]
@@ -117,7 +119,8 @@ def finished(app: uninstall.UninstallApp) -> dict:
 def test_a_file_that_could_not_be_removed_is_reported_as_kept_not_removed(tmp_path: Path):
     home = make_home(tmp_path)  # the fake script removes nothing
     app = uninstall.UninstallApp(
-        APP, home, popen=lambda argv, **kw: FakeProc(""), deferred=lambda h: False, env_var=lambda n: "x")
+        APP, home, popen=lambda argv, **kw: FakeProc(""), deferred=lambda h: False,
+        env_var=lambda n: str(home))
     result = finished(app)
     labels = [k["label"] for k in result["kept"]]
     assert "Python environments (a file is in use)" in labels
@@ -144,8 +147,12 @@ def test_the_deferred_script_waits_for_the_window_then_deletes_bin_with_retries(
     home = tmp_path / "José's ns"
     script = uninstall.deferred_script(home, [111, 222])
     assert "@(111,222)" in script and "Wait-Process" in script
-    assert str(home / "bin").replace("'", "''") in script
+    assert ps_literal(str(home / "bin")) in script
     assert f"for ($i = 0; $i -lt {uninstall.REMOVE_TRIES}" in script
+    left = home / "app.swap-left-20261110-0312"  # (card 206-carried: a folder a start set aside)
+    left.mkdir(parents=True)
+    again = uninstall.deferred_script(home, [111])
+    assert ps_literal(str(left)) in again and "nightshift-launch.ps1" in again
     assert uninstall.REMOVE_TRIES >= 120                                      # at least two minutes
     started: list[dict] = []
     ok = uninstall.spawn_deferred(home, popen=lambda argv, **kw: started.append({"argv": argv, **kw}))
@@ -237,5 +244,37 @@ def test_no_update_ever_made_means_no_update_files_line(tmp_path: Path):
 
 def test_the_deferred_script_also_removes_the_run_folder_after_the_windows_are_gone(tmp_path: Path):
     script = uninstall.deferred_script(tmp_path / "ns", [1])
-    assert str(tmp_path / "ns" / "run").replace("'", "''") in script
-    assert str(tmp_path / "ns" / "bin").replace("'", "''") in script
+    assert ps_literal(str(tmp_path / "ns" / "run")) in script
+    assert ps_literal(str(tmp_path / "ns" / "bin")) in script
+
+
+def test_the_closing_screen_says_what_happened_to_the_keys(tmp_path: Path):
+    """The uninstall program forgets the stock-footage keys (or leaves them for another Nightshift folder):
+    the closing screen shows its own lines about them, and no longer lists the keys under what stays."""
+    home = make_home(tmp_path)
+    file_line = f"removed {home}\\config\\secrets.dpapi (the copy of the Pixabay key for nightly runs)"
+    said = "\n".join([
+        "Left the notification registration: the Nightshift at D:\\Other uses it.",
+        "  forgot the Pixabay key in Credential Manager",
+        "  " + file_line,
+        "  removed user environment variable NIGHTSHIFT_HOME",
+        "",
+    ])
+    app = uninstall.UninstallApp(
+        APP, home, popen=lambda argv, **kw: FakeProc(said), deferred=lambda h: True, env_var=lambda n: None)
+    result = finished(app)
+    assert not any("stock footage keys" in s or "Credential Manager" in s for s in result["stays"])
+    assert result.get("keys") == ["forgot the Pixabay key in Credential Manager", file_line]
+    # another Nightshift folder uses them: the program's "Left" line is the key line, shown once
+    left = "Left the stock-footage keys in Credential Manager: the Nightshift at D:\\Other uses them."
+    other = uninstall.UninstallApp(
+        APP, make_home(tmp_path / "b"), popen=lambda argv, **kw: FakeProc(left + "\n"),
+        deferred=lambda h: True, env_var=lambda n: None)
+    result = finished(other)
+    assert result.get("keys") == [left]
+    assert left not in [k["label"] for k in result["kept"]]
+    # a program that said nothing about the keys (it stopped early): nothing is claimed
+    silent = uninstall.UninstallApp(
+        APP, make_home(tmp_path / "c"), popen=lambda argv, **kw: FakeProc(""), deferred=lambda h: True,
+        env_var=lambda n: None)
+    assert finished(silent).get("keys") == []

@@ -223,18 +223,53 @@ def test_a_real_run_creates_the_queued_voice_first_and_only_warns_on_failure(
 
     env = jobs.open_env(frozenset({"llm"}), light=False)
     queue(tmp_home, mode="design", name="c-voice", description="soft")
-    monkeypatch.setattr(voice_setup, "apply_pending", lambda e: "c-voice")
+    monkeypatch.setattr(voice_setup, "apply_pending_report", lambda e, **kw: voice_setup.Applied("c-voice"))
     env.fake = frozenset()  # as in a real run
     cli._setup_voice(env)  # creates it (patched) without raising
 
-    def broken(e: Any) -> str | None:
+    def broken(e: Any, **kw: Any) -> str | None:
         raise NsError("NS-E310", "no service")
 
-    monkeypatch.setattr(voice_setup, "apply_pending", broken)
+    monkeypatch.setattr(voice_setup, "apply_pending_report", broken)
     cli._setup_voice(env)  # a failure is a warning, the run goes on
     env.fake = frozenset({"llm"})
-    monkeypatch.setattr(voice_setup, "apply_pending", lambda e: pytest.fail("fake runs skip it"))
+    monkeypatch.setattr(voice_setup, "apply_pending_report", lambda e, **kw: pytest.fail("fake runs skip it"))
     cli._setup_voice(env)
+
+
+def test_a_failing_voice_setup_leaves_one_note_on_a_dev_install_across_three_runs(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """FN-3 review blocker [derived-state]: the note names `studio voice apply-pending`, and on a dev install
+    a plain `studio` does not reach this install. The note is stored with the plain words, so the once-only
+    check (it compares the words it gave) matches at the second and third run; it is shown by full path."""
+    from ns_studio import cli
+    from ns_supervisor import notify
+
+    env = jobs.open_env(frozenset({"llm"}), light=False)
+    runtime = tmp_home / "config" / "runtime.json"
+    data = json.loads(runtime.read_text(encoding="utf-8")) if runtime.is_file() else {}
+    runtime.write_text(json.dumps({**data, "dev_mode": True}), encoding="utf-8")
+    monkeypatch.setenv("NS_TEST_USER_PATH", "")     # the PATH is known: nothing on it reaches a dev install
+    queue(tmp_home, mode="design", name="c-voice", description="soft")
+
+    def broken(e: Any, **kw: Any) -> str | None:
+        raise NsError("NS-E310", "no service")
+
+    monkeypatch.setattr(voice_setup, "apply_pending_report", broken)
+    env.fake = frozenset()  # as in a real run (`studio run`, the nightly)
+    for _ in range(3):
+        cli._setup_voice(env)
+    notes = [n for n in notify.read_notes(env.paths) if n["title"] == voice_setup.NOTE_TITLE]
+    assert len(notes) == 1, [n["message"] for n in notes]
+    assert voice_setup.AGAIN in notes[0]["message"]              # stored: the plain words
+    shown = getattr(notify, "shown_notes", None)
+    assert shown is not None, "the base has no notify.shown_notes"
+    seen = [n for n in shown(env.paths) if n["id"] == notes[0]["id"]]  # the id of the stored note
+    own = tmp_home / "venvs" / "studio" / "Scripts" / "studio.exe"   # no command files on a dev install here
+    from ns_common.commandline import command_form
+
+    assert len(seen) == 1 and f"{command_form(str(own))} voice apply-pending" in seen[0]["message"]
 
 
 def test_http_post_keeps_the_code_the_service_answered_with(monkeypatch: pytest.MonkeyPatch):

@@ -151,6 +151,9 @@ def test_b02_copies_the_stage1_uv_and_b03_runs_the_copy(
     home = tmp_path / "home"
     var: dict[str, str] = {}
     cmd = FakeCmd()
+    from tests.test_dependency_lock import write_program
+
+    write_program(tmp_path / "app")         # b03 reads the program's pyproject.toml and uv.lock
     boot = bootstrap.Boot(
         app_path=tmp_path / "app", home=home, uv=controller.default_uv_path(home), cmd=cmd,
         set_home_var=lambda n, v: var.update({n: v}) or True, get_home_var=var.get,

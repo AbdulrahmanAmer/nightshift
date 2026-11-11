@@ -12,6 +12,7 @@ from ns_common.errors import NsError
 from ns_common.tts_client import FakeTts, TtsClient, TtsItem
 from ns_studio import voice_setup
 from ns_studio.policy import regen
+from ns_supervisor import notify
 from tests.helpers import make_ctx
 
 NOT_TTS = {"llm", "embed", "whisper", "clips"}  # a real run: the TTS service is a real client
@@ -40,11 +41,11 @@ def test_run_job_guarded_creates_the_queued_voice_before_the_job(
     ctx = make_ctx(tmp_home, fake=NOT_TTS)
     assert not isinstance(ctx.services.tts, FakeTts)
 
-    def apply(env: Any, **kw: Any) -> str:
+    def apply(env: Any, **kw: Any) -> voice_setup.Applied:
         runs.append("voice created")
-        return "c-voice"
+        return voice_setup.Applied("c-voice")
 
-    monkeypatch.setattr(voice_setup, "apply_pending", apply)
+    monkeypatch.setattr(voice_setup, "apply_pending_report", apply)
     assert regen.run_job_guarded(ctx) == ["voice"]
     assert runs == ["voice created", "run"]
 
@@ -58,14 +59,18 @@ def test_a_failure_to_create_it_is_logged_and_the_job_still_runs(
     def broken(env: Any, **kw: Any) -> str:
         raise NsError("NS-E310", "no service")
 
-    monkeypatch.setattr(voice_setup, "apply_pending", broken)
+    monkeypatch.setattr(voice_setup, "apply_pending_report", broken)
     assert regen.run_job_guarded(ctx) == ["voice"] and runs == ["run"]
+    # and the owner of a run nobody watched reads it in the morning note, with the way to try again
+    (note,) = notify.read_notes(ctx.paths)
+    assert "not created yet" in note["message"] and "no service" in note["message"]
+    assert "Create it now in Library > Voices" in note["message"]
 
 
 def test_nothing_queued_or_a_fake_tts_does_nothing(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch, runs: list[str]
 ):
-    monkeypatch.setattr(voice_setup, "apply_pending", lambda env, **kw: pytest.fail("not wanted"))
+    monkeypatch.setattr(voice_setup, "apply_pending_report", lambda env, **kw: pytest.fail("not wanted"))
     regen.run_job_guarded(make_ctx(tmp_home, fake=NOT_TTS))  # nothing queued
     queue(tmp_home)
     assert voice_setup.apply_pending_voices(make_ctx(tmp_home)) is None  # fake TTS needs no voice

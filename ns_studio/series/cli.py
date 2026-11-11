@@ -13,9 +13,11 @@ from typing import Annotated, Any
 import typer
 from pydantic import BaseModel
 
+from ns_common.commandline import render
 from ns_common.errors import NsError
 from ns_studio.context import FAKEABLE
 from ns_studio.errors import hint_of
+from ns_studio.gate import job_gate
 from ns_studio.series.store import MAX_MINUTES, MIN_MINUTES, WorkshopError
 from ns_studio.series.workshop import Workshop, default_workshop
 
@@ -35,16 +37,19 @@ def _show(value: Any) -> None:
     typer.echo(value if isinstance(value, str) else json.dumps(value, indent=2, ensure_ascii=False))
 
 
-def _run(fake: bool, action: Callable[[Workshop], Any]) -> None:
-    """Run `action` on a workshop, print its result, and turn coded errors into exit code 1."""
+def _run(fake: bool, action: Callable[[Workshop], Any], *, gated: bool = True) -> None:
+    """Run `action` on a workshop, print its result, and turn coded errors into exit code 1. `gated`: the
+    command may run a model or queue a job, so it passes the start gate first (D-48, `ns_studio.gate`)."""
     try:
+        if gated:
+            job_gate()
         _show(action(_workshop(fake)))
     except NsError as e:
         typer.echo(f"error {e.code}: {e.definition.message} {e.detail}".strip(), err=True)
         typer.echo(f"hint: {hint_of(e)}", err=True)
         raise typer.Exit(1) from e
     except WorkshopError as e:
-        typer.echo(f"error: {e}", err=True)
+        typer.echo(f"error: {render(str(e))}", err=True)    # its command as this owner types it (FN-3)
         raise typer.Exit(1) from e
 
 
@@ -166,10 +171,10 @@ def produce(
 @app.command()
 def status(slug: Slug, fake_services: Fake = False) -> None:
     """Show the story status, parts and the suggested next step."""
-    _run(fake_services, lambda ws: ws.status(slug))
+    _run(fake_services, lambda ws: ws.status(slug), gated=False)
 
 
 @app.command("list")
 def list_cmd(fake_services: Fake = False) -> None:
     """List every workshop story."""
-    _run(fake_services, lambda ws: ws.list_stories())
+    _run(fake_services, lambda ws: ws.list_stories(), gated=False)

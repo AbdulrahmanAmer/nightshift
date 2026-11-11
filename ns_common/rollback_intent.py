@@ -31,11 +31,42 @@ the engine's start call, and `ns update` / `ns update --rollback` themselves) ca
 * anything else is a stale record and is deleted, the settings left as they are: a program put in place again
   since (an updater, INSTALL.cmd or an older version's rollback write the marker again, so even the same build
   has another install stamp) has run on the settings the rollback prepared, which the program then in
-  `<app>` reads.
+  `<app>` reads. One thing only the record knows is carried over first: a restore that failed
+  (`after.mark_unrestored`). When the copy in `<app>.prev-config.zip` is still the one of the program the
+  rollback went back to, it is marked (`config_snapshot.mark_unrestored`) BEFORE the record goes, so the next
+  update keeps it instead of saving a newer version's settings over it under the older program's name. While
+  the mark cannot be written the record stays (outcome "failed") and the next start tries again.
 
-The setup window (INSTALL.cmd) does not undo: it finishes a rollback whose older program is in place, and
-refuses to replace the program while the newer one waits for its undo (`appcopy.install_app`). `ns update` and
+The setup window (INSTALL.cmd) started from a zip does not undo: it finishes a rollback whose older program is
+in place, and refuses to replace the program while the newer one waits for its undo (`appcopy.install_app`).
+Started from the installed program folder itself (a repair run from `<home>\app`), `install_app` replaces
+nothing and does not look at the record: that window is a start of the program in place, and its first
+settings write (`first_start.guard`) finishes or undoes like any other start. `ns update` and
 `ns update --rollback` refuse while a record could not be finished or undone (`Recovery.pending`).
+
+The folder `<app>.swap` (`settle_swap`, card 206-carried). Only the first rename makes it and only the third
+takes it away, so one that is there when nothing is running was left by an interruption, with or without a
+record (0.1.14's rollback writes none, and a stale record is deleted). Every place that calls `recover`
+(`first_start`, `ns update`, `ns update --rollback`, and the setup window started from a zip,
+`appcopy.install_app`) calls `settle_swap` first, under the same lock, and it does one rename or none:
+
+* no `<app>`: `<app>.swap` is the program that was leaving; it goes back to `<app>` (and `recover` then
+  undoes the settings when a record says so). In a real install only the setup window can do this: every
+  venv is an editable install of `<app>`, so without that folder no command, Dashboard or `ns doctor`
+  starts, and the Desktop shortcuts (through `<home>\nightshift-launch.ps1`) say to run INSTALL.cmd from
+  the zip. While `<app>` is missing `recover` never calls a record stale: it keeps it and says so;
+* `<app>` and no `<app>.prev`: it becomes `<app>.prev`, the rollback target it was about to become;
+* `<app>` and `<app>.prev` both there: it is a third program folder nothing looks for. It is renamed to
+  `<app>.swap-left-<yyyymmdd-hhmm>` and never deleted (it may be the only copy of a program); `ns doctor`
+  and the next update or rollback name it until the owner deletes it;
+* it has no completion marker (not a program folder Nightshift finished), or Windows refuses the rename (a
+  window or a scanner has it open): nothing is renamed, the sentence says what to do (with a program in
+  `<app>`: start Nightshift again; without one: run INSTALL.cmd from the zip again, or rename by hand), and
+  `ns update --rollback` does not start while the name is taken. Nothing in it is ever deleted.
+
+A run of `ns update --rollback` that finishes an EARLIER rollback (its last rename through `settle_swap`, or
+its step 4 through `recover`) stops there and says so (`update.rollback_app`): swapping again in the same
+run would undo the rollback the owner had asked for.
 
 The settings are loadable by whichever program is in `<app>` at every point: before the swap the newer program
 is there and reads both shapes; from the second rename on the older program is there and its settings were
@@ -50,18 +81,22 @@ imports `first_start`, which calls this.
 from __future__ import annotations
 
 import base64
+import glob
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import ns_common.config_snapshot as config_snapshot
-from ns_common.atomic import read_text_retry, write_text_atomic
+from ns_common.atomic import read_text_retry, write_bytes_atomic, write_text_atomic
 
 SUFFIX = ".rollback-pending.json"
 SWAP_SUFFIX = ".swap"
+#: `<app>.swap-left-<yyyymmdd-hhmm>`: a third program folder `settle_swap` set aside (never deleted).
+LEFT_INFIX = ".swap-left-"
 FORMAT = 1
 PREPARING = "preparing"
 PREPARED = "prepared"
@@ -81,6 +116,150 @@ def swap_for(app: Path) -> Path:
 def prev_for(app: Path) -> Path:
     """`<app>.prev`, the program backup."""
     return app.with_name(app.name + ".prev")
+
+
+#: `<app>.rollback-settings-<yyyymmdd-hhmm>.zip`: the settings a stale record held (`recover`).
+SETTINGS_INFIX = ".rollback-settings-"
+
+
+def saved_settings(app: Path) -> list[Path]:
+    """The zips `recover` saved beside `app` before it removed a stale record (Nightshift never deletes
+    them; the uninstall does)."""
+    try:
+        return sorted(p for p in app.parent.glob(f"{app.name}{SETTINGS_INFIX}*.zip") if p.is_file())
+    except OSError:
+        return []
+
+
+def saved_settings_sentence(file: Path, config: Path) -> str:
+    return (
+        f"The settings saved before the interrupted rollback are in {file}. To use them, stop Nightshift "
+        f"and unzip it into {config}."
+    )
+
+
+def swap_waits(app: Path) -> bool:
+    """True when something is at `<app>.swap` (a folder, or anything else that takes the name)."""
+    return os.path.lexists(swap_for(app))
+
+
+def left_folders(app: Path) -> list[Path]:
+    """The folders `settle_swap` set aside beside `app` (`<app>.swap-left-<stamp>`), by name."""
+    try:
+        found = app.parent.glob(glob.escape(app.name + LEFT_INFIX) + "*")
+        return sorted(p for p in found if p.is_dir())
+    except OSError:
+        return []
+
+
+def left_sentence(folder: Path) -> str:
+    """What the owner is told about a folder `settle_swap` set aside, for as long as it is there."""
+    return (
+        f"{folder} is a program folder left by an interrupted rollback; Nightshift does not use it. Delete "
+        "it when you no longer need it."
+    )
+
+
+def _finished(folder: Path) -> bool:
+    """`folder` is a program folder an updater, INSTALL.cmd or a rollback finished: it holds a completion
+    marker that is not empty (what `appcopy.installed_fingerprint` asks of `<app>`)."""
+    try:
+        return bool((folder / config_snapshot.APP_MARKER).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+
+
+def _then(app: Path) -> str:
+    """What the owner does after freeing `<app>.swap`, true in the state the folders are in. With a program
+    in `<app>`, Nightshift starts and asks again. Without one nothing of Nightshift can start (every command,
+    the Dashboard and `ns doctor` run from that folder): only INSTALL.cmd from a zip, which settles the folder
+    itself (`appcopy.install_app`), or a rename by hand helps."""
+    if app.is_dir():
+        return "then start Nightshift again: it asks again at its next start"
+    return (
+        f"then run INSTALL.cmd from the Nightshift zip again (it puts the folder back), or rename "
+        f"{swap_for(app).name} to {app.name} yourself. Nightshift cannot start while there is no folder "
+        f"{app.name}"
+    )
+
+
+def _unfinished_sentence(app: Path) -> str:
+    swap = swap_for(app)
+    what = (
+        f"{swap} takes the name ns update --rollback uses while it swaps the programs, and it is not a "
+        f"program folder Nightshift finished (there is no {config_snapshot.APP_MARKER} in it), so it was "
+        "left as it is. "
+    )
+    if app.is_dir():
+        return what + "Move it somewhere else; ns update --rollback does not start while it is there."
+    return what + (
+        f"Move it somewhere else (or, if it is your Nightshift program, rename it to {app.name}), then run "
+        "INSTALL.cmd from the Nightshift zip again."
+    )
+
+
+def swap_note(app: Path) -> str:
+    """For `ns doctor`, which looks after the start has settled what it could: what a `<app>.swap` that is
+    still there is, and the way out (empty: there is none). Changes nothing."""
+    if not swap_waits(app):
+        return ""
+    swap = swap_for(app)
+    if not swap.is_dir() or not _finished(swap):
+        return _unfinished_sentence(app)
+    return (
+        f"{swap} is a program folder an interrupted rollback left, and it has not been renamed. Nightshift "
+        "renames it when it starts; if it is still here after a start, a program or an Explorer window has "
+        "it open: close that window (and every Nightshift window), then start Nightshift again. Nothing in "
+        "it was deleted."
+    )
+
+
+def _left_name(app: Path, now: datetime) -> Path:
+    base = app.with_name(f"{app.name}{LEFT_INFIX}{now:%Y%m%d-%H%M}")
+    target, n = base, 1
+    while os.path.lexists(target):  # two in one minute: -2, -3
+        n += 1
+        target = base.with_name(f"{base.name}-{n}")
+    return target
+
+
+def settle_swap(app: Path, *, now: datetime | None = None, for_update: bool = False) -> str:
+    """Give a leftover `<app>.swap` a place something looks at (see the module text): one rename or none,
+    never a deletion. The caller holds the copy's lock (`config_snapshot.locked`) and calls this BEFORE
+    `recover`. Returns the sentence for the owner (empty: there is no `<app>.swap`); when the folder is
+    still there afterwards (`swap_waits`), the sentence says why and what to do, and is true whether or not
+    a program is in `<app>` (`_then`). `for_update`: the caller replaces `<app>.prev` next (an update), so
+    the sentence promises nothing about it. Never raises.
+
+    Interrupted before the rename nothing has changed and the next call does the same; after it the folder
+    is gone from `<app>.swap` and the next call returns "". A second call never renames anything again."""
+    if not swap_waits(app):
+        return ""
+    swap, prev = swap_for(app), prev_for(app)
+    if not swap.is_dir() or not _finished(swap):
+        return _unfinished_sentence(app)
+    if not os.path.lexists(app):
+        target = app
+        said = f"The program folder was put back from {swap.name} (an interrupted rollback)."
+    elif not os.path.lexists(prev):
+        target = prev
+        version = config_snapshot.program_version(swap)
+        to = "it" if version == "-" else version
+        said = f"{swap.name} was renamed to {prev.name}: ns update --rollback goes to {to} again."
+        if for_update:  # (the update replaces the program backup next: no promise about it)
+            said = f"{swap.name} was renamed to {prev.name} (an interrupted rollback left it)."
+    else:
+        target = _left_name(app, now or datetime.now())
+        said = f"{swap.name} was renamed to {target.name}. {left_sentence(target)}"
+    try:
+        os.rename(swap, target)
+    except OSError as e:
+        return (
+            f"{swap} is a program folder an interrupted rollback left, and it could not be renamed to "
+            f"{target.name} ({e}). If a program or an Explorer window has it open, close it (and every "
+            f"Nightshift window), {_then(app)}. Nothing was changed, and nothing in the folder was deleted."
+        )
+    return said
 
 
 @dataclass
@@ -319,6 +498,16 @@ def recover(app: Path, config: Path, *, may_undo: bool = True) -> Recovery:
         return _cleared(app, f"A record of an interrupted rollback could not be used and was removed ({e}).")
     if intent is None:
         return Recovery()
+    if not app.is_dir():
+        # No program in place (a power loss between the first two renames, `<app>.swap` not put back): this
+        # is not "another install", and the record is the only place the settings from before the rollback
+        # are kept. Never stale here: it stays until a program is in `<app>` again.
+        return Recovery(
+            f"A rollback from {intent.from_version} to {intent.to_version} was interrupted and there is no "
+            f"program folder at {app}. Its record was kept (it holds the settings files from before the "
+            "rollback). Run INSTALL.cmd from the Nightshift zip: it puts the program folder back.",
+            "failed",
+        )
     running = config_snapshot.program_fingerprint(app)
     stamp = config_snapshot.install_stamp(app)
     prev, swap = prev_for(app), swap_for(app)
@@ -367,11 +556,59 @@ def recover(app: Path, config: Path, *, may_undo: bool = True) -> Recovery:
                 f"put back as they were before it ({e}); the next start tries again.",
                 "failed",
             )
-    return _cleared(
-        app,
+    stale = (
         f"A record of a rollback from {intent.from_version} to {intent.to_version} (started "
         f"{intent.created.replace('T', ' ')}) does not belong to the programs installed now (one was put in "
-        "place again since): it was removed, and the settings files were left as they are.",
+        "place again since)"
+    )
+    marked = ""
+    if intent.after.mark_unrestored:
+        # Only this record knows that the rollback's restore failed. The copy of the program it went back to
+        # must carry that before the record goes, or the next update saves the settings as they are now (a
+        # newer version's) over it under that program's name. Marking twice is the same as once, so a stop
+        # between the mark and the deletion is repaired by the next start doing both again.
+        zip_path = config_snapshot.path_for(app)
+        slot = config_snapshot.look(zip_path)
+        try:
+            if slot.copy is None and not slot.free:  # it cannot be read now: it may be that very copy
+                raise config_snapshot.SnapshotError(f"{zip_path.name} could not be read ({slot.problem})")
+            if slot.copy is not None and slot.copy.fingerprint == intent.to_fingerprint:
+                config_snapshot.mark_unrestored(zip_path)
+                marked = (
+                    f" That rollback could not put the settings copy for {intent.to_version} back, and the "
+                    f"copy ({zip_path.name}) is marked so: the next update keeps it instead of saving the "
+                    "settings files as they are now over it."
+                )
+        except config_snapshot.SnapshotError as e:
+            return Recovery(
+                f"{stale}, and it says the settings copy for {intent.to_version} was never put back, which "
+                f"could not be recorded beside the copy ({e}). The record stays and the next start tries "
+                f"again. If this does not go away: make room on the disk, close what has {zip_path.name} "
+                f"open, or move {zip_path.name} out of {zip_path.parent} (a rollback then has no settings "
+                "copy to put back and keeps the settings files as they are).",
+                "failed",
+            )
+    saved = ""
+    if intent.live:
+        # The record is the only place that holds the settings from before the rollback (a rollback that
+        # lost power, `app.swap` moved away by hand, a fresh program folder from INSTALL.cmd). They go into a
+        # file of their own BEFORE the record is removed; a start that could not remove the record afterwards
+        # finds the same bytes saved and does not save them again.
+        try:
+            have = [f for f in saved_settings(app) if f.read_bytes() == intent.live]
+            name = f"{app.name}{SETTINGS_INFIX}{datetime.now():%Y%m%d-%H%M}.zip"
+            file = have[0] if have else app.with_name(name)
+            if not have:
+                write_bytes_atomic(file, intent.live)
+        except OSError as e:
+            return Recovery(
+                f"{stale}, and the settings files it holds from before that rollback could not be saved "
+                f"beside the program ({e}). The record stays and the next start tries again.",
+                "failed",
+            )
+        saved = " " + saved_settings_sentence(file, config)
+    return _cleared(
+        app, f"{stale}: it was removed, and the settings files were left as they are.{marked}{saved}"
     )
 
 

@@ -13,6 +13,7 @@ from typing import Any, BinaryIO
 from pydantic import ValidationError
 
 from ns_common.atomic import write_bytes_atomic
+from ns_common.commandline import render, typed
 from ns_common.config import save_runtime
 from ns_common.models import Runtime
 from ns_common.secrets_names import KEY_NAMES, SHORT_NAMES
@@ -117,6 +118,9 @@ class SettingsService:
             # tells registered from interactive_only (NS-W205: only while signed in)
             "schedule_registered": schedule_is_registered(self.s.paths),
             "schedule_mode": status_schedule_mode(self.s.paths),
+            # the command NS-W205's row names, as this install's owner types it in a new terminal (FN-3: the
+            # plain words while they reach this install, else its own command file by full path)
+            "schedule_install_command": typed(self.s.paths.home, "ns schedule install"),
             "home": str(self.s.paths.home),
             "profile": (runtime or {}).get("profile"),
             "dev_mode": bool((runtime or {}).get("dev_mode")),
@@ -152,7 +156,7 @@ class SettingsService:
         """Save Automatic runs (the switch and the time), notifications and (only when unlocked) runtime flags.
 
         `schedule_result` in the answer is what the page says about the switch or the time: `applied`, a
-        `note` in words and the `code` (NS-W205, NS-E204) when there is one. `schedule_registered`,
+        `note` in words and the `code` (NS-W205, NS-E204, NS-E206) when there is one. `schedule_registered`,
         `schedule_time` and `next_run` beside it are read after the change, from the record of what Windows has.
         """
         unlocked = unlock or body.get("unlock") is True
@@ -186,6 +190,9 @@ class SettingsService:
             save_dashboard_settings(self.s.paths, updates)
         out = self.get_settings()
         if schedule_result is not None:
+            note = schedule_result.get("note")
+            if isinstance(note, str):           # the commands it names, as this install's owner types them
+                schedule_result = {**schedule_result, "note": render(note, self.s.paths.home)}
             out["schedule_result"] = schedule_result
         self.s.log.info("settings_saved", fields=sorted(body))
         return out

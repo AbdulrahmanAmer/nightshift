@@ -53,7 +53,7 @@ $ForbiddenDirs = @('.venv', 'venv', '__pycache__', '.git', '.github', 'node_modu
 # The only binaries a bundle may carry: the WebView2 host DLLs, in bin/webview2/ (the *.exe rule still applies).
 $WebView2Files = @('Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.Wpf.dll', 'WebView2Loader.dll')
 $AllowedBinEntries = @($WebView2Files | ForEach-Object { 'bin/webview2/' + $_ })
-$RequiredEntries = @('VERSION', 'pyproject.toml', 'ns_common/__init__.py', 'ns_dashboard/static/index.html', 'ns_dashboard/static/app.js', 'ns_dashboard/static/brand/nightshift.ico', 'installer/ui/static/index.html', 'installer/ui/static/app.js', 'DEMO.cmd', 'dev/demo/serve.js')
+$RequiredEntries = @('VERSION', 'pyproject.toml', 'uv.lock', 'ns_common/__init__.py', 'ns_dashboard/static/index.html', 'ns_dashboard/static/app.js', 'ns_dashboard/static/brand/nightshift.ico', 'installer/ui/static/index.html', 'installer/ui/static/app.js', 'DEMO.cmd', 'dev/demo/serve.js')
 
 function Invoke-Git {
     param([string[]]$GitArgs)

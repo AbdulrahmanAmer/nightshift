@@ -60,6 +60,7 @@ DOC_TESTS: tuple[str, ...] = (
     "tests/test_change_requests_status.py",  # contracts/CHANGE_REQUESTS.md, docs/ENGINEERING.md
     "tests/test_ci_changes.py",  # this list against what the tests name (reads the docs/ tree)
     "tests/test_ci_workflow.py",  # docs/REPO_SETTINGS.md names the required checks
+    "tests/test_commands_on_path.py",  # OPERATOR.md "Commands": the PowerShell 5.1 quoting limit
     "tests/test_dashboard_assistant.py",  # search_docs over the real README.md and OPERATOR.md
     "tests/test_devfake_tool_cue.py",  # the assistant-tool rows of docs/VERIFICATION_INVENTORY.md
     "tests/test_diskneed.py",  # BUILD_SPEC.md, docs/FEATURE_STATUS.md carry the tier numbers
@@ -71,6 +72,7 @@ DOC_TESTS: tuple[str, ...] = (
     "tests/test_installer_files.py",  # BUILD_SPEC.md, OPERATOR.md
     "tests/test_installer_first_run.py",  # OPERATOR.md
     "tests/test_ns_update_git.py",  # BUILD_SPEC.md section 5, the `ns update` line
+    "tests/test_owner_texts.py",  # OPERATOR.md: no studio or ns command typed in a window that adds it
     "tests/test_release_wiring.py",  # CHANGELOG.md, docs/REPO_SETTINGS.md, docs/HANDOFF.md
     "tests/test_secret_file_no_permissions.py",  # OPERATOR.md names NS-E120 and NS-W116 like errors.json
     "tests/test_spec_clipper_text.py",  # BUILD_SPEC.md 17.2, D40, docs/FEATURE_STATUS.md

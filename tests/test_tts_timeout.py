@@ -267,9 +267,9 @@ def test_the_cancel_endpoint_stops_the_running_batch_and_reports_it(tmp_path: Pa
 
     e = Cancelable()
     e.load()
-    c = TestClient(create_app(e, VoiceLibrary(tmp_path / "voices")))
+    c = TestClient(create_app(e, VoiceLibrary(tmp_path / "voices")), base_url="http://127.0.0.1:18099")
     assert c.post("/v1/audio/speech/cancel").json() == {"cancelled": True} and e.stopped == 1
-    plain = TestClient(create_app(FakeEngine(), VoiceLibrary(tmp_path / "v2")))
+    plain = TestClient(create_app(FakeEngine(), VoiceLibrary(tmp_path / "v2")), base_url="http://127.0.0.1:18099")
     assert plain.post("/v1/audio/speech/cancel").json() == {"cancelled": False}  # nothing to stop
 
 
@@ -281,7 +281,7 @@ def test_the_fake_engine_still_serves_batches_with_the_new_fields(tmp_path: Path
 
     e = FakeEngine()
     e.load()
-    c = TestClient(create_app(e, VoiceLibrary(tmp_path / "voices")))
+    c = TestClient(create_app(e, VoiceLibrary(tmp_path / "voices")), base_url="http://127.0.0.1:18099")
     body = {"items": [A], "out_dir": str(tmp_path / "o"), "timeout_s": 500, "resume": True}
     r = c.post("/v1/audio/speech/batch", json=body)
     assert r.status_code == 200 and (tmp_path / "o" / "a.wav").is_file()

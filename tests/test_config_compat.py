@@ -85,7 +85,11 @@ def test_every_field_a_settings_model_gained_since_0_1_14_is_in_the_table() -> N
     )
     stale = sorted(table() - found)
     assert not stale, f"{stale} are in NEW_FIELDS but 0.1.14 already had them (or no settings model has them)"
-    assert found == {("Runtime", "tiny_story"), ("InstallerAnswers", "tiny_story")}  # what 0.1.15 adds
+    assert found == {
+        ("Runtime", "tiny_story"), ("InstallerAnswers", "tiny_story"),
+        ("Answers", "nightly"), ("InstallerAnswers", "nightly_seen"),  # setup's nightly question (used once)
+        ("InstallerAnswers", "shortcuts_here"),  # the yes to moving another install's shortcuts (used once)
+    }  # what 0.1.15 adds
 
 
 def test_the_tripwire_catches_a_field_added_deep_inside_a_model() -> None:
@@ -287,3 +291,169 @@ def test_version_key() -> None:
     assert version_key("0.1.15") > version_key("0.1.14") > version_key("0.1.9")
     assert version_key("v0.1.15") == (0, 1, 15) and version_key("0.1.15-rc1") == (0, 1, 15)
     assert version_key("-") == () < version_key("0.0.1")
+
+
+# ------------------------------------------------------------------- card 206-carried: fields that CHANGED
+#: Parts of a field's JSON schema that say nothing about which values a version reads.
+NOT_VALUES = ("title", "description", "default", "examples")
+
+
+def _values_schema(node: Any, defs: dict[str, Any]) -> Any:
+    """`node` with every reference to an enum or alias resolved, a reference to a model kept as its name
+    (the model is compared field by field on its own) and the `NOT_VALUES` keys left out."""
+    if isinstance(node, dict):
+        if "$ref" in node:
+            name = str(node["$ref"]).rsplit("/", 1)[-1]
+            target = defs.get(name, {})
+            return {"model": name} if "properties" in target else _values_schema(target, defs)
+        return {k: _values_schema(v, defs) for k, v in sorted(node.items()) if k not in NOT_VALUES}
+    if isinstance(node, list):
+        return [_values_schema(v, defs) for v in node]
+    return node
+
+
+def field_schemas(cls: type[BaseModel]) -> dict[str, Any]:
+    """What each field of `cls` accepts: its JSON schema (Literal values, bounds, patterns, types)."""
+    schema = cls.model_json_schema()
+    defs = schema.get("$defs", {})
+    return {n: _values_schema(p, defs) for n, p in schema.get("properties", {}).items()}
+
+
+def changed(now: type[BaseModel], then: type[BaseModel]) -> set[tuple[str, str]]:
+    """(class, field) of every field both `now` and `then` have whose schema differs, nested too."""
+    out: set[tuple[str, str]] = set()
+    new, old_ = field_schemas(now), field_schemas(then)
+    for name, info in now.model_fields.items():
+        if name not in then.model_fields:
+            continue  # a new field: `gained` and NEW_FIELDS
+        if new[name] != old_[name]:
+            out.add((declaring_class(now, name), name))
+        inner = config_compat._models_in(info.annotation)
+        old_inner = config_compat._models_in(then.model_fields[name].annotation)
+        if inner is not None and old_inner is not None:
+            out |= changed(inner[1], old_inner[1])
+    return out
+
+
+def test_every_changed_field_since_0_1_14_is_declared() -> None:
+    """The tripwire for a field 0.1.14 already had: when what it accepts changes (a wider Literal, a looser
+    bound, another type), an older version may refuse a value this one writes. Each such field is declared in
+    `new_fields.CHANGED_FIELDS` with how an older version reads it."""
+    declared = getattr(new_fields, "CHANGED_FIELDS", None)
+    assert declared is not None, "ns_common/new_fields.py has no CHANGED_FIELDS: a widened field ships unseen"
+    found: set[tuple[str, str]] = set()
+    for now, then in PAIRS:
+        found |= changed(now, then)
+    declared_names = {(f.model, f.field) for f in declared}
+    missing = sorted(found - declared_names)
+    assert not missing, (
+        f"{missing} accept other values now than in 0.1.14: add each to ns_common/new_fields.py "
+        "CHANGED_FIELDS with the release, why, and either old_reads_all=True (0.1.14 reads every value this "
+        "version writes) or old_values and a fallback (what a rollback writes in place of a value 0.1.14 "
+        "refuses). A change whose old values cannot be listed (a bound) needs its own rule in "
+        "config_compat.for_version first."
+    )
+    stale = sorted(declared_names - found)
+    assert not stale, f"{stale} are in CHANGED_FIELDS but read the same as in 0.1.14"
+    for f in declared:
+        assert version_key(f.since) > version_key(config_compat.BASE_VERSION) and len(f.why) > 20, f
+        assert f.old_reads_all != bool(f.old_values), f  # exactly one way of going back
+        back = f.fallback if isinstance(f.fallback, list) else [f.fallback]
+        assert f.old_reads_all or all(v in f.old_values for v in back), f  # the fallback is one it reads
+
+
+def test_the_tripwire_catches_a_widened_literal() -> None:
+    """Box 4: the field name is the same, so the name comparison (`gained`) sees nothing; the schema
+    comparison does, at any depth, and is quiet about a changed default or description."""
+    from typing import Literal
+
+    from pydantic import Field
+
+    class Then(Strict):
+        mode: Literal["a", "b"] = "a"
+        size: int = Field(default=3, ge=1, description="how many")
+        same: str = "x"
+
+    class Now(Strict):
+        mode: Literal["a", "b", "c"] = "a"
+        size: int = Field(default=4, ge=1, description="how many of them")
+        same: str = "x"
+
+    class Looser(Strict):
+        mode: Literal["a", "b"] = "a"
+        size: int = Field(default=3, ge=0)
+        same: str = "x"
+
+    def holder(choices: Any) -> type[BaseModel]:
+        """A model that holds a model of the same name in both versions, as the frozen copy does."""
+
+        class Item(Strict):
+            mode: choices = "a"  # type: ignore[valid-type]
+
+        class Holder(Strict):
+            inner: dict[str, Item] = {}
+
+        return Holder
+
+    assert gained(Now, Then) == set()  # why names are not enough
+    assert changed(Now, Then) == {("Now", "mode")}
+    assert changed(Looser, Then) == {("Looser", "size")}
+    assert changed(holder(Literal["a", "b", "c"]), holder(Literal["a", "b"])) == {("Item", "mode")}
+    assert changed(holder(Literal["a", "b"]), holder(Literal["a", "b"])) == set()
+    assert changed(Then, Then) == set()
+
+
+class Wide(Strict):
+    mode: str = "a"  # stands for Literal["a", "b", "c"]: `for_version` works on the parsed file
+    modes: list[str] = []
+    plain: int = 1
+
+
+class HoldsWide(Strict):
+    one: Wide = Wide()
+    named: dict[str, Wide] = {}
+
+
+def test_for_version_puts_a_value_0_1_14_lacks_back_to_its_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One bad value among good ones: only the value the older version cannot read is replaced, by the
+    declared fallback, and it is named; every other value and file stays as it is."""
+    from types import SimpleNamespace
+
+    make = getattr(new_fields, "ChangedField", None) or (lambda *a, **k: SimpleNamespace(args=a, **k))
+    entries = {
+        "Wide": {
+            "mode": make(
+                "Wide", "mode", "0.1.16", "a synthetic widened choice for this test",
+                old_values=("a", "b"), fallback="a",
+            ),
+            "modes": make(
+                "Wide", "modes", "0.1.16", "a synthetic widened list of choices for this test",
+                old_values=("a", "b"), fallback=[],
+            ),
+            "plain": make(
+                "Wide", "plain", "0.1.16", "a synthetic change every older version reads", old_reads_all=True
+            ),
+        }
+    }  # fmt: skip
+    monkeypatch.setattr(config_compat, "_CHANGED_BY_MODEL", entries, raising=False)
+    monkeypatch.setitem(config_compat.FILE_MODELS, "wide.json", (HoldsWide, ()))
+    data = {
+        "one": {"mode": "c", "modes": ["a", "c"], "plain": 99},
+        "named": {"good": {"mode": "b", "modes": ["a", "b"]}, "bad": {"mode": "c"}},
+    }
+    same = json.loads(json.dumps(data))
+    assert for_version("wide.json", same, "0.1.16") == [] and same == data  # it has the wider field
+    fixed = json.loads(json.dumps(data))
+    said = for_version("wide.json", fixed, "0.1.14")
+    assert fixed == {
+        "one": {"mode": "a", "modes": [], "plain": 99},
+        "named": {"good": {"mode": "b", "modes": ["a", "b"]}, "bad": {"mode": "a"}},
+    }
+    assert sorted(said) == [
+        'named.bad.mode set back to "a"',
+        'one.mode set back to "a"',
+        "one.modes set back to []",
+    ]
+    assert for_version("wide.json", fixed, "0.1.14") == []  # the second time: nothing left to do
+    assert for_version("wide.json", json.loads(json.dumps(data)), "-") == said  # unknown: the oldest
+    assert disk_dict_of(HoldsWide, json.loads(json.dumps(data))) == data  # a writer never changes a value

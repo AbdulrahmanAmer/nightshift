@@ -34,7 +34,7 @@ export default function Settings() {
 
   const put = async (body: Record<string, unknown>, ok: string) => { try { const r = await api.put("/settings", body); if (r && typeof r === "object") st.setData({ ...s, ...r }); if (r?.schedule_result && r.schedule_result.applied === false) { toast(r.schedule_result.note, "bad"); return false; } if (r?.schedule_result?.code === "NS-W205") { toast(r.schedule_result.note, "warn"); return true; } toast(ok, "ok"); return true; } catch (e: any) { toast(e.message, "bad"); return false; } };
   const setKey = async (name: string) => {
-    const v = await confirm({ title: `${name[0]!.toUpperCase() + name.slice(1)} key`, body: "Paste the free key from your account page. It is stored in Windows Credential Manager, never in a file", ok: "Save key", input: { label: "Key", placeholder: "Paste the key" } });
+    const v = await confirm({ title: `${name[0]!.toUpperCase() + name.slice(1)} key`, body: "Paste the free key from your account page. It is saved in Windows Credential Manager and, for nightly runs that cannot reach Credential Manager, in an encrypted copy in this install's folder (config\\secrets.dpapi); on a drive that keeps permissions only your Windows account and Windows itself can open that copy", ok: "Save key", input: { label: "Key", placeholder: "Paste the key" } });
     if (typeof v !== "string" || !v.trim()) return;
     try { const r = await api.post("/settings/keys", { name, value: v.trim() }); toast(r?.message || "Key saved", r?.checked === false || r?.warning ? "warn" : "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
@@ -57,7 +57,7 @@ export default function Settings() {
       if ((quietSince !== null && Date.now() - quietSince > UPDATE_WAIT_MS) || Date.now() - began > UPDATE_HARD_STOP_MS) {
         clearInterval(t); setUpdating(null);
         setUpdateNote(sawRunning
-          ? "The update is still being installed. Wait for its window to finish, then open Nightshift from the shortcut on your desktop if this page does not reconnect."
+          ? "The update has not reported back. If a window named Nightshift update is open, it shows the result and what to do. Otherwise open Nightshift from the shortcut on your desktop: the Queue page and this page then show how the update ended."
           : "Nightshift did not come back by itself. Close this window and open Nightshift again from the shortcut on your desktop. If it still does not start, make a diagnostics report from there.");
         return;
       }
@@ -69,7 +69,8 @@ export default function Settings() {
           if ((u.state === "done" || u.state === "failed") && (seen || Date.now() - began > 90_000)) {
             if (u.state === "failed") {
               clearInterval(t); setUpdating(null); setUpd(null);
-              toast(`The update did not work and nothing was changed. ${u.message || ""}`, "bad");
+              // the message says what is in place ("Nothing was changed" only where that is so) and what to do
+              toast(`${u.updated ? "The update was applied, but Nightshift did not start again by itself." : "The update did not complete."} ${u.message || ""}`, "bad"); setUpdateNote(failedNote(u));
               return;
             }
             // done: the service that answers must be the new version before the page says so
@@ -90,7 +91,11 @@ export default function Settings() {
       }
     }, 3000);
   };
-  useEffect(() => { api.get<UpdateState>("/update/state").then((u) => { if (u.state === "running") follow(false); else if (u.state === "done" && u.release_notes) setWhatsNew({ version: u.new, text: u.release_notes }); }).catch(() => undefined); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // A failed update or rollback stays on this card until the next one: it may have ended while nobody was looking
+  // (Nightshift not started again, a power cut), and its message carries the way out.
+  // `updated`: the program was changed and only the restart did not happen, which is not "did not complete".
+  const failedNote = (u: UpdateState) => `${u.updated ? "The last update or rollback was applied, but Nightshift did not start again by itself" : "The last update or rollback did not complete"}${u.updated_at ? ` (${u.updated_at.replace("T", " ")})` : ""}. ${u.message || "See the newest update log in the logs folder."}`;
+  useEffect(() => { api.get<UpdateState>("/update/state").then((u) => { if (u.state === "running") follow(false); else if (u.state === "failed") setUpdateNote(failedNote(u)); else if (u.state === "done" && u.release_notes) setWhatsNew({ version: u.new, text: u.release_notes }); }).catch(() => undefined); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const apply = async () => {
     const ok = await confirm({ title: "Install the update?", body: "Nightshift stops the engine, installs the new version and starts again. If anything fails it goes back to this version", ok: "Install" });
     if (!ok) return;
@@ -142,9 +147,9 @@ export default function Settings() {
   const lastCheck = selfCheck.data[0]; const checkBusy = lastCheck?.status === "queued" || lastCheck?.status === "running";
   useEffect(() => { if (!checkBusy) return; const t = setInterval(selfCheck.reload, 2500); return () => clearInterval(t); }, [checkBusy]); // eslint-disable-line react-hooks/exhaustive-deps
   const runCheck = async (quick: boolean) => { try { await api.post("/jobs/verify", { quick }); toast(quick ? "Quick self-check started" : "Full self-check started. It takes several minutes", "ok"); selfCheck.reload(); } catch (e: any) { toast(e.message, "bad"); } };
-  const res = lastCheck?.result as { passed?: boolean; checks?: { passed: boolean }[] } | null | undefined;
+  const res = lastCheck?.result as { passed?: boolean; checks?: { passed: boolean }[]; warnings?: string[] } | null | undefined;
   const bad = res?.checks?.filter((c) => !c.passed).length ?? 0;
-  const checkSub = !lastCheck ? "Checks the models, the voice and the video encoder, and writes a report" : checkBusy ? `Running. ${lastCheck.message || ""}` : lastCheck.status === "failed" ? `The check could not run. ${lastCheck.message || ""}` : lastCheck.status === "cancelled" ? "Cancelled" : res?.passed ? `Passed ${dayInline(lastCheck.created_at)}. Everything answered` : `${plural(bad, "item")} need attention. The report is in the logs folder`;
+  const checkSub = !lastCheck ? "Checks the models, the voice and the video encoder, and writes a report" : checkBusy ? `Running. ${lastCheck.message || ""}` : lastCheck.status === "failed" ? `The check could not run. ${lastCheck.message || ""}` : lastCheck.status === "cancelled" ? "Cancelled" : res?.passed ? `Passed ${dayInline(lastCheck.created_at)}. ${res.warnings?.length ? `One thing to look at: ${res.warnings.join(" ")}` : "Everything answered"}` : `${plural(bad, "item")} need attention. The report is in the logs folder`;
   const copy = async (t: string) => { try { await navigator.clipboard.writeText(t); toast("Path copied", "ok"); } catch { toast("Copy was blocked", "warn"); } };
   const home = s?.home || status?.disk?.home || "";
   const version = s?.version || status?.version || upd?.current;
@@ -166,7 +171,7 @@ export default function Settings() {
               <Button disabled={time === s?.schedule_time} onClick={() => put({ schedule_time: time }, s?.schedule_registered ? `Runs at ${time} from tonight` : `${time} saved. Automatic runs are off`)}>Save</Button>
             </SettingRow>
             {s && s.schedule_mode === "interactive_only" && (
-              <SettingRow title={interactiveOnly(s.schedule_time)} sub="Windows would not run the task while you are signed out (NS-W205). Lock the screen instead of signing out, or the night's run will not start. Try again asks Windows once more; if it refuses again, run 'ns schedule install' once from an elevated PowerShell">
+              <SettingRow title={interactiveOnly(s.schedule_time)} sub={`Windows would not run the task while you are signed out (NS-W205). Lock the screen instead of signing out, or the night's run will not start. Try again asks Windows once more; if it refuses again, run '${s.schedule_install_command ?? "ns schedule install"}' once from an elevated PowerShell`}>
                 <Button variant="soft" leadingIcon="refresh" onClick={() => put({ automatic_runs: true, schedule_time: s.schedule_time }, `Windows accepted it: the run at ${s.schedule_time} now starts whether you are signed in or not`)}>Try again</Button>
               </SettingRow>
             )}

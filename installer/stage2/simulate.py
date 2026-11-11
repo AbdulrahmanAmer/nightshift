@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import struct
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -21,8 +22,21 @@ import httpx
 from installer.stage2.downloader import DownloadItem, ProgressFn, write_marker
 from installer.stage2.errors import make_error
 from installer.stage2.runner import RunResult
+from installer.stage2.winenv import CHANGED_EXIT, user_path_output
 from ns_common.logging import NsLogger
 from ns_supervisor import check_names as names
+
+
+def simulated_lnk(arguments: str, workdir: str = "", icon: str = "") -> bytes:
+    """A minimal shell link (MS-SHLLINK: the header and Unicode StringData, no target list) that
+    ``shortcut_owner.read_lnk`` reads: setup decides whose a Desktop shortcut is from its arguments, so a
+    simulated one has to say them too."""
+    flags = 0x80 | 0x20 | (0x10 if workdir else 0) | (0x40 if icon else 0)
+    head = struct.pack("<I16sI", 0x4C, bytes.fromhex("0114020000000000c000000000000046"), flags) + bytes(52)
+    body = b"".join(
+        struct.pack("<H", len(text)) + text.encode("utf-16-le") for text in (workdir, arguments, icon) if text
+    )
+    return head + body + bytes(4)
 
 
 def ps_b64(text: str) -> str:
@@ -38,6 +52,8 @@ SITE_PACKAGES = Path("Lib") / "site-packages"
 PRODUCT_DIST_INFO = "nightshift-0-editable.dist-info"
 #: The simulated user environment variables, in the simulated desktop folder (the registry outlives a run).
 USER_ENV_FILE = "_simulated_user_env.json"
+#: Where the simulated user environment keeps the kind of its PATH (`ExpandString` or `String`).
+PATH_KIND = "Path:kind"
 
 
 @dataclass
@@ -127,10 +143,20 @@ class FakeRunner:
             return RunResult(0, ps_b64(self.user_env.get(call.meta["name"], "")) + "\n")
         if tag == "ps:desktop":
             return RunResult(0, ps_b64(str(self.desktop)) + "\n")
+        if tag == "ps:userpath-read":       # the simulated user PATH (`winenv.user_path`)
+            kind = self.user_env.get(PATH_KIND, "ExpandString" if "Path" in self.user_env else "none")
+            return RunResult(0, user_path_output(self.user_env.get("Path", ""), kind))
+        if tag == "ps:userpath-write":      # written only while it still holds what was read
+            if call.env.get("NS_PATH_OLD", "") != self.user_env.get("Path", ""):
+                return RunResult(CHANGED_EXIT, "changed\n")
+            self.user_env["Path"] = call.env.get("NS_PATH_NEW", "")
+            self.user_env[PATH_KIND] = call.env.get("NS_PATH_KIND", "ExpandString")
+            self._save_user_env()
+            return RunResult(0, "written\n")
         if tag == "ps:shortcut":
             lnk = Path(call.meta["lnk"])
             lnk.parent.mkdir(parents=True, exist_ok=True)
-            lnk.write_bytes(b"simulated shortcut")
+            lnk.write_bytes(simulated_lnk(call.meta.get("arguments", ""), "", call.meta.get("icon", "")))
             return RunResult(0)
         if tag.startswith("uv venv"):
             py = Path(call.meta["path"]) / "Scripts" / "python.exe"
@@ -155,6 +181,10 @@ class FakeRunner:
                 logs.mkdir(parents=True, exist_ok=True)
                 (logs / "verify-report.json").write_text(json.dumps(report), encoding="utf-8")
             return RunResult(0, json.dumps(report))
+        if tag.startswith("ns schedule install") and "--setup" in call.argv:
+            return self._schedule_setup(call)
+        # "ps:task-read" (setup's own look at the task) gets the empty default below: no answer, so a
+        # simulated run never settles a record against a Windows it did not ask
         if tag == "ns doctor --bundle":
             self.desktop.mkdir(parents=True, exist_ok=True)
             zip_path = self.desktop / f"nightshift-diagnostics-{date.today():%Y%m%d}.zip"
@@ -168,6 +198,28 @@ class FakeRunner:
         return RunResult(0)
 
     @staticmethod
+    def _schedule_setup(call: Call) -> RunResult:
+        """``ns schedule install --setup`` on a PC whose Windows holds no task: a first install that says yes
+        gets one (the record ``config/schedule.json`` is written, as the real command does), everything else
+        stays off. The answer is the real command's one JSON line."""
+        def value(flag: str) -> str | None:
+            return call.argv[call.argv.index(flag) + 1] if flag in call.argv else None
+
+        when = value("--time") or "03:00"
+        first = value("--setup") == "first"
+        on = first and value("--nightly") == "yes"
+        home = call.env.get("NIGHTSHIFT_HOME")
+        if home and on:
+            config = Path(home) / "config"
+            config.mkdir(parents=True, exist_ok=True)
+            record = {"run_time": when, "task_name": "Nightshift Daily", "mode": "registered"}
+            (config / "schedule.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        out = {"case": "first" if first else "kept", "on": on, "run_time": when, "signed_in_only": False,
+               "wanted_on": False, "wanted_off": False, "time_kept": None, "seen": value("--seen"),
+               "reason": ""}
+        return RunResult(0, "setup: " + json.dumps(out) + "\n")
+
+    @staticmethod
     def _pip_install(call: Call) -> None:
         """Put the product into the venv named by ``--python``: a dist-info in its site-packages.
 
@@ -179,7 +231,13 @@ class FakeRunner:
         venv = Path(call.argv[call.argv.index("--python") + 1]).parent.parent
         info = venv / SITE_PACKAGES / PRODUCT_DIST_INFO
         info.mkdir(parents=True, exist_ok=True)
-        (info / "METADATA").write_text("Name: nightshift\n", encoding="utf-8")
+        # the version of the program installed, as uv records it (D-39b's checks compare it with VERSION)
+        app = Path(call.argv[call.argv.index("-e") + 1].split("[")[0])
+        try:
+            version = (app / "VERSION").read_text(encoding="utf-8-sig").strip()
+        except OSError:
+            version = ""
+        (info / "METADATA").write_text(f"Name: nightshift\nVersion: {version}\n", encoding="utf-8")
 
     @staticmethod
     def _import_check(call: Call) -> RunResult:

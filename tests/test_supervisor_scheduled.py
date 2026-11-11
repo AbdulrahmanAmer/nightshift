@@ -91,7 +91,7 @@ def test_startup_wakes_the_dashboard_for_an_overdue_scheduled_job(tmp_path: Path
         return "ready"
 
     sup.warmup = fake_warmup  # type: ignore[method-assign]
-    with TestClient(create_app(sup, start_dashboard=False, run_monitor=False)):
+    with TestClient(create_app(sup, start_dashboard=False, run_monitor=False), base_url="http://127.0.0.1:18099"):
         assert until_sync(lambda: warmed == ["dashboard"])
 
 
@@ -105,7 +105,8 @@ def test_startup_leaves_the_dashboard_alone_without_due_jobs(tmp_path: Path) -> 
         return "ready"
 
     sup.warmup = fake_warmup  # type: ignore[method-assign]
-    with TestClient(create_app(sup, start_dashboard=False, run_monitor=False)) as tc:
+    app = create_app(sup, start_dashboard=False, run_monitor=False)
+    with TestClient(app, base_url="http://127.0.0.1:18099") as tc:
         assert tc.get("/health").json() == {"ok": True}
         time.sleep(0.3)
     assert warmed == []

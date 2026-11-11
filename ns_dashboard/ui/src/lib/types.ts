@@ -19,7 +19,7 @@ export interface Pools { hooks: string[]; structures: string[]; caption_styles: 
 /** The channel as the editor holds it: a profile (ChannelProfile) in the fields it edits. */
 export interface Channel extends ChannelSummary { language?: string; audience?: string; voice_notes?: string; pools?: Pools; avoid_topics?: string[]; fiction_label?: boolean; long_minutes?: number[]; shorts_per_master?: number[] }
 /** GET /settings. `flags` are the engine settings as flat dotted keys with plain values ("llama.flags.ctx": 16384). */
-export interface Settings { schedule_time: string; schedule_registered?: boolean; schedule_mode?: ScheduleMode; home: string; profile: string | null; flags: Record<string, string | number | boolean>; keys: Record<string, boolean>; key_warnings?: Record<string, { code: string; message: string; hint: string; detail: string }>; notifications: boolean; runtime_locked: boolean; install: { version: string | null; app_path: string | null; profile: string | null }; owner_name: string | null; ui_theme: string | null; next_run: string | null; schedule_result?: { applied: boolean; note: string; code?: string }; version?: string; dev_mode?: boolean; fake_footage?: boolean; tiny_story?: boolean }
+export interface Settings { schedule_time: string; schedule_registered?: boolean; schedule_mode?: ScheduleMode; home: string; profile: string | null; flags: Record<string, string | number | boolean>; keys: Record<string, boolean>; key_warnings?: Record<string, { code: string; message: string; hint: string; detail: string }>; notifications: boolean; runtime_locked: boolean; install: { version: string | null; app_path: string | null; profile: string | null }; owner_name: string | null; ui_theme: string | null; next_run: string | null; schedule_result?: { applied: boolean; note: string; code?: string }; schedule_install_command?: string; version?: string; dev_mode?: boolean; fake_footage?: boolean; tiny_story?: boolean }
 export interface LearnRow { title: string; views: number; viewed_pct: number; kind?: Kind }
 /** GET /learn/summary: the last import, the best and worst videos, 14 days of views and the week-8 check. */
 export interface Learn { imported_at: string | null; matched: number | null; unmatched: number | null; summary: string[]; changes: { pool: string; option: string; delta: number }[]; top: LearnRow[]; bottom: LearnRow[]; daily: { date: string; shorts: number; long: number }[]; milestone: { label: string; rule: string; current: number; target: number; weeks: number; weeks_needed: number } | null; pools: Record<string, any>; weights: any[]; last_import: any; unmatched_uploads: string[] }
@@ -57,11 +57,12 @@ export interface ChannelProfile { slug: string; display_name: string; status: "a
 export interface ChannelPools { hooks: string[]; structures: string[]; pov_tones: string[]; pacings: string[]; caption_styles: string[]; visual_treatments: string[]; title_formulas: string[] }
 /** GET/PUT/POST /channels...: the profile plus the validation warnings. */
 export interface ChannelDetail { profile: ChannelProfile; warnings: string[]; warning_fields: { field: string; message: string }[]; formats_in_use?: Record<string, { id: string | null; name?: string; why?: string; source?: string; applied: boolean; problem?: string }> }
-/** GET /notes: what the nightly run could not show as a toast (run/morning_note.json). */
-export interface MorningNote { at: string; title: string; message: string }
+/** GET /notes: what Nightshift left for the owner who was not at the screen. `id` names a note for POST /notes/clear {ids}: only the notes that were shown are removed. */
+export interface MorningNote { id: string; at: string; title: string; message: string }
 /** GET /update/state: what the detached updater writes to run/update_state.json (idle when it never ran). */
 export interface UpdateState { state: "idle" | "running" | "done" | "failed"; old: string | null; new: string | null; message: string | null; updated_at: string | null; /** The updater process is gone though the file still said running. */ stale?: boolean;
-  /** After an update: the new version's section of CHANGELOG.md (the `## [x.y.z] - date` heading line included). */ release_notes?: string }
+  /** After an update: the new version's section of CHANGELOG.md (the `## [x.y.z] - date` heading line included). */ release_notes?: string;
+  /** The program was changed (set from the restart step on): a failed state with it is only a restart that did not happen. */ updated?: boolean; restart_failed?: boolean }
 /** One entry of GET /assistant/tools: the registry the Assistant works from. */
 export interface ToolInfo { name: string; description: string; side_effect: boolean; topic: string }
 

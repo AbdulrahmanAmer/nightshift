@@ -38,7 +38,7 @@ class StudioError(Exception):
 
     def __init__(self, code: str, detail: str = "") -> None:
         self.code = code
-        self.detail = detail
+        self.detail = detail                # raw: stored as it is, rendered where shown (FN-3)
         definition = describe(code)
         self.message, self.hint = definition.message, definition.hint
         super().__init__(str(self))

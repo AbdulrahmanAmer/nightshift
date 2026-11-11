@@ -1,0 +1,997 @@
+"""D-17: setup takes the pinned programs from a ``files`` folder beside INSTALL.cmd when GitHub is down.
+
+Every test aims the pinned URLs at a fake that answers 504 (or refuses), so any use of the network shows up in
+the list of requests. The programs are small stand-in files with their own SHA256 in the manifest.
+"""
+
+from __future__ import annotations
+
+import errno
+import hashlib
+import http.server
+import inspect
+import io
+import json
+import os
+import shutil
+import subprocess
+import threading
+import zipfile
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from urllib.parse import urlsplit
+
+import httpx
+import pytest
+
+from installer.stage2.downloader import is_done, plan_bins, plan_models, qwentts_item
+from installer.stage2.steps import S02DownloadBins, S04Venvs
+from installer.stage2.steps.s02_download_bins import QWENTTS_RELEASE_URL
+from installer.stage2.testing import FakeRunner, FakeUi, NullReporter, example_answers, make_test_context
+from installer.stage2.web import appcopy, bootstrap, engine
+from installer.stage2.web.bootstrap import Boot, BootstrapError, CmdResult
+from ns_common.config import load_manifest
+from ns_common.errors import NsError
+from ns_common.models import BinPin
+
+ROOT = Path(__file__).resolve().parents[1]
+STAGE1 = ROOT / "installer" / "stage1.ps1"
+KIT = ROOT / "tools" / "make-files-kit.ps1"
+PS = shutil.which("powershell")
+needs_ps = pytest.mark.skipif(PS is None, reason="Windows PowerShell 5.1 is not available")
+MISMATCH = "does not match its pin; downloading it"
+
+
+def sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def leaf(url: str) -> str:
+    return Path(urlsplit(url).path).name
+
+
+def zip_bytes(members: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        for name, data in members.items():
+            z.writestr(name, data)
+    return buf.getvalue()
+
+
+def programs() -> dict[str, bytes]:
+    """Stand-ins for what s02 installs on the sample PC (CUDA 13, Nightshift Code chosen)."""
+    wv = {"lib/net462/Microsoft.Web.WebView2.Core.dll": b"core",
+          "lib/net462/Microsoft.Web.WebView2.Wpf.dll": b"wpf",
+          "runtimes/win-x64/native/WebView2Loader.dll": b"loader"}
+    return {
+        # over two copy blocks (1 MiB each), so a copy can be stopped halfway
+        "llama_cuda13": zip_bytes({"llama-server.exe": b"MZ llama", "pad.bin": os.urandom(2_600_000)}),
+        "cudart13": zip_bytes({"cudart64_13.dll": b"cudart"}),
+        "opencode": zip_bytes({"opencode.exe": b"MZ opencode"}),
+        "yt_dlp": b"MZ yt-dlp stand-in",
+        "webview2": zip_bytes(wv),
+        "qwentts": zip_bytes({"qwen-tts.exe": b"MZ tts", "qwen-codec.exe": b"MZ codec"}),
+    }
+
+
+class RecReporter(NullReporter):
+    def __init__(self, ui: RecUi) -> None:
+        self.ui = ui
+
+    def update(self, name: str, done: int, total: int | None) -> None:
+        if name == self.ui.kill_at_half and total and done < total:
+            raise KeyboardInterrupt        # Ctrl+C (or Stop) while the copy is halfway
+
+    def finish(self, name: str, outcome: str) -> None:
+        self.ui.outcomes[name] = outcome
+
+
+class RecUi(FakeUi):
+    """Records how each file ended; ``kill_at_half`` names the file whose copy is interrupted."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.outcomes: dict[str, str] = {}
+        self.kill_at_half: str | None = None
+
+    def reporter(self, total_bytes: int = 0) -> Any:
+        return RecReporter(self)
+
+
+def github_down(
+    log: list[tuple[str, str]], serve: dict[str, bytes] | None = None, ok_head: tuple[str, ...] = (),
+):
+    """An ``http_factory`` whose every answer is 504, except the URLs in ``serve`` (their bytes) and
+    ``ok_head`` (200 to HEAD). Every request is written to ``log``."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        log.append((request.method, url))
+        if serve is not None and url in serve:
+            data = serve[url]
+            if request.method == "HEAD":
+                return httpx.Response(200, headers={"content-length": str(len(data))})
+            return httpx.Response(200, content=data)
+        if request.method == "HEAD" and url in ok_head:
+            return httpx.Response(200)
+        return httpx.Response(504)
+
+    return lambda: httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+
+
+@pytest.fixture
+def kit(tmp_path: Path) -> SimpleNamespace:
+    """A bundle folder with ``files`` holding every program, and a manifest that pins their real SHA256."""
+    base = load_manifest()
+    data = programs()
+    bins = dict(base.bins)
+    app, files = tmp_path / "bundle", tmp_path / "bundle" / "files"
+    files.mkdir(parents=True)
+    urls: dict[str, str] = {}
+    for key, blob in data.items():
+        pin = base.bins[key]
+        assert pin is not None
+        bins[key] = pin.model_copy(update={"sha256": sha(blob)})
+        urls[key] = pin.url
+        (files / leaf(pin.url)).write_bytes(blob)
+    return SimpleNamespace(app=app, files=files, data=data, urls=urls, tmp=tmp_path,
+                           manifest=base.model_copy(update={"bins": bins}))
+
+
+def context(kit: SimpleNamespace, log: list[tuple[str, str]], *, files: Path | None, **http: Any):
+    ctx = make_test_context(
+        kit.tmp, raw_answers=example_answers(), resolve=True, simulate=False, app_path=kit.app,
+        manifest=kit.manifest, ui=RecUi(), http=github_down(log, **http),
+    )
+    ctx.files_dir = files       # what wizard.build_context sets from --files-dir or <app>/files
+    return ctx
+
+
+def run_s02(ctx: Any) -> BaseException | None:
+    """Run the step as the wizard does; the error it raised (None when it finished)."""
+    try:
+        S02DownloadBins().run(ctx)
+    except (NsError, KeyboardInterrupt) as e:
+        return e
+    return None
+
+
+def items_of(ctx: Any) -> dict[str, Any]:
+    found = {i.name: i for i in plan_bins(ctx.manifest, ctx.profile, ctx.paths.home, include_code=True,
+                                          llama_pair="cuda13")}
+    voice = qwentts_item(ctx.manifest, ctx.paths.home)
+    assert voice is not None
+    return {**found, voice.name: voice}
+
+
+def log_text(ctx: Any) -> str:
+    logs = [p for p in ctx.paths.logs.rglob("*") if p.is_file()]
+    return "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in logs)
+
+
+# ------------------------------------------------------------------------------------------------ s02
+def test_s02_installs_every_pinned_program_from_the_files_folder_with_github_down(kit):
+    log: list[tuple[str, str]] = []
+    ctx = context(kit, log, files=kit.files)
+    error = run_s02(ctx)
+    assert log == [], "setup used the network although every pinned program is in the files folder"
+    assert error is None
+    items = items_of(ctx)
+    assert ctx.ui.outcomes == dict.fromkeys(items, "copied")
+    assert all(is_done(i) for i in items.values())
+    assert (ctx.paths.bin_llama / "llama-server.exe").read_bytes() == b"MZ llama"
+    assert (ctx.paths.home / "bin" / "yt-dlp" / "yt-dlp.exe").read_bytes() == kit.data["yt_dlp"]
+    assert (ctx.paths.home / "bin" / "qwentts" / "qwen-tts.exe").is_file() and ctx.flag("qwentts") == "binary"
+    # every program's source is said once, by the file it came from
+    for key in items:
+        said = [line for line in ctx.ui.said if line.startswith(f"{key}: taken from files\\")]
+        assert len(said) == 1 and leaf(kit.urls[key]) in said[0], (key, ctx.ui.said)
+    assert not list((ctx.paths.home / "bin").rglob("*.copy"))
+    # second run: everything is there, nothing is copied or fetched again
+    ctx.ui.outcomes.clear()
+    assert S02DownloadBins().check(ctx) is True
+    assert run_s02(ctx) is None and log == []
+    assert ctx.ui.outcomes == dict.fromkeys(items, "skipped")
+
+
+def test_a_file_with_the_wrong_sha256_is_skipped_and_said(kit):
+    name = leaf(kit.urls["llama_cuda13"])
+    (kit.files / name).write_bytes(kit.data["llama_cuda13"][:-1] + b"X")       # one bad file among good ones
+    log: list[tuple[str, str]] = []
+    ctx = context(kit, log, files=kit.files)
+    error = run_s02(ctx)
+    line = f"files\\{name} {MISMATCH}"
+    assert ctx.ui.said.count(line) == 1, ctx.ui.said                           # the console (or the window)
+    assert log_text(ctx).count(MISMATCH) == 1                                  # and the log, once each
+    items = items_of(ctx)
+    assert not is_done(items["llama_cuda13"]) and ctx.ui.outcomes["llama_cuda13"] == "failed"
+    assert not (ctx.paths.bin_llama / "llama-server.exe").exists()             # the wrong bytes: never used
+    assert {k: v for k, v in ctx.ui.outcomes.items() if k != "llama_cuda13"} == {
+        "cudart13": "copied", "opencode": "copied", "yt_dlp": "copied", "webview2": "copied"}
+    assert {url for _m, url in log} == {kit.urls["llama_cuda13"]}              # only the bad file went online
+    assert isinstance(error, NsError) and error.code == "NS-E105"
+    assert "504" in error.detail                                               # today's words stay
+    assert "files folder" in error.detail and "tools\\make-files-kit.ps1" in error.detail
+    assert "next to INSTALL.cmd" in error.detail and "run INSTALL.cmd again" in error.detail
+    # failed, then retried: the owner puts the right file there and runs setup again
+    (kit.files / name).write_bytes(kit.data["llama_cuda13"])
+    log.clear()
+    assert run_s02(ctx) is None and log == []
+    assert ctx.ui.outcomes["llama_cuda13"] == "copied" and all(is_done(i) for i in items_of(ctx).values())
+
+
+def test_a_copy_killed_halfway_leaves_no_file_that_counts_as_done(kit):
+    log: list[tuple[str, str]] = []
+    ctx = context(kit, log, files=kit.files)
+    ctx.ui.kill_at_half = "llama_cuda13"
+    error = run_s02(ctx)
+    assert isinstance(error, KeyboardInterrupt), repr(error)
+    item = items_of(ctx)["llama_cuda13"]
+    assert not list((ctx.paths.home / "bin").rglob("*.copy")) and not item.dest.exists()
+    assert not is_done(item) and S02DownloadBins().check(ctx) is False
+    # a console that was killed outright cannot clean up: the half copy it leaves counts for nothing either
+    item.dest.with_name(item.dest.name + ".copy").write_bytes(kit.data["llama_cuda13"][:1000])
+    assert not is_done(item) and S02DownloadBins().check(ctx) is False
+    ctx.ui.kill_at_half = None                                                 # the next run copies it again
+    assert run_s02(ctx) is None and log == []
+    assert ctx.ui.outcomes["llama_cuda13"] == "copied" and is_done(item)
+    assert not list((ctx.paths.home / "bin").rglob("*.copy"))
+
+
+def test_a_full_disk_during_the_copy_is_ns_e104_and_not_a_download(kit, monkeypatch):
+    real, disk = os.replace, {"full": True}
+
+    def replace(src, dst):
+        if disk["full"] and str(src).endswith(".copy"):
+            raise OSError(errno.ENOSPC, "No space left on device")
+        real(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)             # the rename that ends every copy
+    log: list[tuple[str, str]] = []
+    ctx = context(kit, log, files=kit.files)
+    error = run_s02(ctx)
+    assert log == []                                        # a full disk is not answered with a download
+    assert isinstance(error, NsError) and error.code == "NS-E104", repr(error)
+    assert not list((ctx.paths.home / "bin").rglob("*.copy"))
+    disk["full"] = False                                    # space was freed: Retry copies everything
+    assert run_s02(ctx) is None and log == [] and all(is_done(i) for i in items_of(ctx).values())
+
+
+def test_a_program_removed_right_after_unpacking_a_copied_zip_is_ns_e113(kit, monkeypatch):
+    """The copied zip is unpacked by the same code as a downloaded one: a scanner that deletes the program
+    a moment later is the antivirus code, as before."""
+    from installer.stage2 import downloader
+
+    real = downloader.extract_zip
+
+    def unpack_then_scan(zip_path, target):
+        names = real(zip_path, target)
+        (Path(target) / "llama-server.exe").unlink(missing_ok=True)
+        return names
+
+    monkeypatch.setattr(downloader, "extract_zip", unpack_then_scan)
+    log: list[tuple[str, str]] = []
+    ctx = context(kit, log, files=kit.files)
+    error = run_s02(ctx)
+    assert log == []
+    assert isinstance(error, NsError) and error.code == "NS-E113", repr(error)
+    assert "llama-server.exe" in error.detail and not is_done(items_of(ctx)["llama_cuda13"])
+
+
+def test_an_unpinned_voice_engine_zip_is_never_taken_from_the_files_folder(kit):
+    """The ``latest`` probe has no SHA256 to check, so a zip of that name in ``files`` is not used."""
+    kit.manifest = kit.manifest.model_copy(update={"bins": {**kit.manifest.bins, "qwentts": None}})
+    for name in (leaf(QWENTTS_RELEASE_URL), "qwentts.zip"):
+        (kit.files / name).write_bytes(kit.data["qwentts"])
+    log: list[tuple[str, str]] = []
+    ctx = context(kit, log, files=kit.files, ok_head=(QWENTTS_RELEASE_URL,))
+    error = run_s02(ctx)
+    assert ("GET", QWENTTS_RELEASE_URL) in log                                 # it went to the network
+    assert not (ctx.paths.home / "bin" / "qwentts" / "qwen-tts.exe").exists()
+    assert isinstance(error, NsError) and error.code == "NS-E105"
+    assert "make-files-kit" not in error.detail             # the kit cannot hold it, so the hint is not given
+
+
+@pytest.mark.parametrize("folder", ["absent", "empty"])
+def test_no_files_folder_changes_nothing(kit, folder):
+    """Control (a bundle of the previous release has no ``files``): the requests the base makes, per file in
+    the same order, the same outcomes and not a word about a files folder."""
+    shutil.rmtree(kit.files)
+    if folder == "empty":
+        kit.files.mkdir()
+    serve = {kit.urls[k]: v for k, v in kit.data.items()}
+    log: list[tuple[str, str]] = []
+    ctx = context(kit, log, files=kit.files if folder == "empty" else None, serve=serve)
+    assert run_s02(ctx) is None
+    per_url: dict[str, list[str]] = {}
+    for method, url in log:
+        per_url.setdefault(url, []).append(method)
+    assert per_url == {url: ["HEAD", "GET"] for url in serve}
+    assert ctx.ui.outcomes == dict.fromkeys(items_of(ctx), "downloaded")
+    for words in ("taken from", "does not match its pin", "files folder", "files_folder"):
+        assert words not in ctx.ui.text and words not in log_text(ctx)
+    # the wizard's command line is the one of the previous release
+    argv = engine.wizard_argv("py", app_path=kit.app, home=kit.tmp, answers=kit.tmp / "a.json",
+                              preflight=kit.tmp / "p.json", bridge=True)
+    assert "--files-dir" not in argv
+
+
+def test_the_setup_window_hands_the_files_folder_to_the_wizard(kit, monkeypatch):
+    """Stage 2 runs from ``<home>/app``, which never holds ``files``: the bootstrap names the folder."""
+    from installer.stage2 import wizard
+    from installer.stage2.web import controller
+    from tests.test_installer_web_controller import Setup, finish_script
+
+    assert "files_dir" in inspect.signature(engine.wizard_argv).parameters
+    # the window's route, on fakes: the folder beside the bundle reaches b01 and the wizard's command line
+    monkeypatch.setattr(controller, "files_beside", lambda app: kit.files if Path(app) == ROOT else None)
+    s = Setup(kit.tmp, monkeypatch, script=finish_script)
+    assert s.ctl._boot().files_dir == kit.files
+    s.accept()
+    assert s.ctl.do_action("start")[0] == 200
+    s.until(lambda st: st["run"] == "finished", what="the run to finish")
+    argv = s.engine.argv
+    assert argv[argv.index("--files-dir") + 1] == str(kit.files)
+    # the wizard reads it; run from the bundle (the console) it finds the folder by itself; a folder that is
+    # gone is no folder
+    args = wizard.parse_args(argv[5:])
+    assert wizard.files_dir_of(args, kit.tmp / "home" / "app") == kit.files
+    assert wizard.files_dir_of(wizard.parse_args([]), kit.app) == kit.files
+    assert wizard.files_dir_of(wizard.parse_args(["--files-dir", str(kit.tmp / "gone")]), kit.tmp) is None
+
+
+# ------------------------------------------------------------------------------------------ bootstrap
+def tools_boot(kit: SimpleNamespace, files: Path | None, *, fetch_ok: bool = True) -> SimpleNamespace:
+    """``Boot`` for b01 on a PC with winget and Windows Terminal but no FFmpeg and no Visual C++ runtime.
+    Every outside effect is a recorder here (no registry, no PATH, no elevation, no network)."""
+    ffmpeg = zip_bytes({"ffmpeg-n8/bin/ffmpeg.exe": b"MZ ffmpeg", "ffmpeg-n8/bin/ffprobe.exe": b"MZ ffprobe"})
+    vc = b"MZ vc_redist stand-in"
+    pins = {"ffmpeg": {"url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/x/ffmpeg-n8-win64.zip",
+                       "sha256": sha(ffmpeg)},
+            "vcredist": {"url": "https://download.visualstudio.microsoft.com/pr/abc/VC_redist.x64.exe",
+                         "sha256": sha(vc)}}
+    rec = SimpleNamespace(cmds=[], fetched=[], elevated=[], rows=[], said=[], path=[], ffmpeg=ffmpeg, vc=vc,
+                          pins=pins, runtime=False)
+
+    def cmd(argv, env=None, cwd=None, timeout=None):
+        rec.cmds.append([str(a) for a in argv])
+        return CmdResult(1, "", "winget: the source does not answer")
+
+    def fetch(url, sha256, dest, say=None):
+        rec.fetched.append(url)
+        if not fetch_ok:
+            raise BootstrapError("NS-E105", f"could not download {url}: HTTP Error 504: Gateway Time-out")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(ffmpeg if url == pins["ffmpeg"]["url"] else vc)
+
+    def elevated(exe, args):
+        rec.elevated.append(Path(exe).read_bytes())
+        rec.runtime = True
+        return CmdResult(0, "", "")
+
+    rec.boot = Boot(
+        app_path=kit.app, home=kit.tmp / "home", uv="uv", cmd=cmd,
+        which=lambda name: name if name in ("winget.exe", "wt.exe") else None, refresh_path=lambda: None,
+        set_home_var=lambda n, v: True, get_home_var=lambda n: None, bin_pins=pins,
+        vc_missing=lambda: [] if rec.runtime else ["vcruntime140.dll"], fetch_file=fetch,
+        run_elevated=elevated,
+        add_user_path=lambda d: rec.path.append(d) or True, on_row=lambda *row: rec.rows.append(row),
+        say=rec.said.append,
+    )
+    rec.boot.files_dir = files      # what the controller sets from the bundle folder
+    return rec
+
+
+def test_ffmpeg_and_the_vc_runtime_come_from_the_files_folder_before_winget(kit):
+    rec = tools_boot(kit, kit.files)
+    (kit.files / "ffmpeg-n8-win64.zip").write_bytes(rec.ffmpeg)
+    (kit.files / "VC_redist.x64.exe").write_bytes(rec.vc)
+    bootstrap.B01Tools().run(rec.boot)
+    assert not [c for c in rec.cmds if "winget" in c[0].lower()], "winget ran although files had the pin"
+    assert rec.fetched == []
+    assert rec.elevated == [rec.vc]                                 # the installer that ran is the pinned one
+    assert (rec.boot.ffmpeg_dir / "ffmpeg.exe").read_bytes() == b"MZ ffmpeg"
+    assert (rec.boot.ffmpeg_dir / "ffprobe.exe").is_file()
+    notes = {row[0]: row[2] for row in rec.rows if row[1] == "done"}
+    assert notes["vcruntime"] == notes["ffmpeg"] == "installed from the files folder"
+    for name in ("VC_redist.x64.exe", "ffmpeg-n8-win64.zip"):
+        assert sum(f"taken from files\\{name}" in line for line in rec.said) == 1, rec.said
+    assert not list(rec.boot.downloads_dir.glob("*.copy"))
+
+
+def test_a_wrong_file_in_the_files_folder_goes_on_to_winget_and_the_pinned_download(kit):
+    rec = tools_boot(kit, kit.files)
+    (kit.files / "ffmpeg-n8-win64.zip").write_bytes(rec.ffmpeg + b"tail")
+    (kit.files / "VC_redist.x64.exe").write_bytes(rec.vc)
+    bootstrap.B01Tools().run(rec.boot)
+    wrong = "files\\ffmpeg-n8-win64.zip does not match its pin"
+    assert sum(wrong in line for line in rec.said) == 1, rec.said
+    assert [c[3] for c in rec.cmds if "winget" in c[0].lower()] == ["Gyan.FFmpeg"]     # the next source
+    assert rec.fetched == [rec.pins["ffmpeg"]["url"]]                                  # then the pinned URL
+    assert (rec.boot.ffmpeg_dir / "ffmpeg.exe").read_bytes() == b"MZ ffmpeg"
+
+
+def test_a_failed_bootstrap_download_names_the_files_folder_and_the_kit(kit):
+    rec = tools_boot(kit, None, fetch_ok=False)
+    with pytest.raises(BootstrapError) as ei:
+        bootstrap.B01Tools().run(rec.boot)
+    assert ei.value.code == "NS-E105" and "504" in ei.value.detail
+    assert "files folder" in ei.value.detail and "tools\\make-files-kit.ps1" in ei.value.detail
+    assert "next to INSTALL.cmd" in ei.value.detail
+
+
+# ------------------------------------------------------------------------------------------------ s04
+def test_the_spacy_wheel_is_installed_from_the_files_folder_with_its_hash(kit):
+    wheel_bytes = zip_bytes({"en_core_web_md/__init__.py": b""})
+    name = "en_core_web_md-3.8.0-py3-none-any.whl"
+    pin = BinPin(version="3.8.0", url=f"https://github.com/explosion/spacy-models/releases/download/x/{name}",
+                 sha256=sha(wheel_bytes))
+
+    def spacy_line(files: Path | None, sub: str) -> tuple[str, Any, list[str]]:
+        runner = FakeRunner(kit.tmp / sub / "desktop")
+        ctx = make_test_context(kit.tmp / sub, raw_answers=example_answers(), resolve=True, runner=runner,
+                                app_path=ROOT)
+        ctx.manifest = ctx.manifest.model_copy(update={"python": ctx.manifest.python.model_copy(
+            update={"spacy_wheel": pin})})
+        ctx.files_dir = files
+        S04Venvs().run(ctx)
+        call = next(c for c in runner.calls if c.tag == "uv pip install studio spacy model")
+        assert call.argv[-4:-1] == ["--no-deps", "--require-hashes", "-r"]
+        return Path(call.argv[-1]).read_text(encoding="utf-8").strip(), ctx, call.argv
+
+    (kit.files / name).write_bytes(wheel_bytes)
+    line, ctx, _argv = spacy_line(kit.files, "a")
+    assert line == f"en_core_web_md @ {(kit.files / name).as_uri()} --hash=sha256:{pin.sha256}"
+    assert sum(f"taken from files\\{name}" in said for said in ctx.ui.said) == 1
+    # a wheel with other bytes is not handed to uv: the pinned URL is, with the same hash, and it is said
+    (kit.files / name).write_bytes(wheel_bytes + b"x")
+    line, ctx, _argv = spacy_line(kit.files, "b")
+    assert line == f"en_core_web_md @ {pin.url} --hash=sha256:{pin.sha256}"
+    assert ctx.ui.said.count(f"files\\{name} {MISMATCH}") == 1
+    # no files folder: the line of the previous release
+    assert spacy_line(None, "c")[0] == f"en_core_web_md @ {pin.url} --hash=sha256:{pin.sha256}"
+
+
+# -------------------------------------------------------------------------------------------- appcopy
+def test_the_files_folder_is_never_copied_into_the_program_folder(tmp_path: Path):
+    source = tmp_path / "bundle"
+    (source / "files" / "python").mkdir(parents=True)
+    (source / "files" / "llama.zip").write_bytes(b"big")
+    (source / "installer" / "files").mkdir(parents=True)             # only the top-level folder is left out
+    (source / "installer" / "files" / "keep.txt").write_text("x", encoding="utf-8")
+    (source / "manifest.json").write_text("{}", encoding="utf-8")
+    appcopy.copy_tree(source, tmp_path / "app")
+    assert "files" in appcopy.SKIP_TOP
+    assert not (tmp_path / "app" / "files").exists()
+    assert (tmp_path / "app" / "manifest.json").is_file()
+    assert (tmp_path / "app" / "installer" / "files" / "keep.txt").is_file()
+
+
+# -------------------------------------------------------------------------------------------- stage 1
+LOADER = """
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$ast = [System.Management.Automation.Language.Parser]::ParseFile('{stage1}', [ref]$null, [ref]$null)
+$fnType = [System.Management.Automation.Language.FunctionDefinitionAst]
+foreach ($name in 'Get-Prop', 'Join-Str', 'Get-KitHint', 'Get-UrlLeaf', 'Get-FilesDir', 'Copy-PinnedFile',
+                  'Install-Uv', 'Install-ManagedPython', 'Install-VcRuntime') {{
+    $found = @($ast.FindAll({{ param($n) $n -is $fnType -and $n.Name -eq $name }}, $true))
+    if ($found.Count -gt 0) {{ . ([scriptblock]::Create($found[0].Extent.Text)) }}
+    else {{ Write-Host "MISSING:$name" }}
+}}
+function Get-DataDir {{ return '{data}' }}
+function Set-Status {{ param($Index, $Tag, $Text) Write-Host "STATUS:$Tag|$Text" }}
+function Stop-Setup {{ param($Code, $Detail, $ExitCode) Write-Host "STOP:$Code|$Detail"; exit 13 }}
+function Invoke-WebRequest {{ Write-Host 'WEB-CALLED'; throw 'HTTP 504 (the test has no network)' }}
+function Test-Tool {{ param($Name) return $false }}
+function Update-SessionPath {{ }}
+function Get-UvVersion {{ param($Uv) return '0.13.6' }}
+function Test-VcRuntime {{ return $true }}
+function Start-Process {{
+    [CmdletBinding()] param($FilePath, $ArgumentList, $Verb, [switch]$Wait, [switch]$PassThru)
+    Write-Host ('ELEVATED:' + (Get-FileHash -Algorithm SHA256 -LiteralPath $FilePath).Hash.ToLower())
+    return [pscustomobject]@{{ ExitCode = 0 }}
+}}
+$script:IsDry = $false
+$script:UvFrom = 'downloaded'
+$m = Get-Content -Raw -LiteralPath '{manifest}' | ConvertFrom-Json
+$files = ''
+if (Get-Command Get-FilesDir -ErrorAction SilentlyContinue) {{ $files = Get-FilesDir -App '{app}' }}
+Write-Host "FILES=[$files]"
+"""
+
+
+def stage1(tmp_path: Path, app: Path, manifest: dict, body: str, env: dict[str, str] | None = None):
+    """Run the real functions of stage1.ps1 under powershell.exe with stand-ins for the machine."""
+    work = tmp_path / "ps"
+    (work / "temp").mkdir(parents=True, exist_ok=True)
+    (work / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    script = LOADER.format(stage1=STAGE1, data=work / "data", manifest=work / "manifest.json", app=app) + body
+    (work / "harness.ps1").write_text(script, encoding="utf-8")
+    full = {k: v for k, v in os.environ.items() if k.upper() != "UV_PYTHON_INSTALL_MIRROR"}
+    full.update({"TEMP": str(work / "temp"), "TMP": str(work / "temp"), **(env or {})})
+    argv = [str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(work / "harness.ps1")]
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=180, env=full)
+    return proc, work
+
+
+def fake_uv(folder: Path, refuse_mirror: bool = False, fail: bool = False) -> Path:
+    """A stand-in uv: writes the mirror variable and its arguments to uv-calls.txt and exits 0 (2 when it
+    refuses the file of a folder mirror, 3 when it fails anyway)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    lines = ["@echo off", 'echo MIRROR=[%UV_PYTHON_INSTALL_MIRROR%] ARGS=[%*]>>"%~dp0uv-calls.txt"']
+    if refuse_mirror:
+        lines.append('if /i "%UV_PYTHON_INSTALL_MIRROR:~0,5%"=="file:" exit /b 2')
+    lines.append("exit /b 3" if fail else "exit /b 0")
+    (folder / "fakeuv.cmd").write_text("\r\n".join(lines) + "\r\n", encoding="ascii")
+    return folder / "fakeuv.cmd"
+
+
+@needs_ps
+def test_stage1_takes_uv_and_python_from_the_files_folder(tmp_path: Path):
+    app, files = tmp_path / "my bundle", tmp_path / "my bundle" / "files"     # a space: file:///...my%20bundle...
+    (files / "python" / "20261026").mkdir(parents=True)
+    uv_zip, vc = zip_bytes({"uv.exe": b"MZ uv stand-in", "uvx.exe": b"MZ uvx"}), b"MZ vc_redist stand-in"
+    (files / "uv-x86_64-pc-windows-msvc.zip").write_bytes(uv_zip)
+    (files / "VC_redist.x64.exe").write_bytes(vc)
+    manifest = {"python_version": "3.12", "bins": {
+        "uv": {"version": "0.13.6", "url": "http://127.0.0.1:9/dl/0.13.6/uv-x86_64-pc-windows-msvc.zip",
+               "sha256": sha(uv_zip)},
+        "vcredist": {"version": "14", "url": "http://127.0.0.1:9/pr/VC_redist.x64.exe", "sha256": sha(vc)}}}
+    uv = fake_uv(tmp_path / "uv")
+    body = f"""
+$hasFiles = (Get-Command Install-Uv).Parameters.ContainsKey('FilesDir')
+if ($hasFiles) {{ $got = Install-Uv -Manifest $m -FilesDir $files }} else {{ $got = Install-Uv -Manifest $m }}
+Write-Host "UV=[$got] FROM=[$script:UvFrom]"
+if (Get-Command Install-ManagedPython -ErrorAction SilentlyContinue) {{
+    $note = Install-ManagedPython -Uv '{uv}' -Version '3.12' -FilesDir $files
+    Write-Host "PY=[$note] AFTER=[$env:UV_PYTHON_INSTALL_MIRROR]"
+    $ok = Install-VcRuntime -Manifest $m -FilesDir $files
+    Write-Host "VC=[$ok]"
+}}
+"""
+    proc, work = stage1(tmp_path, app, manifest, body)
+    out = proc.stdout + proc.stderr
+    assert f"FILES=[{files}]" in out, out
+    assert f"UV=[{work / 'data' / 'bootstrap' / 'uv' / 'uv.exe'}] FROM=[from the files folder]" in out, out
+    assert "WEB-CALLED" not in out and proc.returncode == 0, out                    # no download was tried
+    assert (work / "data" / "bootstrap" / "uv" / "uv.exe").read_bytes() == b"MZ uv stand-in"
+    assert "taken from files\\uv-x86_64-pc-windows-msvc.zip" in out
+    # Python: the mirror is the files\python folder for the one `uv python install` call and gone after it
+    calls = (uv.parent / "uv-calls.txt").read_text(encoding="ascii").splitlines()
+    assert calls == [f"MIRROR=[{(files / 'python').as_uri()}] ARGS=[python install 3.12]"]
+    assert "my%20bundle/files/python]" in calls[0]
+    assert "PY=[from the files folder] AFTER=[]" in out
+    # the Visual C++ runtime: the installer that was started is the pinned file from the folder
+    assert f"ELEVATED:{sha(vc)}" in out and "VC=[True]" in out
+    assert "taken from files\\VC_redist.x64.exe" in out
+    assert not [p.name for p in (work / "temp").iterdir()], "stage 1 left a file in the temp folder"
+
+
+@needs_ps
+def test_stage1_goes_on_when_the_files_folder_cannot_be_used(tmp_path: Path):
+    """A wrong uv zip is said and not unpacked; a Python archive uv refuses is retried once without the mirror
+    (the owner's own mirror setting comes back); when that fails too the error names the kit."""
+    app, files = tmp_path / "bundle", tmp_path / "bundle" / "files"
+    (files / "python").mkdir(parents=True)
+    uv_zip = zip_bytes({"uv.exe": b"MZ uv stand-in"})
+    (files / "uv-x86_64-pc-windows-msvc.zip").write_bytes(uv_zip + b"tail")
+    manifest = {"python_version": "3.12", "bins": {"uv": {
+        "version": "0.13.6", "url": "http://127.0.0.1:9/dl/uv-x86_64-pc-windows-msvc.zip",
+        "sha256": sha(uv_zip)}}}
+    refusing, failing = fake_uv(tmp_path / "uv1", refuse_mirror=True), fake_uv(tmp_path / "uv2", fail=True)
+    mine = "https://mirror.example/python"
+    body = f"""
+if (Get-Command Install-ManagedPython -ErrorAction SilentlyContinue) {{
+    $note = Install-ManagedPython -Uv '{refusing}' -Version '3.12' -FilesDir $files
+    Write-Host "PY=[$note] AFTER=[$env:UV_PYTHON_INSTALL_MIRROR]"
+    $null = Install-ManagedPython -Uv '{failing}' -Version '3.12' -FilesDir ''
+}}
+"""
+    proc, _work = stage1(tmp_path, app, manifest, body, env={"UV_PYTHON_INSTALL_MIRROR": mine})
+    out = proc.stdout + proc.stderr
+    assert "MISSING:" not in out, out
+    calls = (refusing.parent / "uv-calls.txt").read_text(encoding="ascii").splitlines()
+    assert calls == [f"MIRROR=[{(files / 'python').as_uri()}] ARGS=[python install 3.12]",
+                     f"MIRROR=[{mine}] ARGS=[python install 3.12]"], out
+    assert "files\\python was not accepted by uv (exit code 2); downloading Python 3.12" in out
+    assert f"PY=[downloaded] AFTER=[{mine}]" in out
+    stop = next(line for line in out.splitlines() if line.startswith("STOP:"))
+    assert stop.startswith("STOP:NS-E105|uv python install 3.12 failed (exit code 3).")
+    assert proc.returncode == 13
+    assert "tools\\make-files-kit.ps1" in stop and "next to INSTALL.cmd" in stop
+    # uv: the wrong zip is said once, never unpacked, and the download (dead here) is what fails
+    body = """
+$got = Install-Uv -Manifest $m -FilesDir $files
+"""
+    proc, work = stage1(tmp_path / "second", app, manifest, body)
+    out = proc.stdout + proc.stderr
+    assert out.count(f"files\\uv-x86_64-pc-windows-msvc.zip {MISMATCH}") == 1, out
+    assert "WEB-CALLED" in out and "STOP:NS-E105|" in out and "tools\\make-files-kit.ps1" in out
+    assert not (work / "data" / "bootstrap" / "uv" / "uv.exe").exists()
+    assert not [p.name for p in (work / "temp").iterdir()]
+
+
+@needs_ps
+def test_a_dry_run_of_stage1_names_the_files_folder_and_hands_it_to_every_step(tmp_path: Path):
+    """The whole script, as CI runs it (-DryRun with a fake probe): the folder beside INSTALL.cmd is found and
+    said, and the three places that fetch a program get it."""
+    app = tmp_path / "bundle"
+    (app / "files").mkdir(parents=True)
+    shutil.copy(ROOT / "manifest.json", app / "manifest.json")
+    probe = tmp_path / "probe.json"
+    drives = [{"letter": "C", "free_gb": 500, "type": "SSD"}]
+    probe.write_text(json.dumps({"smi_text": "CUDA Version: 13.0", "vc_runtime": False, "drives": drives}),
+                     encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k != "NIGHTSHIFT_HOME"}
+    env["NS_NONINTERACTIVE"] = "1"
+
+    def dry(folder: Path) -> str:
+        argv = [str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(STAGE1), "-AppPath",
+                str(folder), "-DryRun", "-FakeProbe", str(probe)]
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=300, env=env)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        return proc.stdout
+
+    line = f"[dry-run] take the pinned programs from {app / 'files'} when their SHA256 matches"
+    assert line in dry(app)
+    (app / "files").rmdir()
+    without = dry(app)                                              # no folder: not a word about one
+    assert "pinned programs from" not in without and "files folder" not in without
+    text = STAGE1.read_text(encoding="ascii")
+    main = text[text.index("# Main"):]
+    for call in ("Install-Uv -Manifest $Manifest -FilesDir $filesDir",
+                 "Install-ManagedPython -Uv $uv -Version $pyVersion -FilesDir $filesDir",
+                 "Install-VcRuntime -Manifest $Manifest -FilesDir $filesDir"):
+        assert call in main, call
+
+
+# ------------------------------------------------------------------- the preflight network row
+GITHUB_FILES = ("uv", "yt_dlp", "yunet", "llama_cuda13", "cudart13", "ffmpeg", "qwentts", "opencode")
+PY_ARCHIVE = "cpython-3.12.16+20261026-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
+PY_FILE = "20261026\\" + PY_ARCHIVE         # what the pinned uv names (the fake probe says it; CI has no uv)
+COVERS = "github.com does not answer; setup takes the pinned programs from files\\ (SHA256 checked)"
+
+
+def github_bundle(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
+    """A bundle (in a folder with a space) whose files folder holds a stand-in, with its SHA256 pinned in the
+    bundle's manifest.json, for every file the fake PC (RTX 50-series, CUDA 13, no FFmpeg) takes from
+    GitHub."""
+    app = tmp_path / "my bundle"
+    files = app / "files"
+    (files / "python" / "20261026").mkdir(parents=True)
+    manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+    names: dict[str, str] = {}
+    pins = [(k, manifest["bins"][k]) for k in GITHUB_FILES] + [("spacy", manifest["python"]["spacy_wheel"])]
+    for key, pin in pins:
+        assert urlsplit(pin["url"]).hostname == "github.com", key
+        blob = f"stand-in for {key}".encode()
+        pin["sha256"] = sha(blob)
+        names[key] = leaf(pin["url"])
+        (files / names[key]).write_bytes(blob)
+    (files / "python" / "20261026" / PY_ARCHIVE).write_bytes(b"stand-in")
+    (app / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    shutil.copytree(ROOT / "contracts", app / "contracts")           # errors.json: the real hints
+    return app, files, names
+
+
+def stage1_probe(
+    tmp_path: Path, app: Path, unreachable: list[str], *, dry: bool = False, answers: Path | None = None,
+) -> tuple[dict, str]:
+    """stage1.ps1 on a fake PC whose listed sites give no answer. Default: -ProbeOnly, the hand-over JSON the
+    setup window reads (also on Check again); with ``dry`` the console of the headless run."""
+    probe = tmp_path / "probe.json"
+    probe.write_text(json.dumps({
+        "smi_text": "CUDA Version: 13.0", "unreachable": unreachable, "tools": {"ffmpeg": False},
+        "python_file": PY_FILE,
+        "drives": [{"letter": "C", "free_gb": 500, "type": "SSD"}]}), encoding="utf-8")
+    out = tmp_path / "handover.json"
+    mode = ["-DryRun"] if dry else ["-ProbeOnly", "-Out", str(out)]
+    if answers is not None:
+        mode += ["-Answers", str(answers)]
+    env = {k: v for k, v in os.environ.items() if k != "NIGHTSHIFT_HOME"}
+    env["NS_NONINTERACTIVE"] = "1"
+    argv = [str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(STAGE1), "-AppPath", str(app),
+            "-FakeProbe", str(probe), *mode]
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=300, env=env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    if dry:
+        line = next(x for x in proc.stdout.splitlines() if x.startswith("[dry-run] preflight-json: "))
+        return json.loads(line.split("preflight-json: ", 1)[1]), proc.stdout
+    return json.loads(out.read_text(encoding="utf-8-sig")), proc.stdout
+
+
+def network_rows(handover: dict) -> tuple[dict, dict]:
+    """The network row as stage 1 wrote it and as the setup window shows it."""
+    from installer.stage2.web import preflight
+
+    raw = next(r for r in handover["checks"] if r["id"] == "network")
+    shown = next(r for r in preflight.check_rows(handover) if r["id"] == "network")
+    return raw, shown
+
+
+@needs_ps
+def test_github_unreachable_with_a_complete_files_folder_does_not_stop_setup(tmp_path: Path):
+    """The day the item exists for: github.com gives no HTTP answer and the folder holds everything."""
+    app, _files, _names = github_bundle(tmp_path)
+    # headless stage 1: a warning that names the folder, and nothing blocks
+    handover, console = stage1_probe(tmp_path, app, ["github.com", "api.github.com"], dry=True)
+    raw, shown = network_rows(handover)
+    assert raw["status"] == "warn", raw
+    assert raw["value"] == COVERS + "; also unreachable: api.github.com" and raw["files"] == "covers"
+    assert "would block" not in console and COVERS in console
+    assert "stops its step with NS-E105 after a few minutes of trying" in raw["hint"]
+    assert "after a few minutes of trying" in shown["whatToDo"]
+    assert "[dry-run] take the pinned programs from" in console
+    # the window (the same JSON, also after Check again): the Install button is not held
+    handover, _ = stage1_probe(tmp_path, app, ["github.com", "huggingface.co"])
+    raw, shown = network_rows(handover)
+    assert raw["status"] == "warn" and shown["blocking"] is False
+    assert shown["title"] == "GitHub cannot be reached" and shown["value"].startswith(COVERS)
+    assert "files folder next to INSTALL.cmd" in shown["whatToDo"]
+    assert "A folder on this PC" in shown["whatToDo"]
+    assert shown["fix"]["kind"] == "recheck" and "NS-" not in shown["whatToDo"]
+
+
+@needs_ps
+def test_github_unreachable_with_an_incomplete_files_folder_stays_red_and_names_the_files(tmp_path: Path):
+    app, files, names = github_bundle(tmp_path)
+    (files / names["llama_cuda13"]).unlink()                                   # missing
+    (files / names["yt_dlp"]).write_bytes(b"other bytes")                      # wrong bytes: the same
+    shutil.rmtree(files / "python")
+    handover, console = stage1_probe(tmp_path, app, ["github.com"], dry=True)
+    raw, shown = network_rows(handover)
+    assert raw["status"] == "fail" and raw["files"] == "lacks" and "would block" in console
+    assert raw["value"].startswith("unreachable: github.com; the files folder lacks: ")
+    lacking = raw["value"].split("lacks: ", 1)[1]
+    assert names["llama_cuda13"] in lacking and names["yt_dlp"] in lacking and "cpython-3.12" in lacking
+    assert names["uv"] not in lacking and names["cudart13"] not in lacking     # only what is really missing
+    assert "tools\\make-files-kit.ps1" in raw["hint"] and "run INSTALL.cmd again" in raw["hint"]
+    assert shown["blocking"] is True and "tools\\make-files-kit.ps1" in shown["whatToDo"]
+    assert "press Check again" in shown["whatToDo"]
+    # OpenCode is not needed when the answers say so, and FFmpeg is not when the PC has it: not asked for
+    assert "Nightshift Code" not in raw["value"]            # OpenCode is there: nothing is said about it
+    (files / names["opencode"]).unlink()
+    (files / names["llama_cuda13"]).write_bytes(b"stand-in for llama_cuda13")
+    (files / names["yt_dlp"]).write_bytes(b"stand-in for yt_dlp")
+    (files / "python" / "20261026").mkdir(parents=True)
+    (files / "python" / "20261026" / PY_ARCHIVE).write_bytes(b"x")
+    # a kit made without OpenCode: red (the window asks about Nightshift Code only later), with both ways out
+    raw, shown = network_rows(stage1_probe(tmp_path, app, ["github.com"])[0])
+    assert raw["status"] == "fail" and shown["blocking"] is True
+    assert raw["value"].endswith(
+        f"the files folder lacks: {names['opencode']}. {names['opencode']} is needed only for Nightshift "
+        'Code: add it with the kit, or install without Nightshift Code (put "install_code": false in an '
+        "answers.json next to INSTALL.cmd and start INSTALL.cmd -Ui)")
+    assert shown["value"] == raw["value"]
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({"install_code": False}), encoding="utf-8")
+    handover, _ = stage1_probe(tmp_path, app, ["github.com"], answers=answers)
+    assert network_rows(handover)[0]["status"] == "warn"
+
+
+@needs_ps
+@pytest.mark.parametrize(
+    ("unreachable", "folder", "status", "value", "files", "kit"),
+    [
+        # no folder: the row of the previous release; GitHub alone also names the kit
+        (["github.com"], False, "fail", "unreachable: github.com", "none", True),
+        (["github.com", "pypi.org"], False, "fail", "unreachable: github.com, pypi.org", None, False),
+        # no internet at all, a complete folder: red, and it says up front why setup cannot start
+        (["huggingface.co", "github.com", "pypi.org", "files.pythonhosted.org"], True, "fail",
+         "unreachable: huggingface.co, github.com, pypi.org, files.pythonhosted.org; the files folder covers "
+         "GitHub, but the Python packages need pypi.org and files.pythonhosted.org, so setup cannot start",
+         "pypi", False),
+        # the other sites are untouched by the folder: PyPI blocks, Hugging Face and the rest only warn
+        (["pypi.org"], True, "fail", "unreachable: pypi.org", None, False),
+        (["huggingface.co", "api.nuget.org"], True, "warn", "unreachable: huggingface.co, api.nuget.org",
+         None, False),
+    ],
+)
+def test_the_network_row_for_every_other_state(tmp_path, unreachable, folder, status, value, files, kit):
+    app, files_dir, _names = github_bundle(tmp_path)
+    if not folder:
+        shutil.rmtree(files_dir)
+    handover, _ = stage1_probe(tmp_path, app, unreachable)
+    raw, shown = network_rows(handover)
+    assert (raw["status"], raw["value"], raw.get("files")) == (status, value, files)
+    assert ("make-files-kit" in raw["hint"]) is kit and ("make-files-kit" in shown["whatToDo"]) is kit
+    assert shown["blocking"] is (status == "fail") and raw["hint"].startswith("Check the internet")
+    if files == "pypi":
+        assert "no folder replaces them" in shown["whatToDo"]
+
+
+GAP_FUNCTIONS = ("Get-Prop", "Get-UrlLeaf", "Find-PinnedFile", "Get-UvPythonFile", "Get-PythonFileGap",
+                 "Get-GitHubFilesGap")
+
+
+def gap_harness(tmp_path: Path, body: str) -> str:
+    """Run the named functions of stage1.ps1 under powershell.exe (StrictMode, as stage 1 runs)."""
+    listed = ", ".join(repr(x) for x in GAP_FUNCTIONS)
+    script = f"""
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$ast = [System.Management.Automation.Language.Parser]::ParseFile('{STAGE1}', [ref]$null, [ref]$null)
+$fnType = [System.Management.Automation.Language.FunctionDefinitionAst]
+foreach ($name in @({listed})) {{
+    $found = @($ast.FindAll({{ param($n) $n -is $fnType -and $n.Name -eq $name }}, $true))
+    if ($found.Count -gt 0) {{ . ([scriptblock]::Create($found[0].Extent.Text)) }}
+    else {{ Write-Host "MISSING:$name" }}
+}}
+""" + body
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "gap.ps1").write_text(script, encoding="utf-8")
+    argv = [str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(tmp_path / "gap.ps1")]
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=180)
+    out = proc.stdout + proc.stderr
+    assert "MISSING:" not in out and proc.returncode == 0, out
+    return proc.stdout
+
+
+@needs_ps
+def test_stage_1_and_stage_2_agree_on_what_this_pc_takes_from_github(tmp_path: Path):
+    """Get-GitHubFilesGap is a PowerShell twin of stage 2's plan. Both are worked out from the repository's
+    manifest for every profile, driver pair and option; a pin added to one side only fails here."""
+    manifest = load_manifest()
+    (tmp_path / "files").mkdir()                    # an empty folder: the gap is the whole list
+    combos = [(dev, profile, pair, code, ffmpeg)
+              for dev in (False, True) for profile in (("cpu-dev",) if dev else ("gpu", "cpu-dev"))
+              for pair in (("cuda12", "cuda13") if profile == "gpu" else ("",))
+              for code in (True, False) for ffmpeg in (True, False)]
+    calls = "\n".join(
+        f"Show-Gap {str(dev).lower()} '{profile}' '{pair}' {str(code).lower()} {str(ffmpeg).lower()}"
+        for dev, profile, pair, code, ffmpeg in combos)
+    out = gap_harness(tmp_path, f"""
+$m = Get-Content -Raw -LiteralPath '{ROOT / "manifest.json"}' | ConvertFrom-Json
+function Show-Gap {{
+    param($Dev, $ProfileName, $Pair, $Code, $Ffmpeg)
+    $tools = [pscustomobject]@{{ ffmpeg = ($Ffmpeg -eq 'true') }}
+    $probe = [pscustomobject]@{{ python_file = 'tag\\file'; tools = $tools }}
+    $gap = @(Get-GitHubFilesGap -Manifest $m -Probe $probe -FilesDir '{tmp_path / "files"}' `
+        -ProfileName $ProfileName -LlamaPair $Pair -DevMode ($Dev -eq 'true') -InstallCode ($Code -eq 'true'))
+    $names = $gap -join ';'
+    Write-Host ("GAP|" + (($Dev, $ProfileName, $Pair, $Code, $Ffmpeg, $names) -join '|'))
+}}
+{calls}
+""")
+    stage1 = {}
+    for line in out.splitlines():
+        if line.startswith("GAP|"):
+            _, dev, profile, pair, code, ffmpeg, names = line.split("|")
+            key = (dev == "true", profile, pair, code == "true", ffmpeg == "true")
+            stage1[key] = {n for n in names.split(";") if n and not n.startswith("python\\")}
+    assert len(stage1) == len(combos) == 16
+
+    def github(urls: list[str | None]) -> set[str]:
+        return {leaf(u) for u in urls if u and urlsplit(u).hostname == "github.com"}
+
+    def pin_url(key: str) -> str | None:
+        pin = manifest.bins.get(key)
+        return pin.url if pin is not None else None
+
+    for dev, profile, pair, code, ffmpeg in combos:
+        home = tmp_path / "home"
+        # ctx.constrain: a dev install has no Nightshift Code
+        bins = plan_bins(manifest, profile, home, include_code=code and not dev, llama_pair=pair or None)
+        urls: list[str | None] = [i.url for i in bins]                               # s02
+        voice = None if dev else qwentts_item(manifest, home)                        # s02 _qwentts
+        urls.append(voice.url if voice else None)
+        models = plan_models(manifest, profile, "small", home, dev=dev)             # s03
+        urls += [i.url for i in models if i.name == "yunet"]
+        wheel = manifest.python.spacy_wheel                                          # s04
+        urls.append(wheel.url if wheel else None)
+        urls.append(pin_url("uv"))                                                   # stage 1 / b02
+        if not ffmpeg:
+            urls.append(pin_url("ffmpeg"))                                           # b01
+        assert stage1[(dev, profile, pair, code, ffmpeg)] == github(urls), (dev, profile, pair, code, ffmpeg)
+
+
+@needs_ps
+def test_a_stale_python_archive_does_not_pass_the_check(tmp_path: Path):
+    """The folder must hold the exact archive the pinned uv asks its mirror for, not any 3.12 build."""
+    app, files, _names = github_bundle(tmp_path)
+    exact = files / "python" / "20261026" / PY_ARCHIVE
+    stale = files / "python" / "20250918" / PY_ARCHIVE.replace("3.12.16+20261026", "3.12.11+20250918")
+    stale.parent.mkdir()
+    exact.rename(stale)
+    raw, _shown = network_rows(stage1_probe(tmp_path, app, ["github.com"])[0])
+    assert raw["status"] == "fail", raw
+    assert raw["value"] == ("unreachable: github.com; the files folder lacks: python\\" + PY_FILE
+                            + " (make it with -Only uv,python)")
+    # the kit's list names the file with another SHA256: a broken copy does not pass either
+    stale.rename(exact)
+    listed = {"key": "python", "file": "python\\" + PY_FILE, "sha256": sha(b"what the kit saved")}
+    (files / "files.json").write_text(json.dumps({"files": [listed]}), encoding="utf-8")
+    raw, _shown = network_rows(stage1_probe(tmp_path, app, ["github.com"])[0])
+    assert raw["status"] == "fail" and "(not the bytes the kit saved)" in raw["value"]
+    (files / "files.json").write_text(json.dumps({"files": [
+        {"key": "python", "file": "python\\" + PY_FILE, "sha256": sha(b"stand-in")}]}), encoding="utf-8")
+    assert network_rows(stage1_probe(tmp_path, app, ["github.com"])[0])[0]["status"] == "warn"
+    # the name comes from uv's own list (the line of uv 0.13.6); other interpreters and versions are skipped
+    uv = tmp_path / "fake uv" / "uv.cmd"
+    uv.parent.mkdir()
+    site = "https://releases.astral.sh/github/python-build-standalone/releases/download"
+    uv.write_text("\r\n".join([
+        "@echo off",
+        "echo pypy-3.12.15-windows-x86_64-none       https://downloads.python.org/pypy/pypy3.12-v8.0.1-win64.zip",
+        f"echo cpython-3.12.16-windows-x86_64-none    {site}/20261026/{PY_ARCHIVE.replace('+', '%%2B')}",
+        f"echo cpython-3.12.15-windows-x86_64-none    {site}/20260901/older.tar.gz"]) + "\r\n",
+        encoding="ascii")
+    out = gap_harness(tmp_path / "ask", f"""
+Write-Host ('ASKED=[' + (Get-UvPythonFile -Uv '{uv}' -Version '3.12') + ']')
+$m = [pscustomobject]@{{ python_version = '3.12'; bins = [pscustomobject]@{{ uv = $null }} }}
+$known = Get-PythonFileGap -Manifest $m -Probe $null -FilesDir '{files}' -KnownUv '{uv}'
+Write-Host ('KNOWN=[' + $known + ']')
+Write-Host ('NOUV=[' + (Get-PythonFileGap -Manifest $m -Probe $null -FilesDir '{files}') + ']')
+""")
+    assert f"ASKED=[{PY_FILE}]" in out and "KNOWN=[]" in out
+    assert "NOUV=[python\\ (the Python 3.12 build could not be checked without the pinned uv)" in out
+
+
+# ------------------------------------------------------------------------------------------- the kit
+class _Quiet(http.server.SimpleHTTPRequestHandler):
+    seen: list[str] = []
+
+    def log_message(self, format: str, *args: Any) -> None:
+        self.seen.append(self.path)
+
+
+@needs_ps
+def test_the_kit_script_parses_under_5_1_and_writes_files_json(tmp_path: Path):
+    site, out = tmp_path / "site", tmp_path / "kit" / "files"
+    (site / "dl").mkdir(parents=True)
+    uv_zip, ytdlp = zip_bytes({"uv.exe": b"MZ uv"}), b"MZ yt-dlp stand-in"
+    (site / "dl" / "uv-x86_64-pc-windows-msvc.zip").write_bytes(uv_zip)
+    (site / "dl" / "yt-dlp.exe").write_bytes(ytdlp)
+    _Quiet.seen = []
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), lambda *a: _Quiet(*a, directory=str(site)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}/dl"
+    dead = "http://127.0.0.1:9/never"
+
+    def manifest(ytdlp_sha: str) -> Path:
+        data = {"python_version": "3.12", "python": {"spacy_wheel": {"version": "1", "url": f"{dead}/w.whl",
+                                                                      "sha256": "0" * 64}},
+                "bins": {"uv": {"version": "0.13.6", "url": f"{base}/uv-x86_64-pc-windows-msvc.zip",
+                                "sha256": sha(uv_zip)},
+                         "yt_dlp": {"version": "1", "url": f"{base}/yt-dlp.exe", "sha256": ytdlp_sha},
+                         "llama_cpu": {"version": "1", "url": f"{dead}/llama.zip", "sha256": "0" * 64},
+                         "qwentts": None}}
+        path = tmp_path / "manifest.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path
+
+    def run(ytdlp_sha: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(KIT), "-Manifest",
+             str(manifest(ytdlp_sha)), "-Out", str(out), "-Only", "uv,yt-dlp"],
+            capture_output=True, text=True, timeout=180)
+
+    try:
+        proc = run(sha(ytdlp))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert (out / "uv-x86_64-pc-windows-msvc.zip").read_bytes() == uv_zip
+        assert (out / "yt-dlp.exe").read_bytes() == ytdlp
+        listed = json.loads((out / "files.json").read_text(encoding="utf-8-sig"))["files"]
+        assert {(f["key"], f["file"], f["sha256"]) for f in listed} == {
+            ("uv", "uv-x86_64-pc-windows-msvc.zip", sha(uv_zip)), ("yt_dlp", "yt-dlp.exe", sha(ytdlp))}
+        assert sorted(_Quiet.seen) == ["/dl/uv-x86_64-pc-windows-msvc.zip", "/dl/yt-dlp.exe"]  # -Only is kept
+        assert sorted(p.name for p in out.iterdir()) == [
+            "files.json", "uv-x86_64-pc-windows-msvc.zip", "yt-dlp.exe"]
+        # second run: what is there and matches is not downloaded again
+        proc = run(sha(ytdlp))
+        assert proc.returncode == 0 and len(_Quiet.seen) == 2, proc.stdout + proc.stderr
+        assert proc.stdout.count("already here") == 2
+        # a download that does not match its pin is not kept, is said, and the script fails
+        (out / "yt-dlp.exe").unlink()
+        proc = run("1" * 64)
+        assert proc.returncode == 1, proc.stdout + proc.stderr
+        assert "yt-dlp.exe does not match its pin" in proc.stdout and not (out / "yt-dlp.exe").exists()
+        assert not list(out.glob("*.part"))
+        listed = json.loads((out / "files.json").read_text(encoding="utf-8-sig"))["files"]
+        assert [f["key"] for f in listed] == ["uv"]                 # files.json lists only what was checked
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=10)
