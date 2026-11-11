@@ -57,6 +57,8 @@ TIME_LIMIT, UPDATE_RESTART, POWER_LOSS, SHUTDOWN, UNKNOWN = (
 #: A Windows event explains the run's end only this close to its last beat (a beat every 30 s, a shutdown that
 #: takes up to a minute and a half to end the programs).
 NEAR_S = 120
+#: How often the night's beat is written (`nightclock.BEAT_S`, repeated: this module imports no clock).
+BEAT_S = 30
 #: A second restart for updates within this many days adds the NS-W212 sentence (once in such a window).
 REPEAT_DAYS = 14
 #: Windows Update's programs that ask for a restart (event 1074, param1).
@@ -172,7 +174,9 @@ def cause(
     if beat_at is None and last_line is None:
         return Cause(UNKNOWN, OLD_WORDS, evidence={"basis": "none"})
     last = max(t for t in (beat_at, last_line) if t is not None)
-    precise = beat_at is not None and beat_at >= last
+    # the beat bounds the end to within a beat or two, also when a ledger line came just after it; a beat
+    # older than that stopped being written (a write failure) and bounds nothing
+    precise = beat_at is not None and (last - beat_at).total_seconds() <= 2 * BEAT_S
     restarted = None if boot is None else boot > last
     evidence: dict[str, Any] = {"basis": "beat" if precise else "ledger", "last_alive": last.isoformat(),
                                 "boot": boot.isoformat() if boot else None}

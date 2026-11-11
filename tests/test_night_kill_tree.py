@@ -191,7 +191,9 @@ def test_the_exact_recovery_path_after_a_kill(
     held.rename(held.with_suffix(".moved"))  # nobody holds it any more
     beat = _beat(paths)
     assert beat is not None and beat["run_id"] == run_id
-    last = datetime.fromisoformat(beat["at"])
+    # the last sign of life: the beat, or a ledger line of the run written after it
+    last = max([datetime.fromisoformat(beat["at"])] + [datetime.fromisoformat(x["at"]) for x in ledger.read(paths)
+                                                       if x.get("run_id") == run_id])
 
     # the dashboard's start closes them, with what the evidence allows here (no Windows log under pytest)
     from ns_dashboard.handlers import build_state
