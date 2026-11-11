@@ -10,7 +10,10 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import sys
+import threading
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Annotated, Any
@@ -346,17 +349,48 @@ def _serve(args: argparse.Namespace, paths: Paths) -> int:
     sup = Supervisor(paths, runtime, config=cfg, update_check=update_check.make_job(paths))
     relock_secret_files(paths, sup.log)
     app = create_app(sup, start_dashboard=not args.headless)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(
+        app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=GRACEFUL_S,
+    ))
 
     async def serve() -> None:
         task = asyncio.create_task(server.serve())
         waiter = asyncio.create_task(sup.exit_requested.wait())
         await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        exit_watchdog(EXIT_BOUND_S, log=sup.log)        # D-46: from here on the exit is bounded
         server.should_exit = True
         await task
 
     asyncio.run(serve())
     return 0
+
+
+#: D-46. The engine's way out had two waits without a bound: uvicorn waits for every request still running
+#: (an `/events` stream, a `/acquire` that waits for the GPU) unless `timeout_graceful_shutdown` is set, and
+#: at the very end the interpreter joins every `asyncio.to_thread` worker, one stuck in a blocking call
+#: included. An engine that had stopped its services and closed its port then stayed alive holding
+#: `run/supervisor.lock`, so no new engine could start and an update refused on its venv launcher.
+GRACEFUL_S = 5
+#: Once exit was requested, the process ends within this, whatever is still waiting (its services were
+#: stopped and its state file removed by then; its Job Object ends any child left).
+EXIT_BOUND_S = 20.0
+
+
+def exit_watchdog(bound_s: float, *, log: Any = None, end: Any = None) -> threading.Thread:
+    """A daemon thread that ends this process `bound_s` from now unless it has ended by itself. Daemon: it
+    never keeps the process alive; when the process is still there, it is what ends it (`os._exit(0)`)."""
+    finish = end or os._exit
+
+    def run() -> None:
+        time.sleep(bound_s)
+        if log is not None:
+            with contextlib.suppress(Exception):
+                log.warn("exit_forced", f"the engine had not ended {bound_s:g} s after it was asked to stop")
+        finish(0)
+
+    thread = threading.Thread(target=run, name="exit-watchdog", daemon=True)
+    thread.start()
+    return thread
 
 
 if __name__ == "__main__":

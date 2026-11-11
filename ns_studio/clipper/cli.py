@@ -24,6 +24,7 @@ from ns_studio.clipper.stages_clip import create_clip_job, resume_clip_job
 from ns_studio.context import FAKEABLE
 from ns_studio.diskroom import require_clip_room
 from ns_studio.errors import hint_of
+from ns_studio.gate import job_gate
 from ns_studio.orchestrator import run_job
 
 
@@ -92,6 +93,7 @@ def clip(
     fake = parse_fake(fake_services)
     paths = Paths.from_env()
     with guarded():
+        job_gate(paths)     # D-48: before the job folder, whatever started this process
         if reselect:
             _reselect(paths, reselect, channel, fake, template, max_clips, min_s, max_s)
             return

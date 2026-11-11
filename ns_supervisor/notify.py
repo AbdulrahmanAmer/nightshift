@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, TypedDict
 
+from installer.stage2.web import venvrepair
 from ns_common.atomic import (
     REPLACE_WAIT_S,
     create_text_atomic,
@@ -504,11 +505,31 @@ def read_notes(paths: Paths) -> list[Note]:
 def shown_notes(paths: Paths) -> list[Note]:
     """`read_notes` as the owner is shown them NOW: each message with the `ns ...` and `studio ...` it names
     given as this install's owner types them (`ns_common.commandline.render`). The id stays the one of the
-    stored (raw) note, so `dismiss` finds it. For a page or a console; never written back."""
-    return [
-        Note(id=n["id"], at=n["at"], title=n["title"], message=render(n["message"], paths.home))
-        for n in read_notes(paths)
-    ]
+    stored (raw) note, so `dismiss` finds it. For a page or a console; never written back.
+
+    D-48 review note: a note that sends the owner to finish an interrupted update (the worker's, the launch
+    script's) is read by the same rule as the update state (`update_job.nothing_left`): once nothing is left
+    to finish (a shortcut's replay, setup's Repair) it is shown as what is true now."""
+    notes = read_notes(paths)
+
+    def asks_to_finish(n: Note) -> bool:
+        return venvrepair.needs_finish({"state": "failed", "message": n["message"]})
+
+    finished: tuple[str, str] | None = None
+    if any(asks_to_finish(n) for n in notes):
+        from ns_supervisor import update_job
+
+        if update_job.nothing_left(paths):
+            said = " ".join(s for s in (update_job.FINISHED_SINCE, update_job.where(paths)) if s)
+            finished = (update_job.FINISHED_TITLE, said)
+    shown: list[Note] = []
+    for n in notes:
+        if finished is not None and asks_to_finish(n):
+            shown.append(Note(id=n["id"], at=n["at"], title=finished[0], message=finished[1]))
+        else:
+            message = render(n["message"], paths.home)
+            shown.append(Note(id=n["id"], at=n["at"], title=n["title"], message=message))
+    return shown
 
 
 def _leave(
