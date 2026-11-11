@@ -1757,7 +1757,7 @@ def uv_swap(
         plan.stays = f" uv stays at {was} (uv {plan.want} could not be put in place: {e})."
         return
     say(said)
-    log.info("uv_swapped", want=plan.want, was=was)
+    log.info("uv_swapped", said, want=plan.want, was=was)
 
 
 def uv_undo(plan: uvpin.Plan, log: NsLogger) -> str:
