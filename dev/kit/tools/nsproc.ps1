@@ -1,7 +1,10 @@
 # The GPU kit's process list (card gpu-kit; dev\prove.py runs it with --tools dev\kit\tools): the processes
 # whose program file is under the install's home, except the kit and the proof runner themselves.
-# -Down runs the install's own Stop All (app\launchers\stop-all.ps1) and lists again. It never stops a
-# process by name, by command line or by pid: what is still listed after Stop All is left as it is.
+# It only lists. -Down, which the proof runner sends after an engine it started itself, stops NOTHING here:
+# on the owner's PC the kit never sends Stop All (it would end a job, a Nightshift Code session or the
+# Dashboard somebody else is using). The kit brings Nightshift up before the proofs under its own record
+# and ends that engine itself at the end of its run, only while nothing else uses it (gpukit.py
+# leave_engine); an engine nobody uses ends by itself after 30 minutes.
 param([Parameter(Mandatory = $true)][string]$NsHome, [switch]$Down)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -19,15 +22,7 @@ function Get-KitProcesses {
 }
 
 if ($Down) {
-    $stop = Join-Path $NsHome 'app\launchers\stop-all.ps1'
-    if (Test-Path -LiteralPath $stop) {
-        $env:NIGHTSHIFT_HOME = $NsHome
-        try { & $stop | Out-Null } catch { Write-Output ('Stop All said: ' + $_.Exception.Message) }
-        Start-Sleep -Seconds 3
-    }
-    else {
-        Write-Output ('no Stop All at ' + $stop)
-    }
+    Write-Output 'NOT STOPPED: the GPU kit never sends Stop All. Nightshift is left as it is; the kit ends its own engine at the end of its run when nothing else uses it.'
 }
 $now = @(Get-KitProcesses)
 if ($now.Count -eq 0) { Write-Output 'CLEAN: no process of this install runs' }

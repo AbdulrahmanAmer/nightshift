@@ -304,6 +304,19 @@ Good to know:
   night and leaves a note on the Queue page; when you chose them yourself, it runs your channels as usual.
 - The kit never takes the graphics card from something else: if Nightshift Code is open (or a job holds the card)
   when a step needs the card, that step says so and waits for the next run; the kit starts and ends nothing of it.
+  Step 3 is stricter, because its model test stops and reloads every model: it starts only while nothing else is
+  using Nightshift at all and with time to end before the nightly run, and while it runs you should start no
+  video and not open Nightshift Code.
+- The kit ends only what it started itself, and only while nothing else is using it. It never presses Stop All.
+  When Nightshift was not running and the kit started it, the kit asks at the end of its run who is using it: if
+  nobody is, it stops that Nightshift again and says "Nightshift was stopped again"; if you opened the Dashboard or
+  Nightshift Code, a job is running or waiting, or a nightly run is working or starts within the hour, it leaves
+  Nightshift running and says why ("Nightshift was left running because ..."), and no later run of the kit
+  stops it. A Nightshift that was
+  already running, or that you started again yourself, is never stopped by the kit. If you close the kit's window
+  in the middle, Nightshift stays on and ends by itself after 30 minutes without use.
+- The kit does not collect or switch anything while a nightly run is still working: it says so and you run it
+  again when the night has ended.
 - If you switch Automatic runs yourself after the kit switched them on (in Settings, with `ns schedule install`, or
   by answering the nightly question when you run setup again), the kit leaves them as you set them.
 - If the kit's record of its nights cannot be read (a damaged file, or one from a newer kit), every night runs as if
@@ -314,7 +327,10 @@ Good to know:
   otherwise (its videos and its clip wait in the Queue: post them or reject them as you like), and Automatic runs
   for two nights. For a few minutes each it also adds one stock clip to the footage cache, two test voices to the
   voice library and the Nightshift Code window; each is recorded before it is made and removed again, also when
-  the window is closed in the middle. It reads your power and sleep settings and never changes them.
+  the window is closed in the middle. Do not work in the Nightshift Code window the kit opens: the kit closes it
+  by itself. If you gave a channel one of the kit's test voices, or a video used the kit's test clip, the kit
+  leaves that one where it is and names it in its last step. It reads your power and sleep settings and never
+  changes them.
 - The zip holds the PC's record (graphics card, driver, disk, sleep settings), the test and proof results, the
   stock-key, clip, voice (with the two test sentences), Nightshift Code and Assistant results, the video's facts and
   one picture of its frames (one a minute), both nights' records, logs and Windows' power events of those nights,

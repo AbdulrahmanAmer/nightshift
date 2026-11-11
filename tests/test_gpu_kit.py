@@ -19,12 +19,15 @@ else of them). The real Windows readers refuse to run under pytest.
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import signal
 import socket
 import subprocess
 import sys
+import threading
+import time
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -131,13 +134,22 @@ class StubFootage:
         return dest
 
 
+class Killed(BaseException):
+    """The kit's process is ended there (Task Manager, a power cut): none of its code runs after it."""
+
+
 class Traps:
-    """Named points where a test closes the kit's window (a KeyboardInterrupt), each once."""
+    """Named points where a test closes the kit's window (a KeyboardInterrupt) or ends its process (`kills`:
+    `Killed`), each once."""
 
     def __init__(self) -> None:
         self.armed: set[str] = set()
+        self.kills: set[str] = set()
 
     def hit(self, name: str) -> None:
+        if name in self.kills:
+            self.kills.discard(name)
+            raise Killed(name)
         if name in self.armed:
             self.armed.discard(name)
             raise KeyboardInterrupt(name)
@@ -189,6 +201,9 @@ class KitStage:
             raise KeyboardInterrupt("the window was closed during " + self.name)
         if w.fail_at == self.name:
             raise NsError("NS-E303", "the story failed its checks")
+        if w.hold_at == self.name:  # the job is in this stage until the test lets it go on
+            w.stage_held.set()
+            w.stage_may_go.wait(120)
         if w.out_of_time_at == self.name and ctx.channel.slug == "gpu-kit" and getattr(ctx, "run_id", None):
             from ns_studio import nightclock, nightfit  # the night's own time rule stops the kit's video here
 
@@ -291,7 +306,10 @@ class LocalProduct:
         """The kit's own HTTP client to the dashboard (made when first used: the fixture builds on a base
         without the kit, and the test body then fails at its first assertion)."""
         kit_here()
-        return gpukit.InstallProduct(self.world.home, self.world.server.port)
+        try:
+            return gpukit.InstallProduct(self.world.home, self.world.server.port, self.world.engine_port)
+        except TypeError:  # (a kit that never asks the engine itself takes no engine port)
+            return gpukit.InstallProduct(self.world.home, self.world.server.port)
 
     def api(self, method: str, path: str, body: Any = None, timeout: float = 60) -> tuple[int | None, Any]:
         self.calls.append(("api", method, path, body))
@@ -389,9 +407,36 @@ class LocalProduct:
         return rc, "\n".join(lines)
 
     def start_engine(self, timeout: float) -> tuple[bool, str]:
+        """The kit's nsup.ps1: the engine is started when it does not answer (with a real engine: the
+        product's own, in this process), then its Dashboard service."""
         self.calls.append(("start_engine",))
-        self.world.dashboard_down = False
+        w = self.world
+        if w.real_engine and w.engine is None:
+            w.start_nightshift()
+        w.dashboard_down = False
+        hook, w.after_engine_start = w.after_engine_start, None
+        if hook is not None:
+            hook()
         return True, "engine + dashboard up (headless)"
+
+    # What the product says about who uses it: the kit's own readers, on this home and its engine.
+    def engine_api(
+        self, method: str, path: str, body: Any = None, timeout: float = 30
+    ) -> tuple[int | None, Any]:
+        self.calls.append(("engine_api", method, path, body))
+        return self.world.engine_http(method, path, body, timeout)
+
+    def engine_record(self) -> dict[str, Any] | None:
+        return self.http.engine_record()
+
+    def live_work(self) -> list[dict[str, Any]] | None:
+        return self.http.live_work()
+
+    def dashboard_in_use(self) -> bool | None:
+        return self.http.dashboard_in_use()
+
+    def update_running(self) -> bool:
+        return self.http.update_running()
 
     def night_now(self, limit_s: int, timeout: float) -> tuple[int | None, str]:
         self.calls.append(("night_now", limit_s))
@@ -478,19 +523,84 @@ class CannedWindows:
         return (CAPTURED / "wevtutil-system.txt").read_text(encoding="utf-8")
 
 
+class Engine:
+    """Nightshift's REAL engine in this process: the product's `Supervisor` (its GPU lock, holder record and
+    services table) behind the product's own app (`ns_supervisor.app.create_app`: the lifespan writes and
+    removes the start record `run/supervisor.json`; the routes are /status, /acquire, /release, /stop_all,
+    /shutdown), listening on the home's engine port. A model service is the supervisor tests' stub process
+    (`ns_supervisor.testing.StubTable`), started and ended by the supervisor itself. `seen` lists every
+    request that reached the engine."""
+
+    def __init__(self, world: World) -> None:
+        import uvicorn
+
+        from ns_common.config import load_runtime
+        from ns_supervisor.app import create_app
+        from ns_supervisor.core import Supervisor
+        from ns_supervisor.gpu import NullGpuProbe
+        from ns_supervisor.testing import StubTable, fast_config
+
+        self.sup = Supervisor(world.paths, load_runtime(world.paths), resolver=StubTable(),
+                              config=fast_config(idle_unload_s=3600.0), gpu_probe=NullGpuProbe())  # fmt: skip
+        self.seen: list[tuple[str, str]] = []
+        app = create_app(self.sup)
+
+        async def recorded(scope: Any, receive: Any, send: Any) -> None:
+            if scope["type"] == "http":
+                self.seen.append((scope["method"], scope["path"]))
+            await app(scope, receive, send)
+
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.bind(("127.0.0.1", world.engine_port))
+        self.sock.listen(64)
+        self.server = uvicorn.Server(uvicorn.Config(recorded, log_level="warning"))
+        self.thread = threading.Thread(target=self.server.run, kwargs={"sockets": [self.sock]}, daemon=True)
+        self.thread.start()
+        end = time.monotonic() + 30
+        while not self.server.started:
+            assert self.thread.is_alive() and time.monotonic() < end, "the engine did not start"
+            time.sleep(0.02)
+        self.started_at = self.sup.started_wall
+
+    def stop(self) -> None:
+        """The engine ends as the product ends it: its services stopped, its start record removed."""
+        self.server.should_exit = True
+        self.thread.join(60)
+        self.sock.close()
+
+
 class World:
     """One install home made by the product's code, its real dashboard, and `run()`: one double-click of
     GPU-KIT.cmd (the product's state stays between two runs, as on the PC)."""
 
     def __init__(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, test_install: bool = False
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        test_install: bool = False,
+        real_engine: bool = False,
     ) -> None:
         self.home = tmp_path / "home"
         monkeypatch.setenv("NIGHTSHIFT_HOME", str(self.home))
         self.paths = Paths(self.home)
         self.paths.ensure()
-        self.supervisor = FakeSupervisor().start()
-        port = int(self.supervisor.url.rsplit(":", 1)[1])
+        # `real_engine`: Nightshift is not running until somebody starts it, and what is then started is the
+        # product's own engine (`Engine`); else the Dashboard's canned stand-in for it, always up
+        self.real_engine = real_engine
+        self.engine: Engine | None = None
+        self.after_engine_start: Any = None
+        self.job_may_end = threading.Event()
+        self.job_thread: threading.Thread | None = None
+        if real_engine:
+            from ns_supervisor.testing import free_port
+
+            self.supervisor: Any = None
+            port = free_port()
+        else:
+            self.supervisor = FakeSupervisor().start()
+            port = int(self.supervisor.url.rsplit(":", 1)[1])
+        self.engine_port = port
         switches = {"fake_footage": True, "fake_gpu": True} if test_install else {}
         save_runtime(
             self.paths, Runtime.default("gpu").model_copy(update={"supervisor_port": port, **switches})
@@ -512,6 +622,8 @@ class World:
         )
         self.kill_at: str | None = None
         self.fail_at: str | None = None
+        self.hold_at: str | None = None
+        self.stage_held, self.stage_may_go = threading.Event(), threading.Event()
         self.out_of_time_at: str | None = None
         self.say_hooks: dict[str, Any] = {}
         self.real_downloads = False
@@ -529,7 +641,7 @@ class World:
         monkeypatch.setattr(dash_state, "SYNC_INLINE", True, raising=False)
         monkeypatch.setattr(dash_state, "_record_checked", {})
         state = build_state(
-            self.paths, fake_services=True, link=SupervisorLink(self.supervisor.url, timeout_s=2.0)
+            self.paths, fake_services=True, link=SupervisorLink(f"http://127.0.0.1:{port}", timeout_s=2.0)
         )
         state.adapters.schedule = RealScheduleAdapter(self.paths)
         static = tmp_path / "static"
@@ -548,7 +660,7 @@ class World:
         self.code: CodeProc | None = None
         self.frees_card = True
         self.clip_status = "done"
-        self.dashboard_down = False
+        self.dashboard_down = real_engine
         self.refuse_cancel = False
         self.jobs_route_times_out = False
         self.traps, self.clock = Traps(), Clock()
@@ -560,8 +672,88 @@ class World:
         self.say_trap: str | None = None
 
     def close(self) -> None:
+        self.job_may_end.set()
+        self.stage_may_go.set()
+        if self.job_thread is not None:
+            self.job_thread.join(30)
         self.server.stop()
-        self.supervisor.stop()
+        if self.engine is not None:
+            self.engine.stop()
+        if self.supervisor is not None:
+            self.supervisor.stop()
+
+    # ---- Nightshift's real engine and what its owner does with it (`real_engine`) ----
+    def engine_http(self, method: str, path: str, body: Any = None, timeout: float = 30) -> Any:
+        """One request to the engine's own API on this home's engine port (the kit's loopback client)."""
+        return gpukit.InstallProduct(self.home, self.engine_port).api(method, path, body, timeout)
+
+    def start_nightshift(self) -> Engine:
+        """Nightshift is started (by the kit's nsup, or by its owner from the Desktop)."""
+        assert self.engine is None
+        self.engine = Engine(self)
+        self.dashboard_down = False
+        return self.engine
+
+    def stop_nightshift(self) -> None:
+        """The owner ends Nightshift: the engine stops as the product stops (its start record goes)."""
+        assert self.engine is not None
+        self.engine.stop()
+        self.engine, self.dashboard_down = None, True
+
+    def owner_opens_code(self) -> None:
+        """The owner opens Nightshift Code: the launcher's own request (launchers/nightshift-code.ps1: owner
+        `opencode`, the coding model, the pid of its console, here this live process) to the engine's own
+        /acquire route. The engine records the holder and loads the model."""
+        body = {"service": "llama", "owner": "opencode", "model_alias": "code", "wait": True,
+                "timeout_s": 7200, "pid": os.getpid()}  # fmt: skip
+        status, answer = self.engine_http("POST", "/acquire", body, 120)
+        assert status == 200, (status, answer)
+        assert self.holder() == ("opencode", os.getpid())
+
+    def owner_closes_code(self) -> None:
+        """The owner closes it again (the launcher's own /release)."""
+        assert self.engine_http("POST", "/release", {"service": "llama", "owner": "opencode"})[0] == 200
+
+    def holder(self) -> tuple[Any, Any]:
+        """Who holds the graphics card and with which process, as the engine's own /status says."""
+        status, body = self.engine_http("GET", "/status")
+        assert status == 200, (status, body)
+        return body["gpu_owner"], body["holder_pid"]
+
+    def owner_starts_job(self, channel: str = "after-dark") -> str:
+        """The owner starts a video in Create: the Dashboard's own route queues it and the Dashboard's own
+        worker runs it. Only the job's work is a stand-in: it lasts until the test lets it end."""
+
+        def work(ctl: Any) -> dict[str, Any]:
+            self.job_may_end.wait(120)
+            ctl.check_cancel()
+            return {}
+
+        self.dash_state.worker.handlers["run"] = work
+        status, job = self.product.http.api("POST", "/api/jobs/run", {"channel": channel})
+        assert status == 201, (status, job)
+        self.job_thread = threading.Thread(target=self.dash_state.worker.run_next, daemon=True)
+        self.job_thread.start()
+        end = time.monotonic() + 30
+        while self.job(job["job_id"])["status"] != "running":
+            assert time.monotonic() < end, self.job(job["job_id"])
+            time.sleep(0.05)
+        return str(job["job_id"])
+
+    def job(self, job_id: str) -> dict[str, Any]:
+        status, body = self.product.http.api("GET", f"/api/jobs/{job_id}")
+        assert status == 200, (status, body)
+        return body
+
+    def never_stopped(self) -> bool:
+        """No Stop All and no shutdown reached the engine, and it is not stopping."""
+        assert self.engine is not None
+        asked = {("POST", "/stop_all"), ("POST", "/shutdown")} & set(self.engine.seen)
+        return not asked and not self.engine.sup.shutting_down
+
+    def said(self, start: str) -> str:
+        """The one line of the last run that starts with `start` ('' when none does)."""
+        return next((line for line in self.out if line.startswith(start)), "")
 
     def finish_clip(self, job_id: str) -> None:
         """What the Dashboard's worker records for a clip job: the studio job's QC report (as the clipper's QC
@@ -1877,7 +2069,7 @@ def test_an_unfinished_update_is_the_products_own_refusal_and_nothing_is_started
     )
     assert "Nightshift was not started: " in rec["line"]
     assert world.product.count("start_engine") == 0 and world.task.has is None
-    assert "engine_started_by_kit" not in world.state()
+    assert "engine" not in world.state()  # no start was asked for: nothing of Nightshift is the kit's
 
 
 def test_a_coded_start_failure_shows_that_codes_hint(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1904,3 +2096,301 @@ def test_a_job_route_that_always_times_out_still_ends_by_time(world: World) -> N
         and "did not finish in 1 h 30 min" in line
         and "cancel asked (HTTP 200)" in line
     )
+
+
+# ------------------------------------------------------------------------------------------------ round 7
+# THE KIT ENDS ONLY WHAT THE KIT STARTED, AND ONLY WHILE NOTHING ELSE DEPENDS ON IT (review of 8913c4e, G).
+# Nightshift is not running when the kit starts, so the kit starts it: the product's real engine (`Engine`).
+# What its owner then does goes through the product's own routes: Nightshift Code is the launcher's /acquire
+# with a live pid, a video is POST /api/jobs/run run by the Dashboard's own worker, a restart is the engine's
+# own end and a new engine with a new start record.
+LAST_STEP = f"{'WAIT':7} Step 13 of 13"  # the line of the last step: after it the run only puts back and ends
+CODE_OPEN = "Nightshift was left running because Nightshift Code is open"
+
+
+@pytest.fixture
+def nightshift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A home where Nightshift is not running. The evening is late, so step 5 says WAIT and a run ends
+    after its first steps (the engine is needed, and started, at step 3)."""
+    w = World(tmp_path, monkeypatch, real_engine=True)
+    w.clock.t = datetime(2026, 11, 12, 23, 30, 1).astimezone()
+    try:
+        yield w
+    finally:
+        w.close()
+
+
+def test_the_kits_own_engine_is_stopped_when_nothing_else_uses_it(nightshift: World) -> None:
+    w = nightshift
+    assert w.run() == 0, w.out
+    eng = w.engine
+    assert eng is not None and w.product.count("start_engine") == 1  # the kit started Nightshift
+    assert ("POST", "/shutdown") in eng.seen and eng.sup.exit_requested.is_set()  # and ended that engine
+    assert ("POST", "/stop_all") not in eng.seen  # by asking that one engine: never Stop All
+    assert not (w.home / "run" / "supervisor.json").exists()
+    line = "Nightshift was stopped again: the kit had started it and nothing else was using it."
+    assert line in w.out and w.out.index(line) < w.out.index(w.said("The zip so far: "))
+    assert w.state()["engine"] is None and w.state()["engine_end"]["result"] == "stopped"
+    readme = zipfile.ZipFile(w.zips()[0]).read("README.txt").decode("utf-8")
+    assert f"Nightshift itself at the end of the kit's last run: {line}" in readme
+
+
+def test_the_owners_code_survives_a_kit_run_that_ends_normally(nightshift: World) -> None:
+    w = nightshift
+    w.say_hooks[LAST_STEP] = w.owner_opens_code  # every step has had its line; then the owner opens Code
+    assert w.run() == 0, w.out
+    assert w.product.count("start_engine") == 1 and w.engine is not None  # (the kit had started Nightshift)
+    assert w.holder() == ("opencode", os.getpid())  # the owner's Code holds the card still
+    assert w.engine.sup.services["llama"].state == "ready" and w.never_stopped()  # and its model is loaded
+    assert w.said(CODE_OPEN), w.out[-6:]
+    assert w.state()["engine"] is None  # the kit's claim on that engine is used once
+    w.owner_closes_code()
+    assert w.run() == 0 and w.never_stopped()  # nothing uses it now: it is still not the kit's to stop
+    assert not w.said("Nightshift was")  # and the kit, which started nothing this time, says nothing of it
+
+
+def test_the_owners_code_survives_a_kit_run_that_ends_on_not_run(nightshift: World) -> None:
+    w = nightshift
+    w.after_engine_start = w.owner_opens_code  # the kit started Nightshift for step 3; the owner opens Code
+    assert w.run() == 0, w.out
+    rec = w.state()["steps"]["K2"]
+    assert rec["result"] == "NOT RUN" and rec["line"].endswith("(nothing was started or ended)"), rec
+    assert ("cli", "ns", "verify") not in w.product.calls  # the model test was not started
+    assert w.holder() == ("opencode", os.getpid()) and w.never_stopped()
+    assert w.said(CODE_OPEN), w.out[-6:]
+
+
+def test_the_owners_code_survives_a_kit_run_that_is_killed_and_run_again(nightshift: World) -> None:
+    w = nightshift
+    w.traps.kills.add("ns verify")  # the kit started Nightshift; inside step 3 its process is ended
+    with pytest.raises(Killed):
+        w.run()
+    assert w.product.count("start_engine") == 1 and w.engine is not None
+    w.owner_opens_code()  # the owner uses the Nightshift that is running
+    assert w.run() == 0, w.out
+    assert w.results()["K2"] == "NOT RUN" and w.product.count("start_engine") == 1
+    assert w.holder() == ("opencode", os.getpid()) and w.never_stopped()  # (it IS the engine the kit started)
+    assert w.said(CODE_OPEN), w.out[-6:]
+    w.owner_closes_code()
+    assert w.run() == 0 and w.never_stopped()  # a third run, nobody using it: left to itself all the same
+
+
+def test_a_job_the_owner_started_while_the_kit_ran_is_not_cancelled_by_the_kits_exit(
+    nightshift: World,
+) -> None:
+    w = nightshift
+    started: list[str] = []
+    w.say_hooks[LAST_STEP] = lambda: started.append(w.owner_starts_job())
+    assert w.run() == 0, w.out
+    job = w.job(started[0])
+    assert job["status"] == "running" and not job["cancel_requested"], job
+    assert w.never_stopped()
+    assert w.said(f"Nightshift was left running because the run job {started[0]} is running"), w.out[-6:]
+    w.job_may_end.set()
+    assert w.job_thread is not None
+    w.job_thread.join(30)
+    assert w.job(started[0])["status"] == "done"  # it ran to its own end
+
+
+def test_an_engine_the_owner_restarted_after_a_killed_kit_run_is_not_stopped_by_the_next_run(
+    nightshift: World,
+) -> None:
+    w = nightshift
+    w.traps.kills.add("ns verify")
+    with pytest.raises(Killed):
+        w.run()
+    assert w.engine is not None and w.product.count("start_engine") == 1
+    first = w.engine.started_at
+    w.stop_nightshift()  # the owner ends Nightshift ...
+    while datetime.now().isoformat(timespec="seconds") == first:  # (the start record is to the second)
+        time.sleep(0.05)
+    w.start_nightshift()  # ... and starts it again: an engine with its own start record, used by nobody now
+    assert w.run() == 0, w.out
+    assert w.product.count("start_engine") == 1 and w.never_stopped()
+    assert w.said("Nightshift was left running: it was started again after the kit had started it")
+    assert w.state()["engine"] is None
+
+
+def test_the_model_test_does_not_start_while_a_job_of_the_owner_runs(nightshift: World) -> None:
+    """Step 3's `ns verify` stops every model twice by the product's own design: the kit does not start it
+    while the product's own tables show anybody else at work, card held or not."""
+    w = nightshift
+    started: list[str] = []
+    w.after_engine_start = lambda: started.append(w.owner_starts_job())  # (in a stage that holds no model)
+    assert w.run() == 0, w.out
+    rec = w.state()["steps"]["K2"]
+    assert ("cli", "ns", "verify") not in w.product.calls, rec  # the model test was not started
+    assert rec["result"] == "NOT RUN" and not rec["done"]
+    said = (f"the run job {started[0]} is running: the model test stops and reloads every model, so it "
+            "was not started (nothing was started or ended)")  # fmt: skip
+    assert rec["line"].startswith(said), rec
+    assert w.job(started[0])["status"] == "running" and w.never_stopped()
+
+
+def test_a_night_still_at_work_is_waited_for_and_nothing_is_switched_off_under_it(world: World) -> None:
+    """Night 2 was started late by Windows (the PC slept at its run time) and is in a stage when the kit is
+    run after 'run time + 6 h'. The product's own owner table says a live process holds that run: the kit
+    waits, and neither judges it 'never closed' nor removes the task Windows is running."""
+    assert world.run() == 0  # armed: Automatic runs were off before, the kit switched them on
+    world.night(local(2026, 11, 13, 3, 0))
+    world.hold_at = "kit_story"
+    night2 = threading.Thread(target=world.night, args=(local(2026, 11, 14, 8, 55),), daemon=True)
+    night2.start()
+    try:
+        assert world.stage_held.wait(60)
+        world.clock.t = local(2026, 11, 14, 9, 30)
+        code = world.run()
+        k6 = world.state()["steps"]["K6"]
+        assert k6["result"] == "WAIT" and "is working now" in k6["line"], k6
+        assert code == 0 and world.results()["K7"] == "WAIT"
+        assert world.task.has == ("Ready", "03:00") and world.channel()["status"] == "active"
+        assert kitnights.read(world.paths, world.clock.now()).kind == "valid"
+    finally:
+        world.hold_at = None
+        world.stage_may_go.set()
+        night2.join(120)
+    assert world.run() == 0, world.out  # the night has ended: judged from its own closed record
+    assert world.results()["K6"] == "PASS" and world.results()["K7"] == "PASS" and world.task.has is None
+
+
+def test_automatic_runs_the_night_after_settled_as_the_owners_are_not_switched_off(world: World) -> None:
+    """The owner switched Automatic runs on themselves after the kit had; the kit was not run until after
+    the night that follows the two. That night settles the kit's record as the product does (the runs stay,
+    as the owner's; the record goes). The kit's own 'I switched them on' is then evidence of nothing."""
+    assert world.run() == 0
+    world.product.http.api("PUT", "/api/settings", {"automatic_runs": True})  # the owner's own route
+    world.nights_pass()
+    now = datetime.now().astimezone()  # (the nightly reads the PC's clock)
+    rec = kitnights.read(world.paths, START).record
+    assert rec["owner_chose_at"]
+    kitnights.write(world.paths, {**rec, "until": (now - timedelta(hours=1)).isoformat(),
+                                  "nights": [{**n, "from": (now - timedelta(days=3 - i)).isoformat(),
+                                              "to": (now - timedelta(days=2 - i)).isoformat()}
+                                             for i, n in enumerate(rec["nights"])]})  # fmt: skip
+    assert CliRunner().invoke(_studio_app(), ["run", "--daily", "--fake-services"]).exit_code == 0
+    assert kitnights.read(world.paths, now).kind == "none" and world.task.has == ("Ready", "03:00")
+    assert world.run() == 0, world.out
+    assert world.task.has == ("Ready", "03:00")  # still on: they are the owner's
+    assert [p["automatic_runs"] for p in world.puts() if p.get("by")] == [True]  # the kit's one switch
+    assert "Automatic runs were left on: the night after the kit's two already put back what the kit" in (
+        world.state()["steps"]["K7"]["line"]
+    )
+
+
+def test_a_clip_that_came_for_the_same_words_later_is_not_the_kits_to_remove(world: World) -> None:
+    """The kit's process is ended during its download (the clip is in the cache, its id not yet saved).
+    Later the owner's own fetch for the same words brings another clip. The next run removes the ONE clip
+    of the kit's own request, not everything that is new for those words."""
+    world.traps.kills.add("after api POST /api/library/footage/fetch")
+    with pytest.raises(Killed):
+        world.run()
+    ask = {"q": gpukit.STOCK_QUERIES[0], "orientation": "landscape", "count": 1, "source": "pixabay"}
+    status, body = world.product.http.api("POST", "/api/library/footage/fetch", ask)  # the Library's route
+    assert status == 200 and [(c["clip_id"], c["new"]) for c in body["clips"]] == [("702", True)]
+    assert world.run() == 0, world.out
+    status, rows = world.product.http.api("GET", "/api/library/footage?limit=200")
+    assert status == 200 and [r["clip_id"] for r in rows] == ["702"]  # the owner's clip is in the cache still
+    assert world.state()["changes"]["stock_clip_pixabay"]["removed_after_kill"] == ["701"]
+
+
+def test_a_test_voice_a_channel_was_given_is_left(world: World) -> None:
+    """The kit's process is ended after it made its designed test voice; the owner then gives a channel
+    that voice. The next run does not remove it under the channel, and says so."""
+    from ns_common.config import load_channel
+    from ns_common.models import Voice
+
+    world.traps.kills.add("api POST /api/voices/clone")
+    with pytest.raises(Killed):
+        world.run()
+    (folder,) = world.paths.models_tts_voices.glob("gpukit-design-*")
+    channel = load_channel(world.paths, "after-dark")
+    save_channel(world.paths, channel.model_copy(update={"voice": Voice(mode="design", name=folder.name)}))
+    assert world.run() == 0, world.out
+    assert folder.is_dir()
+    line = world.state()["steps"]["KV"]["line"]
+    assert f"left on the PC: the test voice {folder.name} (the channel After Dark uses it as its" in line
+    assert not list(world.paths.models_tts_voices.glob("gpukit-clone-*"))  # its other test voice is removed
+
+
+def test_the_kits_channel_is_not_paused_under_a_job_the_owner_queued_on_it(world: World) -> None:
+    queued: list[str] = []
+    seen: dict[str, str] = {}
+
+    def owner_queues() -> None:  # while the kit's video is made, the owner asks for one on that channel
+        status, job = world.product.http.api("POST", "/api/jobs/run", {"channel": "gpu-kit"})
+        assert status == 201, (status, job)
+        queued.append(job["job_id"])
+
+    world.say_hooks["Making the story video"] = owner_queues
+    world.say_hooks[_label("KC")] = lambda: seen.update(status=world.channel()["status"])
+    assert world.run() == 0, world.out
+    assert seen["status"] == "active" and world.job(queued[0])["status"] == "queued"
+    assert (f"the kit's channel was left active because the run job {queued[0]} on it is waiting in the "
+            "Queue") in world.state()["steps"]["K3"]["line"]  # fmt: skip
+
+
+def test_the_dashboard_open_in_a_browser_keeps_nightshift_running(nightshift: World) -> None:
+    """The engine's own question before its idle exit (`ns_supervisor.presence`): a page that is open holds
+    a connection to the Dashboard. The kit asks the same and leaves Nightshift under an open page."""
+    w = nightshift
+    pages: list[socket.socket] = []
+    w.say_hooks[LAST_STEP] = lambda: pages.append(socket.create_connection(("127.0.0.1", w.server.port)))
+    try:
+        assert w.run() == 0, w.out
+        assert w.never_stopped()
+        assert w.said("Nightshift was left running because Nightshift's Dashboard is open"), w.out[-6:]
+    finally:
+        for page in pages:
+            page.close()
+
+
+def test_a_nightly_run_at_work_keeps_nightshift_running(nightshift: World) -> None:
+    w = nightshift
+    w.hold_at = "kit_story"  # the night is in a stage (one that holds no model) when the kit's run ends
+    night = threading.Thread(target=w.night, args=(local(2026, 11, 13, 3, 0),), daemon=True)
+
+    def the_night_starts() -> None:
+        night.start()
+        assert w.stage_held.wait(60)
+
+    w.say_hooks[LAST_STEP] = the_night_starts
+    try:
+        assert w.run() == 0, w.out
+        assert w.never_stopped()
+        line = w.said("Nightshift was left running because the nightly run daily-")
+        assert " is working (and 1 more)." in line, w.out[-6:]  # (and the video job that run is making)
+    finally:
+        w.hold_at = None
+        w.stage_may_go.set()
+        night.join(120)
+
+
+def test_close_to_a_nightly_run_the_model_test_waits_and_nightshift_is_left_for_the_night(
+    nightshift: World,
+) -> None:
+    """02:10, Automatic runs on (the owner's), the nightly run at 03:00. Step 3's model test, which stops
+    every model, has no room before the run and waits; and the kit does not end the engine it started
+    within the hour before a night (the engine's own rule for its idle exit)."""
+    w = nightshift
+    assert w.product.http.api("PUT", "/api/settings", {"automatic_runs": True})[0] == 200
+    w.clock.t = datetime(2026, 11, 13, 2, 10).astimezone()
+    assert w.run() == 0, w.out
+    rec = w.state()["steps"]["K2"]
+    assert ("cli", "ns", "verify") not in w.product.calls, rec
+    assert rec["result"] == "WAIT" and "the model test and the proofs takes up to 1 h 40 min" in rec["line"]
+    assert w.product.count("start_engine") == 1 and w.never_stopped()
+    assert w.said("Nightshift was left running because the nightly run starts at 03:00, within the hour")
+
+
+def test_an_update_in_progress_keeps_the_kit_from_stopping_nightshift(nightshift: World) -> None:
+    from ns_supervisor import update_job
+
+    w = nightshift
+    lock = update_job.update_lock(w.paths)  # the lock an update, a rollback or setup holds while it works
+    w.say_hooks[LAST_STEP] = lock.acquire
+    try:
+        assert w.run() == 0, w.out
+        assert w.never_stopped()
+        assert w.said("Nightshift was left running because an update of Nightshift is in progress")
+    finally:
+        lock.release()

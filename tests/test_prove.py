@@ -266,8 +266,10 @@ def test_a_real_gpu_install_is_its_own_kind(env):
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell")
 def test_the_kit_tools_never_stop_by_pattern(tmp_path):
-    """dev/kit/tools/nsproc.ps1 -Down runs the install's own Stop All and lists again; nothing is stopped by
-    name, command line or pid (the laptop tool's pattern kill would reach the owner's own browsers)."""
+    """dev/kit/tools/nsproc.ps1 only lists. -Down stops NOTHING: not by name, command line or pid (the laptop
+    tool's pattern kill would reach the owner's own browsers), and not through the install's Stop All either
+    (on the owner's PC that ends a job, a Nightshift Code session or the Dashboard somebody else is using).
+    The kit ends the engine it started itself, only while nothing else uses it (gpukit.py leave_engine)."""
     from ns_supervisor import pwsh
 
     exe = pwsh.find_powershell()
@@ -276,8 +278,8 @@ def test_the_kit_tools_never_stop_by_pattern(tmp_path):
     root = Path(__file__).resolve().parents[1]
     script = root / "dev" / "kit" / "tools" / "nsproc.ps1"
     code = "\n".join(line.split("#", 1)[0] for line in script.read_text(encoding="ascii").splitlines())
-    assert not re.search(r"Stop-Process|taskkill|\.Kill\(|Terminate", code, re.IGNORECASE)
-    assert "stop-all.ps1" in code
+    stops = r"Stop-Process|taskkill|\.Kill\(|Terminate|stop-all|ns\.exe|/shutdown|/stop_all|Invoke-"
+    assert not re.search(stops, code, re.IGNORECASE)
     home = tmp_path / "home"
     (home / "app" / "launchers").mkdir(parents=True)
     (home / "app" / "launchers" / "stop-all.ps1").write_text(
@@ -289,8 +291,10 @@ def test_the_kit_tools_never_stop_by_pattern(tmp_path):
                            str(home), "-Down"], capture_output=True, text=True, timeout=120,
                           check=False)  # fmt: skip
     assert done.returncode == 0, done.stdout + done.stderr
-    assert (home / "stopped.txt").read_text(encoding="utf-8").strip() == "Stop All ran"
-    assert done.stdout.strip().splitlines()[-1].startswith("CLEAN")  # then it lists: nothing runs from there
+    assert not (home / "stopped.txt").exists()  # the install's Stop All was not run
+    lines = done.stdout.strip().splitlines()
+    assert lines[0].startswith("NOT STOPPED: the GPU kit never sends Stop All.")
+    assert lines[-1].startswith("CLEAN")  # then it lists: nothing runs from there
 
 
 def test_a_proof_asked_for_by_name_on_the_wrong_install_kind_is_a_usage_error_and_keeps_old_evidence(

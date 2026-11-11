@@ -206,9 +206,12 @@ def end_nights(
         if not theirs:
             (leave_note or _note_once)(paths, EXPIRED_NOTE)
             (switch_off or _switch_off)(paths)
-        remove(paths, log)
         if log is not None:
-            log.info("gpu_kit_nights_ended", switched_off=not theirs)
+            # said BEFORE the record goes, and with the record's own `armed_at`: once the record is gone,
+            # this line is how the kit's last step knows that Nightshift itself settled these nights (and
+            # that Automatic runs still on after it are the owner's, not the kit's to switch off)
+            log.info("gpu_kit_nights_ended", switched_off=not theirs, armed_at=rec.get("armed_at"))
+        remove(paths, log)
         return None if theirs else EXPIRED_NOTE
     except Exception as e:  # noqa: BLE001 - kept: the next night tries again
         if log is not None:

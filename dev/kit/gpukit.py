@@ -13,6 +13,14 @@ night 2, K7 collect and put back; K8 the person's questions (offered from K3 on,
 Every step is safe to run twice; whatever stops the kit, the next run continues from the step it reached. A
 failed step still ends in the zip. The kit records facts; whether the nights passed is the Head's reading.
 
+THE KIT ENDS ONLY WHAT THE KIT STARTED, AND ONLY WHILE NOTHING ELSE DEPENDS ON IT. What is the kit's own is
+shown by an id it recorded when it made the thing (the engine's own start record, a job id, a pid and its
+creation time, a voice's name, a clip id) and checked against the product's present record before any end;
+who else uses it is asked of the product each time (`Kit.others`: the engine's holder table, the studio's
+owner table, the Dashboard's job table, the Dashboard-in-use probe, the update lock), never read from a flag
+the kit kept. The kit never sends Stop All: it ends its own things one by one (`Kit.leave_engine` for the
+engine), and what it leaves it says in one line ("Nightshift was left running because ...").
+
 `main(argv, env=...)` takes stand-ins for the clock, the product and the Windows readers (tests); the real
 Windows readers refuse to run under pytest.
 """
@@ -61,11 +69,18 @@ TITLES = {"K0": "start", "K1": "record this PC", "K2": "test each model and run 
           "K4": "switch Automatic runs on for two nights", "K5": "night 1", "K6": "night 2",
           "K7": "collect everything and put Automatic runs back"}  # fmt: skip
 #: What each step needs before it may talk to the product (`Kit.enter`): nothing, the engine and Dashboard
-#: answering, or that and the graphics card free of anything the kit did not start.
-ENTRY = {"K1": "none", "K2": "card", "KS": "dashboard", "K3": "card", "KC": "card", "KV": "card",
+#: answering, that and the graphics card free of anything the kit did not start, or (step 3, whose model test
+#: stops and reloads every model) that and nobody else using Nightshift at all.
+ENTRY = {"K1": "none", "K2": "alone", "KS": "dashboard", "K3": "card", "KC": "card", "KV": "card",
          "KN": "card",
          "KA": "card", "K4": "dashboard", "K5": "none", "K6": "none", "K7": "dashboard"}  # fmt: skip
 ENGINE_ANSWER_S = 180  # how long the kit waits for a started engine and Dashboard to answer
+ENGINE_END_S = 60  # how long the kit waits for the engine it started to end after it asked it to
+NIGHT_SOON_S = 3600  # the engine's own look-ahead (`schedule_lookahead_s`): no end this close to a night
+#: A clip a killed download left is the kit's own only when the cache got it this soon after the kit asked
+#: (the request's own 10 minutes and 5 to spare).
+CLIP_OWN_S = 15 * 60
+IDLE_EXIT = "it ends by itself after 30 minutes without use"
 STOCK_QUERIES = ("lighthouse in fog", "rain on a window at night", "empty country road at dusk")
 CLIP_BOUND_S = 90 * 60  # the clip job of 3 minutes of video, with its models loaded (bounded)
 VOICE_BOUND_S = 30 * 60
@@ -86,7 +101,9 @@ PLAN = (
     "if they were off).",
     "  1. Start: checks this is the GPU install (seconds)",
     "  2. Record this PC: graphics card, driver, disk, sleep settings, model files (up to 15 minutes)",
-    "  3. Test each model once and run the proof scripts (10 to 40 minutes)",
+    "  3. Test each model once and run the proof scripts (10 to 40 minutes; this test stops and reloads",
+    "     every model, so it runs only while nothing else uses Nightshift: start no video and no Nightshift",
+    "     Code until it has ended)",
     "  4. Try each stored stock-footage key: one search and one small download (a minute)",
     "  5. Make one story video with the real models on the kit's own paused channel (about 3 hours)",
     "  6. to 9. One clip from the video, a designed and a cloned test voice (removed again), Nightshift Code",
@@ -149,6 +166,13 @@ class Product(Protocol):
     ) -> tuple[int | None, str]: ...
     def kill_tree(self, pid: int, created: float | None) -> None: ...
 
+    # What the product itself says about who uses it now (`Kit.others`); each is asked again every time.
+    def engine_api(self, method: str, path: str, body: Any = None, timeout: float = 30) -> Answer: ...
+    def engine_record(self) -> dict[str, Any] | None: ...
+    def live_work(self) -> list[dict[str, Any]] | None: ...
+    def dashboard_in_use(self) -> bool | None: ...
+    def update_running(self) -> bool: ...
+
 
 class Windows(Protocol):
     """What only Windows says (read only): nvidia-smi, the disk, the power plan, the System log."""
@@ -186,10 +210,11 @@ POWERSHELL = ["powershell.exe", "-NoProfile", "-NonInteractive"]
 
 
 class InstallProduct:
-    """The real routes of the install at `home`. The dashboard is only ever asked on 127.0.0.1."""
+    """The real routes of the install at `home`. The dashboard (`port`) and the engine (`engine_port`) are
+    only ever asked on 127.0.0.1."""
 
-    def __init__(self, home: Path, port: int) -> None:
-        self.home, self.port = home, port
+    def __init__(self, home: Path, port: int, engine_port: int = 0) -> None:
+        self.home, self.port, self.engine_port = home, port, engine_port
         self.env = {**os.environ, "NIGHTSHIFT_HOME": str(home), "NS_HOME_EXPLICIT": str(home)}
 
     def _exe(self, program: str) -> str:
@@ -316,6 +341,63 @@ class InstallProduct:
             with contextlib.suppress(psutil.Error, OSError):
                 p.kill()
         psutil.wait_procs(family, timeout=10)
+
+    def engine_api(self, method: str, path: str, body: Any = None, timeout: float = 30) -> Answer:
+        """The engine's own loopback API (the supervisor): `GET /status` is its holder table (who holds the
+        graphics card, who waits for it, who uses a service), `POST /shutdown` ends that engine."""
+        return InstallProduct(self.home, self.engine_port).api(method, path, body, timeout)
+
+    def engine_record(self) -> dict[str, Any] | None:
+        """The start record of the engine that runs now: what the supervisor itself wrote when it started
+        (`run/supervisor.json`: its pid and `started_at`; it removes the file when it ends) and when that
+        process was created. None when there is no record, it cannot be read, or no process has that pid
+        (a record an engine left behind when it died is not an engine)."""
+        from ns_common.atomic import read_text_retry
+
+        try:
+            data = json.loads(read_text_retry(self.home / "run" / "supervisor.json"))
+            pid, started = int(data["pid"]), str(data["started_at"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        created = self.created(pid)
+        return None if created is None else {"pid": pid, "started_at": started, "created": round(created, 1)}
+
+    def live_work(self) -> list[dict[str, Any]] | None:
+        """The studio's own owner table (`ns_studio.ownership`: one record and one OS lock per run and job):
+        every nightly run and every video job a live process holds now. None when it cannot be read."""
+        try:
+            from ns_common.paths import Paths
+            from ns_studio import ownership
+
+            paths = Paths(self.home)
+            return [{"id": str(r["id"]), "kind": r.get("kind"), "channel": r.get("channel")}
+                    for r in ownership.list_records(paths)
+                    if ownership.liveness(paths, str(r["id"]), r) == "live"]  # fmt: skip
+        except Exception:  # noqa: BLE001 - not known: the caller never reads that as "nothing runs"
+            return None
+
+    def dashboard_in_use(self) -> bool | None:
+        """The engine's own question before its idle exit (`ns_supervisor.presence.dashboard_in_use`): a
+        Dashboard window is open, or a page in a browser is connected. Asked up to three times over a
+        second: the kit's own request, closed a moment ago, is gone by then; an open page stays connected.
+        None when it cannot be asked."""
+        try:
+            from ns_common.paths import Paths
+            from ns_supervisor import presence
+
+            for _ in range(3):
+                if not presence.dashboard_in_use(Paths(self.home), self.port):
+                    return False
+                time.sleep(0.4)
+            return True
+        except Exception:  # noqa: BLE001 - not known
+            return None
+
+    def update_running(self) -> bool:
+        """An update, rollback or setup holds this home's update lock (`venvrepair.update_running`)."""
+        from installer.stage2.web import venvrepair
+
+        return bool(venvrepair.update_running(self.home))
 
 
 class RealWindows:
@@ -681,6 +763,7 @@ class Kit:
     state: dict[str, Any] = field(default_factory=dict)
     mark: str | None = None
     lock: Path | None = None
+    channel_left: str | None = None  # why `pause_channel` left the kit's channel active (other work on it)
 
     def __post_init__(self) -> None:
         # ONE state for every version: a newer candidate's kit goes on with the nights an older one armed
@@ -740,8 +823,9 @@ class Kit:
         channel anyway (`cadence.KIT_CHANNEL`), and the next run of the kit puts it back too."""
         self.put_back_extras()
         ch = (self.state.get("changes") or {}).get("channel")
-        if self.state.get("nights_armed"):  # active for the armed nights: step 13 or the night after
-            return
+        collected = (self.state.get("steps", {}).get("K7") or {}).get("done")
+        if self.state.get("nights_armed") and not collected:
+            return  # active for the armed nights: paused by step 13, or by the night after them
         job = self.state.get("job") or {}
         busy = bool(job.get("pid")) and self.product.alive(job["pid"], job.get("pid_created"))
         if not ch or ch.get("put_back") or busy:
@@ -750,10 +834,16 @@ class Kit:
             if self.pause_channel(start=False):
                 ch["put_back"] = True
                 self.save()
+            elif self.channel_left:
+                self.say(f"The kit's channel was left active because {self.channel_left}; the next run of "
+                         "GPU-KIT.cmd pauses it.")  # fmt: skip
 
     def put_back_extras(self) -> None:
         """The kit's test clip in the footage cache, its test voices and the Code window it opened, removed on
-        every way out (each recorded before it was made; bounded, best effort: the next run tries again)."""
+        every way out (each recorded before it was made; bounded, best effort: the next run tries again).
+        Each is the kit's own by its recorded id, and is left where it is, with the reason recorded, when the
+        product's own records show that something else uses it now (a video used the clip, a channel's
+        profile names the voice)."""
         changes = self.state.get("changes") or {}
         for what, ch in list(changes.items()):
             if ch.get("put_back"):
@@ -762,17 +852,22 @@ class Kit:
                 if what.startswith("stock_clip_") and ch.get("clip"):
                     if self.product.api("GET", "/api/health", timeout=10)[0] == 200:
                         c = ch["clip"]
+                        row = self.clip_row(str(c["source"]), str(c["clip_id"]))
+                        if row is not None and row.get("uses"):  # a video used it since: its record stays
+                            self.left(ch, f"the stock clip {c['source']} {c['clip_id']} in the footage cache "
+                                          "(a video used it after the kit downloaded it)")  # fmt: skip
+                            continue
                         st, _ = self.product.api(
                             "DELETE", f"/api/library/footage/{c['source']}/{c['clip_id']}"
                         )
                         ch["put_back"] = st in (200, 404)
                 elif what.startswith("stock_clip_") and ch.get("trying"):
-                    # killed during the download: the kit's clip is what the cache holds for the kit's
-                    # query now and did not hold before it (its clip ids, recorded before the request)
+                    # killed during the download: the kit's clip is the ONE the cache got for the kit's own
+                    # request (`own_new_clip`), never every clip that came for those words since
                     if self.product.api("GET", "/api/health", timeout=10)[0] == 200:
                         source = what.removeprefix("stock_clip_")
-                        new = [c for c in self.cached_ids(str(ch["trying"]), source)
-                               if c not in set(ch.get("before") or [])]  # fmt: skip
+                        new = self.own_new_clip(str(ch["trying"]), source, set(ch.get("before") or []),
+                                                ch.get("asked_at"))  # fmt: skip
                         gone = [
                             self.product.api("DELETE", f"/api/library/footage/{source}/{c}")[0] for c in new
                         ]
@@ -780,20 +875,49 @@ class Kit:
                 elif what.startswith("stock_clip_"):
                     ch["put_back"] = True  # nothing was asked for
                 elif what.startswith("voice_") and ch.get("name"):
-                    ch["put_back"] = self.remove_voice(str(ch["name"]))
+                    name = str(ch["name"])
+                    ch["put_back"] = self.remove_voice(name)
+                    if not ch["put_back"] and self.voice_users(name):
+                        users = ", ".join(self.voice_users(name))
+                        self.left(ch, f"the test voice {name} (the channel {users} uses it as its voice)")
                 elif what == "code_window" and ch.get("pid"):
                     self.product.kill_tree(int(ch["pid"]), ch.get("created"))
                     ch["put_back"] = True
         if changes:
             self.save()
 
+    def left(self, change: dict[str, Any], what: str) -> None:
+        """Something of the kit's that is left on the PC because something else uses it now: recorded as
+        settled (not tried again) and listed in step 13's line and the zip's state."""
+        change.update({"put_back": True, "left": what})
+        stays = self.state.setdefault("left_on_pc", [])
+        if what not in stays:
+            stays.append(what)
+
+    def voice_users(self, name: str) -> list[str]:
+        """The channels whose profile names `name` as its designed or cloned voice (the product's own
+        reader of the profiles)."""
+        from ns_common.config import list_channels, load_channel
+        from ns_common.paths import Paths
+
+        paths, out = Paths(self.home), []
+        for slug in list_channels(paths):
+            with contextlib.suppress(Exception):  # an unreadable profile uses no voice
+                ch = load_channel(paths, slug)
+                if ch.voice.mode != "preset" and ch.voice.name == name:
+                    out.append(ch.display_name)
+        return out
+
     def remove_voice(self, name: str) -> bool:
-        """The kit's own test voice folder removed (only a `gpukit-` name inside the voice library)."""
+        """The kit's own test voice folder removed (only a `gpukit-` name inside the voice library, and only
+        while no channel's profile names it as its voice); True when it is gone."""
         from ns_common.paths import Paths
 
         root = Paths(self.home).models_tts_voices
         folder = root / name
         if not name.startswith("gpukit-") or folder.parent != root:
+            return False
+        if folder.exists() and self.voice_users(name):
             return False
         shutil.rmtree(folder, ignore_errors=True)
         return not folder.exists()
@@ -836,7 +960,12 @@ class Kit:
         return body if status == 200 and isinstance(body, dict) else None
 
     def engine(self) -> str | None:
-        """The dashboard answers (started with the kit's nsup when it did not: then stopped by `finish`)."""
+        """The Dashboard answers. When it does not, Nightshift is started with the kit's nsup (after the
+        product's own start gate), and the kit records what it can show it started: the supervisor's own
+        start record (`run/supervisor.json`: pid and start time) of an engine that did not answer before
+        the start and whose record is new since the kit asked. That record, re-read at the end of a run, is
+        the ONLY thing that makes an engine the kit's to end (`leave_engine`); the ask is saved before the
+        start, the record after it, so a kill in between leaves an engine the kit never claims."""
         if self.product.api("GET", "/api/health", timeout=10)[0] == 200:
             return None
         from ns_common.errors import NsError
@@ -849,26 +978,44 @@ class Kit:
         except NsError as e:
             self.refusal = e
             return str(e)
-        self.state["engine_started_by_kit"] = True
-        self.save()  # before the start: a kill from here on still stops it at the end of the next run
+        was_up = self.product.engine_api("GET", "/health", timeout=10)[0] == 200
+        before = self.product.engine_record()
+        held = (self.state.get("engine") or {}).get("record")
+        asked = time.time()  # (the PC's own clock: the supervisor's record carries it)
+        self.state["engine"] = {
+            "asked_at": datetime.fromtimestamp(asked, UTC).isoformat(timespec="seconds"),
+            "was_up": was_up,  # the engine itself answered: only its Dashboard service is switched on
+            "before": before,
+            # (an engine the kit started earlier, still that one: only its Dashboard is switched on again)
+            "record": held if was_up and _same_engine(before, held) else None,
+            "version": self.version,
+        }
+        self.save()  # the ask before the start
         try:
             ok, text = self.product.start_engine(300)
         except NsError as e:  # the product's own coded reason
             return f"Nightshift's engine did not start: {e}"
-        begun = self.now()
+        begun, answers = self.now(), False
         while ok:  # started: it answers within a bound, or that is the answer
-            if self.product.api("GET", "/api/health", timeout=10)[0] == 200:
-                return None
-            if (self.now() - begun).total_seconds() > ENGINE_ANSWER_S:
+            answers = self.product.api("GET", "/api/health", timeout=10)[0] == 200
+            if answers or (self.now() - begun).total_seconds() > ENGINE_ANSWER_S:
                 break
             self.clock.sleep(2)
+        after = self.product.engine_record()
+        if not was_up and after is not None and not _same_engine(after, before) \
+                and _stamp(after.get("started_at")) >= asked - 2:  # fmt: skip
+            self.state["engine"]["record"] = after  # shown by the supervisor's own record: the kit's start
+            self.save()
+        if answers:
+            return None
         return f"Nightshift's engine did not start or did not answer ({text[-300:].strip()})"
 
     def enter(self, step: str) -> Result | None:
         """Every step's ONE entry, before the step talks to the product: the engine and the Dashboard brought
         up (`engine`, bounded) when the step needs them, what the kit left from a killed run put back, then
-        the engine asked who holds the graphics card (bounded wait for an answer) when the step takes it. None
-        hands over to the step; a Result is the step's answer (nothing of the step was started)."""
+        the engine asked who holds the graphics card (bounded wait for an answer) when the step takes it,
+        and (step 3) who else uses Nightshift at all. None hands over to the step; a Result is the step's
+        answer (nothing of the step was started)."""
         need = ENTRY.get(step, "none")
         if need == "none":
             return None
@@ -876,12 +1023,163 @@ class Kit:
         if why:
             return self.not_started(why)
         self.put_back_extras()  # (the kit's own Code window, test voices or stock clip of a killed run)
-        if need != "card" or self.own_work_running(step):
+        if need == "dashboard" or self.own_work_running(step):
             return None
         begun = self.now()
         while self.engine_status() is None and (self.now() - begun).total_seconds() < ENGINE_ANSWER_S:
             self.clock.sleep(2)
-        return self.card_taken()
+        taken = self.card_taken()
+        return self.alone() if taken is None and need == "alone" else taken
+
+    def alone(self) -> Result | None:
+        """Before step 3. Its model test (`ns verify`) stops and reloads EVERY model by the product's own
+        design, whoever uses one, so it starts only while the product's own tables show nobody else at
+        all (`others`). Anyone, or a table that did not answer: NOT RUN, nothing started or ended."""
+        answered, who = self.others(window=False)
+        if who:
+            return Result("NOT RUN", f"{who[0]}: the model test stops and reloads every model, so it was "
+                          "not started (nothing was started or ended). What to do: run GPU-KIT.cmd again "
+                          "when that has ended (a job that only waits in the Queue: let it run, or cancel "
+                          "it there first).", done=False, stop=True)  # fmt: skip
+        if not answered:
+            return Result("NOT RUN", "Nightshift did not say who is using it, so the model test, which "
+                          "stops and reloads every model, was not started (nothing was started or ended). "
+                          "What to do: run GPU-KIT.cmd again.", done=False, stop=True)  # fmt: skip
+        return None
+
+    def open_jobs(self) -> list[dict[str, Any]] | None:
+        """The Dashboard's own job table: every job that runs or waits in the Queue now; None when the
+        Dashboard did not answer."""
+        out: list[dict[str, Any]] = []
+        for status in ("running", "queued"):
+            st, rows = self.product.api("GET", f"/api/jobs?status={status}&limit=200", timeout=30)
+            if st != 200 or not isinstance(rows, list):
+                return None
+            out += [r for r in rows if isinstance(r, dict)]
+        return out
+
+    def others(self, window: bool = True) -> tuple[bool, list[str]]:
+        """Who else uses Nightshift NOW, asked of the product each time and never taken from the kit's own
+        state: an update in progress (its lock), the Dashboard open in a window or a browser (`window`: the
+        engine's own question before its idle exit), the Dashboard's job table (running or waiting), the
+        studio's owner table (a nightly run or a video job a live process holds), a nightly run due
+        within the hour (`window`: Automatic runs on, the kit's clock) and, last, the engine's
+        holder table (who holds the graphics card, who waits for it, who uses a service, a model loading).
+        The kit's own job or window counts too: it also needs the engine. Returns (every table answered,
+        who): a table that did not answer is never read as "nobody"."""
+        who: list[str] = []
+        answered = True
+        if self.product.update_running():
+            who.append("an update of Nightshift is in progress")
+        if window:
+            seen = self.product.dashboard_in_use()
+            answered = answered and seen is not None
+            if seen:
+                who.append("Nightshift's Dashboard is open (its window, or a page in a browser)")
+            # the engine's own rule for its idle exit (`run_due_soon`): never within the hour before a
+            # nightly run, which would find an engine that is just stopping
+            st, status = self.product.api("GET", "/api/status", timeout=30)
+            runs_on = status.get("schedule_registered") if st == 200 and isinstance(status, dict) else None
+            answered = answered and runs_on is not None
+            nxt = self.run_times(self.now(), 1)[0] if runs_on else None
+            if nxt is not None and (nxt - self.now()).total_seconds() <= NIGHT_SOON_S:
+                who.append(f"the nightly run starts at {nxt:%H:%M}, within the hour")
+        jobs = self.open_jobs()
+        answered = answered and jobs is not None
+        clip = (self.state.get("clip") or {}).get("job_id")
+        for j in jobs or []:
+            what = "the kit's own clip job" if j.get("job_id") == clip else f"the {j.get('kind')} job"
+            state = "is running" if j.get("status") == "running" else "is waiting in the Queue"
+            who.append(f"{what} {j.get('job_id')} {state}")
+        work = self.product.live_work()
+        answered = answered and work is not None
+        story = (self.state.get("job") or {}).get("id")
+        for w in sorted(work or [], key=lambda w: w.get("kind") != "run"):  # (a night before its jobs)
+            if w.get("kind") == "run":
+                who.append(f"the nightly run {w.get('id')} is working")
+            else:
+                what = "the kit's own video job" if w.get("id") == story else "the video job"
+                who.append(f"{what} {w.get('id')} is being made")
+        st, body = self.product.engine_api("GET", "/status", timeout=30)
+        if st != 200 or not isinstance(body, dict):
+            return False, who
+        owner = body.get("gpu_owner")
+        if owner and str(owner).startswith("opencode"):
+            who.append("Nightshift Code is open")
+        elif owner:
+            who.append(f"{owner} holds the graphics card")
+        who += [f"{w.get('owner')} is waiting for the graphics card"
+                for w in body.get("waiting") or [] if isinstance(w, dict)]  # fmt: skip
+        services = body.get("services")
+        for name, svc in services.items() if isinstance(services, dict) else []:
+            if name == "dashboard" or not isinstance(svc, dict):
+                continue
+            using = [str(o) for o in svc.get("owners") or [] if o != owner]
+            if using:
+                who.append(f"{', '.join(using)} is using {name}")
+            if svc.get("state") == "starting":
+                who.append(f"a model is loading ({name})")
+        if body.get("shutting_down"):
+            who.append("Nightshift is stopping already")
+        return answered, list(dict.fromkeys(who))
+
+    def leave_engine(self) -> None:
+        """THE one place the kit ends Nightshift, at the end of a run, and it says in one line which
+        happened. The kit ends only an engine it can SHOW it started (the start record it saved is still the
+        supervisor's own record of the engine that runs now), and only while nothing else uses it
+        (`others`, asked last, right before the request); then it asks that engine to shut down, and never
+        sends Stop All. Everything else is left running and said so. The claim is used once: whatever
+        happens here, a later run never stops this engine on the strength of this one's record."""
+        eng = self.state.get("engine")
+        if not isinstance(eng, dict):
+            self.state.pop("engine_end", None)
+            return  # this kit asked for no start: nothing of Nightshift is its own to end, nothing to say
+        rec, now = eng.get("record"), self.product.engine_record()
+        result, line = "left", ""
+        if now is None and self.product.engine_api("GET", "/health", timeout=10)[0] == 200:
+            line = ("Nightshift was left running: its start record cannot be read now, so the kit cannot "
+                    f"show that it started this engine; {IDLE_EXIT}.")  # fmt: skip
+        elif now is None:
+            result = "not running"
+            line = ("Nightshift is not running now: the engine the kit started has ended by itself."
+                    if rec else "")  # fmt: skip
+        elif not rec and eng.get("was_up"):
+            line = ("Nightshift was left running: its engine was already running when the kit needed it. "
+                    "The kit only switched its Dashboard on, which ends with that engine.")  # fmt: skip
+        elif not rec:
+            line = ("Nightshift was left running: its own start record does not show that the kit started "
+                    f"it, so the kit does not stop it; {IDLE_EXIT}.")  # fmt: skip
+        elif not _same_engine(now, rec):
+            line = ("Nightshift was left running: it was started again after the kit had started it (not "
+                    "by the kit), so it is not the kit's to stop.")  # fmt: skip
+        else:
+            answered, who = self.others()
+            if who:
+                more = f" (and {len(who) - 1} more)" if len(who) > 1 else ""
+                line = (f"Nightshift was left running because {who[0]}{more}. The kit had started it and "
+                        "does not stop it, now or on a later run.")  # fmt: skip
+            elif not answered:
+                line = ("Nightshift was left running because it did not say who is using it (the kit had "
+                        f"started it); {IDLE_EXIT}.")  # fmt: skip
+            else:
+                self.product.engine_api("POST", "/shutdown", {"grace_s": 30}, timeout=180)
+                begun = self.now()
+                while _same_engine(self.product.engine_record(), rec) \
+                        and (self.now() - begun).total_seconds() < ENGINE_END_S:  # fmt: skip
+                    self.clock.sleep(2)
+                if _same_engine(self.product.engine_record(), rec):
+                    result = "asked to stop"
+                    line = ("Nightshift was asked to stop (the kit had started it and nothing else was "
+                            f"using it) and had not ended after {ENGINE_END_S} s; {IDLE_EXIT}.")  # fmt: skip
+                else:
+                    result = "stopped"
+                    line = ("Nightshift was stopped again: the kit had started it and nothing else was "
+                            "using it.")  # fmt: skip
+        self.state["engine"] = None
+        self.state["engine_end"] = {"result": result, "line": line, "at": self.iso()}
+        self.save()
+        if line:
+            self.say(line)
 
     def not_started(self, why: str) -> Result:
         """The engine is not up: the product's OWN reason and way out when it gave a coded one (the start
@@ -992,6 +1290,14 @@ class Kit:
 
     # -------------------------------------------------------------------------------------- K2 checks
     def k2(self) -> Result:
+        # (entry found nobody else using Nightshift: `ns verify` stops every model twice, whoever holds one;
+        # so it must also have ended before a nightly run starts: 40 minutes and the proofs' hour)
+        held = self.room(40 * 60 + 60 * 60, "the model test and the proofs")
+        if held is not None:
+            return held
+        self.say("This step stops and reloads every model of Nightshift. Until it says PASS or FAIL, "
+                 "start no video and no clip and do not open Nightshift Code: they would lose their "
+                 "model.")  # fmt: skip
         asked = time.time()  # (the file's own clock: the report must be written by THIS run of ns verify)
         rc, text = self.product.cli("ns", ["verify"], 40 * 60)
         self.write_json("verify.json", {"exit": rc, "output": text})
@@ -1005,6 +1311,12 @@ class Kit:
             return Result("FAIL", "a model did not answer its short test (ns verify; its report "
                           "logs\\verify-report.json is in the zip). What to do: send the zip.",
                           done=False, stop=True)  # fmt: skip
+        # the proof runner starts an engine itself when none answers and would then end it by itself: the kit
+        # brings Nightshift up first (under its own record), so the runner starts and ends nothing
+        why = self.engine()
+        if why:
+            return Result("FAIL", f"{why}, so the proofs were not run. What to do: run GPU-KIT.cmd again; if "
+                          "this line comes back, send the zip.", done=False, stop=True)  # fmt: skip
         args = ["--home", str(self.home), "--dept", "kit", "--lock-file", str(self.ev / "kit.lock"),
                 "--tools", str(KIT_DIR / "tools"), "--runs", str(self.ev / "proofs"), "--all", "--strict",
                 "--no-window"]  # fmt: skip
@@ -1104,9 +1416,26 @@ class Kit:
         why = f"the kit's channel could not be made (HTTP {st}: {answer})"[:300]
         return None if st in (201, 409) else why
 
+    def channel_work(self) -> list[str] | None:
+        """Other work on the kit's channel now, from the product's own job tables: a video job a live
+        process holds (the studio's owner table) and a story job of the Dashboard that runs or waits in the
+        Queue (a clip job is not held by a pause). None when a table did not answer."""
+        work, jobs = self.product.live_work(), self.open_jobs()
+        if work is None or jobs is None:
+            return None
+        out = [f"the video job {w.get('id')} on it is being made" for w in work
+               if w.get("kind") == "job" and w.get("channel") == CHANNEL]  # fmt: skip
+        out += [f"the {j.get('kind')} job {j.get('job_id')} on it "
+                + ("is running" if j.get("status") == "running" else "is waiting in the Queue")
+                for j in jobs if j.get("channel") == CHANNEL and j.get("kind") != "clip"]  # fmt: skip
+        return out
+
     def pause_channel(self, start: bool = True) -> bool:
-        """The kit's channel is paused (or does not exist); False when the Dashboard could not make it so
-        (`start` False: an engine that is down is not started for it)."""
+        """The kit's channel is paused (or does not exist). False when it is not: the Dashboard could not
+        make it so (`start` False: an engine that is down is not started for it), or other work on the
+        channel runs or waits now, which a pause would hold or stop (`channel_left` then says which; the
+        channel stays active and the next exit or run tries again)."""
+        self.channel_left = None
         if start and self.engine() is not None:
             return False
         if not start and self.product.api("GET", "/api/health", timeout=10)[0] != 200:
@@ -1116,6 +1445,12 @@ class Kit:
             return True
         if status == 200 and isinstance(body, dict) and (body.get("profile") or {}).get("status") == "paused":
             return True
+        busy = self.channel_work()
+        if busy is None:
+            return False
+        if busy:
+            self.channel_left = busy[0]
+            return False
         note = {"note": "GPU kit: one video only"}
         st, _ = self.product.api("POST", f"/api/channels/{CHANNEL}/pause", note)
         return st == 200
@@ -1210,12 +1545,15 @@ class Kit:
         return self.k3_after(job)
 
     def k3_after(self, job: dict[str, Any]) -> Result:
-        if not self.pause_channel():  # first, also after a kill between the job's end and the pause
+        paused = self.pause_channel()  # first, also after a kill between the job's end and the pause
+        if not paused and not self.channel_left:
             return Result("FAIL", f"the kit's channel '{CHANNEL}' could not be paused. What to do: pause it "
                           "in Channels, then run GPU-KIT.cmd again.", done=False, stop=True)  # fmt: skip
-        if (self.state.get("changes") or {}).get("channel"):
+        if paused and (self.state.get("changes") or {}).get("channel"):
             self.state["changes"]["channel"]["put_back"] = True
             self.save()
+        channel = ("the kit's channel is paused" if paused else "the kit's channel was left active because "
+                   f"{self.channel_left} (the kit pauses it on a later run)")  # fmt: skip
         story = self.ev / "story"
         story.mkdir(parents=True, exist_ok=True)
         rows = self.long_rows(job.get("id"))
@@ -1250,7 +1588,7 @@ class Kit:
             "PASS",
             self.marked(
                 f"video made: {video} ({int(length // 60)} min "
-                f"{int(length % 60)} s long, made in {took}); the kit's channel is paused"
+                f"{int(length % 60)} s long, made in {took}); {channel}"
             ),
         )
 
@@ -1356,22 +1694,48 @@ class Kit:
             return Result("FAIL", self.marked("; ".join(lines)), done=False, stop=True)
         return Result("PASS", self.marked("; ".join(lines)))
 
-    def cached_ids(self, query: str, source: str) -> list[str]:
-        """The clip ids of `source` the footage cache holds for `query` (`GET /api/library/footage`)."""
+    def clip_rows(self, query: str, source: str) -> list[dict[str, Any]]:
+        """The footage cache's own rows of `source` for `query` (`GET /api/library/footage`: each with its
+        clip id, when the cache got it, `fetched_at`, and how many videos used it, `uses`)."""
         from urllib.parse import quote
 
         st, rows = self.product.api("GET", f"/api/library/footage?q={quote(query)}&limit=200")
         if st != 200 or not isinstance(rows, list):
             return []
-        return [str(r.get("clip_id")) for r in rows if isinstance(r, dict) and r.get("source") == source]
+        return [r for r in rows if isinstance(r, dict) and r.get("source") == source]
+
+    def cached_ids(self, query: str, source: str) -> list[str]:
+        """The clip ids of `source` the footage cache holds for `query`."""
+        return [str(r.get("clip_id")) for r in self.clip_rows(query, source)]
+
+    def clip_row(self, source: str, clip_id: str) -> dict[str, Any] | None:
+        """The cache's row of one clip, or None when it holds none."""
+        return next((r for r in self.clip_rows(clip_id, source) if str(r.get("clip_id")) == clip_id), None)
+
+    def own_new_clip(self, query: str, source: str, before: set[str], asked_at: Any) -> list[str]:
+        """After a kill during the kit's download, before its clip id was saved: the ONE clip that is the
+        kit's own. The kit asked for one clip, so it is the first row the cache got for the kit's words and
+        source that it did not hold before (`before`, recorded before the request), inside the kit's own
+        request time (from `asked_at`, recorded before the request, to `CLIP_OWN_S` later), and that no
+        video has used. A clip that came for the same words later (a night, the Library page) is not it; a
+        record without `asked_at` names none."""
+        asked = _when(asked_at)
+        if asked_at is None or asked == _when(None):
+            return []
+        lo, hi = asked - timedelta(seconds=5), asked + timedelta(seconds=CLIP_OWN_S)
+        new = sorted((r for r in self.clip_rows(query, source) if str(r.get("clip_id")) not in before
+                      and lo <= _when(r.get("fetched_at")) <= hi), key=lambda r: _when(r.get("fetched_at")))
+        return [str(new[0].get("clip_id"))] if new and not new[0].get("uses") else []
 
     def try_stock(self, name: str) -> dict[str, Any]:
         title = name.capitalize()
         what = f"stock_clip_{name}"
         self.change(what, "not in the cache", "one clip, removed from the cache after the check")
         for q in STOCK_QUERIES:
-            # before the request: what the cache held for it, so a kill mid-download finds the kit's clip
-            self.state["changes"][what].update({"trying": q, "before": self.cached_ids(q, name)})
+            # before the request: what the cache held for it and when the kit asked (the PC's own clock, as
+            # the cache's rows carry it), so a kill mid-download finds the kit's clip and no other
+            self.state["changes"][what].update({"trying": q, "before": self.cached_ids(q, name),
+                                                "asked_at": datetime.now(UTC).isoformat()})  # fmt: skip
             self.save()
             status, body = self.product.api("POST", "/api/library/footage/fetch",
                                             {"q": q, "orientation": "landscape", "count": 1, "source": name},
@@ -1556,7 +1920,10 @@ class Kit:
         self.write_json("voices/voices.json", rec)
         results = {rec[k]["result"] for k in ("design", "clone")}
         word = "FAIL" if "FAIL" in results else "PASS" if "PASS" in results else "NOT RUN"
-        return Result(word, self.marked("; ".join(parts) + "; both test voices removed"))
+        kept = [str(ch["left"]) for what, ch in (self.state.get("changes") or {}).items()
+                if what.startswith("voice_") and ch.get("left")]  # fmt: skip
+        ends = "left on the PC: " + "; ".join(kept) if kept else "both test voices removed"
+        return Result(word, self.marked("; ".join(parts) + "; " + ends))
 
     def make_voice(self, kind: str, name: str) -> dict[str, Any]:
         body: dict[str, Any] = {"name": name, "test_line": VOICE_TEST_LINE}
@@ -1567,6 +1934,10 @@ class Kit:
             if sample is None:
                 return {"result": "NOT RUN", "line": "no narration of the kit's video to clone from"}
             body.update({"sample_path": str(sample), "consent": True})
+        users = self.voice_users(name)
+        if users:  # (made by an earlier run of the kit, and a channel was given it since: not made again)
+            return {"result": "NOT RUN", "line": f"the test voice {name} is in use (the channel "
+                    f"{', '.join(users)} has it as its voice), so the kit did not make it again"}  # fmt: skip
         self.change(f"voice_{kind}", "absent", "a test voice of the kit, removed after its check")
         self.state["changes"][f"voice_{kind}"]["name"] = name
         self.save()  # the name first: a kill from here on still removes it
@@ -1635,6 +2006,9 @@ class Kit:
         rec: dict[str, Any] = {"vram_before": self.vram_used(), "started": self.iso()}
         self.state["code"] = rec
         self.change("code_window", "closed", "opened by the kit and closed again")
+        self.say("Opening Nightshift Code in a window of its own for this check. The kit closes that "
+                 "window again by itself (on its next run too, if this one is stopped): do not work in "
+                 "it.")  # fmt: skip
         proc = self.product.start_code(launcher)
         ch = self.state["changes"]["code_window"]
         ch.update({"pid": proc.pid, "created": self.product.created(proc.pid)})
@@ -1905,6 +2279,20 @@ class Kit:
             )
         self.save()
 
+    def night_at_work(self) -> str | None:
+        """A nightly run that is working NOW, in words, or None. Asked of the product: a `runs` row of a
+        nightly that is not closed AND the studio's own owner table says a live process holds a run (a row
+        a killed night left open has no live owner: the next start of Nightshift closes it). The steps that
+        judge the nights, switch Automatic runs off or pause the kit's channel wait for it."""
+        open_rows = self.db("select run_id from runs where mode = 'daily' and finished_at is null")
+        if not open_rows:
+            return None
+        work = self.product.live_work()
+        if work is None:
+            return "a nightly run was started and Nightshift did not say whether it is still working"
+        run = next((w for w in work if w.get("kind") == "run"), None)
+        return f"the nightly run {run.get('id')} is working now" if run else None
+
     def night(self, i: int) -> Result:
         night = self.state["nights"][i]
         if self.night_now and not night.get("ran_now"):  # a dry-run night: it starts now, through the stub
@@ -1917,6 +2305,10 @@ class Kit:
         run_at, lo, hi = self.at(night["run_at"]), self.at(night["from"]), self.at(night["to"])
         rows = self.night_rows(lo, hi)
         late = self.night_now or self.now() >= run_at + timedelta(seconds=NIGHT_LIMIT_S)
+        working = self.night_at_work() if any(not r["finished_at"] for r in rows) else None
+        if working:  # (a night Windows started late is still a night at work: never judged "never closed")
+            return Result("WAIT", f"Night {i + 1}: {working}. Run GPU-KIT.cmd again when it has ended.",
+                          done=False, stop=True)  # fmt: skip
         if not late and (not rows or not rows[0]["finished_at"]):
             back = self.come_back(run_at + timedelta(seconds=NIGHT_LIMIT_S))
             self.save()
@@ -2036,8 +2428,29 @@ class Kit:
             None if armed else "the night found no armed night of the kit (no gpu_kit_night line in its log)"
         )
 
+    def nights_settled(self) -> bool:
+        """Nightshift's own night after the two already settled THIS kit's nights: its log has the line
+        `gpu_kit_nights_ended` (`kitnights.end_nights`, written before it removes the record) carrying the
+        `armed_at` of the record this kit wrote. Then whatever Automatic runs are now is no longer the
+        kit's to change."""
+        armed = self.state.get("armed_at")
+        for f in sorted((self.home / "logs").glob("studio-*.jsonl")) if armed else []:
+            with contextlib.suppress(OSError):
+                for text in f.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if '"gpu_kit_nights_ended"' not in text:
+                        continue
+                    with contextlib.suppress(ValueError):
+                        ln = json.loads(text)
+                        if isinstance(ln, dict) and (ln.get("data") or {}).get("armed_at") == armed:
+                            return True
+        return False
+
     # -------------------------------------------------------------------------------------- K7 collect
     def k7(self) -> Result:
+        working = self.night_at_work()
+        if working:  # switching Automatic runs off removes the task Windows is running: never under a night
+            return Result("WAIT", f"{working}, so nothing was collected, switched off or paused. Run "
+                          "GPU-KIT.cmd again when it has ended.", done=False, stop=True)  # fmt: skip
         col = self.ev / "collected"
         col.mkdir(parents=True, exist_ok=True)
         for i, night in enumerate(self.state.get("nights") or []):
@@ -2072,6 +2485,13 @@ class Kit:
                         f"{str(chose)[:16]}), after the kit: they were left as you set them")  # fmt: skip
             elif not settings.get("schedule_registered"):
                 said = "Automatic runs are off again, as they were before the kit (switched off already)"
+            elif record.kind == "none" and self.nights_settled():
+                # the product's own record of the kit's nights is gone because the night after the two
+                # settled them, and it left the runs on as the owner's. The kit's "I switched them on" from
+                # an earlier run is no evidence against the product's own settlement: nothing is switched off.
+                said = ("Automatic runs were left on: the night after the kit's two already put back what "
+                        "the kit changed and kept the runs on as yours; to switch them off, use "
+                        "Settings")  # fmt: skip
             elif settings.get("schedule_time") != armed_time:
                 said = (f"you moved the run time to {settings.get('schedule_time')} after the kit: Automatic "
                         "runs were left on, as you set them")  # fmt: skip
@@ -2093,9 +2513,15 @@ class Kit:
             self.state.update({"restored": True, "restored_said": said})
             self.state.setdefault("changes", {}).setdefault("automatic_runs", {})["put_back"] = True
             self.save()
-        ch = (self.state.get("changes") or {}).get("channel_for_nights")
-        if ch and not ch.get("put_back") and self.pause_channel():
-            ch["put_back"] = True
+        paused = self.pause_channel()  # whatever left it active (the nights, a job on it at an earlier end)
+        for what in ("channel_for_nights", "channel"):
+            ch = (self.state.get("changes") or {}).get(what)
+            if ch and paused:
+                ch["put_back"] = True
+        channel = ("the kit's channel is paused" if paused else
+                   f"the kit's channel was left active because {self.channel_left}: pause it in Channels "
+                   "when that has ended" if self.channel_left else
+                   "the kit's channel could not be paused: pause it in Channels")  # fmt: skip
         kitnights.remove(paths)
         self.save()
         verdicts = [str(n.get("verdict") or "NOT RUN") for n in self.state.get("nights") or []]
@@ -2107,9 +2533,7 @@ class Kit:
         stays = self.state.get("left_on_pc") or []
         if stays:
             said += "; left on the PC: " + "; ".join(stays)
-        return Result(word, f"the nights: {nights_said}; collected the nights' records; {said}; the kit's "
-                      "channel "
-                      "is paused")  # fmt: skip
+        return Result(word, f"the nights: {nights_said}; collected the nights' records; {said}; {channel}")
 
     # -------------------------------------------------------------------------------------- K8 questions
     def ready(self, group: str) -> bool:
@@ -2294,7 +2718,11 @@ class Kit:
         for s in STEPS:
             rec = self.state.get("steps", {}).get(s) or {}
             lines.append(f"{s} {TITLES[s]}: {rec.get('result', 'NOT RUN')}  {rec.get('line', 'not reached')}")
+        ended = (self.state.get("engine_end") or {}).get("line")
         lines += [
+            "",
+            "Nightshift itself at the end of the kit's last run: "
+            + (ended or "the kit had started nothing of it and left it as it was."),
             "",
             "Left on the PC on purpose (the person can remove them):",
             "- the kit's story video, the two night videos and the clip, in the Queue on the kit's channel",
@@ -2351,6 +2779,12 @@ class Kit:
             where = next((s for s in STEPS if not (steps.get(s) or {}).get("done")), "K7")
             self.say(f"Stopped by you during {self.label(where)}. Nothing is lost: run GPU-KIT.cmd again and "
                      "it continues from there.")  # fmt: skip
+            if (self.state.get("engine") or {}).get("record"):
+                # (a closed window leaves no time to ask who uses it and wait for its end: it is left, and
+                # the record stays for the next run, which checks it against the engine's own again)
+                self.say(f"Nightshift was left running (the kit had started it): {IDLE_EXIT}; the next run "
+                         "of GPU-KIT.cmd stops it only if it is still that engine and nothing else is using "
+                         "it.")  # fmt: skip
             return 130
         except Exception as e:  # noqa: BLE001 - an error the kit did not expect: still put back, still the zip
             steps[step] = {"result": "FAIL", "done": False, "at": self.iso(), "version": self.version,
@@ -2366,12 +2800,16 @@ class Kit:
         return 1 if failed else 0
 
     def finish(self, blocked: bool) -> None:
-        """Stop the engine only when the kit started it, then the zip (also after a failed step), then the
-        last lines: what to send, or when to come back."""
-        if self.state.get("engine_started_by_kit"):
-            self.product.api("POST", "/api/engine/stop_all", {}, timeout=120)  # the product's own Stop All
-            self.state["engine_started_by_kit"] = False
-            self.save()
+        """The end of a run: Nightshift is ended or left (`leave_engine`: only the kit's own engine, only
+        while nothing else uses it, said in one line), then the zip (also after a failed step), then the last
+        lines: what to send, or when to come back."""
+        try:
+            self.leave_engine()
+        except Exception as e:  # noqa: BLE001 - never ended on a guess: left as it is, and said
+            line = (f"Nightshift was left as it is: the kit could not ask who is using it "
+                    f"({type(e).__name__}: {str(e)[:200]}); {IDLE_EXIT}.")  # fmt: skip
+            self.state.update({"engine": None, "engine_end": {"result": "left", "line": line}})
+            self.say(line)
         try:
             target = self.bundle()
         except OSError as e:
@@ -2518,6 +2956,28 @@ def _modern_standby(sleep_states: str | None) -> bool | None:
     return "S0 Low Power Idle" in available
 
 
+def _same_engine(a: Any, b: Any) -> bool:
+    """Two start records (`InstallProduct.engine_record`) name the same engine: the same pid, the same
+    start time as the supervisor wrote it, and a process created at the same moment (a pid Windows gave to
+    another process since is not it)."""
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return False
+    try:
+        same_birth = abs(float(a["created"]) - float(b["created"])) < 1.0
+    except (KeyError, TypeError, ValueError):
+        return False
+    return a.get("pid") == b.get("pid") and a.get("started_at") == b.get("started_at") and same_birth
+
+
+def _stamp(raw: Any) -> float:
+    """The supervisor's `started_at` (the PC's local time, to the second) as a timestamp; far in the past
+    when it cannot be read, so it never counts as a start after the kit asked."""
+    try:
+        return datetime.fromisoformat(str(raw)).timestamp()
+    except (TypeError, ValueError, OSError, OverflowError):
+        return float("-inf")
+
+
 def _when(raw: Any) -> datetime:
     """A ledger line's `at` as an aware time (the oldest possible when it is missing or unreadable)."""
     try:
@@ -2634,7 +3094,7 @@ def start(args: argparse.Namespace, env: KitEnv) -> Kit:
         except ValueError as e:
             raise Refused(f"-Clock needs a time like 2026-11-12T22:00, not {args.clock!r}.") from e
     clock = env.clock or RealClock(offset)
-    product = env.product or InstallProduct(home, info.ports["dashboard"])
+    product = env.product or InstallProduct(home, info.ports["dashboard"], info.ports["supervisor"])
     status, body = product.api("GET", "/api/status", timeout=30)
     served = (body.get("disk") or {}).get("home") if status == 200 and isinstance(body, dict) else None
     if served and os.path.normcase(str(Path(served).resolve())) != os.path.normcase(str(home)):
@@ -2651,6 +3111,8 @@ def start(args: argparse.Namespace, env: KitEnv) -> Kit:
 
         kit.mark = gpu.simulated_mark(gpu.smi_source(Paths(home)))
         kit.state.setdefault("started", kit.iso())
+        # (an older kit's bare "the kit started the engine" flag names no engine: it is evidence of nothing)
+        kit.state.pop("engine_started_by_kit", None)
         older = sorted(
             {
                 str(s.get("version"))
