@@ -476,8 +476,10 @@ suite and no more is claimed.
   update stop with NS-E702 and no way out named (an outside program has to cause it); a start in the few renames
   between the record and the swap is let through. Shown by tests.
 - `studio run`, the voice commands, `studio dashboard` and `ns verify` read the repair record before they ask the
-  engine (D-39b with default-port-tests). They refuse with NS-W210 when a record waits and the engine is down, say
-  that an update or rollback is running now when one holds `run\update.lock`, and go on in every other state; with
+  engine (D-39b with default-port-tests, D-48). While a record waits, `studio run` and the voice commands refuse
+  with NS-W210 whether or not the engine answers; `ns verify` and `studio dashboard` refuse when the engine is down
+  and go on when it answers. All of them say that an update or rollback is running now when one holds
+  `run\update.lock`, and go on when nothing waits; with
   nothing waiting the check is a file look and no connection, so the footage-key and no-channel refusals still come
   before any job, with their codes and messages unchanged. Not covered: a record held open by another program is
   waited for a moment, and `install_state.json` is read when the engine is up; the engine's own start refuses
