@@ -471,7 +471,7 @@ def test_the_setup_window_over_a_finished_install_with_a_damaged_model_opens_the
     done = app_setup(tmp_path, monkeypatch, zip_a).snap()
     assert done["run"] == "finished"  # nothing owed: Done, as before
     model = first.home / "models" / "llm" / "a.gguf"
-    model.parent.mkdir(parents=True)
+    model.parent.mkdir(parents=True, exist_ok=True)  # (the finished install has its own model there)
     model.write_bytes(content("a.gguf"))
     dl.write_marker(model, sha(content("a.gguf")))
     model.write_bytes(content("a.gguf") + b"!")  # changed since setup verified it
@@ -560,7 +560,12 @@ def test_the_setup_window_brings_back_a_model_file_deleted_with_its_marker(
     state = window.until(lambda st: st["run"] in ("finished", "waiting", "stopped"), timeout=60.0,
                          what="the Repair to end")  # fmt: skip
     assert codes == [0] and state["run"] == "finished", (codes, state["failure"])
-    assert {st["id"]: st["status"] for st in state["steps"]}["s03_download_models"] == "done"
+    # the models step ends with its note (a damaged file was replaced): the wizard reports that row as
+    # "warning" with the sentence (`Wizard._step`), and the window keeps both (`_ev_step`)
+    row = next(st for st in state["steps"] if st["id"] == "s03_download_models")
+    said = str(row["detail"] or "")
+    assert row["status"] == "warning" and "damaged model file was downloaded again" in said, row
+    assert llm.name in said, row
     assert embed.read_bytes() == content(embed.name) and dl.is_verified(embed, sha(content(embed.name)))
     assert llm.read_bytes() == content(llm.name) and dl.is_verified(llm, sha(content(llm.name)))
     assert not list((home / "models").rglob("*.bad"))
@@ -622,7 +627,7 @@ def test_the_windows_plan_of_model_files_is_the_models_steps_plan(tmp_path: Path
 
 def test_the_window_names_each_way_a_planned_model_is_not_verified(tmp_path: Path) -> None:
     """Written by the builder of blocker 1, NOT RUN. `modelmarks.repair_owed` with the plan: one line per
-    file, the reason in words, nothing for a verified file or one that is not planned."""
+    file, the reason in words, nothing for a verified file or for an unplanned one that left no marker."""
     from installer.stage2.web import modelmarks
 
     home = tmp_path / "home"
@@ -658,7 +663,9 @@ def test_the_window_names_each_way_a_planned_model_is_not_verified(tmp_path: Pat
         "models/llm/torn.gguf: its check record cannot be read",
         "models/llm/repinned.gguf: this version pins another file",
     ]), lines
-    assert modelmarks.repair_owed(home, [(ok, pin), (nopin, None)]) == []
+    # with only verified files planned: the files that are no longer planned and have no marker left say
+    # nothing; the marker whose file is gone still speaks for itself, planned or not (the Repair removes it)
+    assert modelmarks.repair_owed(home, [(ok, pin), (nopin, None)]) == ["models/llm/gone1.gguf: missing"]
 
 
 # ------------------------------------------------------------------------------------------------- M6
