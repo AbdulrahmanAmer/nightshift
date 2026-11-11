@@ -11,6 +11,8 @@ from __future__ import annotations
 import importlib
 import json
 import re
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,10 @@ try:  # the module is new with this card: a missing module must fail the guard t
     yr: Any = importlib.import_module("ns_studio.media.youtube_rules")
 except ImportError:
     yr = None
+try:  # new with the review of 149f3af: the one reader of sheet files
+    sr: Any = importlib.import_module("ns_studio.media.sheet_read")
+except ImportError:
+    sr = None
 
 REPO = Path(__file__).resolve().parent.parent
 CLONE = {"mode": "clone", "name": "owner-clone"}
@@ -487,20 +493,186 @@ def _warnings(detail: dict) -> list[str]:
     return [n for n in detail["youtube_notes"] if n.startswith("WARNING FOR YOUTUBE")]
 
 
-def _block(txt: Path) -> str:
-    """A .txt that exists but cannot be read (as when another program holds it): a folder of that name."""
-    text = txt.read_text(encoding="utf-8")
-    txt.unlink()
-    txt.mkdir()
-    return text
+class _Obstruction:
+    """A sheet file another program holds (a byte-range lock, as Word or Excel take) or that cannot be opened
+    for another reason (a folder of its name, the OS error a broken file gives); `clear()` undoes it."""
+
+    def __init__(self, path: Path, how: str) -> None:
+        self.path, self.how, self.cleared = path, how, False
+        self.saved = path.read_bytes()
+        if how == "held":
+            import msvcrt
+
+            self.fh = open(path, "r+b")  # noqa: SIM115 (kept open until clear)
+            msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, len(self.saved))
+        else:
+            path.unlink()
+            path.mkdir()
+
+    def clear(self) -> None:
+        if self.cleared:
+            return
+        self.cleared = True
+        if self.how == "held":
+            import msvcrt
+
+            self.fh.seek(0)
+            msvcrt.locking(self.fh.fileno(), msvcrt.LK_UNLCK, len(self.saved))
+            self.fh.close()
+        else:
+            self.path.rmdir()
+            self.path.write_bytes(self.saved)
 
 
-def _let_go(txt: Path, text: str) -> None:
-    """The other program lets go of the .txt: it can be read again, as it was."""
-    txt.rmdir()
-    txt.write_text(text, encoding="utf-8")
+JSON_STATES = ("ok", "utf16", "missing", "torn", "layout", "held", "os_error")
+TXT_STATES = ("ok", "utf16", "ansi", "missing", "held", "os_error", "layout")
+needs_windows = pytest.mark.skipif(sys.platform != "win32", reason="a share lock and ANSI are Windows")
 
 
+def _set_json(path: Path, how: str) -> _Obstruction | None:
+    if how == "utf16":
+        path.write_bytes(path.read_text(encoding="utf-8").encode("utf-16"))
+    elif how == "missing":
+        path.unlink()
+    elif how == "torn":
+        path.write_text('{"title": "The Doorb', encoding="utf-8")
+    elif how == "layout":
+        path.write_text('{"hello": "not a sheet"}', encoding="utf-8")
+    elif how in ("held", "os_error"):
+        return _Obstruction(path, how)
+    return None
+
+
+def _set_txt(path: Path, how: str) -> _Obstruction | None:
+    text = path.read_text(encoding="utf-8").replace("TITLE: Scary Story", "TITLE: Scary Störy")
+    if how == "utf16":
+        path.write_bytes(text.encode("utf-16"))  # Notepad's "Unicode": UTF-16 with its mark
+    elif how == "ansi":
+        try:
+            path.write_bytes(text.encode(sr.ansi_codec()))  # Notepad's "ANSI" on this PC
+        except UnicodeEncodeError:
+            pytest.skip("this PC's ANSI code page has no ö")
+    elif how == "missing":
+        path.unlink()
+    elif how == "layout":
+        path.write_text("my notes\nTitle idea: The Doorbell\n", encoding="utf-8")
+    elif how in ("held", "os_error"):
+        return _Obstruction(path, how)
+    return None
+
+
+def _whole(sheet: Path) -> bool:
+    j, t = sr.read_sheet_file(sheet, "json"), sr.read_sheet_file(sheet.with_suffix(".txt"), "txt")
+    return j.state == sr.OK and t.state == sr.OK
+
+
+@needs_windows
+@pytest.mark.parametrize("txt", TXT_STATES)
+@pytest.mark.parametrize("jsn", JSON_STATES)
+def test_every_cell_of_the_sheet_table_says_what_is_true_and_following_it_mends_the_sheet(
+    tmp_home: Path, tmp_path: Path, jsn: str, txt: str
+):
+    """Each (.json, .txt) cell of `sheet_read.plan_sheet`'s table: what the Queue does on opening the video,
+    the one sentence it shows, and that doing what the sentence says leaves a whole sheet (or, where the
+    sheet is gone, that the file it names holds the fields)."""
+    paths = Paths.from_env()
+    paths.ensure()
+    state, queue = _dashboard(paths)
+    ctx = make_ctx(tmp_home)
+    held: list[_Obstruction] = []
+    try:
+        run_short(ctx, tmp_path, SEO)
+        sheet = Path(ctx.read_json("outbox/manifest.json")["s1"]["json"])
+        tfile = sheet.with_suffix(".txt")
+        tob = _set_txt(tfile, txt)
+        held.extend([tob] if tob else [])
+        changed_txt = tfile.read_bytes() if tfile.is_file() and tob is None else None
+        job = _set_json(sheet, jsn)
+        held.extend([job] if job else [])
+        oid = f"{ctx.job_id}/s1"
+        said = _warnings(queue.detail(oid))
+        joined = " ".join(said)
+        assert "reject" not in joined and "--resume" not in joined
+        if job is not None:  # the .json is held or cannot be opened: only it is named
+            assert len(said) == 1 and sheet.name in said[0] and tfile.name not in said[0]
+            assert ("open in another program" if jsn == "held" else "could not be opened") in said[0]
+            job.clear()  # done as said, then the video is opened again
+            said = _warnings(queue.detail(oid))
+            jsn = "ok"  # the next cell is the one of a readable .json
+        bad_json = jsn in ("missing", "torn", "layout")
+        if tob is not None:  # the .txt is held or cannot be opened
+            assert len(said) == 1 and tfile.name in said[0]
+            assert ("open in another program" if txt == "held" else "could not be opened") in said[0]
+            if not bad_json:
+                assert sheet.name not in said[0]  # only the file that failed is named
+            tob.clear()
+            said = _warnings(queue.detail(oid))
+            changed_txt = None
+        if bad_json and txt == "missing":  # gone: the job's own record is named, and it holds the fields
+            assert len(said) == 1 and str(ctx.file("seo.json")) in said[0] and sr.RULES_TO_CHECK in said[0]
+            wrote = json.loads(ctx.file("seo.json").read_text(encoding="utf-8"))[0]
+            assert (wrote["title"], wrote["tags"]) == (SEO["title"], SEO["tags"])
+            return
+        if bad_json and txt == "layout":  # gone: the .txt named holds what the owner wrote
+            assert len(said) == 1 and f"from {tfile.name}" in said[0] and sr.RULES_TO_CHECK in said[0]
+            assert "The Doorbell" in tfile.read_text(encoding="utf-8")
+            return
+        assert said == [], said  # mended on opening
+        assert _whole(sheet)
+        meta = Metadata.model_validate_json(sheet.read_text(encoding="utf-8"))
+        new_txt = tfile.read_text(encoding="utf-8")
+        if txt in ("utf16", "ansi"):  # decoded, re-saved as UTF-8; the owner's file kept as it was
+            assert "re-saved" in new_txt and "as UTF-8" in new_txt
+            if bad_json:
+                assert meta.title == "Scary Störy: The Doorbell Camera"  # decoded right, not guessed
+            kept = list(tfile.parent.glob(f"{tfile.stem}.before-*.txt"))
+            assert len(kept) == 1 and kept[0].read_bytes() == changed_txt
+            assert "YOUR EDITS KEPT: " in new_txt and kept[0].name in new_txt
+        elif txt == "layout":  # the owner's file is kept before the sheet is written again
+            kept = list(tfile.parent.glob(f"{tfile.stem}.before-*.txt"))
+            assert len(kept) == 1 and "Title idea: The Doorbell" in kept[0].read_text(encoding="utf-8")
+        elif txt == "missing" or bad_json:
+            assert f"TITLE: {meta.title}" in new_txt
+        if bad_json:
+            assert outbox.REBUILT in new_txt
+        if jsn == "utf16":
+            assert "re-saved" in new_txt
+    finally:
+        for ob in held:
+            ob.clear()
+        state.db.close()
+
+
+def test_a_txt_no_encoding_can_read_is_saved_as_utf8_by_the_owner_as_the_sentence_says(tmp_home, tmp_path):
+    """The column a single-byte ANSI code page never reaches (bytes no encoding decodes, as on a double-byte
+    PC): with the .json readable the owner's file is kept and the sheet written again; with it torn the
+    owner is asked to re-save it as UTF-8, and doing so mends the sheet."""
+    paths = Paths.from_env()
+    paths.ensure()
+    state, queue = _dashboard(paths)
+    try:
+        ctx = make_ctx(tmp_home)
+        run_short(ctx, tmp_path, SEO)
+        sheet = Path(ctx.read_json("outbox/manifest.json")["s1"]["json"])
+        tfile = sheet.with_suffix(".txt")
+        good = sr.read_sheet_file(sheet, "json")
+        undecoded = sr.SheetRead(tfile, sr.NOT_UTF8, raw=b"\x81\x8d", encoding="unknown")
+        plan = sr.plan_sheet(good, undecoded, ctx.file("seo.json"), ctx.job_dir)
+        assert (plan.action, plan.keep_txt, plan.sentence) == (sr.FIT, True, None)
+        torn = sr.SheetRead(sheet, sr.TORN)
+        plan = sr.plan_sheet(torn, undecoded, ctx.file("seo.json"), ctx.job_dir)
+        assert plan.action == sr.WAIT and plan.sentence is not None
+        assert f"open {tfile.name} in Notepad, choose File > Save as, set Encoding to UTF-8" in plan.sentence
+        assert sheet.name in plan.sentence and "reject" not in plan.sentence
+        # done as said: the owner re-saves the .txt as UTF-8, then opens the video again
+        sheet.write_text("{torn", encoding="utf-8")
+        tfile.write_text(tfile.read_text(encoding="utf-8"), encoding="utf-8")
+        assert _warnings(queue.detail(f"{ctx.job_id}/s1")) == [] and _whole(sheet)
+    finally:
+        state.db.close()
+
+
+@needs_windows
 def test_a_sheet_that_stays_unreadable_is_tried_at_five_starts_then_left_with_a_word(tmp_home: Path):
     paths = Paths.from_env()
     paths.ensure()
@@ -509,48 +681,74 @@ def test_a_sheet_that_stays_unreadable_is_tried_at_five_starts_then_left_with_a_
         torn = _rc3_sheet(paths, state.db, slug="after-dark", job_id="after-dark-20261101-bb01", title="Torn",
                           status="pending")
         torn.with_suffix(".json").write_text("{not json", encoding="utf-8")
-        held = _block(torn.with_suffix(".txt"))
+        lock = _Obstruction(torn.with_suffix(".txt"), "held")
+        held = [lock]
         for _ in range(6):
             outbox.sweep_sheets(paths, state.db, state.log)
         logs = _logs(paths)
         assert logs.count('"sheet_unreadable"') == 5  # tries 1 to 5, then the sweep is done with it
         assert "(try 4 of 5) and whenever the video is opened in the Queue" in logs
         assert "stopped trying at its starts after 5; opening the video in the Queue tries once more" in logs
-        assert "reject" not in logs and "--resume" not in logs  # no way out that does not mend the sheet
-        last = "close the program that holds after-dark-20261101-bb01 - Short 01.txt, then open this video in the Queue again"
-        assert last in logs
+        assert "reject" not in logs and "--resume" not in logs
+        said = "which is open in another program: close that program, then open this video again"
+        assert said in logs
         assert json.loads((paths.data / "sheet-rules.json").read_text(encoding="utf-8"))["retry"] == {}
-        # the Queue says the same while it holds
+        assert any(said in w for w in _warnings(queue.detail("after-dark-20261101-bb01/s1")))
+        lock.clear()  # done as said
         detail = queue.detail("after-dark-20261101-bb01/s1")
-        assert any(last in w for w in _warnings(detail))
-        # follow it: the program lets go, the owner opens the video again: the sheet is rebuilt, the line is gone
-        _let_go(torn.with_suffix(".txt"), held)
-        detail = queue.detail("after-dark-20261101-bb01/s1")
-        assert _warnings(detail) == [] and detail["title"] == "Torn" and detail["tags"] == ["night bus", "story"]
-        assert Metadata.model_validate_json(torn.with_suffix(".json").read_text(encoding="utf-8")).title == "Torn"
+        assert _warnings(detail) == [] and detail["title"] == "Torn" and _whole(torn.with_suffix(".json"))
     finally:
+        for ob in locals().get("held", []):
+            ob.clear()
         state.db.close()
 
 
-def test_every_way_out_for_a_sheet_that_cannot_be_read_is_true(tmp_home: Path, tmp_path: Path):
-    """Each sentence the Queue prints for a broken sheet, followed as written."""
+def test_a_rebuild_whose_repair_changes_the_owners_text_keeps_their_file(tmp_home: Path, tmp_path: Path):
     paths = Paths.from_env()
     paths.ensure()
     state, queue = _dashboard(paths)
     try:
-        # 1. the .json is torn, the .txt reads: opening the video rebuilds it, nothing to do
+        ctx = make_ctx(tmp_home)
+        run_short(ctx, tmp_path, SEO)
+        sheet = Path(ctx.read_json("outbox/manifest.json")["s1"]["json"])
+        tfile = sheet.with_suffix(".txt")
+        mine = tfile.read_text(encoding="utf-8").replace("TITLE: Scary Story", "TITLE: Scary <Story>")
+        tfile.write_text(mine, encoding="utf-8")
+        sheet.write_text("{torn", encoding="utf-8")
+        queue.detail(f"{ctx.job_id}/s1")
+        kept = list(tfile.parent.glob(f"{tfile.stem}.before-*.txt"))
+        assert len(kept) == 1 and "TITLE: Scary <Story>" in kept[0].read_text(encoding="utf-8")
+        new = tfile.read_text(encoding="utf-8")
+        assert "TITLE: Scary Story: The Doorbell Camera" in new and kept[0].name in new
+        assert "removed < and > from the title" in new
+    finally:
+        state.db.close()
+
+
+def test_a_deleted_hashtag_line_does_not_turn_the_description_into_hashtags():
+    text = outbox.sheet_text(meta_of(SEO), "s1.mp4")
+    gone = text.replace("\n\n#Shorts #horror #scarystory\n", "\n")  # the line and one blank line deleted
+    assert "#Shorts" not in gone
+    fields = sr.parse_sheet_text(gone)
+    assert fields["hashtags"] == [] and fields["description"].endswith("Original fiction.")
+    assert sr.parse_sheet_text(text)["hashtags"] == ["#Shorts", "#horror", "#scarystory"]
+
+
+def test_the_rebuild_keeps_every_field_for_a_master_and_a_clip(tmp_home: Path, tmp_path: Path):
+    paths = Paths.from_env()
+    paths.ensure()
+    state, queue = _dashboard(paths)
+    try:
         ctx = make_ctx(tmp_home)
         ctx.write_json("prompt_versions.json", {"seo": 3})
         before, _ = run_short(ctx, tmp_path, SEO)
         sheet = Path(ctx.read_json("outbox/manifest.json")["s1"]["json"])
         sheet.write_text("{torn", encoding="utf-8")
-        detail = queue.detail(f"{ctx.job_id}/s1")
+        assert _warnings(queue.detail(f"{ctx.job_id}/s1")) == []
         after = json.loads(sheet.read_text(encoding="utf-8"))
-        assert _warnings(detail) == [] and outbox.REBUILT in (detail["sheet_text"] or "")
         for key in ("title", "description", "tags", "hashtags", "publish_after", "clips", "combo_id",
                     "prompt_versions", "made_for_kids", "age_restrict_suggested", "ai_disclosure"):
             assert after[key] == before[key], key
-        # the same for a master (its chapters and thumbnails) and for a clip (its source and template)
         master = make_ctx(tmp_home, fmt="master_first", channel=make_channel(format="master_first"))
         mmeta, _ = run_master(master, tmp_path, {**SEO, "description": "Summary.\n\n[[CHAPTERS]]\n\nOriginal fiction."},
                               THREE_CHAPTERS)
@@ -567,50 +765,73 @@ def test_every_way_out_for_a_sheet_that_cannot_be_read_is_true(tmp_home: Path, t
         rebuilt = json.loads(csheet.read_text(encoding="utf-8"))
         assert (rebuilt["source_video"], rebuilt["template"], rebuilt["title"]) == (
             cmeta["source_video"], cmeta["template"], cmeta["title"])
+    finally:
+        state.db.close()
 
-        # 2. the .txt is held too: "close the program that holds <stem>.txt, then open this video in the Queue
-        #    again: Nightshift rebuilds the sheet from it"
-        held_ctx = make_ctx(tmp_home)
-        run_short(held_ctx, tmp_path, SEO)
-        hsheet = Path(held_ctx.read_json("outbox/manifest.json")["s1"]["json"])
-        hsheet.write_text("{torn", encoding="utf-8")
-        text = _block(hsheet.with_suffix(".txt"))
-        said = _warnings(queue.detail(f"{held_ctx.job_id}/s1"))
-        assert len(said) == 1 and f"close the program that holds {hsheet.with_suffix('.txt').name}" in said[0]
-        _let_go(hsheet.with_suffix(".txt"), text)  # done as said
-        assert _warnings(queue.detail(f"{held_ctx.job_id}/s1")) == []
-        assert Metadata.model_validate_json(hsheet.read_text(encoding="utf-8")).title == SEO["title"]
 
-        # 3. the .txt is not in the sheet's layout: "copy the title, description and tags from <stem>.txt and
-        #    check them yourself before posting: <the rules>"
-        odd = make_ctx(tmp_home)
-        run_short(odd, tmp_path, SEO)
-        osheet = Path(odd.read_json("outbox/manifest.json")["s1"]["json"])
-        osheet.write_text("{torn", encoding="utf-8")
-        osheet.with_suffix(".txt").write_text("my own notes\nTitle idea: The Doorbell\n", encoding="utf-8")
-        said = _warnings(queue.detail(f"{odd.job_id}/s1"))
-        name = osheet.with_suffix(".txt").name
-        assert len(said) == 1 and f"copy the title, description and tags from {name}" in said[0]
-        assert outbox.RULES_TO_CHECK in said[0] and "reject" not in said[0]
-        assert "The Doorbell" in osheet.with_suffix(".txt").read_text(encoding="utf-8")  # the file it names holds them
+_SHEET_PATH = re.compile(r'with_suffix\("\.(json|txt)"\)|\[\s*"(json|txt)"\s*\]')
+_READ_CALL = re.compile(r"read_text|read_bytes|\bopen\(|json\.load|model_validate_json|_read_json|_read_text")
 
-        # 4. the .txt is missing: "the title, description and tags this job wrote are in <job>/seo.json; copy
-        #    them into YouTube Studio and check them yourself before posting: <the rules>"
-        gone = make_ctx(tmp_home)
-        run_short(gone, tmp_path, SEO)
-        gsheet = Path(gone.read_json("outbox/manifest.json")["s1"]["json"])
-        gsheet.write_text("{torn", encoding="utf-8")
-        gsheet.with_suffix(".txt").unlink()
-        said = _warnings(queue.detail(f"{gone.job_id}/s1"))
-        record = gone.file("seo.json")
-        assert len(said) == 1 and f"are in {record}" in said[0] and outbox.RULES_TO_CHECK in said[0]
-        wrote = json.loads(record.read_text(encoding="utf-8"))[0]  # the file it names holds the three fields
-        assert (wrote["title"], wrote["description"], wrote["tags"]) == (SEO["title"], SEO["description"], SEO["tags"])
-        # 5. and the job folder has no SEO record either: the fields are written by hand, to the rules
-        record.unlink()
-        said = _warnings(queue.detail(f"{gone.job_id}/s1"))
-        assert len(said) == 1 and "write the title, description and tags in YouTube Studio yourself" in said[0]
-        assert outbox.RULES_TO_CHECK in said[0]
+
+#: Files whose `.txt` beside a `.wav` is a narration sidecar, not an upload sheet.
+_NOT_SHEETS = {"captions.py", "transcribe.py", "voice.py"}
+
+
+def test_no_reader_opens_a_sheet_file_outside_the_one_function():
+    """Static: no line of product code both names a sheet file and reads it, except `sheet_read.py` (and the
+    audio sidecars of `_NOT_SHEETS`, which are not sheets)."""
+    offenders = []
+    for top in ("ns_studio", "ns_dashboard", "ns_supervisor"):
+        for f in (REPO / top).rglob("*.py"):
+            if f.name == "sheet_read.py" or f.name in _NOT_SHEETS:
+                continue
+            for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+                if _SHEET_PATH.search(line) and _READ_CALL.search(line):
+                    offenders.append(f"{f.relative_to(REPO)}:{n}: {line.strip()}")
+    assert offenders == [], offenders
+
+
+def test_every_sheet_read_at_run_time_goes_through_the_one_function(tmp_home: Path, tmp_path: Path, monkeypatch):
+    """Run time: the sweep, the Queue, the night's retime and its slot count open the Outbox's .json and
+    .txt files only inside `sheet_read.read_sheet_file`."""
+    import builtins
+    import io
+    from types import SimpleNamespace
+
+    from ns_studio import daily
+
+    paths = Paths.from_env()
+    paths.ensure()
+    state, queue = _dashboard(paths)
+    try:
+        ctx = make_ctx(tmp_home)
+        run_short(ctx, tmp_path, SEO)
+        entry = ctx.read_json("outbox/manifest.json")["s1"]
+        Path(entry["json"]).write_text("{torn", encoding="utf-8")
+        outside: list[str] = []
+        real_open = io.open
+
+        def watched(file, mode="r", *a, **kw):
+            p = Path(str(file)) if isinstance(file, (str, Path)) else None
+            reading = not any(c in str(mode) for c in "wax+")
+            if p is not None and reading and p.suffix in (".json", ".txt") and paths.outbox in p.parents:
+                frame, inside = sys._getframe(1), False
+                while frame is not None:
+                    inside = inside or frame.f_code.co_name == "read_sheet_file"
+                    frame = frame.f_back
+                if not inside:
+                    outside.append(str(p))
+            return real_open(file, mode, *a, **kw)
+
+        monkeypatch.setattr(io, "open", watched)
+        monkeypatch.setattr(builtins, "open", watched)
+        outbox.sweep_sheets(paths, state.db, state.log)
+        queue.detail(f"{ctx.job_id}/s1")
+        outbox.retime_sheet(entry, "2026-11-05T19:00")
+        env: Any = SimpleNamespace(db=state.db)  # the slot count reads only the database and the sheets
+        daily.scheduled_shorts(env, "after-dark", datetime(2026, 11, 1).date(), set(), datetime(2026, 11, 2, tzinfo=UTC))
+        monkeypatch.undo()
+        assert outside == [], outside
     finally:
         state.db.close()
 

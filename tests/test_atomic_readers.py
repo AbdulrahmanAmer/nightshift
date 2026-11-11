@@ -202,8 +202,20 @@ def test_the_nightly_scheduler_counts_a_sheet_that_is_briefly_busy(
     now = datetime(2026, 11, 21, tzinfo=UTC)
     first = daily.scheduled_shorts(env, "after-dark", date(2020, 1, 1), set(), now)
     assert sum(first.values()) == 1
-    with busy_opens(monkeypatch, Path(man["s1"]["json"]).name) as left:
-        assert daily.scheduled_shorts(env, "after-dark", date(2020, 1, 1), set(), now) == first
+    # sheets are read by their one reader (`sheet_read.read_sheet_file`), which opens the file itself: the
+    # first opens are refused the way Windows refuses them while `os.replace` swaps the file
+    from ns_studio.media import sheet_read
+
+    name, real_open, left = Path(man["s1"]["json"]).name, open, {"n": 2}
+
+    def busy_open(file: Any, *a: Any, **k: Any) -> Any:
+        if Path(str(file)).name == name and left["n"] > 0:
+            left["n"] -= 1
+            raise PermissionError(13, "Permission denied")
+        return real_open(file, *a, **k)
+
+    monkeypatch.setattr(sheet_read, "open", busy_open, raising=False)
+    assert daily.scheduled_shorts(env, "after-dark", date(2020, 1, 1), set(), now) == first
     assert left["n"] == 0
 
 

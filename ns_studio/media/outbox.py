@@ -12,13 +12,21 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from ns_common.atomic import copy_atomic, read_text_retry, sweep_stale_tmp, write_text_atomic
+from ns_common.atomic import (
+    copy_atomic,
+    read_text_retry,
+    sweep_stale_tmp,
+    write_bytes_atomic,
+    write_text_atomic,
+)
 from ns_common.logging import NsLogger
 from ns_common.models import Channel, ClipRef, Metadata, PolicyAdvice, PolicyResult, Seo
 from ns_common.paths import Paths
 from ns_studio.context import JobContext
+from ns_studio.media import sheet_read as sr
 from ns_studio.media import youtube_rules as yr
 from ns_studio.media.master import load_shorts
+from ns_studio.media.sheet_read import read_sheet_file
 from ns_studio.media.shotplan import Shot
 from ns_studio.media.youtube_rules import Notes
 from ns_studio.stages import Tenant
@@ -404,20 +412,24 @@ def retime_sheet(entry: Mapping[str, str], publish_at: str) -> Metadata | None:
     metadata, or None when the sheet is missing or unreadable (nothing is changed then).
     """
     sheet = Path(entry["json"])
-    try:
-        meta = Metadata.model_validate_json(read_text_retry(sheet))
-    except (OSError, ValueError):
+    j = read_sheet_file(sheet, "json")
+    if not j.usable:  # the start sweep and the Queue deal with a sheet that is not whole
         return None
-    try:
-        old = yr.read_notes(read_text_retry(Path(entry["txt"])))
-    except OSError:
-        old = Notes()
+    t = read_sheet_file(Path(entry["txt"]), "txt")
+    if t.state in (sr.HELD, sr.OS_ERROR):  # its notes cannot be read now: retimed at the next night
+        return None
+    before: Any = j.value
+    name = Path(entry["mp4"]).name
     notes: Notes
-    moved = meta.model_copy(update={"publish_after": publish_at})
-    meta, notes = refit(moved, old, fallback_title=meta.job_id)
+    moved = before.model_copy(update={"publish_after": publish_at})
+    meta, notes = refit(moved, yr.read_notes(t.text), fallback_title=before.job_id)
+    if t.state != sr.MISSING:  # the owner's own text (an edit, another layout or encoding) is kept first
+        ours = {yr.bare_sheet(render_sheet(m, name)) for m in (before, meta)}
+        if t.state != sr.OK or yr.bare_sheet(t.text) not in ours:
+            notes.kept = keep_copy(Path(entry["txt"]), t.raw)
     related = (meta.related_video_instruction or "").removeprefix(RELATED_PREFIX) or None
     write_text_atomic(sheet, meta.model_dump_json(indent=2) + "\n", newline=None)
-    write_sheet_txt(meta, Path(entry["mp4"]).name, Path(entry["txt"]), related_title=related, notes=notes)
+    write_sheet_txt(meta, name, Path(entry["txt"]), related_title=related, notes=notes)
     return meta
 
 
@@ -468,23 +480,14 @@ SWEEP_TRIES = 5
 def sweep_sheets(paths: Paths, db: Any, log: NsLogger) -> int:
     """Dashboard start: the sheets of videos waiting to be posted, brought up to YouTube's rules once.
 
-    States, each worked out (card posting-sheet-true, review of 07c320e):
-    - pending and approved outputs only: an uploaded video is on YouTube already, a rejected one is not going.
-    - the `.txt` holds what its `.json` renders (or what this sweep wrote before): rewritten from the fitted
-      `.json` when the text differs.
-    - the `.txt` was edited by hand: kept first as `<stem>.before-<version>.txt` (`keep_edited`), and the new
-      sheet and the Queue carry one line naming that file.
-    - the `.txt` is missing: written from the `.json`.
-    - the `.json` cannot be read: rebuilt from the sheet's `.txt` and the job's records (`rebuild_sheet`),
-      with a line saying so.
-    - neither can be used (a `.txt` another program holds, a `.txt` missing too): left as it is, NOT marked
-      done; tried again at the next start, at most `SWEEP_TRIES` starts in a row, and whenever the video is
-      opened in the Queue, with a WARN each time saying which try it is; the last one and the Queue say the
-      way out that is true for that case (`sheet_way_out`).
-    - interrupted half-way: each file is written atomically in the order kept copy, `.txt`, `.json`,
-      `outputs.title`, and `data/sheet-rules.json` last; the next start redoes only what still differs.
-    - run twice: `data/sheet-rules.json` holds the rules version and no sheet left to retry, so nothing runs.
-    Returns the number of outputs rewritten in this run."""
+    Pending and approved outputs only (an uploaded video is on YouTube already, a rejected one is not going).
+    Each sheet's two files are read by `sheet_read.read_sheet_file` and `sheet_read.plan_sheet` decides what
+    happens (the table is there): fitted from its `.json`, rebuilt from its `.txt`, or left as it is with the
+    owner's sentence. A sheet left as it is is NOT marked done: `data/sheet-rules.json` lists it, and the next
+    start (at most `SWEEP_TRIES` starts in a row) and every opening of the video in the Queue try it again,
+    with a WARN at each try. Each file is written atomically in the order kept copy, `.txt`, `.json`,
+    `outputs.title`, and `data/sheet-rules.json` last, so a sweep killed half-way redoes only what still
+    differs; a second run with nothing left to retry does nothing. Returns the outputs rewritten."""
     marker = paths.data / SHEET_RULES_FILE
     try:
         state = json.loads(read_text_retry(marker))
@@ -501,28 +504,29 @@ def sweep_sheets(paths: Paths, db: Any, log: NsLogger) -> int:
         "SELECT output_id, job_id, channel, kind, k, path, title, duration_s, combo_id, profile FROM outputs"
         " WHERE status IN ('pending', 'approved') ORDER BY created_at, output_id"
     )
-    if same:  # an earlier run of this version did the rest: only the sheets it could not read
+    if same:  # an earlier run of this version did the rest: only the sheets it left as they were
         rows = [r for r in rows if r["output_id"] in retry]
     rewritten = 0
     left: dict[str, int] = {}
     for row in rows:
         oid = str(row["output_id"])
         try:
-            rewritten += refit_output(paths, db, row)
-        except (OSError, ValueError) as e:
-            tries = int(retry.get(oid, 0)) + 1
-            if tries < SWEEP_TRIES:
-                left[oid] = tries
-                then = (f"Nightshift tries again at the next start (try {tries} of {SWEEP_TRIES}) and "
-                        "whenever the video is opened in the Queue")
-            else:
-                then = (f"{sheet_way_out(paths, row, e)}. Nightshift stopped trying at its starts after "
-                        f"{SWEEP_TRIES}; opening the video in the Queue tries once more")
-            log.warn(
-                "sheet_unreadable",
-                f"the upload sheet of {oid} could not be read or rebuilt, so it was left as it is; {then}",
-                output_id=oid, path=str(row["path"]), detail=str(e)[:200], tries=tries,
-            )
+            changed, sentence = refit_output(paths, db, row)
+        except (OSError, ValueError) as e:  # a write that failed (a full disk): the same retry, its text said
+            changed, sentence = 0, f"the sheet could not be written ({e})"
+        rewritten += changed
+        if sentence is None:
+            continue
+        tries = int(retry.get(oid, 0)) + 1
+        if tries < SWEEP_TRIES:
+            left[oid] = tries
+            then = (f"Nightshift tries again at the next start (try {tries} of {SWEEP_TRIES}) and whenever "
+                    "the video is opened in the Queue")
+        else:
+            then = (f"Nightshift stopped trying at its starts after {SWEEP_TRIES}; opening the video in the "
+                    "Queue tries once more")
+        log.warn("sheet_unreadable", f"the upload sheet of {oid} was left as it is: {sentence}. {then}",
+                 output_id=oid, path=str(row["path"]), tries=tries)
     write_text_atomic(
         marker,
         json.dumps({"rules_version": yr.RULES_VERSION, "retry": left, "rewritten": rewritten,
@@ -542,129 +546,46 @@ def render_sheet(meta: Any, video_name: str, notes: Notes | None = None) -> str:
     return sheet_text(meta, video_name, related_title=related, notes=notes)
 
 
-def keep_edited(txt: Path, text: str) -> str:
-    """Keep a hand-edited `.txt` as `<stem>.before-<version>.txt` next to it; returns that file's name.
-
-    A copy already there with the same text is reused (a sweep killed after keeping it); one with other
-    text is never overwritten: `-2`, `-3`... is added."""
+def keep_copy(txt: Path, raw: bytes) -> str:
+    """Keep the owner's `.txt` (its bytes as they are, whatever their encoding) as
+    `<stem>.before-<version>.txt` next to it; returns that file's name. A copy already there with the same
+    bytes is reused (a sweep killed after keeping it); one with other bytes is never overwritten: `-2`,
+    `-3` is added."""
     from ns_common import __version__
 
     n = 1
     while True:
-        name = f"{txt.stem}.before-{__version__}{'' if n == 1 else f'-{n}'}.txt"
-        dest = txt.with_name(name)
-        if not dest.exists():
-            write_text_atomic(dest, text, newline=None)
-            return name
-        if read_text_retry(dest).replace("\r\n", "\n") == text:
-            return name
+        dest = txt.with_name(f"{txt.stem}.before-{__version__}{'' if n == 1 else f'-{n}'}.txt")
+        there = read_sheet_file(dest, "raw")
+        if there.state == sr.MISSING:
+            write_bytes_atomic(dest, raw)
+            return dest.name
+        if there.raw == raw:
+            return dest.name
         n += 1
 
 
-class SheetGone(ValueError):
-    """A sheet whose `.json` cannot be read and cannot be rebuilt; `why` is `txt_unreadable`, `txt_missing`
-    or `txt_layout` (`sheet_way_out` turns it into the owner's sentence)."""
-
-    def __init__(self, why: str, detail: str) -> None:
-        super().__init__(detail)
-        self.why = why
-
-
-RULES_TO_CHECK = (
-    "no < or >, a title of 1 to 100 characters, a description of at most 5,000 bytes with its hashtags, and "
-    "tags of at most 500 characters in all (a tag with a space counts two more)"
-)
 _SEO_FILES = {
     "long": ("seo_long.json",), "short": ("seo_shorts.json", "seo.json"), "clip": ("seo_clips.json",),
 }
 
 
-def sheet_way_out(paths: Paths, row: Any, error: BaseException) -> str:
-    """The owner's way out for a sheet that could not be read or rebuilt: the one that is true for its case.
-
-    - its `.txt` exists but cannot be read (another program holds it): close that program and open the video
-      in the Queue again, which rebuilds the sheet from it.
-    - its `.txt` cannot be used (missing, or not in the sheet's layout): the job's own SEO record, named, to
-      copy from and check against the rules; when even that is gone, the fields are written by hand.
-    Never "reject the video": a finished video's sheet is the problem, not the video."""
-    video = Path(str(row["path"]))
-    jname, tname = video.with_suffix(".json").name, video.with_suffix(".txt").name
-    why = getattr(error, "why", "")
-    if why == "txt_unreadable" or (isinstance(error, OSError) and not isinstance(error, FileNotFoundError)):
-        return (f"the upload sheet {jname} could not be read, and neither could {tname} ({error}): close "
-                f"the program that holds {tname}, then open this video in the Queue again: Nightshift "
-                "rebuilds the sheet from it")
-    if why == "txt_layout":
-        return (f"the upload sheet {jname} could not be read and {tname} is not laid out as Nightshift "
-                f"writes it, so the sheet cannot be rebuilt: copy the title, description and tags from "
-                f"{tname} and check them yourself before posting: {RULES_TO_CHECK}")
+def seo_record(paths: Paths, row: Any) -> Path | None:
+    """The job's own SEO file for this output's kind (what the job wrote), when the job folder has one."""
     job_dir = paths.job_dir(str(row["job_id"]))
-    names = _SEO_FILES.get(str(row["kind"]), ())
-    record = next((job_dir / n for n in names if (job_dir / n).is_file()), None)
-    if record is not None:
-        return (f"the upload sheet {jname} could not be read and {tname} is missing, so Nightshift cannot "
-                f"rebuild it: the title, description and tags this job wrote are in {record}; copy them into "
-                f"YouTube Studio and check them yourself before posting: {RULES_TO_CHECK}")
-    return (f"the upload sheet {jname} could not be read, {tname} is missing and the job folder {job_dir} "
-            "holds no SEO record, so nothing is left to rebuild it from: write the title, description and "
-            f"tags in YouTube Studio yourself, keeping to: {RULES_TO_CHECK}")
+    return next((job_dir / n for n in _SEO_FILES.get(str(row["kind"]), ()) if (job_dir / n).is_file()), None)
 
 
-_TITLE = re.compile(r"^TITLE: (.*)$", re.M)
-_PUBLISH = re.compile(r"^PUBLISH AFTER \(local time\): (\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})", re.M)
-_KIDS = re.compile(r"^  Made for kids: (Yes|No)$", re.M)
-_AGE = re.compile(r"^  Age restriction suggested: (Yes|No)$", re.M)
-_DISCLOSED = re.compile(r"^  Altered or synthetic content: (Yes|No|You decide)\b", re.M)
-_RELATED = re.compile(r"^Related video: set Related video -> (.*)$", re.M)
-_MIDROLL = re.compile(r"^MID-ROLL SUGGESTIONS \(chapter breaks\): (.*)$", re.M)
-_SOURCE = re.compile(r"^  Source video: (.*) \(template (.*)\)$", re.M)
-
-
-def parse_sheet_text(text: str) -> dict[str, Any]:
-    """The fields of a `.txt` sheet as `sheet_text` and `clip_sheet_text` write them; ValueError when the
-    text is not laid out that way. The description is everything between `DESCRIPTION:` and the blank line
-    before the hashtag line that precedes `TAGS:`."""
-    text = text.replace("\r\n", "\n")
-    title, publish, kids, age, said = (r.search(text) for r in (_TITLE, _PUBLISH, _KIDS, _AGE, _DISCLOSED))
-    start, tags_at = text.find("\nDESCRIPTION:\n"), text.rfind("\n\nTAGS: ")
-    if not (title and publish and kids and age and said) or start < 0 or tags_at < start:
-        raise ValueError("the .txt is not laid out as an upload sheet")
-    description, _, hashtag_line = text[start + len("\nDESCRIPTION:\n"):tags_at].rpartition("\n\n")
-    tags_line = text[tags_at + len("\n\nTAGS: "):].split("\n", 1)[0]
-    related, midroll, source = _RELATED.search(text), _MIDROLL.search(text), _SOURCE.search(text)
-    marks = [m.split(":") for m in midroll.group(1).split(", ")] if midroll else []
-    return {
-        "title": title.group(1), "description": description, "hashtags": hashtag_line.split(),
-        "tags": [t for t in tags_line.split(", ") if t],
-        "publish_after": f"{publish.group(1)}T{publish.group(2)}",
-        "made_for_kids": kids.group(1) == "Yes", "age_restrict_suggested": age.group(1) == "Yes",
-        "ai_disclosure": "yes" if said.group(1) == "Yes" else "no",
-        "related": related.group(1) if related else None,
-        "midroll_suggestions_s": [int(m) * 60.0 + int(s) for m, s in marks] or None,
-        "source": (source.group(1), source.group(2)) if source else None,
-    }
-
-
-def rebuild_sheet(paths: Paths, db: Any, row: Any) -> Any:
-    """A `.json` sheet rebuilt from the job's own records: what the owner pastes from its `.txt` (title,
-    description, hashtags, tags, publish time, settings, related video, mid-roll marks, clip source), the
-    footage it used from the database (`clip_usage` joined with `clips`), the combo and the test mark from
-    its `outputs` row, the prompt versions from the job folder's `prompt_versions.json`, the chapters from
-    `long/chapters.json` (a master that lists them) and the thumbnails next to the video. SheetGone when the
-    `.txt` cannot be read or used."""
+def rebuild_sheet(paths: Paths, db: Any, row: Any, f: dict[str, Any]) -> Any:
+    """A `.json` sheet rebuilt from the job's own records: `f`, the fields the owner pastes, parsed from its
+    `.txt` (`sheet_read.parse_sheet_text`: title, description, hashtags, tags, publish time, settings,
+    related video, mid-roll marks, clip source), the footage it used from the database (`clip_usage` joined
+    with `clips`), the combo and the test mark from its `outputs` row, the prompt versions from the job
+    folder's `prompt_versions.json`, the chapters from `long/chapters.json` (a master that lists them) and the
+    thumbnails next to the video."""
     from ns_studio.context import PROMPT_VERSIONS_FILE
 
     video = Path(str(row["path"]))
-    try:
-        text = read_text_retry(video.with_suffix(".txt"))
-    except FileNotFoundError as e:
-        raise SheetGone("txt_missing", str(e)) from e
-    except OSError as e:
-        raise SheetGone("txt_unreadable", str(e)) from e
-    try:
-        f = parse_sheet_text(text)
-    except ValueError as e:
-        raise SheetGone("txt_layout", str(e)) from e
     job_id, kind = str(row["job_id"]), str(row["kind"])
     job_dir = paths.job_dir(job_id)
     try:
@@ -712,30 +633,31 @@ def rebuild_sheet(paths: Paths, db: Any, row: Any) -> Any:
 
 
 REBUILT = "rebuilt the .json sheet from the .txt and the job's records, because the .json could not be read"
+_ENCODINGS = {"utf-16-le": "UTF-16", "utf-16-be": "UTF-16 (big-endian)", "ansi": "ANSI"}
 
 
-def refit_output(paths: Paths, db: Any, row: Any) -> int:
-    """One output brought up to YouTube's rules (the start sweep, and the Queue for a sheet it cannot read):
-    1 when its sheet was rewritten, 0 when it already held. A `.json` that cannot be read is rebuilt
-    (`rebuild_sheet`); SheetGone or OSError when that is not possible either."""
+def read_sheet(row: Any) -> tuple[sr.SheetRead, sr.SheetRead]:
+    """The two files of an output's sheet, each read by the one reader."""
+    video = Path(str(row["path"]))
+    json_read = read_sheet_file(video.with_suffix(".json"), "json")
+    return json_read, read_sheet_file(video.with_suffix(".txt"), "txt")
+
+
+def refit_output(paths: Paths, db: Any, row: Any) -> tuple[int, str | None]:
+    """One output's sheet brought up to YouTube's rules (the start sweep; the Queue when it opens a sheet
+    that is not whole): (1 when its files were rewritten else 0, the owner's sentence when it was left as it
+    is). What happens is `sheet_read.plan_sheet`'s answer for the two files as `read_sheet_file` found
+    them."""
     video = Path(str(row["path"]))
     jpath, tpath = video.with_suffix(".json"), video.with_suffix(".txt")
-    meta: Any
-    rebuilt = False
-    try:
-        if row["kind"] == "clip":
-            from ns_studio.clipper.models import ClipMetadata
-
-            meta = ClipMetadata.model_validate_json(read_text_retry(jpath))
-        else:
-            meta = Metadata.model_validate_json(read_text_retry(jpath))
-    except (OSError, ValueError):
-        meta, rebuilt = rebuild_sheet(paths, db, row), True
-    try:
-        old_text: str | None = read_text_retry(tpath).replace("\r\n", "\n")
-    except FileNotFoundError:
-        old_text = None  # nothing to keep; any other error is raised: the sheet is tried again
+    j, t = read_sheet(row)
     job_id = str(row["job_id"])
+    plan = sr.plan_sheet(j, t, seo_record(paths, row), paths.job_dir(job_id))
+    if plan.action in (sr.WAIT, sr.GONE):
+        return 0, plan.sentence
+    rebuilt = plan.action == sr.REBUILD
+    meta = rebuild_sheet(paths, db, row, t.value) if rebuilt else j.value
+    old_text = t.text if t.state != sr.MISSING else None
     told = disclosure_for(paths, job_id, str(row["kind"]), meta.ai_disclosure)
     fitted, notes = refit(
         meta, yr.read_notes(old_text), told=told, duration_s=row["duration_s"],
@@ -743,21 +665,32 @@ def refit_output(paths: Paths, db: Any, row: Any) -> int:
     )
     if rebuilt:
         notes.changes = list(dict.fromkeys([REBUILT, *notes.changes]))
-    elif old_text is not None:
-        ours = {yr.bare_sheet(render_sheet(m, video.name)) for m in (meta, fitted)}
-        if yr.bare_sheet(old_text) not in ours:  # edited by hand: kept before anything is written
-            notes.kept = keep_edited(tpath, old_text)
+    if t.state == sr.NOT_UTF8 and t.usable:
+        notes.changes = list(dict.fromkeys(
+            [f"re-saved {tpath.name} as UTF-8 (it was saved as {_ENCODINGS.get(t.encoding, t.encoding)})",
+             *notes.changes]))
+    if j.state == sr.NOT_UTF8 and j.usable:
+        notes.changes = list(dict.fromkeys([f"re-saved {jpath.name} as UTF-8", *notes.changes]))
     text = render_sheet(fitted, video.name, notes)
+    if old_text is not None:
+        new_bare, old_bare = yr.bare_sheet(text), yr.bare_sheet(old_text)
+        # Nightshift's own rendering of the .json it fits: its repairs are said on the change line. Anything
+        # else (an edit, another layout, another encoding, a rebuild whose repair changes the owner's text)
+        # is the owner's text and is kept as .before- before it is replaced.
+        ours = not rebuilt and not plan.keep_txt and old_bare == yr.bare_sheet(render_sheet(meta, video.name))
+        if plan.keep_txt or (old_bare != new_bare and not ours):
+            notes.kept = keep_copy(tpath, t.raw)
+            text = render_sheet(fitted, video.name, notes)
     changed = 0
-    if text != old_text:
+    if text != old_text or t.state != sr.OK:
         write_text_atomic(tpath, text, newline=None)
         changed = 1
-    if rebuilt or fitted.model_dump(mode="json") != meta.model_dump(mode="json"):
+    if rebuilt or j.state != sr.OK or fitted.model_dump(mode="json") != meta.model_dump(mode="json"):
         write_text_atomic(jpath, fitted.model_dump_json(indent=2) + "\n", newline=None)
         changed = 1
     if row["title"] != fitted.title:
         db.execute("UPDATE outputs SET title = ? WHERE output_id = ?", (fitted.title, row["output_id"]))
-    return changed
+    return changed, None
 
 
 class OutboxStage:
