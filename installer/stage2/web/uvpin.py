@@ -115,15 +115,31 @@ def run_version(exe: Path) -> tuple[int, str]:
     return res.returncode, res.stdout or ""
 
 
-def report(exe: Path) -> tuple[bool, str | None]:
-    """Whether the uv at ``exe`` runs, and the version it prints (None when it prints none)."""
+def report(exe: Path, run: Callable[[Path], tuple[int, str]] | None = None) -> tuple[bool, str | None]:
+    """Whether the uv at ``exe`` runs, and the version it prints (None when it prints none).
+
+    The one reader of ``uv --version`` for setup (B02, which passes its own runner) and the updater."""
     if not exe.is_file():
         return False, None
-    code, out = run_version(exe)
+    code, out = (run or run_version)(exe)
     if code != 0:
         return False, None
-    found = UV_VERSION.search(out)
+    found = UV_VERSION.search(out or "")
     return True, found.group(1) if found else None
+
+
+def is_pinned(runs: bool, version: str | None, want: str) -> bool:
+    """The one decision of setup and the updater: this uv runs and is the version the manifest pins.
+
+    A pin without a version leaves nothing to compare with, so a uv that runs is accepted."""
+    return runs and (not want or version == want)
+
+
+def mismatch(runs: bool, version: str | None, want: str | None) -> str:
+    """Why a uv is not accepted: it does not run, or it reports another version."""
+    if not runs:
+        return "does not run from the install folder"
+    return f"reports {version or 'no version'}, not the pinned {want}"
 
 
 def doctor_line(home: Path, program: Path) -> tuple[bool, str]:
@@ -334,7 +350,7 @@ def prepare(
     uv, prev, nxt = (uv_dir(home, s) for s in ("", ".prev", ".next"))
     runs, have = report(uv / EXE)
     plan.want, plan.was = want, have
-    if runs and have == want:
+    if is_pinned(runs, have, want):
         return plan
     why = held(uv / EXE) if (uv / EXE).is_file() and not runs else None
     if why is not None:     # "could not look", not "damaged": nothing is fetched or replaced for it
@@ -355,7 +371,7 @@ def prepare(
         shutil.rmtree(nxt, ignore_errors=True)
         raise NotHad(f"uv {want} ({name}) could not be unpacked from {zip_path} ({e}).") from e
     runs, got = report(nxt / EXE)
-    if not (runs and got == want):
+    if not is_pinned(runs, got, want):
         shutil.rmtree(nxt, ignore_errors=True)
         said = f"reports {got or 'no version'}, not {want}" if runs else "does not run on this PC"
         raise NotHad(f"The uv in {zip_path} ({name}) {said}.")

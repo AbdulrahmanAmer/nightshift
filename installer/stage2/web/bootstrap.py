@@ -29,14 +29,14 @@ from typing import NamedTuple
 import installer.stage2.shortcut_owner as shortcut_owner
 import ns_common.testguard as testguard
 import ns_common.vcruntime as vcruntime
-from installer.stage2.web import appcopy, deplock, filesdir, pathcheck, venvrepair
+from installer.stage2.web import appcopy, deplock, filesdir, pathcheck, uvpin, venvrepair
 from ns_common.atomic import copy_atomic, write_stream_atomic
 from ns_common.avblock import is_blocked_error, looks_blocked
 from ns_common.psquote import ps_literal
 from ns_common.uv import looks_full, uv_env, venv_args
 
 HOME_VAR = "NIGHTSHIFT_HOME"
-UV_VERSION = re.compile(r"(?:^|\s)uv\s+(\d+(?:\.\d+)+\S*)")  # "uv 0.13.6 (abc 2025-11-01)"
+UV_VERSION = uvpin.UV_VERSION  # "uv 0.13.6 (abc 2025-11-01)": one pattern for setup and the updater
 TOP_DIRS = ("bin", "models", "venvs", "config", "data", "cache", "imports", "outbox", "rejected", "logs")
 # key, winget id, label, required. Git is not here: nothing in setup or at run time needs it (only the
 # optional ``ns update --git``), and its machine-wide installer would add an administrator prompt.
@@ -671,14 +671,11 @@ class B02Home:
     @staticmethod
     def _uv_report(boot: Boot) -> tuple[bool, str | None]:
         """Whether the install folder's uv runs, and the version it prints (None when it prints none)."""
-        target = boot.home / "bin" / "uv" / "uv.exe"
-        if not target.is_file():
-            return False, None
-        res = boot.cmd([str(target), "--version"], None, boot.home, 60)
-        if res.returncode != 0:
-            return False, None
-        found = UV_VERSION.search(res.stdout)
-        return True, found.group(1) if found else None
+        def run(exe: Path) -> tuple[int, str]:
+            res = boot.cmd([str(exe), "--version"], None, boot.home, 60)
+            return res.returncode, res.stdout
+
+        return uvpin.report(boot.home / "bin" / "uv" / "uv.exe", run)  # (the updater's reader: one function)
 
     @staticmethod
     def _uv_is_pinned(boot: Boot) -> bool:
@@ -687,17 +684,13 @@ class B02Home:
         A manifest pin without a version leaves nothing to compare with, so a uv that runs is accepted.
         """
         runs, version = B02Home._uv_report(boot)
-        want = str(boot.uv_pin.get("version") or "")
-        return runs and (not want or version == want)
+        return uvpin.is_pinned(runs, version, str(boot.uv_pin.get("version") or ""))  # (the updater's rule)
 
     @staticmethod
     def _uv_mismatch(boot: Boot) -> str:
         """Why the install folder's uv is refused: it does not run, or reports another version."""
         runs, version = B02Home._uv_report(boot)
-        want = boot.uv_pin.get("version")
-        if not runs:
-            return "does not run from the install folder"
-        return f"reports {version or 'no version'}, not the pinned {want}"
+        return uvpin.mismatch(runs, version, boot.uv_pin.get("version"))
 
     @staticmethod
     def _clear_uv_family(dest_dir: Path) -> None:
