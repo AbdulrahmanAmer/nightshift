@@ -256,8 +256,9 @@ class SettingsService:
         short = SHORT_NAMES.get(full, full)
         service = short[0].upper() + short[1:]
         verdict = self.key_check(short, secret) if self.key_check is not None else None
-        if verdict is not None and not verdict.get("ok") and verdict.get("code") != "NS-E503":
-            # the service answered and did not accept the key: not stored, so a working key is not replaced
+        if verdict is not None and not verdict.get("ok"):
+            # the site said the key is wrong (`keys.verdict`): not stored, so a working key is not replaced. A
+            # site that is busy, failing or out of reach is `ok` with a code: the key is saved below, unchecked
             raise ApiError(
                 422, str(verdict.get("code") or "bad_key"),
                 f"{service} did not accept this key. Paste it again from your {service} account page "
@@ -267,13 +268,16 @@ class SettingsService:
             self.s.adapters.keyring.set(full, secret)
         except AdapterUnavailable as e:
             raise ApiError(501, "keyring_unavailable", str(e)) from e
-        self.s.log.info("api_key_set", name=full, checked=bool(verdict and verdict.get("ok")))
+        checked = bool(verdict and verdict.get("ok") and not verdict.get("code"))
+        self.s.log.info("api_key_set", name=full, checked=checked, code=(verdict or {}).get("code"))
         out: dict[str, Any] = {"name": full, "set": True}
         if verdict is not None:
-            out["checked"] = bool(verdict.get("ok"))
+            out["checked"] = checked
+            # unchecked: the classifier's own sentence (busy, failing, out of reach, not understood) and that
+            # the check before the next video asks again (`installer.stage2.web.keys.verdict`)
             out["message"] = (
-                f"{service} accepted the key" if verdict.get("ok")
-                else f"Key saved, but {service} could not be reached to check it (no internet?)"
+                f"{service} accepted the key" if checked
+                else f"Key saved, but it could not be checked now. {verdict.get('message') or ''}".rstrip()
             )
         problem = self._key_problem(full)
         if problem:

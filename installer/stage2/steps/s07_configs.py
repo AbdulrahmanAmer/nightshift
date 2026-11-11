@@ -305,4 +305,5 @@ class S07Configs(Step):
             raise make_error("NS-E110", "config/opencode.json was not written")
         leaking = [f.name for f in answer_files(ctx) if _file_has_keys(f)]
         if leaking:
-            raise make_error("NS-E501", f"API keys are still written in {', '.join(leaking)}")
+            # its own code (card stock-truth): NS-E501 says the Pexels key was refused, which is not this
+            raise make_error("NS-E126", f"API keys are still written in {', '.join(leaking)}")
