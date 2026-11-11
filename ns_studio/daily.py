@@ -319,6 +319,9 @@ def _run_daily(
         finally:
             if isinstance(acquirer, StudioAcquirer):
                 acquirer.vram_wait = False
+            # the words for the morning note only: the run's summary keeps the failure entry, which the Last
+            # night card reads (`failures`), and no key the dashboard does not declare
+            model_found = report.pop("model_damaged", None)
         report["timing"] = _close_night(env, night, report)
         finished = clock.now()
         report["finished_at"] = finished.isoformat(timespec="seconds")
@@ -334,7 +337,7 @@ def _run_daily(
     _leave_time_note(env, report, clock, now)
     _leave_sleep_note(env, report, clock, now)
     _leave_vram_note(env, report, clock, now)
-    _leave_model_note(env, report, clock, now)
+    _leave_model_note(env, model_found, clock, now)
     notifications.send(env.paths, env.log, notifier, notifications.nightly_message(report, masters, shorts))
     finish = getattr(env.services.acquirer, "run_finished", None)
     if finish is not None:  # gap 25: the engine this run needed leaves once nobody else uses it
@@ -833,11 +836,13 @@ def _leave_vram_note(env: jobs.Env, report: dict, clock: nightclock.Clock, start
         env.log.warn("morning_note_failed", str(e))
 
 
-def _leave_model_note(env: jobs.Env, report: dict, clock: nightclock.Clock, started: datetime) -> None:
+def _leave_model_note(
+    env: jobs.Env, found: dict[str, Any] | None, clock: nightclock.Clock, started: datetime
+) -> None:
     """Card model-file-damaged, M7: the one morning note of a night that met a damaged (or missing) model
     file (`notifications.model_note`: which file, the way out), once per night, through the notes' one owner.
     Settings > Notifications off leaves none; the Last night card still lists the failure and the skipped."""
-    message = notifications.model_note(report)
+    message = notifications.model_note(found)
     if not message or not notifications.notifications_enabled(env.paths):
         return
     since = started.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
@@ -953,9 +958,10 @@ def _model_damaged(report: dict, job_id: str, slug: str) -> None:
     """M7: a job failed with NS-E127 (the engine named the damaged file): its failure stays (the Queue's
     card, Retry after the Repair); the night keeps the engine's words for the one morning note."""
     failed = next((f for f in reversed(report["failures"]) if f.get("code") == MODEL_DAMAGED), None)
+    said = str(failed.pop("said", "") or "") if failed is not None else ""  # (not a key of the summary)
     if failed is not None and "model_damaged" not in report:
-        report["model_damaged"] = {"said": f"{MODEL_DAMAGED}: {failed.get('said') or ''}".rstrip(": "),
-                                   "job_id": job_id, "channel": slug}
+        report["model_damaged"] = {"said": f"{MODEL_DAMAGED}: {said}".rstrip(": "), "job_id": job_id,
+                                   "channel": slug}
 
 
 Outcomes = dict[str, tuple[str, str | None]]
