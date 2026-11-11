@@ -464,6 +464,10 @@ def verify_quick(monkeypatch: pytest.MonkeyPatch, passed: bool) -> int:
         def __init__(self) -> None:
             self.passed = passed
 
+    home = Paths.from_env()
+    home.ensure()
+    if not home.runtime_file.exists():    # `ns verify` starts nothing without settings (NS-E125)
+        save_runtime(home, Runtime.default("gpu"))
     monkeypatch.setattr(cli, "_client", lambda paths: Up())
     monkeypatch.setattr(cli, "ensure_running", lambda *a, **kw: None)
     monkeypatch.setattr(verify, "run_verify", lambda *a, **kw: Report())
