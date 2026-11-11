@@ -231,9 +231,15 @@ class LocalProduct:
 
     def __init__(self, world: World) -> None:
         self.world = world
-        self.http = gpukit.InstallProduct(world.home, world.server.port)
         self.calls: list[tuple[Any, ...]] = []
         self.procs: dict[int, StudioProc] = {}
+
+    @property
+    def http(self) -> Any:
+        """The kit's own HTTP client to the dashboard (made when first used: the fixture builds on a base
+        without the kit, and the test body then fails at its first assertion)."""
+        kit_here()
+        return gpukit.InstallProduct(self.world.home, self.world.server.port)
 
     def api(self, method: str, path: str, body: Any = None, timeout: float = 60) -> tuple[int | None, Any]:
         self.calls.append(("api", method, path, body))
