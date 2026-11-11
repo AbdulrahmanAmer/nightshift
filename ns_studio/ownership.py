@@ -140,6 +140,14 @@ PAUSED_REASON = "its channel is paused"  # `resume_problem` of a job whose chann
 #: nightly task (card night-fits, S6), and the `reason` that record carries: its card says so, with NS-W211.
 OUT_OF_TIME_OWNER = "it was left for time"
 OUT_OF_TIME_REASON = "out_of_time"
+#: The `owner` of a record the nightly closed because other programs held the graphics card's memory when its
+#: model was to load (card vram-busy, NS-E208): its card says so, with NS-E208, and the nightly continues it.
+VRAM_OWNER = "other programs held the graphics card's memory"
+VRAM_CODE = "NS-E208"
+#: The `owner` of a record the nightly closed because the graphics card stayed in use by another task for
+#: the whole wait (NS-E201): a new job waits for the next night as a half-made one does (card vram-busy).
+CARD_BUSY_OWNER = "the graphics card was in use by another task"
+CARD_BUSY_CODE = "NS-E201"
 #: The `owner` and `reason` of a record the nightly closed itself because its stage stopped as the PC woke
 #: from a sleep (card night-fits-b, 4b.4): continued by the next nightly run like a job left for time.
 SLEPT_OWNER = "the PC went to sleep"
@@ -788,12 +796,20 @@ FATES = ("open", "resumed", "failed_again", "waiting")
 
 
 def interrupted_entry(
-    job_id: str, channel: str | None, stage: str | None, fate: str = "open", *, has_card: bool | None = None
+    job_id: str,
+    channel: str | None,
+    stage: str | None,
+    fate: str = "open",
+    *,
+    has_card: bool | None = None,
+    said: str | None = None,
 ) -> dict[str, Any]:
     """One `interrupted_jobs` entry of a run summary: which job, where it stopped and what became of it.
 
     `state` is the fate (one of `FATES`); `resumed` is `state == "resumed"` (the key older readers know);
-    `has_card` says whether a Retry card in the Queue stands for the job (omitted when not known).
+    `has_card` says whether a Retry card in the Queue stands for the job (omitted when not known); `said`
+    is why a `waiting` job waits when that was the graphics card's memory (the engine's NS-E208 words, which
+    name the programs Windows reported; omitted otherwise).
     """
     if fate not in FATES:
         raise ValueError(f"unknown fate {fate!r}")
@@ -806,6 +822,8 @@ def interrupted_entry(
     }
     if has_card is not None:
         item["has_card"] = has_card
+    if said:
+        item["said"] = said
     return item
 
 
@@ -940,7 +958,9 @@ def _card_text(
     nightly = origin == NIGHTLY_ORIGIN
     during = "during the night's run" if nightly else "while this job ran"
     stopped = f"{at}: {cause} {during}."
-    if nightly and owner == SLEPT_OWNER:
+    if owner in (VRAM_OWNER, CARD_BUSY_OWNER):  # the card was not free: the error table's own sentence
+        stopped = f"{at} {during}: {describe(VRAM_CODE if owner == VRAM_OWNER else CARD_BUSY_CODE).message}"
+    elif nightly and owner == SLEPT_OWNER:
         stopped = f"{at}: the PC went to sleep during the night's run, and the stage stopped as it woke."
     elif nightly and cause_said and owner != PAUSED_OWNER:
         said = cause_said[:1].lower() + cause_said[1:] if cause_said.startswith("The ") else cause_said
@@ -1003,6 +1023,10 @@ def _card_error(
         return {"code": PAUSED, "hint": describe(PAUSED).hint, "stage": stage}
     if owner == OUT_OF_TIME_OWNER:
         return {"code": OUT_OF_TIME, "hint": describe(OUT_OF_TIME).hint, "stage": stage}
+    if owner == VRAM_OWNER:
+        return {"code": VRAM_CODE, "hint": describe(VRAM_CODE).hint, "stage": stage}
+    if owner == CARD_BUSY_OWNER:
+        return {"code": CARD_BUSY_CODE, "hint": describe(CARD_BUSY_CODE).hint, "stage": stage}
     hint = INTERRUPTED_HINT if origin == NIGHTLY_ORIGIN else INTERRUPTED_HINT_BY_HAND
     if origin == NIGHTLY_ORIGIN and owner == SLEPT_OWNER:
         hint = SLEPT_HINT

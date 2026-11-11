@@ -55,6 +55,10 @@ COVERED = {
         "passes": "test_fh47_proof_runs_against_a_fake_home",
         "fails": ["test_fh47_proof_fails_when_a_closed_console_keeps_the_card"],
     },
+    "vram-busy": {
+        "passes": "test_vram_busy_proof_runs_against_a_fake_home",
+        "fails": ["test_vram_busy_proof_fails_when_a_load_is_not_checked"],
+    },
 }
 
 
@@ -377,6 +381,26 @@ def test_fh47_proof_fails_when_a_closed_console_keeps_the_card(
     monkeypatch.setattr(Supervisor, "_release_gone_holder", never)
     result = fh47_home.run("f_h47_closed_code_window")
     assert_fails_at(result, "the card is free within 5 s of the console closing")
+
+
+# ------------------------------------------------------------------------------ vram-busy, the simulated card
+def test_vram_busy_proof_runs_against_a_fake_home(fh47_home: ProofHome):
+    result = fh47_home.run("vram_busy")
+    assert_passed(result, at_least_checks=8)
+    names = step_names(result)
+    assert "the Dashboard's start is refused at once with NS-E208 naming game.exe" in names
+    assert "the nightly's load goes ahead once the memory is free" in names
+    assert "the nightly gives up at its bound with NS-E208, saying how long it waited" in names
+
+
+def test_vram_busy_proof_fails_when_a_load_is_not_checked(
+    fh47_home: ProofHome, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_supervisor import vram
+
+    monkeypatch.setattr(vram, "check", lambda *a, **k: None)  # the defect: nothing reads the card first
+    result = fh47_home.run("vram_busy")
+    assert_fails_at(result, "the Dashboard's start is refused at once with NS-E208 naming game.exe")
 
 
 # ------------------------------------------------------------------------------------------ the rule

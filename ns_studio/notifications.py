@@ -17,7 +17,7 @@ from ns_common.config import notifications_enabled
 from ns_common.db import Db
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
-from ns_studio.ownership import WHILE_NIGHTLY_ON_CLAUSE
+from ns_studio.ownership import IF_NIGHTLY_ON, WHILE_NIGHTLY_ON_CLAUSE
 
 Notifier = Callable[[str, str], object]
 TITLE = "Nightshift"
@@ -93,7 +93,36 @@ def nightly_message(report: dict[str, Any], masters: int, shorts: int) -> str | 
     left = time_part(report)
     if left:
         parts.append(left)
+    if report.get("vram"):
+        parts.append(vram_part())
     return "; ".join(parts) if parts else None
+
+
+def vram_part() -> str:
+    """The toast's part of a night whose model could not load for the card's memory (card vram-busy)."""
+    return (
+        "other programs held the graphics card's memory (NS-E208), so tonight's videos wait for the next "
+        f"nightly run{IF_NIGHTLY_ON}"
+    )
+
+
+def vram_note(report: dict[str, Any]) -> str | None:
+    """Card vram-busy, V8: the morning note of a night whose model could not load because other programs held
+    the graphics card's memory. Its middle is the engine's own NS-E208 words (`ns_supervisor.vram`: the
+    numbers, the programs Windows named or that it named none, how long the nightly waited); this adds what
+    became of the night and the way out. None when the night met no NS-E208."""
+    vram = report.get("vram")
+    if not isinstance(vram, dict):
+        return None
+    said = str(vram.get("said") or "other programs were using the graphics card's memory").rstrip(".")
+    at = f" at {vram['at']}" if vram.get("at") else ""
+    return (
+        f"NS-E208: Tonight's run could not load its model{at}: {said}. It kept tonight's videos for the next "
+        f"nightly run{IF_NIGHTLY_ON}. Close the programs that use the graphics card (a game, a "
+        "browser with video, another AI program) before you leave the PC for the night (closing the browser "
+        "is enough if it was the browser), or set a run time in Settings when the PC is free. Nightshift "
+        "never closes another program itself."
+    )
 
 
 def _limit(report: dict[str, Any]) -> int | None:

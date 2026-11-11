@@ -626,7 +626,9 @@ def test_every_reader_of_the_card_marks_a_simulated_reading() -> None:
     source) must take the mark from `gpu.simulated_mark` (directly, or through `gpu.source_probe`). A new
     reader that does not fails here."""
     root = repo_root()
-    asks = re.compile(r"\bsmi_source\(|procs\.(?:vram_mb|gpu_memory_used_mb|nvidia_smi_report|gpu_name)\(")
+    asks = re.compile(
+        r"\bsmi_source\(|\bsmi\.query\(|procs\.(?:vram_mb|gpu_memory_used_mb|nvidia_smi_report|gpu_name)\("
+    )
     out = subprocess.run(["git", "ls-files", "ns_*/*.py", "ns_*/**/*.py", "installer/*.py", "installer/**/*.py",
                           "dev/*.py", "proofs/*.py"], cwd=root, capture_output=True, text=True,
                          check=True).stdout.split()  # fmt: skip
@@ -641,6 +643,7 @@ def test_every_reader_of_the_card_marks_a_simulated_reading() -> None:
     assert set(readers) >= {
         "ns_supervisor/core.py", "ns_supervisor/doctor.py", "ns_supervisor/verify.py",
         "ns_studio/nightclock.py",  # night-fits: the ledger's lines and the night's times (block E merge)
+        "ns_supervisor/vram.py",  # vram-busy: asks `SmiSource.query` itself (memory, compute apps, table)
     }
     unmarked = sorted(rel for rel, ok in readers.items() if not ok)
     assert not unmarked, f"these read the card but never ask gpu.simulated_mark: {unmarked}"
@@ -790,6 +793,8 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("installer/stage2/web/fakes.py", "card"): "the setup window's sample hand-over (stage 1, as above)",
     ("ns_dashboard/ui/src/lib/demo.ts", "card"): "the dashboard's demo mode (no engine at all), screenshots",
     ("ns_supervisor/gpu.py", "dep"): "the simulated card itself",
+    ("tests/test_vram_busy.py", "dep"):
+        "wraps FakeSmi itself (a subclass that answers a scripted list of its own Cards): no second fake",
 }
 _GPU = r"(?:Gpu|GPU|Smi|SMI|Nvidia|NVIDIA|Vram|VRAM|Cuda|CUDA)"
 RULES = {
