@@ -504,7 +504,7 @@ class Supervisor:
         mem = await asyncio.to_thread(vram.read_memory, self.smi)
         if mem is None:
             return
-        n = await asyncio.to_thread(vram.need, self.paths, rt.definition)
+        n = await asyncio.to_thread(vram.need, self.paths, rt.definition, None, simulated_mark(self.smi))
         gone = n.mb if n.measured and not n.lower else None
         if self._release is not None and self.clock() - self._release_at > vram.RELEASE_STALE_S:
             self._release = None
@@ -620,12 +620,14 @@ class Supervisor:
         self, rt: ServiceRuntime, d: ServiceDef, e: NsError, before: vram.Verdict
     ) -> NsError | None:
         """V7: a load that failed at startup says why, truly. Read again (settled, who is on the card). When
-        the load did not fit either reading, its need is more than what was free: that lower bound is kept
+        a MEASURED need did not fit either reading, it is more than what was free: that lower bound is kept
         (`record_failure`), so the next check compares it. Others held memory an idle card would have had
         free: NS-E208 with the original in its detail. The need does not fit even an idle card: NS-E203 (a
         tuning matter: its hint says ns doctor, then ns tune). Else None: the original error stands."""
         after = await self._vram_check(d, programs=True)
-        short = [v for v in (before, after) if v is not None and not v.fits]
+        # a lower bound only for a need that was MEASURED: the first start of a model only estimated may have
+        # failed for a damaged file (NS-E202's ground), never to be told later as "too big" (NS-E203)
+        short = [v for v in (before, after) if v is not None and not v.fits and v.need.measured]
         if short:
             try:
                 vram.record_failure(self.paths, d, min(v.free_mb for v in short), simulated_mark(self.smi),

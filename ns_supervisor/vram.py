@@ -68,6 +68,8 @@ LOAD_OVERHEAD_MB = 700
 #: What an idle card of this PC keeps in use (Windows' desktop, the driver) before Nightshift has read its own
 #: idle card (`record_idle`): the GPU PC showed 812 MiB idle (tests/fixtures/supervisor).
 IDLE_ALLOWANCE_MB = 1024
+#: Readings that must agree (within `SETTLE_STEP_MB`) before a candidate becomes this PC's idle baseline.
+IDLE_AGREE = 3
 #: The studio's own CUDA context (whisper ran in its process), which a WDDM driver never reports per process:
 #: allowed for when the GPU holder is a studio process that named its pid.
 HOLDER_CONTEXT_MB = 512
@@ -258,12 +260,19 @@ def _save(paths: Paths, data: dict[str, Any]) -> None:
     write_text_atomic(path, json.dumps({"version": 1, **data}, indent=2) + "\n")
 
 
-def need(paths: Paths, d: ServiceDef, model_dir: str | None = None) -> Need:
-    """The largest of the last `KEEP` measured loads of this exact model (and of a failed load's lower bound,
-    `min_mb`), else the estimate (`measured` False: it never refuses a load)."""
+def _same(e: dict[str, Any], key: dict[str, Any], mark: str | None) -> bool:
+    """The same model, measured on the same kind of card: an entry of the simulated card (`card` set) is
+    never a real card's number, nor the other way round (H-10)."""
+    return all(e.get(k) == v for k, v in key.items()) and e.get("card") == mark
+
+
+def need(paths: Paths, d: ServiceDef, model_dir: str | None = None, mark: str | None = None) -> Need:
+    """The largest of the last `KEEP` measured loads of this exact model on this kind of card (`mark`: the
+    simulated card's, None for a real one), and of a failed load's lower bound (`min_mb`), else the
+    estimate (`measured` False: it never refuses a load)."""
     key = need_key(d)
     for e in _entries(_load(paths)):
-        if all(e.get(k) == v for k, v in key.items()):
+        if _same(e, key, mark):
             mbs = [int(m) for m in e.get("mb") or [] if isinstance(m, int) and m > 0][-KEEP:]
             low = e.get("min_mb") if isinstance(e.get("min_mb"), int) and e["min_mb"] > 0 else None
             if mbs or low:
@@ -272,11 +281,11 @@ def need(paths: Paths, d: ServiceDef, model_dir: str | None = None) -> Need:
     return Need(estimate_mb(d, model_dir), False)
 
 
-def _mine(data: dict[str, Any], d: ServiceDef) -> dict[str, Any]:
+def _mine(data: dict[str, Any], d: ServiceDef, mark: str | None) -> dict[str, Any]:
     key = need_key(d)
     entries = _entries(data)
     data["entries"] = entries
-    mine = next((e for e in entries if all(e.get(k) == v for k, v in key.items())), None)
+    mine = next((e for e in entries if _same(e, key, mark)), None)
     if mine is None:
         mine = dict(key)
         entries.append(mine)
@@ -297,7 +306,7 @@ def record(paths: Paths, d: ServiceDef, mb: int, mark: str | None, now: datetime
     if mb <= 0:
         return
     data = _load(paths)
-    mine = _mine(data, d)
+    mine = _mine(data, d, mark)
     mine["mb"] = [*[m for m in mine.get("mb") or [] if isinstance(m, int)], int(mb)][-KEEP:]
     mine.pop("min_mb", None)
     _stamp(mine, mark, now)
@@ -305,36 +314,63 @@ def record(paths: Paths, d: ServiceDef, mb: int, mark: str | None, now: datetime
 
 
 def record_failure(paths: Paths, d: ServiceDef, free_mb: int, mark: str | None, now: datetime) -> None:
-    """A load that failed to start with `free_mb` free: its need is more than that minus the margin, so the
-    next check compares that lower bound (`min_mb`) instead of the estimate. Raises OSError as `record`."""
+    """A load whose need was MEASURED failed to start with `free_mb` free: its need is more than that minus
+    the margin, so the next check compares that lower bound (`min_mb`). The caller never calls it for a model
+    only estimated (its failure may be a damaged file: NS-E202's ground, not memory). Raises OSError."""
     low = free_mb - MARGIN_MB + 1
     if low <= 0:
         return
     data = _load(paths)
-    mine = _mine(data, d)
+    mine = _mine(data, d, mark)
     old = mine.get("min_mb")
     mine["min_mb"] = max(old if isinstance(old, int) else 0, low)
     _stamp(mine, mark, now)
     _save(paths, data)
 
 
-def idle_mb(paths: Paths) -> int | None:
-    """What this PC's card showed in use with nothing of Nightshift's on it (the smallest such reading)."""
-    idle = _load(paths).get("idle")
+def _idle_slot(mark: str | None) -> str:
+    """Where the idle card of this kind is kept: a simulated card's idle never stands for the real card's."""
+    return "idle" if mark is None else "idle_simulated"
+
+
+def idle_mb(paths: Paths, mark: str | None = None) -> int | None:
+    """What this PC's card (of this kind: `mark`) keeps in use with nothing of Nightshift's on it, once
+    CONFIRMED (`record_idle`); None before (the caller then uses `IDLE_ALLOWANCE_MB`)."""
+    idle = _load(paths).get(_idle_slot(mark))
     mb = idle.get("mb") if isinstance(idle, dict) else None
     return mb if isinstance(mb, int) and mb >= 0 else None
 
 
 def record_idle(paths: Paths, used_mb: int, mark: str | None, now: datetime) -> bool:
-    """Keep `used_mb`, read with nothing of ours on the card, when it is the smallest seen yet (a reading
-    taken while a game was open is higher, and the next quiet one replaces it). True when it was written."""
+    """One reading taken with nothing of ours on the card. The baseline is only ever TAKEN or LOWERED, never
+    raised, and never from one reading (a game may be open at the first): a reading is a CANDIDATE, kept
+    when lower than the candidate by more than `SETTLE_STEP_MB`, counted when within that of it; the
+    candidate becomes the baseline (`mb`) after `IDLE_AGREE` agreeing readings, and only when lower than the
+    baseline it would replace. True when the file was written."""
     data = _load(paths)
-    old = data.get("idle")
-    if isinstance(old, dict) and isinstance(old.get("mb"), int) and old["mb"] <= used_mb:
-        return False
-    idle: dict[str, Any] = {"mb": int(used_mb)}
+    slot = _idle_slot(mark)
+    raw = data.get(slot)
+    old: dict[str, Any] = raw if isinstance(raw, dict) else {}
+
+    def whole(key: str) -> int | None:
+        v = old.get(key)
+        return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+    base, cand, agree = whole("mb"), whole("candidate"), whole("agree") or 0
+    if cand is None or used_mb < cand - SETTLE_STEP_MB:
+        cand, agree = int(used_mb), 1  # a new, lower candidate (or the first): provisional
+    elif used_mb <= cand + SETTLE_STEP_MB:
+        agree += 1
+    else:
+        return False  # higher than the candidate: something else is on the card; not counted
+    new_base = cand if agree >= IDLE_AGREE and (base is None or cand < base) else base
+    if agree > IDLE_AGREE and new_base == base:
+        return False  # confirmed already: one more agreeing reading changes nothing (no write per check)
+    idle: dict[str, Any] = {"candidate": cand, "agree": agree}
+    if new_base is not None:
+        idle["mb"] = new_base
     _stamp(idle, mark, now)
-    data["idle"] = idle
+    data[slot] = idle
     data["entries"] = _entries(data)
     _save(paths, data)
     return True
@@ -516,11 +552,11 @@ def check(
     `poll_s` for at most `SETTLE_S` (`settled`). `programs`: list who is on the card whatever the answer
     (the words of a failed load); otherwise only when the load is refused."""
     mark = simulated_mark(smi)
-    want = need(paths, d, model_dir)
+    want = need(paths, d, model_dir, mark)
     mem = read_memory(smi)
     if mem is None:
         return None
-    stored = idle_mb(paths)
+    stored = idle_mb(paths, mark)
     allowance = (stored if stored is not None else IDLE_ALLOWANCE_MB) + holder_mb
     # bounded twice: at most SETTLE_READS readings AND SETTLE_S of real time (`time.monotonic`, which no
     # injected clock stops); it logs nothing, whatever the readings do

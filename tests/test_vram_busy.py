@@ -36,6 +36,23 @@ from ns_supervisor import gpu, procs
 from ns_supervisor.core import Supervisor
 from ns_supervisor.testing import StubTable, fast_config
 
+#: The most any test of this file may leave in its temp folders (the home, the logs, the need file): a model
+#: of a real size is given through the size seam (`vram._mib`), never written (D: filled up, 2026-11-11).
+DISK_CAP = 4 * 1024 * 1024
+
+
+@pytest.fixture(autouse=True)
+def _writes_at_most_4_mib(tmp_path: Path) -> Any:
+    """After each test: the bytes under its temp folder (the test home lives there too) are at most 4 MiB,
+    else the test fails naming the largest file."""
+    yield
+    files = [(f.stat().st_size, f) for f in tmp_path.rglob("*") if f.is_file()]
+    total = sum(n for n, _ in files)
+    if total > DISK_CAP:
+        size, big = max(files)
+        pytest.fail(f"this test left {total} bytes under {tmp_path}; the largest is {big} ({size} bytes)")
+
+
 MARGIN = 512
 WAIT_S = 1800
 STUB_NEED = 700  # a stub has no `-m` and no `-c`: the estimate is its load overhead
@@ -409,13 +426,17 @@ def test_the_need_is_measured_after_a_load_and_kept(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("short", [0, 1])
 def test_without_a_measurement_the_estimate_is_the_file_size_plus_the_context(
-    tmp_path: Path, short: int
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, short: int
 ) -> None:
     """Both ends of the estimate (file + ctx / 1024 x 64 + 700). It decides nothing: one MiB short, the load
-    is still tried (an estimate never refuses), and the log says why."""
+    is still tried (an estimate never refuses), and the log says why. The file's 10 MiB come through the size
+    seam (`vram._mib`): the file on disk is 4 bytes."""
+    from ns_supervisor import vram
+
     model = tmp_path / "model.gguf"
-    with model.open("wb") as f:
-        f.truncate(10 * 1024 * 1024)  # 10 MiB
+    model.write_bytes(b"GGUF")
+    real_mib = vram._mib
+    monkeypatch.setattr(vram, "_mib", lambda p: 10 if Path(p) == model else real_mib(p))
     need = 10 + 8192 * 64 // 1024 + 700  # file + ctx / 1024 x 64 + 700 = 1222
     table = StubTable(extra={"llama": ["-m", str(model), "-c", "8192"]})
     eng = Engine(tmp_path, [card(need + MARGIN - short)], table=table)
@@ -902,3 +923,99 @@ def test_the_settle_ends_when_our_memory_never_comes_back_and_logs_one_line(tmp_
     assert eng.starts == ["tts", "llama"]
     assert reads <= 1 + 20 + 1 + 3, f"{reads} readings (the stop's, at most 20 settling, the measurement)"
     assert len(eng.log("vram_tried")) == 1
+
+
+def test_the_estimate_reads_a_model_files_size_only_through_the_size_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`estimate_mb` learns a file's size from `vram._mib` and nowhere else, so a stubbed size is the only way
+    a model of a real size enters a test (none is ever written)."""
+    import inspect as insp
+
+    from ns_supervisor import vram
+    from ns_supervisor.services import ServiceDef
+
+    asked: list[Path] = []
+
+    def seam(p: Path) -> int:
+        asked.append(Path(p))
+        return 20186
+
+    monkeypatch.setattr(vram, "_mib", seam)
+    huge = Path("Z:/no/such/folder/story.gguf")  # never on disk: only the seam can give its size
+    d = ServiceDef("llama", ["llama-server.exe", "-m", str(huge), "-c", "16384"], "127.0.0.1", 1, gpu=True)
+    assert vram.estimate_mb(d) == 20186 + 16384 * 64 // 1024 + 700
+    assert asked == [huge]
+    body = insp.getsource(vram.estimate_mb)
+    assert "stat(" not in body and "getsize" not in body and "open(" not in body, body
+
+
+def test_a_failed_first_start_that_was_not_memory_keeps_no_lower_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A never-measured model (estimated at 20 GB on a 16 GB card, nothing else on it) whose process exits at
+    start (a damaged file: NS-E202's ground) twice: both failures stay NS-E202, no lower bound is kept, and
+    the second is never told as NS-E203 "too big"."""
+    from ns_supervisor import vram
+
+    model = tmp_path / "story.gguf"
+    model.write_bytes(b"GGUF")
+    real_mib = vram._mib
+    monkeypatch.setattr(vram, "_mib", lambda p: 20186 if Path(p) == model else real_mib(p))
+    table = StubTable(extra={"llama": ["-m", str(model), "--exit-immediately"]})
+    eng = Engine(tmp_path, [card(TOTAL - 800)], table=table)
+
+    async def twice() -> list[NsError]:
+        out = [await refused(eng, "llama", "opencode", model_alias="code")]
+        eng.clock.t += 60
+        out.append(await refused(eng, "llama", "opencode", model_alias="code"))
+        return out
+
+    first, second = eng.run(twice)
+    assert (first.code, second.code) == ("NS-E202", "NS-E202"), (str(first), str(second))
+    kept = eng.paths.home / "run" / "vram-need.json"
+    entries = json.loads(kept.read_text(encoding="utf-8")).get("entries", []) if kept.exists() else []
+    assert all("min_mb" not in e for e in entries), entries
+
+
+def test_the_idle_baseline_is_provisional_until_readings_agree_and_never_raised(tmp_path: Path) -> None:
+    """A first reading may include a game: it is a candidate, not the baseline. A lower reading replaces the
+    candidate; three agreeing readings (within 64 MiB) make it the baseline; a higher one never raises it."""
+    from datetime import datetime
+
+    from ns_supervisor import vram
+
+    paths, now = Paths(tmp_path / "ns"), datetime(2026, 11, 11, 3, 0)
+    vram.record_idle(paths, 12800, None, now)  # a game was open at the first reading
+    assert vram.idle_mb(paths) is None, "one reading made a baseline"
+    for used in (800, 810, 790):
+        vram.record_idle(paths, used, None, now)
+    assert vram.idle_mb(paths) == 800, "three agreeing readings did not make the baseline"
+    for used in (5000, 5000, 5000):
+        vram.record_idle(paths, used, None, now)
+    assert vram.idle_mb(paths) == 800, "a higher reading raised it"
+    vram.record_idle(paths, 600, None, now)
+    assert vram.idle_mb(paths) == 800, "one lower reading lowered it at once"
+    vram.record_idle(paths, 610, None, now)
+    vram.record_idle(paths, 600, None, now)
+    assert vram.idle_mb(paths) == 600
+
+
+def test_numbers_of_the_simulated_card_never_stand_for_a_real_card(tmp_path: Path) -> None:
+    """A need measured, and an idle card read, on the simulated card (marked `card`) are not a real card's
+    numbers, and a real card's are not the simulated one's (H-10)."""
+    from datetime import datetime
+
+    from ns_supervisor import vram
+    from ns_supervisor.services import ServiceDef
+
+    paths, now, sim = Paths(tmp_path / "ns"), datetime(2026, 11, 11, 3, 0), gpu.SIMULATED
+    d = ServiceDef("llama", ["llama-server.exe", "--alias", "story"], "127.0.0.1", 1, gpu=True)
+    vram.record(paths, d, 9000, sim, now)
+    for _ in range(3):
+        vram.record_idle(paths, 800, sim, now)
+    assert vram.need(paths, d, mark=sim) == vram.Need(9000, True)
+    assert vram.need(paths, d).measured is False, "a simulated measurement was used for a real card"
+    assert vram.idle_mb(paths, sim) == 800 and vram.idle_mb(paths) is None
+    vram.record(paths, d, 7000, None, now)
+    assert vram.need(paths, d) == vram.Need(7000, True) and vram.need(paths, d, mark=sim).mb == 9000
