@@ -352,6 +352,30 @@ def _say_how_to_continue(ctx: JobContext) -> Iterator[None]:
         raise
 
 
+def _kit_nights(env: jobs.Env, now: datetime) -> Any:
+    """The GPU kit's nights record at a night's start (`ns_supervisor.kitnights.night_start`): said in the
+    log; an expired one pauses the kit's channel first. Whatever goes wrong, the night runs as if there were
+    no record."""
+    try:
+        return importlib.import_module("ns_supervisor.kitnights").night_start(env.paths, now, env.log)
+    except Exception as e:  # noqa: BLE001 - the owner's night never depends on the kit
+        env.log.warn("gpu_kit_nights_unreadable", str(e))
+        return None
+
+
+def _kit_nights_over(env: jobs.Env, kit: Any, now: datetime) -> None:
+    """After a night that found the kit's nights over: put back what the kit switched on (`end_nights`)."""
+    if kit is None or getattr(kit, "kind", None) != "expired":
+        return
+    try:
+        said = importlib.import_module("ns_supervisor.kitnights").end_nights(env.paths, kit, now, env.log)
+    except Exception as e:  # noqa: BLE001
+        env.log.warn("gpu_kit_nights_put_back_failed", str(e))
+        said = None
+    if said:
+        echo(said)
+
+
 def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
     """The `--daily` branch of `studio run`."""
     now = datetime.now(UTC)
@@ -363,19 +387,15 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
         for dj in due:
             echo(f"{dj.channel.slug}: {dj.count} x {dj.fmt} ({dj.plan.describe()})")
         return
-    try:  # the GPU kit's two nights are over and nobody ran the kit again: this night puts them back
-        said = importlib.import_module("ns_supervisor.kitnights").expire_if_due(env.paths, now, env.log)
-    except ImportError:
-        said = None
-    if said:
-        echo(said)
-        return
+    kit = _kit_nights(env, now)  # the GPU kit's record (never raises; read again by the planner)
     notifier = notifications.nightly_notifier(env.paths, env.log)
     try:
         report = run_daily(env, now=now, notifier=notifier)
     except (NsError, StudioError) as e:  # the night itself broke (not one job): say so before exiting
         notifications.send(env.paths, env.log, notifier, notifications.failure_message(e.code))
         raise
+    finally:
+        _kit_nights_over(env, kit, now)
     for item in report.get("interrupted_jobs", []):
         echo(interrupted_line(item))
     if not (report["channels"] or report["jobs"] or report["failures"]):

@@ -259,14 +259,18 @@ left plugged in and on or asleep (not shut down) for the next two nights, and 15
    paste check, and later the two hand checks and the morning note). Type **a** and press Enter to answer them now,
    or just press Enter (or wait 10 minutes) to leave them for the next time. Each question takes **y**, or **n** and
    what you saw, or **later**.
-5. If Automatic runs were off, the kit switches them on for two nights and says so. Its last lines say when to come
-   back, for example "Run GPU-KIT.cmd again after Saturday 14 November 09:00".
+5. Before it switches anything on, the kit says what the two nights will make: each night makes one more full story
+   video on the kit's channel, besides what your own channels have due that night, and it says how long that video
+   took here. If Automatic runs were off, the kit switches them on for two nights and says so. Its last lines say
+   when to come back, for example "Run GPU-KIT.cmd again after Saturday 14 November 09:00".
 
 **Day 3**
 
 1. After that time, double-click **GPU-KIT.cmd** again. It reads what the two nights did, collects the records,
-   switches Automatic runs off again if they were off before, and asks two questions about the note on the
-   Dashboard's **Queue** page.
+   switches Automatic runs off again if they were off before, pauses the kit's channel, and asks two questions about
+   the note on the Dashboard's **Queue** page. A night is **PASS** only when its records show the kit's video made
+   inside the night's time limit, or stopped by the night's own time rule (the reason is then the finding); a night
+   that made nothing for the kit is **FAIL**, with the reason its records give.
 2. Its last line is "Send this one file: ...zip (size)". Send that file to the person who gave you Nightshift, as you
    send the diagnostics zip.
 
@@ -284,15 +288,19 @@ Good to know:
 - You can close the window at any time. Double-click GPU-KIT.cmd again and it goes on from the step it reached. It
   never makes a second video or a second channel, and it changes Automatic runs at most once each way. A newer
   candidate installed in between goes on with the same nights.
-- The kit's channel is never used by a nightly run, even if the window was closed while its video was being made.
-- If you never run the kit again after the two nights, the third night switches Automatic runs off by itself (only
-  when they were off before the kit), makes nothing that night and leaves a note on the Queue page.
-- If you switch Automatic runs yourself in Settings after the kit switched them on, the kit leaves them as you set
-  them.
+- The kit's channel is used by a nightly run only on the two nights the kit switched on, once each night; never
+  before them and never after them, even if the window was closed while its video was being made.
+- If you never run the kit again after the two nights, the third night runs your channels as usual, then pauses the
+  kit's channel, switches Automatic runs off (only when they were off before the kit and nobody switched them since)
+  and leaves a note on the Queue page.
+- If you switch Automatic runs yourself after the kit switched them on (in Settings, with `ns schedule install`, or
+  by answering the nightly question when you run setup again), the kit leaves them as you set them.
+- If the kit's record of its nights cannot be read (a damaged file, or one from a newer kit), every night runs as if
+  there were no record and says so once in its log; the kit's step 8 still puts back what it changed.
 - A line starting with **REFUSED** means the kit did not start and changed nothing; it says why and what to do (for
   example: another GPU kit window is still open, or this is not the install with the graphics card).
-- What the kit changes: its own channel "GPU kit (test video)", which stays paused (its video waits in the Queue: post
-  it or reject it as you like), and Automatic runs for two nights. It reads your power and sleep settings and never
+- What the kit changes: its own channel "GPU kit (test video)", which is active only for the two nights and paused
+  otherwise (its videos wait in the Queue: post them or reject them as you like), and Automatic runs for two nights. It reads your power and sleep settings and never
   changes them.
 - The zip holds the PC's record (graphics card, driver, disk, sleep settings), the test and proof results, the video's
   facts and one picture of its frames (one a minute), both nights' records, logs and Windows' power events of those

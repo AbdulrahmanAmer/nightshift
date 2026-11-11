@@ -576,6 +576,12 @@ def schedule_install(
             raise _die(NsError("NS-E204", usage))
         _schedule_setup(time, setup, nightly, seen, was)
         return
+    if not disabled:  # the owner's own choice of Automatic runs: the GPU kit never undoes it (kitnights)
+        from datetime import datetime as _dt
+
+        from ns_supervisor import kitnights
+
+        kitnights.owner_chose(Paths.from_env(), _dt.now().astimezone(), "ns schedule install")
     _schedule_call("install", time, disabled, enable)
 
 

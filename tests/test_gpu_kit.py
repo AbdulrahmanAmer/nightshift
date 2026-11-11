@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from typer.testing import CliRunner
 
-from ns_common.config import save_runtime
+from ns_common.config import save_channel, save_runtime
 from ns_common.db import Db
 from ns_common.errors import NsError
 from ns_common.models import GateCheck, GateReport, Metadata, QcResult, Runtime
@@ -334,6 +334,7 @@ class LocalProduct:
     def night_now(self, limit_s: int, timeout: float) -> tuple[int | None, str]:
         self.calls.append(("night_now", limit_s))
         self.world.night(self.world.clock.now())
+        self.world.clock.t += timedelta(minutes=15)  # a night takes its time
         return 0, "night ran"
 
     def frame_grid(self, video: Path, out: Path, timeout: float) -> str | None:
@@ -467,9 +468,13 @@ class World:
         """One night of the product (`daily.run_daily`, fake services, the stub plan) started at `started`."""
         clock = NightClock(started)
         env = jobs.open_env(frozenset(FAKEABLE))
+        from ns_studio import cli as studio_cli
+
+        kit = studio_cli._kit_nights(env, clock.now())  # what `studio run --daily` does around the night
         report = daily.run_daily(
             env, now=clock.now(), rng=random.Random(1), notifier=None, clock=clock, environ={}
         )
+        studio_cli._kit_nights_over(env, kit, clock.now())
         from ns_studio import notifications
         from ns_supervisor import notify
 
@@ -534,7 +539,11 @@ def test_a_first_run_goes_k0_to_k4_and_stops_with_the_morning_date(world: World)
                               "vram_total": "16311 MiB", "vram_used": "812 MiB"}  # fmt: skip
     assert machine["modern_standby"] is False and machine["fake_gpu_typed_on_a_real_install"] is True
     assert world.task.has == ("Ready", "03:00")  # the Settings switch registered the task
-    assert world.channel()["status"] == "paused"
+    assert world.channel()["status"] == "active"  # the two armed nights make its video
+    change = world.state()["changes"]["channel_for_nights"]
+    assert (change["was"], change["will_be"], change["put_back"]) == ("paused", "active", False)
+    said = next(x for x in world.out if x.startswith("Each of the next two nights"))
+    assert "makes one full story video on the kit's channel, about " in said and "night 1: After Dark" in said
 
 
 # ------------------------------------------------------------------------------------------------ 2
@@ -577,7 +586,8 @@ def test_each_step_interrupted_resumes_on_the_next_run(world: World, step: str) 
     assert [p["automatic_runs"] for p in world.puts()] == [True, False]
     assert len(world.zips()) == 1 and world.out[-1].startswith("Send this one file: ")
     assert world.channel()["status"] == "paused" and world.task.has is None
-    assert not (world.ev / "kit.lock").exists() and kitnights.read(world.paths) is None
+    assert not (world.ev / "kit.lock").exists() and kitnights.read(world.paths, START).kind == "none"
+    assert [s[:13] for s in (world.results()["K5"], world.results()["K6"])] == ["PASS", "PASS"]
 
 
 # ------------------------------------------------------------------------------------------------ 3
@@ -609,7 +619,7 @@ def test_a_failed_story_job_is_recorded_with_its_code_and_the_kit_goes_on(world:
     assert world.state()["job"]["code"] == "NS-E303"
     assert "Nothing to do now" in world.state()["steps"]["K3"]["line"]
     assert world.out[-1] == "Run GPU-KIT.cmd again after Saturday 14 November 09:00."
-    assert world.channel()["status"] == "paused"
+    assert world.channel()["status"] == "active"  # armed
     assert world.run() == 0 and world.product.count("studio") == 1  # not made again
 
 
@@ -636,10 +646,11 @@ def test_the_kit_reads_what_the_product_writes(world: World) -> None:
     read = set(re.findall(r'\bx\.get\("(\w+)"\)', source))
     assert read and read <= written, f"the kit reads ledger keys the product never writes: {read - written}"
     kinds = set(re.findall(r'x\.get\("kind"\) == "(\w+)"', source))
-    assert kinds - {"slept"} <= {line["kind"] for line in lines}, (
+    assert kinds - {"slept", "decision"} <= {line["kind"] for line in lines}, (
         kinds
     )  # ("slept": written only after a sleep)
-    assert '"slept"' in (ROOT / "ns_studio" / "nightclock.py").read_text(encoding="utf-8")
+    clock_src = (ROOT / "ns_studio" / "nightclock.py").read_text(encoding="utf-8")
+    assert '"slept"' in clock_src and 'self.write("decision"' in clock_src  # written only when they happen
 
 
 # ------------------------------------------------------------------------------------------------ blocker 2
@@ -657,7 +668,7 @@ def test_the_kit_channel_is_never_planned_and_is_put_back_on_every_exit(world: W
     assert cadence.KIT_CHANNEL == gpukit.CHANNEL
     report = world.night(local(2026, 11, 13, 3, 0))
     assert [c["channel"] for c in report["channels"]] == ["after-dark"]
-    assert world.run() == 0 and world.channel()["status"] == "paused"
+    assert world.run() == 0 and world.channel()["status"] == "active"  # armed for the nights
 
 
 def test_an_error_the_kit_did_not_expect_still_puts_back_and_writes_the_zip(
@@ -692,12 +703,11 @@ def test_automatic_runs_are_put_back_as_they_were(tmp_path: Path, monkeypatch: p
                     w.traps.armed.add("settings applied")
                     assert w.run() == 130 and w.state()["automatic_runs_before"] is False
                 assert w.run() == 0, w.out
-                record = kitnights.read(w.paths)
+                record = kitnights.read(w.paths, START)  # the one reader
+                assert record.kind == "valid" and record.record["until"].startswith("2026-11-15T02:30")
+                assert record.record["automatic_runs_before"] is (case == "on")
                 if case == "on":
-                    assert record is None and w.puts() == []
-                else:
-                    assert record is not None and record["automatic_runs_before"] is False
-                    assert record["until"].startswith("2026-11-14T09:00")
+                    assert w.puts() == []
                 if case == "owner":  # the owner decides after the kit armed: theirs from now on
                     w.product.http.api("PUT", "/api/settings", {"automatic_runs": True})
                 w.nights_pass()
@@ -711,31 +721,35 @@ def test_automatic_runs_are_put_back_as_they_were(tmp_path: Path, monkeypatch: p
                     assert w.puts() == [] and w.task.has is not None and "left as you had them" in line
                 if case == "owner":
                     assert w.task.has is not None and "you switched Automatic runs yourself" in line
-                assert kitnights.read(w.paths) is None
+                assert kitnights.read(w.paths, START).kind == "none"
             finally:
                 w.close()
 
 
-def test_the_third_night_puts_automatic_runs_back_when_the_kit_is_never_run_again(world: World) -> None:
+def test_the_night_after_the_two_runs_as_if_no_record_and_puts_everything_back(world: World) -> None:
+    """The kit is never run again: the first night past the record's end runs the owner's channels exactly as
+    without a record, and puts back what the kit changed (the channel first, Automatic runs after it)."""
     assert world.run() == 0
-    assert world.task.has == ("Ready", "03:00")
-    night2_end = local(2026, 11, 14, 9, 0)
     assert (
-        kitnights.expire_if_due(world.paths, night2_end - timedelta(minutes=1)) is None
-    )  # nights 1 and 2 run
-    note = kitnights.expire_if_due(world.paths, night2_end + timedelta(hours=18))  # the third night
-    assert note == kitnights.EXPIRED_NOTE and world.task.has is None and kitnights.read(world.paths) is None
-    notes = json.loads((world.home / "run" / "morning_note.json").read_text(encoding="utf-8"))
-    assert any(
-        kitnights.EXPIRED_NOTE in json.dumps(n) for n in (notes if isinstance(notes, list) else [notes])
-    )
-    # the nightly's own route: a record past its end makes `studio run --daily` do nothing but that
-    kitnights.write(world.paths, {"until": "2026-01-01T00:00:00+00:00", "automatic_runs_before": False,
-                                  "run_time": "03:00"})  # fmt: skip
-    world.product.http.api("PUT", "/api/settings", {"automatic_runs": True, "by": kitnights.BY_KIT})
+        world.task.has == ("Ready", "03:00") and world.channel()["status"] == "active"
+    )  # armed for the nights
+    now = datetime.now().astimezone()  # (the nightly reads the PC's clock)
+    rec = kitnights.read(world.paths, START).record
+    kitnights.write(world.paths, {**rec, "until": (now - timedelta(hours=1)).isoformat(),
+                                  "nights": [{**n, "from": (now - timedelta(days=3 - i)).isoformat(),
+                                              "to": (now - timedelta(days=2 - i)).isoformat()}
+                                             for i, n in enumerate(rec["nights"])]})  # fmt: skip
     res = CliRunner().invoke(_studio_app(), ["run", "--daily", "--fake-services"])
-    assert res.exit_code == 0 and "The GPU kit had switched Automatic runs on" in res.output, res.output
-    assert world.task.has is None and not Db(world.paths.db_path).query("select * from runs")
+    assert res.exit_code == 0 and kitnights.EXPIRED_NOTE in res.output, res.output
+    runs = Db(world.paths.db_path).query("select summary_json from runs")
+    assert (
+        len(runs) == 1 and "after-dark" in runs[0]["summary_json"]
+    )  # the owner's night, as without a record
+    assert '"channel": "gpu-kit"' not in runs[0]["summary_json"]
+    assert world.task.has is None and world.channel()["status"] == "paused"
+    assert kitnights.read(world.paths, now).kind == "none"
+    notes = (world.home / "run" / "morning_note.json").read_text(encoding="utf-8")
+    assert kitnights.EXPIRED_NOTE in notes
 
 
 # ------------------------------------------------------------------------------------------------ 6
@@ -763,10 +777,16 @@ def test_the_nights_are_read_from_the_runs_rows_and_the_ledger(world: World) -> 
     assert world.run() == 0
     assert world.results()["K5"] == "PASS" and world.results()["K6"] == "WAIT"
     assert world.state()["steps"]["K5"]["line"].startswith("Night 1: ran ")
+    assert "made the kit's video in " in world.state()["steps"]["K5"]["line"]
     assert world.out[-1] == "Run GPU-KIT.cmd again after Saturday 14 November 09:00."
     world.clock.t = local(2026, 11, 14, 9, 1)  # night 2 has no row after its run time + 6 h
-    assert world.run() == 0
-    assert "Night 2: did not run" in world.state()["steps"]["K6"]["line"]
+    assert world.run() == 1  # a night that made nothing is a FAIL; the kit still collects
+    assert world.results()["K6"] == "FAIL"
+    assert "Night 2: did not run, so it made nothing" in world.state()["steps"]["K6"]["line"]
+    assert (
+        world.results()["K7"] == "FAIL"
+        and "night 1 PASS, night 2 FAIL" in world.state()["steps"]["K7"]["line"]
+    )
     assert world.state()["nights"][1]["schedule"][0] == 0  # `ns schedule show`'s answer, kept
     with zipfile.ZipFile(world.zips()[0]) as z:
         names = set(z.namelist())
@@ -1096,6 +1116,8 @@ def test_a_dry_run_on_the_simulated_card_is_marked_and_runs_both_nights_at_once(
         assert w.out[1] == f"SIMULATED graphics card ({mark}): a test install; nothing measured here " \
             "is evidence of the GPU PC."  # fmt: skip
         assert all(w.state()["steps"][k]["line"].startswith(mark) for k in ("K3", "K5", "K6"))
+        for k in ("K5", "K6"):  # each dry-run night MADE the kit's video (fake services)
+            assert "made the kit's video in " in w.state()["steps"][k]["line"], w.state()["steps"][k]
         with zipfile.ZipFile(w.zips()[0]) as z:
             assert z.read("README.txt").decode().startswith(f"SIMULATED GRAPHICS CARD ({mark})")
             assert json.loads(z.read("machine.json"))["simulated"] == mark
@@ -1152,3 +1174,137 @@ def test_the_real_windows_readers_are_refused_under_pytest(tmp_path: Path) -> No
                  lambda: real.events(START, START)):  # fmt: skip
         with pytest.raises(RealMachineUnderTest):
             call()
+
+
+# ------------------------------------------------------------------------------------------------ round 3
+def test_a_night_that_makes_nothing_for_the_kit_is_a_fail_with_its_reason(world: World) -> None:
+    assert world.run() == 0
+    kitnights.record_file(world.paths).write_text("{torn", encoding="utf-8")  # the planner cannot read it
+    world.nights_pass()
+    assert world.run() == 1, world.out
+    assert world.results()["K5"] == "FAIL" and world.results()["K6"] == "FAIL"
+    line = world.state()["steps"]["K5"]["line"]
+    assert "made nothing for the kit (the night could not read the kit's record of its nights: " in line, line
+    assert world.results()["K7"] == "FAIL" and world.out[-1].startswith("Send this one file: ")
+
+
+def test_the_owners_own_routes_to_automatic_runs_are_theirs(world: World) -> None:
+    from ns_supervisor import schedule
+
+    assert world.run() == 0
+    res = CliRunner().invoke(ns_app, ["schedule", "install"])  # the owner types it after the kit armed
+    assert res.exit_code == 0, res.output
+    rec = kitnights.read(world.paths, START).record
+    assert rec["owner_route"] == "ns schedule install" and rec["owner_chose_at"]
+    kitnights.write(world.paths, {k: v for k, v in rec.items() if not k.startswith("owner_")})
+    schedule.setup_apply(
+        world.paths, ROOT, first=True, nightly=True, seen=None, run_time="03:00"
+    )  # INSTALL.cmd
+    assert kitnights.read(world.paths, START).record["owner_route"] == "setup"
+    kitnights.write(world.paths, {k: v for k, v in rec.items() if not k.startswith("owner_")})
+    world.product.http.api("PUT", "/api/settings", {"automatic_runs": True})  # the Settings click
+    assert kitnights.read(world.paths, START).record["owner_route"] == "Settings"
+    world.product.http.api("PUT", "/api/settings", {"automatic_runs": True, "by": kitnights.BY_KIT})
+    assert (
+        kitnights.read(world.paths, START).record["owner_route"] == "Settings"
+    )  # the kit's own: not counted
+
+
+RECORDS = ("none", "valid night 1", "valid night 2", "past until", "torn", "no time zone", "newer version")
+READERS = ("nightly", "planner", "Settings", "K7")
+
+
+def _plant(world: World, kind: str, now: datetime) -> bytes | None:
+    """The record of `kind`, relative to `now` (the PC's clock: the nightly reads it)."""
+    path = kitnights.record_file(world.paths)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "none":
+        return None
+    if kind == "torn":
+        path.write_text('{"until": "2026', encoding="utf-8")
+        return path.read_bytes()
+    start = {"valid night 1": -1, "valid night 2": -25, "past until": -50}.get(kind, -1)
+    lo = now + timedelta(hours=start)
+    nights = [{"n": 1, "from": lo, "to": lo + timedelta(days=1)},
+              {"n": 2, "from": lo + timedelta(days=1), "to": lo + timedelta(days=2)}]  # fmt: skip
+    if kind == "no time zone":
+        stamp = lambda d: d.replace(tzinfo=None).isoformat()  # noqa: E731
+    else:
+        stamp = lambda d: d.isoformat()  # noqa: E731
+    record = {
+        "until": stamp(lo + timedelta(days=2)),
+        "automatic_runs_before": False,
+        "run_time": "03:00",
+        "nights": [{**n, "from": stamp(n["from"]), "to": stamp(n["to"]), "makes": "x"} for n in nights],
+    }
+    kitnights.write(world.paths, record)
+    if kind == "newer version":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({**data, "schema": 99}), encoding="utf-8")
+    return path.read_bytes()
+
+
+@pytest.mark.parametrize("reader", READERS)
+@pytest.mark.parametrize("kind", RECORDS)
+def test_the_one_reader_of_the_nights_record(world: World, kind: str, reader: str) -> None:
+    """Each record state x each reader (round 3, B): the one reader never raises; unreadable or expired runs
+    as if there were no record (expired then puts back); the kit's channel is planned on a valid night."""
+    kit_here()
+    now = datetime.now().astimezone()
+    db = Db(world.paths.db_path)
+    created = (datetime.now(UTC) - timedelta(weeks=11)).isoformat(timespec="seconds")
+    save_channel(
+        world.paths,
+        make_channel(
+            slug="gpu-kit", display_name="GPU kit (test video)", format="master_first", created_at=created
+        ),
+    )  # active
+    world.product.http.api("PUT", "/api/settings", {"automatic_runs": True, "by": kitnights.BY_KIT})
+    planted = _plant(world, kind, now)
+    expected = {"none": "none", "valid night 1": "valid", "valid night 2": "valid", "past until": "expired"}
+    result = kitnights.read(world.paths, now)
+    assert result.kind == expected.get(kind, "unreadable"), result
+    assert result.night == {"valid night 1": 1, "valid night 2": 2}.get(kind)
+    valid = kind.startswith("valid")
+    if reader == "nightly":  # the owner's ordinary night, with whatever record is there
+        res = CliRunner().invoke(_studio_app(), ["run", "--daily", "--fake-services"])
+        assert res.exit_code == 0, res.output
+        summary = db.query("select summary_json from runs")[0]["summary_json"]
+        assert "after-dark" in summary  # the owner's channel ran in every case
+        assert ('"channel": "gpu-kit"' in summary) is valid  # the kit's video only on an armed night
+        if kind == "past until":
+            assert world.task.has is None and world.channel()["status"] == "paused"
+            assert not kitnights.record_file(world.paths).exists()
+        else:
+            assert world.task.has == ("Ready", "03:00")
+        if planted is not None and not valid and kind != "past until":
+            assert kitnights.record_file(world.paths).read_bytes() == planted  # unreadable: left as it is
+    elif reader == "planner":
+        planned = [j.channel.slug for j in cadence.plan_daily(world.paths, db, now.astimezone(UTC))]
+        assert ("gpu-kit" in planned) is valid and "after-dark" in planned
+    elif reader == "Settings":
+        status, body = world.product.http.api("PUT", "/api/settings", {"automatic_runs": True})
+        assert status == 200 and body["schedule_registered"] is True
+        after = kitnights.read(world.paths, now)
+        if result.armed:
+            assert after.record.get("owner_route") == "Settings"
+        elif planted is not None:
+            assert kitnights.record_file(world.paths).read_bytes() == planted
+        else:
+            assert not kitnights.record_file(world.paths).exists()
+    else:  # K7: the kit's own collect step reads it through the same reader, never raises, puts back
+        world.clock.t = now
+        args = gpukit.build_parser().parse_args(["--home", str(world.home)])
+        env = gpukit.KitEnv(clock=world.clock, product=world.product, windows=world.windows, ask=world.ask,
+                            say=world.say)  # fmt: skip
+        kit = gpukit.start(args, env)
+        try:
+            kit.state.update({"turned_on": True, "automatic_runs_before": False, "nights": []})
+            res7 = kit.k7()
+        finally:
+            kit.close()
+        assert kit.state["nights_record_at_collect"]["kind"] == result.kind
+        assert "Automatic runs are off again" in res7.line and world.task.has is None
+        if result.kind == "unreadable":
+            assert "the nights record could not be read" in res7.line
+        assert not kitnights.record_file(world.paths).exists()

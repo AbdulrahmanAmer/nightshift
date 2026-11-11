@@ -186,8 +186,8 @@ class SettingsService:
         if "notifications" in body:
             updates["notifications"] = body["notifications"]
         if "automatic_runs" in body:
-            if body.get("by") != kitnights.BY_KIT:  # the owner's own click ends the GPU kit's claim on it
-                kitnights.owner_changed(self.s.paths, datetime.now().astimezone())
+            if body.get("by") != kitnights.BY_KIT:  # the owner's own click: theirs, never undone by the kit
+                kitnights.owner_chose(self.s.paths, datetime.now().astimezone(), "Settings", self.s.log)
             # the switch (and the time with it): Windows first, and the answer is what Windows then has
             schedule_result = self.s.adapters.schedule.switch(body["automatic_runs"], updates.get("run_time"))
         elif "run_time" in updates:  # the task first: a time Windows refused must not be remembered as the schedule

@@ -960,6 +960,10 @@ def setup_apply(
     if is_dev(paths):
         raise DevInstall("this is a dev install: its nightly task is registered disabled and never runs")
     log = _logger(paths, log)
+    if nightly:  # the owner said yes to Automatic runs in setup: theirs, never undone by the GPU kit
+        from ns_supervisor import kitnights
+
+        kitnights.owner_chose(paths, datetime.now().astimezone(), "setup", log)
     try:
         with _locked(paths):
             return _setup_locked(paths, app_path, read_task(), first, nightly, seen, run_time, was, log)

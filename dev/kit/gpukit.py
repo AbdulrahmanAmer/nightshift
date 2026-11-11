@@ -58,14 +58,16 @@ TITLES = {"K0": "start", "K1": "record this PC", "K2": "test each model and run 
           "K6": "night 2", "K7": "collect everything and put Automatic runs back"}  # fmt: skip
 PLAN = (
     "What the kit does, in order. You can close this window at any time: run GPU-KIT.cmd again and it goes",
-    "on from where it stopped. Nothing is sent anywhere; the only changes are the kit's own paused channel",
-    "and Automatic runs for two nights (switched off again at the end if they were off).",
+    "on from where it stopped. Nothing is sent anywhere; the only changes are the kit's own channel (active",
+    "for its video and the two nights only) and Automatic runs for two nights (switched off again at the end",
+    "if they were off).",
     "  1. Start: checks this is the GPU install (seconds)",
     "  2. Record this PC: graphics card, driver, disk, sleep settings, model files (up to 15 minutes)",
     "  3. Test each model once and run the proof scripts (10 to 40 minutes)",
     "  4. Make one story video with the real models on the kit's own paused channel (about 3 hours)",
     "  5. Switch Automatic runs on for the next two nights if they are off (seconds); the kit then stops",
-    "  6. and 7. The two nights run by themselves; run GPU-KIT.cmd again after the second morning",
+    "  6. and 7. The two nights run by themselves, each making one more story video on the kit's channel;",
+    "     run GPU-KIT.cmd again after the second morning",
     "  8. Collect everything into one zip and put Automatic runs back (about 5 minutes)",
     "  Then a few questions only you can answer (about 15 minutes; 'later' keeps them for the next run).",
 )
@@ -212,8 +214,20 @@ class InstallProduct:
 
     def night_now(self, limit_s: int, timeout: float) -> tuple[int | None, str]:
         stub = str(self.home / "nightshift-launch.ps1")  # the task's action, without the task
-        return _run([*POWERSHELL, "-ExecutionPolicy", "Bypass", "-File", stub, "-Nightly", "-Studio",
-                     self._exe("studio")], timeout, {**self.env, "NS_TEST_NIGHT_LIMIT_S": str(limit_s)})
+        return _run(
+            [
+                *POWERSHELL,
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                stub,
+                "-Nightly",
+                "-Studio",
+                self._exe("studio"),
+            ],
+            timeout,
+            {**self.env, "NS_TEST_NIGHT_LIMIT_S": str(limit_s)},
+        )
 
     def frame_grid(self, video: Path, out: Path, timeout: float) -> str | None:
         from ns_common import ffmpeg
@@ -484,7 +498,7 @@ QUESTIONS: dict[str, tuple[str, ...]] = {
     ),
     "standby": (  # dev/kit/night-task-end.txt f to h; f (which sleep states) is read by the kit itself
         "Hand check 2, sleep during a night (steps g and h of {hand}, another evening): after the PC slept 5 "
-        "minutes during a night, did the night's ledger get one \"slept\" line about 5 minutes long?",
+        'minutes during a night, did the night\'s ledger get one "slept" line about 5 minutes long?',
     ),
     "morning": (
         "Open Nightshift's Dashboard, Queue page. Is there a note about the last night at the top?",
@@ -552,8 +566,9 @@ class Kit:
     def write_json(self, name: str, data: Any) -> Path:
         from ns_common.atomic import write_text_atomic
 
-        return write_text_atomic(self.ev / name, json.dumps(data, indent=2, default=str, ensure_ascii=False)
-                                 + "\n")
+        return write_text_atomic(
+            self.ev / name, json.dumps(data, indent=2, default=str, ensure_ascii=False) + "\n"
+        )
 
     def label(self, step: str) -> str:
         return f"Step {STEPS.index(step) + 1} of {len(STEPS)} ({TITLES[step]})"
@@ -578,6 +593,10 @@ class Kit:
         to paused unless its video is being made right now. Bounded and best effort: a night never plans the
         channel anyway (`cadence.KIT_CHANNEL`), and the next run of the kit puts it back too."""
         ch = (self.state.get("changes") or {}).get("channel")
+        if self.state.get(
+            "nights_armed"
+        ):  # active for the armed nights: step 8 or the night after puts it back
+            return
         job = self.state.get("job") or {}
         busy = bool(job.get("pid")) and self.product.alive(job["pid"], job.get("pid_created"))
         if not ch or ch.get("put_back") or busy:
@@ -656,14 +675,18 @@ class Kit:
         found = {k: re.search(rf"{k} Version:\s*([\d.]+)", smi["table"] or "") for k in ("Driver", "CUDA")}
         line = ((smi["query_gpu"] or "").strip().splitlines() or [""])[0]
         cells = [c.strip() for c in line.split(",")] if line else []
-        cell = (lambda i: cells[i] if len(cells) > i else None)  # noqa: E731
+        cell = lambda i: cells[i] if len(cells) > i else None  # noqa: E731
         rec["gpu"] = {"name": cell(0), "driver": found["Driver"] and found["Driver"].group(1),
                       "cuda": found["CUDA"] and found["CUDA"].group(1), "vram_total": cell(2),
                       "vram_used": cell(3)}  # fmt: skip
         drive = os.path.splitdrive(str(self.home))[0] or str(self.home)[:2]
         usage = shutil.disk_usage(self.home)
-        rec["disk"] = {"drive": drive, "free_gb": round(usage.free / 1e9, 1),
-                       "total_gb": round(usage.total / 1e9, 1), "physical": w.physical_disk(drive)}
+        rec["disk"] = {
+            "drive": drive,
+            "free_gb": round(usage.free / 1e9, 1),
+            "total_gb": round(usage.total / 1e9, 1),
+            "physical": w.physical_disk(drive),
+        }
         rec["power"] = {"wake_timers": w.powercfg(["/q", "SCHEME_CURRENT", "SUB_SLEEP", "RTCWAKE"]),
                         "sleep_states": w.powercfg(["/a"])}  # fmt: skip
         import platform
@@ -915,8 +938,13 @@ class Kit:
         took = _span(job.get("started"), job.get("ended"))
         if job.get("outcome") != "done" or not rows:
             self.write_json("story/story.json", facts)
-            return Result("FAIL", self.marked(f"the video stopped ({job.get('code')}) after {took}; its log "
-                          "goes into the zip. Nothing to do now: the kit goes on with the nights."))
+            return Result(
+                "FAIL",
+                self.marked(
+                    f"the video stopped ({job.get('code')}) after {took}; its log "
+                    "goes into the zip. Nothing to do now: the kit goes on with the nights."
+                ),
+            )
         video = Path(rows[0]["path"])
         video = video if video.is_absolute() else self.home / video
         facts.update({"video": str(video), "length_s": rows[0]["duration_s"],
@@ -929,10 +957,48 @@ class Kit:
             facts["grid_problem"] = self.product.frame_grid(video, story / "frames.png", 600)
         self.write_json("story/story.json", facts)
         length = float(facts["length_s"] or 0)
-        return Result("PASS", self.marked(f"video made: {video} ({int(length // 60)} min "
-                      f"{int(length % 60)} s long, made in {took}); the kit's channel is paused"))
+        return Result(
+            "PASS",
+            self.marked(
+                f"video made: {video} ({int(length // 60)} min "
+                f"{int(length % 60)} s long, made in {took}); the kit's channel is paused"
+            ),
+        )
 
     # -------------------------------------------------------------------------------------- K4 arm
+    def nights_record(self) -> Any:
+        """THE reader of the kit's nights record (`ns_supervisor.kitnights.read`): none, valid, expired or
+        unreadable; it never raises."""
+        from ns_common.paths import Paths
+        from ns_supervisor import kitnights
+
+        return kitnights.read(Paths(self.home), self.now())
+
+    def kit_video_s(self) -> float:
+        """How long the kit's own video took here (its stage times, measured in step 4), else the estimate."""
+        with contextlib.suppress(OSError, ValueError, TypeError):
+            story = json.loads((self.ev / "story" / "story.json").read_text(encoding="utf-8"))
+            total = sum(
+                float(s.get("seconds") or 0) for s in story.get("stages") or [] if s.get("outcome") == "done"
+            )
+            if total > 0:
+                return total
+        return self.estimate_s()
+
+    def owner_due(self, run_at: datetime) -> str:
+        """What the owner's channels have due at `run_at`, read only (the planner the night itself uses)."""
+        try:
+            from ns_common.db import Db
+            from ns_common.paths import Paths
+            from ns_studio.channels import cadence
+
+            home = Paths(self.home)
+            due = [d for d in cadence.plan_daily(home, Db(home.db_path), run_at.astimezone(UTC))
+                   if d.channel.slug != CHANNEL]  # fmt: skip
+        except Exception as e:  # noqa: BLE001 - said, not a stop
+            return f"(could not be read: {e})"
+        return ", ".join(f"{d.channel.display_name} ({d.count} x {d.fmt})" for d in due) or "nothing due"
+
     def k4(self) -> Result:
         settings = self.settings()
         if settings is None:
@@ -944,38 +1010,72 @@ class Kit:
         from ns_common.paths import Paths
         from ns_supervisor import kitnights
 
-        paths = Paths(self.home)
-        record = kitnights.read(paths)
+        paths, record = Paths(self.home), self.nights_record()
+        if record.kind == "unreadable" and not self.state.get("nights_armed"):
+            return Result("FAIL", f"the record of the kit's nights cannot be used ({record.reason}). What to "
+                          "do: "
+                          "send the zip; nothing was switched on.", done=False, stop=True)  # fmt: skip
         if self.state.get("automatic_runs_before") is None:
             # the ORIGINAL value: an older kit's record (a newer candidate installed since) wins over now
-            before = record.get("automatic_runs_before") if record else None
+            before = record.record.get("automatic_runs_before") if record.armed else None
             now_on = bool(settings.get("schedule_registered"))
             self.state["automatic_runs_before"] = now_on if before is None else bool(before)
             self.save()  # FIRST: whatever happens next, the next run knows what to put back
         armed = self.at(self.state["armed_at"]) if self.state.get("armed_at") else self.now()
-        nights = [armed, armed] if self.night_now else self.run_times(armed, 2)
-        self.state.update({"armed_at": armed.isoformat(timespec="seconds"),
-                           "nights": [{"run_at": t.isoformat(timespec="seconds")} for t in nights]})
+        if not self.state.get("nights"):
+            if (
+                self.night_now
+            ):  # the nights run one after the other from now (night 2's window is set at its start)
+                end = armed + timedelta(seconds=DRY_NIGHT_LIMIT_S + 900)
+                spans = [(armed, armed, end), (end, end, end + timedelta(seconds=DRY_NIGHT_LIMIT_S + 900))]
+            else:
+                half = timedelta(seconds=NIGHT_WINDOW_S)
+                spans = [(t, t - half, t + timedelta(days=1) - half)
+                         for t in self.run_times(armed, 2)]  # fmt: skip
+            video_s = self.kit_video_s()
+            self.state.update({"armed_at": armed.isoformat(timespec="seconds"), "kit_video_s": round(video_s),
+                               "nights": [{"run_at": r.isoformat(timespec="seconds"),
+                                           "from": lo.isoformat(timespec="seconds"),
+                                           "to": hi.isoformat(timespec="seconds"),
+                                           "makes": kitnights.KIT_NIGHT_MAKES, "owner_due": self.owner_due(r)}
+                                          for r, lo, hi in spans]})  # fmt: skip
+            self.save()
+        nights = self.state["nights"]
+        self.say(f"Each of the next two nights ({self.when(self.at(nights[0]['run_at']))} and "
+                 f"{self.when(self.at(nights[1]['run_at']))}) makes {kitnights.KIT_NIGHT_MAKES}, about "
+                 f"{_secs(self.state['kit_video_s'])} (as long as the kit's own video took here), besides "
+                 f"what your channels have due: night 1: {nights[0]['owner_due']}; night 2: "
+                 f"{nights[1]['owner_due']}.")  # fmt: skip
+        if not record.armed:  # what the product honours if the kit never returns, written before any change
+            self.change("nights_record", "absent", "written")
+            kitnights.write(paths, {"armed_at": self.state["armed_at"], "until": nights[1]["to"],
+                                    "automatic_runs_before": self.state["automatic_runs_before"],
+                                    "run_time": str(settings.get("schedule_time") or "03:00"),
+                                    "by": f"GPU kit {self.version}", "kit_video_s": self.state["kit_video_s"],
+                                    "nights": [{"n": n, "from": x["from"], "to": x["to"], "makes": x["makes"]}
+                                               for n, x in enumerate(nights, 1)]})  # fmt: skip
+        status, body = self.product.api("GET", f"/api/channels/{CHANNEL}")
+        was = str(((body or {}).get("profile") or {}).get("status")) if isinstance(body, dict) else "absent"
+        if status == 200 and was == "paused":  # the nights make its video: active until step 8 or night 3
+            self.change("channel_for_nights", "paused", "active")
+            st, _ = self.product.api("POST", f"/api/channels/{CHANNEL}/resume", {"note": "GPU kit nights"})
+            if st != 200:
+                return Result("FAIL", f"the kit's channel could not be switched on for the nights (HTTP "
+                              f"{st}). "
+                              "What to do: send the zip.", done=False, stop=True)  # fmt: skip
+        self.state["nights_armed"] = True
         self.save()
         if self.night_now:
             self.state["automatic_note"] = "not changed: -NightNow runs each night itself, through the stub"
         elif not self.state["automatic_runs_before"]:
-            until = nights[1] + timedelta(seconds=NIGHT_LIMIT_S)
-            run_time = str(settings.get("schedule_time") or nights[0].strftime("%H:%M"))
-            self.change("automatic_runs", False, True)
-            if record is None or not record.get("until"):  # what the product honours if the kit never returns
-                kitnights.write(paths, {"armed_at": armed.isoformat(timespec="seconds"),
-                                        "until": until.isoformat(timespec="seconds"),
-                                        "automatic_runs_before": False, "run_time": run_time,
-                                        "by": f"GPU kit {self.version}"})  # fmt: skip
             if not settings.get("schedule_registered"):  # (on already: a run killed after its PUT)
+                self.change("automatic_runs", False, True)
                 self.say("Switching Automatic runs on for two nights (they are off now). The kit switches "
-                         "them off again when you run it after the nights; if you do not, the third night "
-                         "does.")  # fmt: skip
+                         "them off again when you run it after the nights; if you do not, the next night "
+                         "after them does.")  # fmt: skip
                 body_in = {"automatic_runs": True, "by": kitnights.BY_KIT}
                 status, body = self.product.api("PUT", "/api/settings", body_in)
                 if status != 200 or not isinstance(body, dict) or not body.get("schedule_registered"):
-                    kitnights.remove(paths)  # nothing was switched on: nothing for a night to undo
                     note = (body.get("schedule_result") or {}).get("note") if isinstance(body, dict) else body
                     return Result("FAIL", f"Automatic runs could not be switched on ({note}). What to do: "
                                   "switch them on in Settings, then run GPU-KIT.cmd again.",
@@ -983,86 +1083,216 @@ class Kit:
             self.state["turned_on"] = True
             self.save()
         if self.night_now:
-            return Result("PASS", "dry run: the two nights run now, one after the other, through the stub")
-        back = self.come_back(nights[1] + timedelta(seconds=NIGHT_LIMIT_S))
+            return Result("PASS", "dry run: the two nights run now, one after the other, through the stub; "
+                          "each "
+                          f"makes {kitnights.KIT_NIGHT_MAKES}")  # fmt: skip
+        back = self.come_back(self.at(nights[1]["run_at"]) + timedelta(seconds=NIGHT_LIMIT_S))
         self.save()
-        return Result("PASS", f"Automatic runs are on for the next two nights ({self.when(nights[0])} and "
-                      f"{self.when(nights[1])}). Leave the PC on or asleep (not shut down) and plugged in. "
-                      f"Run GPU-KIT.cmd again after {self.when(back)}.", stop=True)  # fmt: skip
+        first, second = self.when(self.at(nights[0]["run_at"])), self.when(self.at(nights[1]["run_at"]))
+        return Result("PASS", f"Automatic runs are on for the next two nights ({first} and {second}); each "
+                      f"makes {kitnights.KIT_NIGHT_MAKES}. "
+                      "Leave the PC on or asleep (not shut down) and plugged in. Run GPU-KIT.cmd again after "
+                      f"{self.when(back)}.", stop=True)  # fmt: skip
 
     # -------------------------------------------------------------------------------------- K5, K6 nights
-    def night_rows(self, i: int, run_at: datetime) -> list[dict[str, Any]]:
-        """The `runs` rows of mode daily that belong to night `i`: started after `armed_at`, from half an
-        hour before its run time to half an hour before the next day's (a late start counts)."""
-        lo = run_at - timedelta(seconds=NIGHT_WINDOW_S)
-        hi = lo + timedelta(days=1)
-        armed = self.at(self.state["armed_at"]) - timedelta(seconds=1)
-        rows = [r for r in self.db("select run_id, started_at, finished_at, summary_json from runs where "
-                                   "mode = 'daily' order by started_at")  # fmt: skip
-                if armed <= self.at(r["started_at"])
-                and (self.night_now or lo <= self.at(r["started_at"]) < hi)]
-        return rows[i:i + 1] if self.night_now else rows[:1]
+    def night_rows(self, lo: datetime, hi: datetime) -> list[dict[str, Any]]:
+        """The `runs` rows of mode daily inside a night's window (a late start counts)."""
+        return [
+            r
+            for r in self.db(
+                "select run_id, started_at, finished_at, summary_json from runs where "
+                "mode = 'daily' order by started_at"
+            )  # fmt: skip
+            if lo <= self.at(r["started_at"]) < hi
+        ]
+
+    def dry_night_window(self, i: int) -> None:
+        """-NightNow: night `i` starts now; the record and the state say so (the kit's own record)."""
+        from ns_common.paths import Paths
+        from ns_supervisor import kitnights
+
+        now = self.now()
+        nights = self.state["nights"]
+        if i == 1:
+            nights[0]["to"] = now.isoformat(timespec="seconds")
+        nights[i].update(
+            {
+                "run_at": now.isoformat(timespec="seconds"),
+                "from": now.isoformat(timespec="seconds"),
+                "to": (now + timedelta(seconds=DRY_NIGHT_LIMIT_S + 900)).isoformat(timespec="seconds"),
+            }
+        )
+        record = self.nights_record()
+        if record.armed:
+            kitnights.write(
+                Paths(self.home),
+                {
+                    **record.record,
+                    "until": nights[1]["to"],
+                    "nights": [
+                        {"n": n, "from": x["from"], "to": x["to"], "makes": x["makes"]}
+                        for n, x in enumerate(nights, 1)
+                    ],
+                },
+            )
+        self.save()
 
     def night(self, i: int) -> Result:
         night = self.state["nights"][i]
-        run_at = self.at(night["run_at"])
-        rows = self.night_rows(i, run_at)
-        if self.night_now and not rows:  # a dry-run night with no row never began its work: run it now
+        if self.night_now and not night.get("ran_now"):  # a dry-run night: it starts now, through the stub
+            self.dry_night_window(i)
             self.say(f"Dry run: night {i + 1} starts now (limit {DRY_NIGHT_LIMIT_S // 60} min).")
             night["ran_now"] = self.iso()
             self.save()
             rc, text = self.product.night_now(DRY_NIGHT_LIMIT_S, DRY_NIGHT_LIMIT_S + 900)
             night["stub"] = {"exit": rc, "output": text[-2000:]}
-            rows = self.night_rows(i, run_at)
+        run_at, lo, hi = self.at(night["run_at"]), self.at(night["from"]), self.at(night["to"])
+        rows = self.night_rows(lo, hi)
         late = self.night_now or self.now() >= run_at + timedelta(seconds=NIGHT_LIMIT_S)
-        if rows and (rows[0]["finished_at"] or late):
-            row = rows[0]
-            summary = _loads(row.get("summary_json"))
-            night.update({"status": "ran", "run_id": row["run_id"], "start": row["started_at"],
-                          "end": row["finished_at"], "summary": summary})  # fmt: skip
-            jobs = len(summary.get("jobs") or []) if isinstance(summary, dict) else 0
-            end = (row["finished_at"] or "?")[11:16]
-            words = f"ran {row['started_at'][11:16]} to {end}, {jobs} job(s) done"
-            if not row["finished_at"]:
-                words = f"started {row['started_at'][11:16]}; its run was never closed (ended from outside)"
-        elif late:
-            task = self.product.cli("ns", ["schedule", "show"], 60)
-            night.update({"status": "did not run", "schedule": task})
-            words = "did not run (Windows' answer for the task is in the zip)"
-        else:
+        if not late and (not rows or not rows[0]["finished_at"]):
             back = self.come_back(run_at + timedelta(seconds=NIGHT_LIMIT_S))
             self.save()
             return Result("WAIT", f"Night {i + 1}: not yet (come back after {self.when(back)})",
                           done=False, stop=True)  # fmt: skip
+        if not rows:
+            task = self.product.cli("ns", ["schedule", "show"], 60)
+            night.update({"status": "did not run", "schedule": task, "verdict": "FAIL"})
+            self.save()
+            return Result("FAIL", self.marked(f"Night {i + 1}: did not run, so it made nothing (Windows' "
+                                              "answer "
+                                              "for the task is in the zip)"))  # fmt: skip
+        word, line = self.judge_night(i, lo, hi, rows[0])
+        night["verdict"] = word
         self.save()
-        return Result("PASS", self.marked(f"Night {i + 1}: {words}"))
+        return Result(word, self.marked(f"Night {i + 1}: {line}"))
+
+    def judge_night(self, i: int, lo: datetime, hi: datetime, row: dict[str, Any]) -> tuple[str, str]:
+        """PASS only when the night's own records show the kit's video begun and finished inside the task's
+        limit, or stopped by the night's time rule (`nightfit`) with its reason (the finding); every other
+        night is a FAIL with the reason its records give."""
+        night = self.state["nights"][i]
+        summary = _loads(row.get("summary_json"))
+        summary = summary if isinstance(summary, dict) else {}
+        timing = summary.get("timing") or {}
+        used, limit = timing.get("used_s"), timing.get("limit_s")
+        rows = self.db(
+            "select job_id, created_at from combos where channel = ? order by created_at", (CHANNEL,)
+        )
+        kit_jobs = list(dict.fromkeys(r["job_id"] for r in rows if lo <= _when(r["created_at"]) < hi))
+        lines = self.ledger()
+        jid = kit_jobs[0] if kit_jobs else None
+        ends = [x for x in lines if x.get("kind") == "job_end" and x.get("job_id") == jid]
+        decided = [d for d in lines if d.get("kind") == "decision" and d.get("job_id") == jid
+                   and d.get("answer") not in (None, "begin")]  # nightfit.BEGIN is no stop  # fmt: skip
+        owners = len([j for j in summary.get("jobs") or [] if j.get("channel") != CHANNEL])
+        night.update({"status": "ran", "run_id": row["run_id"], "start": row["started_at"],
+                      "end": row["finished_at"],
+                      "summary": summary, "kit_job": jid, "used_s": used, "limit_s": limit})  # fmt: skip
+        hhmm = lambda raw: self.at(raw).strftime("%H:%M") if raw else "?"  # noqa: E731 - local time
+        ran = f"ran {hhmm(row['started_at'])} to {hhmm(row['finished_at'])}"
+        if not row["finished_at"]:
+            return "FAIL", f"started {hhmm(row['started_at'])}; its run was never closed (ended from outside)"
+        if isinstance(used, int | float) and isinstance(limit, int | float) and used > limit:
+            return "FAIL", f"{ran}: {_secs(used - limit)} past the {_secs(limit)} limit"
+        if any(x.get("outcome") == "done" for x in ends):
+            took = sum(float(x.get("seconds") or 0) for x in ends)
+            inside = (f", the night used {_secs(used)} of its {_secs(limit)} limit" if used and limit
+                      else ", the night knew no time limit")  # fmt: skip
+            return (
+                "PASS",
+                f"{ran}: made the kit's video in {_secs(took)}{inside}; {owners} job(s) of yours",
+            )
+        if decided:
+            d = decided[-1]
+            return "PASS", (f"{ran}: the night's time rule did not finish the kit's video "
+                            f"({d.get('answer')}: "
+                            f"{d.get('reason')}): that is the finding; {owners} job(s) of yours")  # fmt: skip
+        if jid:
+            code = next((str(x.get("outcome")) for x in reversed(ends)), None) or next(
+                (str(f.get("code")) for f in summary.get("failures") or [] if f.get("job_id") == jid),
+                "no end",
+            )
+            return "FAIL", f"{ran}: the kit's video stopped ({code})"
+        why = (
+            self.night_log_reason(row)
+            or summary.get("failed")
+            or "; ".join(
+                [
+                    f"{k}: {json.dumps(summary[k], default=str)[:160]}"
+                    for k in ("no_room", "paused", "unreadable_profiles", "not_due")
+                    if summary.get(k)
+                ]
+            )
+            or (
+                "the night did not plan the kit's video (see its log: gpu_kit_night, "
+                "gpu_kit_nights_unreadable)"
+            )
+        )
+        return "FAIL", f"{ran}: made nothing for the kit ({why}); {owners} job(s) of yours"
+
+    def night_log_reason(self, row: dict[str, Any]) -> str | None:
+        """What the night's own log says about the kit's record (`kitnights.night_start`, written just before
+        the run): it could not read it, or it found no armed night; None when it found the armed night. The
+        night's lines are the `gpu_kit_*` lines after the previous run's `daily_done`, before this run's."""
+        lines: list[dict[str, Any]] = []
+        for f in sorted((self.home / "logs").glob("studio-*.jsonl")):
+            with contextlib.suppress(OSError):
+                for text in f.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if '"gpu_kit_' in text or '"daily_done"' in text:
+                        with contextlib.suppress(ValueError):
+                            item = json.loads(text)
+                            if isinstance(item, dict):
+                                lines.append(item)
+        end = next((i for i, ln in enumerate(lines) if ln.get("event") == "daily_done"
+                    and (ln.get("data") or {}).get("run_id") == row["run_id"]), None)  # fmt: skip
+        if end is None:
+            return None  # (the run's log is not there: the summary says why)
+        before = [i for i, ln in enumerate(lines[:end]) if ln.get("event") == "daily_done"]
+        start = before[-1] + 1 if before else 0
+        seen = lines[start:end]
+        bad = next((ln for ln in seen if ln.get("event") == "gpu_kit_nights_unreadable"), None)
+        if bad is not None:
+            return f"the night could not read the kit's record of its nights: {bad.get('msg')}"
+        armed = [ln for ln in seen
+                 if ln.get("event") == "gpu_kit_night" and (ln.get("data") or {}).get("night")]  # fmt: skip
+        return (
+            None if armed else "the night found no armed night of the kit (no gpu_kit_night line in its log)"
+        )
 
     # -------------------------------------------------------------------------------------- K7 collect
     def k7(self) -> Result:
         col = self.ev / "collected"
         col.mkdir(parents=True, exist_ok=True)
         for i, night in enumerate(self.state.get("nights") or []):
-            start = self.at(night.get("start") or night["run_at"]) - timedelta(minutes=30)
+            start = self.at(night.get("start") or night["from"]) - timedelta(minutes=30)
             end = self.at(night.get("end") or night["run_at"]) + timedelta(seconds=NIGHT_LIMIT_S)
             text = self.windows.events(start, end) or "the System log could not be read\n"
             (col / f"windows-events-night{i + 1}.txt").write_text(text, encoding="utf-8")
         rc, text = self.product.cli("ns", ["doctor", "--bundle", "--out-dir", str(col)], 600)
         (col / "doctor-bundle.txt").write_text(f"exit {rc}\n{text}", encoding="utf-8")
+        from ns_common.paths import Paths
+        from ns_supervisor import kitnights
+
+        paths, record = Paths(self.home), self.nights_record()  # the one reader
+        self.state["nights_record_at_collect"] = {"kind": record.kind, "reason": record.reason}
         said = self.state.get("restored_said") or "Automatic runs were left as you had them"
         if self.state.get("turned_on") and not self.state.get("restored"):
-            from ns_common.paths import Paths
-            from ns_supervisor import kitnights
-
-            paths = Paths(self.home)
-            record = kitnights.read(paths) or {}
             settings = self.settings() if self.engine() is None else None
             if settings is None:
-                return Result("FAIL", "the Dashboard did not answer, so Automatic runs were not switched off "
-                              "again. What to do: run GPU-KIT.cmd again later.", done=False, stop=True)
-            armed_time = record.get("run_time") or settings.get("schedule_time")
-            if record.get("owner_changed_at"):
-                said = (f"you switched Automatic runs yourself at {record['owner_changed_at'][:16]}, after "
-                        "the kit: they were left as you set them")  # fmt: skip
+                return Result(
+                    "FAIL",
+                    "the Dashboard did not answer, so Automatic runs were not switched off "
+                    "again. What to do: run GPU-KIT.cmd again later.",
+                    done=False,
+                    stop=True,
+                )
+            chose = record.record.get("owner_chose_at") if record.armed else None
+            armed_time = (record.record.get("run_time") if record.armed else None) or settings.get(
+                "schedule_time"
+            )
+            if chose:
+                said = (f"you switched Automatic runs yourself ({record.record.get('owner_route')}, "
+                        f"{str(chose)[:16]}), after the kit: they were left as you set them")  # fmt: skip
             elif not settings.get("schedule_registered"):
                 said = "Automatic runs are off again, as they were before the kit (switched off already)"
             elif settings.get("schedule_time") != armed_time:
@@ -1071,18 +1301,32 @@ class Kit:
             else:
                 self.say("Switching Automatic runs off again: they were off before the kit. To keep them on, "
                          "switch them on again in Settings.")  # fmt: skip
-                status, _ = self.product.api("PUT", "/api/settings", {"automatic_runs": False,
-                                                                      "by": kitnights.BY_KIT})
+                status, _ = self.product.api(
+                    "PUT", "/api/settings", {"automatic_runs": False, "by": kitnights.BY_KIT}
+                )
                 if status != 200:
                     return Result("FAIL", "Automatic runs could not be switched off again. What to do: "
                                   "switch them off in Settings (they were off before the kit), then run "
                                   "GPU-KIT.cmd again.", done=False, stop=True)  # fmt: skip
                 said = "Automatic runs are off again, as they were before the kit"
-            kitnights.remove(paths)
+            if record.kind == "unreadable":
+                said += (
+                    f" (the nights record could not be read: {record.reason}; decided from the kit's state)"
+                )
             self.state.update({"restored": True, "restored_said": said})
             self.state.setdefault("changes", {}).setdefault("automatic_runs", {})["put_back"] = True
             self.save()
-        return Result("PASS", f"collected the nights' records; {said}")
+        ch = (self.state.get("changes") or {}).get("channel_for_nights")
+        if ch and not ch.get("put_back") and self.pause_channel():
+            ch["put_back"] = True
+        kitnights.remove(paths)
+        self.save()
+        verdicts = [str(n.get("verdict") or "NOT RUN") for n in self.state.get("nights") or []]
+        word = "PASS" if verdicts and all(v == "PASS" for v in verdicts) else "FAIL"
+        nights_said = ", ".join(f"night {n} {v}" for n, v in enumerate(verdicts, 1))
+        return Result(word, f"the nights: {nights_said}; collected the nights' records; {said}; the kit's "
+                      "channel "
+                      "is paused")  # fmt: skip
 
     # -------------------------------------------------------------------------------------- K8 questions
     def ready(self, group: str) -> bool:
@@ -1120,9 +1364,12 @@ class Kit:
         for f in sorted((self.ev / "collected").glob("windows-events-night*.txt")):
             with contextlib.suppress(OSError):
                 events += f.read_text(encoding="utf-8", errors="replace")
-        return {"modern_standby": machine.get("modern_standby"), "slept_lines_in_the_nights": len(slept),
-                "sleeps_in_the_nights": len(re.findall(r"Event ID: 42\b", events)),  # Kernel-Power: sleep
-                "hand_check_files": files}
+        return {
+            "modern_standby": machine.get("modern_standby"),
+            "slept_lines_in_the_nights": len(slept),
+            "sleeps_in_the_nights": len(re.findall(r"Event ID: 42\b", events)),  # Kernel-Power: sleep
+            "hand_check_files": files,
+        }
 
     def k8(self) -> None:
         """The person's checklists: one bounded prompt for all of them; every answer is saved as it is
@@ -1177,18 +1424,29 @@ class Kit:
     def parts(self) -> list[tuple[str, Path, str]]:
         """(name in the zip, file, why it may be missing): the Head's checklist (card 4b.3)."""
         ev, home = self.ev, self.home
-        out = [(n, ev / n, w) for n, w in (
-            ("machine.json", "step 2 has not run yet"), ("verify.json", "step 3 has not run yet"),
-            ("proofs.json", "step 3 has not run yet"), ("story/story.json", "step 4 has not finished"),
-            ("story/frames.png", "no finished video (or FFmpeg failed: story.json says why)"),
-            ("story/sheet.txt", "no finished video"), ("story/sheet.json", "no finished video"),
-            ("story/studio-run.log", "the kit started no video"), ("watch.json", "not answered yet"),
-            ("paste.json", "not answered yet"), ("morning.json", "not answered yet"),
-            ("task_end.json", "not asked yet (after step 5)"),
-            ("standby.json", "not asked yet (after step 5)"))]
-        out += [("logs/verify-report.json", home / "logs" / "verify-report.json", "ns verify wrote none"),
-                ("run/vram-need.json", home / "run" / "vram-need.json", "no model load was measured yet"),
-                ("run/morning_note.json", home / "run" / "morning_note.json", "no morning note waits")]
+        out = [
+            (n, ev / n, w)
+            for n, w in (
+                ("machine.json", "step 2 has not run yet"),
+                ("verify.json", "step 3 has not run yet"),
+                ("proofs.json", "step 3 has not run yet"),
+                ("story/story.json", "step 4 has not finished"),
+                ("story/frames.png", "no finished video (or FFmpeg failed: story.json says why)"),
+                ("story/sheet.txt", "no finished video"),
+                ("story/sheet.json", "no finished video"),
+                ("story/studio-run.log", "the kit started no video"),
+                ("watch.json", "not answered yet"),
+                ("paste.json", "not answered yet"),
+                ("morning.json", "not answered yet"),
+                ("task_end.json", "not asked yet (after step 5)"),
+                ("standby.json", "not asked yet (after step 5)"),
+            )
+        ]
+        out += [
+            ("logs/verify-report.json", home / "logs" / "verify-report.json", "ns verify wrote none"),
+            ("run/vram-need.json", home / "run" / "vram-need.json", "no model load was measured yet"),
+            ("run/morning_note.json", home / "run" / "morning_note.json", "no morning note waits"),
+        ]
         nights = self.state.get("nights") or []
         if nights:
             ledger = sorted((home / "data" / "ledger").glob("ledger-*.jsonl"))
@@ -1225,15 +1483,24 @@ class Kit:
         return target
 
     def readme(self) -> str:
-        top = (f"SIMULATED GRAPHICS CARD ({self.mark}): this zip comes from a test install. Nothing in it is "
-               "evidence of the GPU PC." if self.mark else "Real graphics card: the GPU PC's own readings.")
+        top = (
+            f"SIMULATED GRAPHICS CARD ({self.mark}): this zip comes from a test install. Nothing in it is "
+            "evidence of the GPU PC."
+            if self.mark
+            else "Real graphics card: the GPU PC's own readings."
+        )
         lines = [top, f"Nightshift GPU kit {self.version}, install kind {self.kind}"
                  + (" (dry run)" if self.dry_run else ""), ""]  # fmt: skip
         for s in STEPS:
             rec = self.state.get("steps", {}).get(s) or {}
             lines.append(f"{s} {TITLES[s]}: {rec.get('result', 'NOT RUN')}  {rec.get('line', 'not reached')}")
-        lines += ["", "Masked in every text file:", *(f"- {m}" for m in MASKED), "",
-                  "The kit records facts; whether the nights passed is read by the Head from them."]
+        lines += [
+            "",
+            "Masked in every text file:",
+            *(f"- {m}" for m in MASKED),
+            "",
+            "The kit records facts; whether the nights passed is read by the Head from them.",
+        ]
         return scrub_text("\n".join(lines) + "\n", Masks.here(self.home))
 
     # -------------------------------------------------------------------------------------- the run
@@ -1374,10 +1641,23 @@ def _loads(raw: Any) -> Any:
         return raw
 
 
+def _secs(seconds: Any) -> str:
+    """A number of seconds in words ("2 h 5 min", "3 min 12 s"); "an unknown time" when it is not one."""
+    try:
+        s = int(float(seconds))
+    except (TypeError, ValueError):
+        return "an unknown time"
+    return f"{s // 3600} h {s % 3600 // 60} min" if s >= 3600 else f"{s // 60} min {s % 60} s"
+
+
 def _span(a: datetime | str | None, b: datetime | str | None) -> str:
     try:
-        s = int(((b if isinstance(b, datetime) else datetime.fromisoformat(str(b)))
-                 - (a if isinstance(a, datetime) else datetime.fromisoformat(str(a)))).total_seconds())
+        s = int(
+            (
+                (b if isinstance(b, datetime) else datetime.fromisoformat(str(b)))
+                - (a if isinstance(a, datetime) else datetime.fromisoformat(str(a)))
+            ).total_seconds()
+        )
     except (TypeError, ValueError):
         return "an unknown time"
     return f"{s // 3600} h {s % 3600 // 60} min" if s >= 3600 else f"{s // 60} min {s % 60} s"
@@ -1451,8 +1731,10 @@ def start(args: argparse.Namespace, env: KitEnv) -> Kit:
         raise Refused("-DryRun is for a laptop test install only; this is a real install. Run the kit "
                       "without it.")  # fmt: skip
     if not args.dry_run and info.kind != "gpu":
-        raise Refused(f"This install ({home}) is not a GPU install (kind: {info.kind}). The kit proves the "
-                      "GPU PC: install the candidate there with INSTALL.cmd, then run its GPU-KIT.cmd.")
+        raise Refused(
+            f"This install ({home}) is not a GPU install (kind: {info.kind}). The kit proves the "
+            "GPU PC: install the candidate there with INSTALL.cmd, then run its GPU-KIT.cmd."
+        )
     offset = timedelta(0)
     if args.clock:
         try:
@@ -1477,16 +1759,26 @@ def start(args: argparse.Namespace, env: KitEnv) -> Kit:
 
         kit.mark = gpu.simulated_mark(gpu.smi_source(Paths(home)))
         kit.state.setdefault("started", kit.iso())
-        older = sorted({str(s.get("version")) for s in kit.state.get("steps", {}).values()
-                        if isinstance(s, dict) and s.get("version") and s.get("version") != info.version})
+        older = sorted(
+            {
+                str(s.get("version"))
+                for s in kit.state.get("steps", {}).values()
+                if isinstance(s, dict) and s.get("version") and s.get("version") != info.version
+            }
+        )
         line = f"the install is {info.version} at {home}"
         if older:  # one state for every version: an older kit's steps stay done, its nights are collected
             line += f"; going on from the kit of {', '.join(older)} (its steps and armed nights are kept)"
         versions = list(dict.fromkeys([*kit.state.get("versions", []), info.version]))
         kit.state.update({"version": info.version, "versions": versions, "kind": info.kind,
                           "simulated": kit.mark, "dry_run": args.dry_run})  # fmt: skip
-        kit.state.setdefault("steps", {})["K0"] = {"result": "PASS", "done": True, "at": kit.iso(),
-                                                   "version": info.version, "line": line}
+        kit.state.setdefault("steps", {})["K0"] = {
+            "result": "PASS",
+            "done": True,
+            "at": kit.iso(),
+            "version": info.version,
+            "line": line,
+        }
         kit.save()
     except BaseException:
         kit.close()
