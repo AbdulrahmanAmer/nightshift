@@ -71,6 +71,9 @@ def _root(ctx: typer.Context) -> None:
         return
     try:    # D-35: no install named or found: NS-E123 before any command opens or writes a home
         homecheck.check_root(ctx)
+        # version-mismatch-writes: NS-E128 for a command that writes (the one table, `homeguard.COMMANDS`)
+        # when this window's NIGHTSHIFT_HOME names an install of another version; reading goes on
+        homecheck.check_home(ctx, "ns")
     except NsError as e:
         raise _die(e) from e
 

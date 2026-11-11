@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from ns_common import first_start
+from ns_common import first_start, homeguard
 from ns_common.atomic import BACKUP_SUFFIX, quarantine, read_text_retry, write_text_atomic
 from ns_common.config_compat import disk_dict
 from ns_common.models import Channel, EmbedCfg, InstallState, Manifest, Runtime
@@ -85,8 +85,12 @@ def load_install_state(paths: Paths) -> InstallState:
         return InstallState.model_validate_json(read_text_retry(f, "utf-8-sig"))
     except ValueError:
         pass
-    first_start.guard(f)  # the torn file is moved aside: a change like any other (F-10c)
-    quarantine(f)
+    if not homeguard.decide(paths.home).foreign:
+        first_start.guard(f)  # the torn file is moved aside: a change like any other (F-10c)
+        quarantine(f)
+    # else: a READER in a window whose NIGHTSHIFT_HOME names an install of another version (NS-E128's state,
+    # card version-mismatch-writes). Reading is never refused and nothing there is changed: the torn file
+    # stays where it is for that install's own program, and the last good copy is read.
     try:
         return InstallState.model_validate_json(
             f.with_name(f.name + BACKUP_SUFFIX).read_text(encoding="utf-8-sig")

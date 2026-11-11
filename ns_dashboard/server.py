@@ -30,6 +30,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import NotModifiedResponse, StaticFiles
 from starlette.types import Scope
 
+from ns_common import homeguard
 from ns_common.db import UnusableDb
 from ns_common.dbrestore import BROKE_IN_DASHBOARD, is_damage_error, want_full_check
 from ns_common.dbrestore import DAMAGED_CODE as DB_DAMAGED
@@ -827,6 +828,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--open", action="store_true", help="open the dashboard in the default browser")
     ap.add_argument("--fake-services", action="store_true", help="use fake adapters (no GPU, no models)")
     args = ap.parse_args(argv)
+    try:    # version-mismatch-writes: a dashboard of another version never starts on this home (NS-E128)
+        homeguard.require_own(Paths.from_env().home, "studio dashboard")
+    except NsError as e:     # before `configure_tmp` empties the tmp folder: nothing was changed
+        sys.stderr.write(f"{e}\nHint: {e.definition.hint}\n")
+        return 1
     from ns_studio.gate import refusal
 
     why = refusal()     # D-48: it runs jobs; the engine that starts it passed the same gate, a hand start not

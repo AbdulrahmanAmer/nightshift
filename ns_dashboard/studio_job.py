@@ -269,8 +269,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--args", required=True, type=Path, help="JSON file with the arguments of the kind")
     ns = ap.parse_args(argv)
     try:
+        from ns_common import homeguard
         from ns_studio.gate import job_gate
 
+        # version-mismatch-writes: NS-E128 (an `error` event) when this child was started by hand in a window
+        # whose NIGHTSHIFT_HOME names an install of another version; the dashboard starts it on its own home
+        homeguard.require_own(_paths().home, "studio dashboard")
         job_gate()      # D-48: NS-W210 (an `error` event) before the job's handler opens anything
         args = json.loads(ns.args.read_text(encoding="utf-8"))
         result = HANDLERS[ns.kind](args)
