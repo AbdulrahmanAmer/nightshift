@@ -343,7 +343,8 @@ def sheet_text(
         f"  Made for kids: {_yes_no(meta.made_for_kids)}",
         f"  Age restriction suggested: {_yes_no(meta.age_restrict_suggested)}",
     ]
-    credit = yr.credit_line([c.source for c in meta.clips])  # an offer (card stock-truth), never a field
+    # an offer (card stock-truth), never a field, counted against R3 with the description and hashtags
+    credit = yr.credit_line([c.source for c in meta.clips], meta.description, meta.hashtags)
     if credit:
         lines += ["", credit]
     if related_title:

@@ -296,6 +296,8 @@ def _run_jobs(
             env.log.info("run_channel_paused", channel=ctx.channel.slug, job_id=ctx.job_id)
             who = f"{ctx.channel.display_name} ({ctx.channel.slug})"
             raise StudioError(PAUSED, f"{who}: job {ctx.job_id} was not continued")
+        # only when it will still fetch stock footage (its `clips` not done): no key or every key refused
+        precheck(env.services, env.paths, env.log, fmt=str(ctx.fmt), job_dir=ctx.job_dir)
         # a resumed job needs only what its unfinished stages still write; refused (NS-E104) before it starts
         require_story_room(env.paths, env.log, ctx.channel, ctx.fmt, fake=env.fake, resume_dir=ctx.job_dir)
         jobs.record_policy(ctx, policy)  # after the last refusal (the pause and the room checks above)
@@ -325,7 +327,7 @@ def _run_jobs(
                 echo(f"channel {ch.slug} was paused: {count - n} job(s) not started")
                 break
             # before any GPU work: `clips` would fail an hour in (no key, or every stored key refused)
-            precheck(env.services, env.paths, env.log)
+            precheck(env.services, env.paths, env.log, fmt=job_fmt)
             # and before the job exists: a drive with less room than the job needs writes nothing (D-33)
             require_story_room(env.paths, env.log, ch, job_fmt, fake=env.fake)
             if script is not None:

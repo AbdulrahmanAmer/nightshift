@@ -181,7 +181,9 @@ class _HttpSource:
     @property
     def key_id(self) -> str:
         """A short hash that tells two keys apart (the check's cache); the key cannot be read back from it."""
-        return hashlib.sha256(f"stock-key|{self.name}|{self._key}".encode()).hexdigest()[:16]
+        from ns_studio.footage_keys import stock_key_id
+
+        return stock_key_id(self.name, self._key)
 
     def check_key(self) -> sa.Answer:
         """The check before a job (`footage_keys`): ONE request at this source's search endpoint, at most
@@ -218,6 +220,11 @@ class _HttpSource:
                 answer = self._classify(failed=e)
             if answer.ok:
                 return dict(answer.data)
+            if answer.kind == sa.KEY_WRONG:  # an "ok" kept by the check before the job is wrong now: fix it
+                from ns_studio.footage_keys import remember_refused
+
+                if remember_refused(self.cache_dir, self.name, self.key_id, answer.why) and self.log:
+                    self.log.warn("stock_key_refused_by_search", source=self.name, code=answer.code)
             if answer.kind in (sa.KEY_WRONG, sa.UNEXPECTED):
                 raise answer.error()
             if answer.kind == sa.RATE_LIMITED:

@@ -5,8 +5,9 @@ the captions (30 to 90 minutes). Without a key that stage fails with a Pexels or
 nightly planner, `studio run` and the dashboard refuse the job up front instead, with `NS-E502`.
 
 A key that is stored but wrong or revoked was found only at that stage too. `precheck` is the ONE check
-before a job that needs stock footage begins (the nightly's `_attempt`, `studio run`, Create and Retry of a
-new video through `studio_bridge`): ONE bounded request per site with a stored key (`check_key` of the source:
+before a job begins (the nightly's `_attempt`, `studio run` and its `--resume`, Create and Retry through
+`studio_bridge`), for a job that will still fetch stock footage (`needs_stock`, the one question): ONE
+bounded request per site with a stored key (`check_key` of the source:
 at most `stock_answer.TIMEOUT_S`, no retry), read by `ns_common.stock_answer`, its answer kept in
 `cache/search/stock-keys.json` for `KNOWN_TTL_S` (ok or wrong: a night of several jobs asks once) or
 `UNSURE_TTL_S` (busy, failing, out of reach, not understood). The cache is keyed by a hash of the key, so a
@@ -16,9 +17,11 @@ key pasted again in Settings is asked about at the next job. It sits beside the 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Protocol
 
 from ns_common import stock_answer as sa
@@ -60,13 +63,17 @@ def require_footage_key(services: HasFootageKey) -> None:
         raise NsError("NS-E502", NO_FOOTAGE_KEY)
 
 
-def _read_cache(paths: Paths) -> dict[str, Any]:
+def _read_cache_file(f: Path) -> dict[str, Any]:
     """The kept answers; a missing, torn or foreign file is an empty cache (the next job asks again)."""
     try:
-        data = json.loads(read_text_retry(paths.cache_search / CHECK_FILE))
+        data = json.loads(read_text_retry(f))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _read_cache(paths: Paths) -> dict[str, Any]:
+    return _read_cache_file(paths.cache_search / CHECK_FILE)
 
 
 def _fresh(entry: Any, key_id: str, now: float) -> sa.Answer | None:
@@ -129,9 +136,13 @@ def wrong_key_note(wrong: list[sa.Answer], answers: list[sa.Answer]) -> str:
         return (f"{first} No video that needs stock footage starts until it is fixed: paste the key again in "
                 f"{sa.KEYS_PLACE}. The next video you start, and the next nightly run{IF_NIGHTLY_ON}, check "
                 "it again.")
-    others = " and ".join(a.name for a in answers if a.kind != sa.KEY_WRONG)
-    return (f"{first} Videos use {others} footage only until you paste the key again in {sa.KEYS_PLACE} "
-            "(or clear it there).")
+    way = f"paste the key again in {sa.KEYS_PLACE} (or clear it there)"
+    usable = " and ".join(a.name for a in answers if a.ok)
+    if usable:
+        return f"{first} Videos use {usable} footage only until you {way}."
+    unsure = " and ".join(a.name for a in answers if not a.checked)
+    return (f"{first} {unsure} could not be checked now; videos use its footage if it answers. To use both "
+            f"sites again, {way}.")
 
 
 def _leave_note(paths: Paths, log: NsLogger, message: str) -> None:
@@ -150,15 +161,102 @@ def _leave_note(paths: Paths, log: NsLogger, message: str) -> None:
         log.warn("morning_note_failed", str(e))
 
 
+#: The stages that search or download stock footage (each builds a `Searcher` over the clip sources):
+#: `clips` (a Short's parts, and the master's through `run_clips_master`) and `shorts_derive` (fresh Shorts).
+STOCK_STAGES = ("clips", "shorts_derive")
+
+
+def needs_stock(services: HasSources, fmt: str, job_dir: Path | None = None) -> bool:
+    """The ONE question before a job (the nightly, `studio run`, Create and Retry ask it alike): will this job
+    still fetch stock footage? Answered from the job's own plan and stage record (`stage_state.json`):
+
+    | the job | answer |
+    |---|---|
+    | the clip sources are placeholders (fake services, dev install, `fake_footage` engine test) | no |
+    | its plan has no stock stage (`STOCK_STAGES`) | no |
+    | a new job (`job_dir` None) whose plan has one | yes |
+    | a resumed job with a stock stage not recorded `done` | yes |
+    | a resumed job whose stock stages are all recorded `done` | no |
+    | a resumed job whose stage record cannot be read, or whose format nothing names | yes (the safe side) |
+
+    The Clipper (own footage) never asks: it builds no story job. A stock stage whose inputs changed since it
+    was recorded done reruns; its own search then tells a refused key with the same classifier."""
+    from ns_studio.media.clip_sources import keyed
+    from ns_studio.orchestrator import plan_format, plan_names
+    from ns_studio.stages import StageState
+
+    sources = list(services.clip_sources)
+    if sources and not keyed(sources) and services.footage_key:  # placeholders only: no stock is fetched
+        return False
+    if job_dir is not None and not fmt:  # a record that names no format: the job's own `job.json` does
+        fmt = str(_read_cache_file(job_dir / "job.json").get("fmt") or "")
+        if not fmt:
+            return True  # nothing tells: the safe side (the check only asks)
+    key = plan_format(fmt, job_dir) if job_dir is not None else fmt
+    stock = [n for n in plan_names(key, True) if n in STOCK_STAGES]
+    if not stock:
+        return False
+    if job_dir is None:
+        return True
+    try:
+        entries = StageState.load(job_dir).entries
+    except (OSError, ValueError):
+        return True
+    return any(not isinstance(entries.get(n), dict) or entries[n].get("status") != "done" for n in stock)
+
+
+def stock_key_id(provider: str, key: str) -> str:
+    """A short hash that tells two keys apart (the check's cache); the key cannot be read back from it."""
+    return hashlib.sha256(f"stock-key|{provider}|{key}".encode()).hexdigest()[:16]
+
+
+def remember_refused(cache_dir: Path, provider: str, key_id: str, why: str, now: float | None = None) -> bool:
+    """A search found the key refused (the `clips` stage, after an earlier "ok" was kept): correct the kept
+    answer, so the next job stops at its start instead of failing at `clips` again. Only an entry for this
+    very key in an existing check file is changed (a test source's folder gets no file); True when changed."""
+    f = cache_dir / CHECK_FILE
+    if not f.is_file():
+        return False
+    cache = _read_cache_file(f)
+    entry = cache.get(provider)
+    if not isinstance(entry, dict) or entry.get("key_id") != key_id or entry.get("kind") == sa.KEY_WRONG:
+        return False
+    cache[provider] = {**entry, "kind": sa.KEY_WRONG, "why": why, "at": time.time() if now is None else now}
+    try:
+        write_text_atomic(f, json.dumps(cache, indent=2) + "\n")
+    except OSError:
+        return False
+    return True
+
+
+def refused_sentence(paths: Paths, keys: Mapping[str, str], *, now: float | None = None) -> str | None:
+    """What the kept answers already say about the stored `keys` (no request): the sentence of a refused key,
+    for an answer given before the job runs (the dashboard's Create), else None."""
+    cache = _read_cache(paths)
+    now = time.time() if now is None else now
+    wrong = [a for p, k in keys.items() if k and (a := _fresh(cache.get(p), stock_key_id(p, k), now))
+             and a.kind == sa.KEY_WRONG]
+    if not wrong:
+        return None
+    return " ".join(f"{sa.NAMES.get(a.provider, a.provider)} did not accept the key stored on this PC "
+                    f"({a.why}): it is wrong or was revoked." for a in wrong) + (
+        f" Paste it again in {sa.KEYS_PLACE}.")
+
+
 def precheck(
-    services: HasSources, paths: Paths, log: NsLogger, *, now: float | None = None
+    services: HasSources, paths: Paths, log: NsLogger, *, fmt: str, job_dir: Path | None = None,
+    now: float | None = None,
 ) -> list[sa.Answer]:
-    """The check before a job that needs stock footage begins. Raises NS-E502 when no key is stored, and the
-    refused key's code (NS-E502 before NS-E501) when EVERY site with a stored key said its key is wrong: no
-    job is made and no model loads. A rate limit, a failing site, no connection or an answer not understood
-    does not stop the job (the `clips` stage's own retries handle it then). A key refused when it was just
+    """The check before a job begins, for a job that will still fetch stock footage (`needs_stock`; any
+    other job passes untouched, a missing key too). Raises NS-E502 when no key is stored, and the refused
+    key's code (NS-E502 before NS-E501) when EVERY site with a stored key said its key is wrong: no job is
+    made and no model loads. A rate limit, a failing site, no connection or an answer not understood does
+    not stop the job (the `clips` stage's own retries handle it then). A key refused when it was just
     asked about is told in a note (at most once per `KNOWN_TTL_S` per key); one refused key beside a usable
     site lets the job run on that site."""
+    if not needs_stock(services, fmt, job_dir):
+        log.info("stock_check_not_needed", fmt=fmt, resumed=job_dir is not None)
+        return []
     require_footage_key(services)
     answers, asked = check_stock_keys(services, paths, log, now=now)
     wrong = [a for a in answers if a.kind == sa.KEY_WRONG]

@@ -143,8 +143,10 @@ def test_fake_subset_is_accepted_and_bad_name_rejected(tmp_home: Path, stub_stag
 def test_run_without_a_footage_key_is_refused_before_any_job(
     tmp_home: Path, stub_stages, monkeypatch: pytest.MonkeyPatch
 ):
-    """Gap L3: real clip sources and no key: NS-E502 at once, no job folder, no stage run."""
+    """Gap L3: real clip sources and no key: NS-E502 at once, no job folder, no stage run. The plan has its
+    stock stage (card stock-truth: only a job that will fetch stock footage is checked, `needs_stock`)."""
     monkeypatch.setattr(jobs, "load_keys", lambda: {})
+    monkeypatch.setitem(FORMAT_STAGES, "shorts_only", ["stub_a", "clips", "stub_b"])
     res = runner.invoke(app, ["run", "--fake-services=llm,tts", "--format", "shorts_only"])
     assert res.exit_code == 1
     assert "NS-E502" in res.output

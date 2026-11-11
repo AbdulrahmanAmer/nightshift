@@ -301,7 +301,9 @@ def test_setup_accepts_a_key_it_cannot_check_now(sites: dict[str, StandIn], tmp_
     except NsError as e:
         raised = e.code
     stored = ctx.store.get("pixabay_api_key") == KEY
-    said = "Could not check the Pixabay key now" in ui.text and "not answering" in ui.text
+    # NS-W502: said in the window or console, kept as a notice, listed by the install summary (ctx.warnings)
+    said = ("NS-W502" in ui.text and "not answering" in ui.text
+            and any(code == "NS-W502" and "not answering" in d for code, d in ctx.warnings))
     # a wrong key is still refused on both
     sites["pixabay"].mode = "key_wrong"
     bad = setup_keys.check_key("pixabay", KEY)
@@ -381,8 +383,32 @@ def test_a_wrong_key_stops_the_night_before_any_model_loads(sites: dict[str, Sta
     assert len(notes) == 1 and "while Automatic runs are on in Settings" in notes[0]
 
 
+class StubClips:
+    """A `clips` stage that fetches nothing: the plan has a stock stage, and no model or site is touched."""
+
+    name = "clips"
+    tenant = None
+    inputs = ("a.json",)
+    outputs = ("clips/shots.json",)
+
+    def run(self, ctx: Any) -> None:
+        CALLS.append("clips")
+        ctx.subdir("clips")
+        ctx.write_json("clips/shots.json", {})
+
+
+@pytest.fixture
+def stock_plan(stub_stages: None, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
+    """`shorts_only` = stub_a, clips, stub_b: a story plan with its stock stage, all stubs."""
+    from ns_studio.orchestrator import FORMAT_STAGES
+    from ns_studio.stages import REGISTRY
+
+    monkeypatch.setitem(REGISTRY, "clips", StubClips())
+    monkeypatch.setitem(FORMAT_STAGES, "shorts_only", ["stub_a", "clips", "stub_b"])
+
+
 def test_studio_run_stops_on_a_wrong_key_before_any_stage(
-    sites: dict[str, StandIn], tmp_home: Path, stub_stages: None, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    sites: dict[str, StandIn], tmp_home: Path, stock_plan: None, monkeypatch: pytest.MonkeyPatch
 ):
     from ns_studio.cli import app
 
@@ -428,18 +454,18 @@ def test_the_check_is_kept_for_its_stated_time_and_asked_again_after(
     from ns_studio import footage_keys as fk
 
     env = _night_env(tmp_home, sites, {"pixabay": KEY})
-    fk.precheck(env.services, env.paths, env.log, now=1000.0)
-    fk.precheck(env.services, env.paths, env.log, now=1000.0 + fk.KNOWN_TTL_S - 1)
+    fk.precheck(env.services, env.paths, env.log, fmt="shorts_only", now=1000.0)
+    fk.precheck(env.services, env.paths, env.log, fmt="shorts_only", now=1000.0 + fk.KNOWN_TTL_S - 1)
     assert sites["pixabay"].searches == 1                         # just inside: kept
-    fk.precheck(env.services, env.paths, env.log, now=1000.0 + fk.KNOWN_TTL_S)
+    fk.precheck(env.services, env.paths, env.log, fmt="shorts_only", now=1000.0 + fk.KNOWN_TTL_S)
     assert sites["pixabay"].searches == 2                         # at the end: asked again
     sites["pixabay"].mode = "failing"
-    fk.precheck(env.services, env.paths, env.log, now=1_000_000.0)
-    fk.precheck(env.services, env.paths, env.log, now=1_000_000.0 + fk.UNSURE_TTL_S - 1)
-    fk.precheck(env.services, env.paths, env.log, now=1_000_000.0 + fk.UNSURE_TTL_S)
+    fk.precheck(env.services, env.paths, env.log, fmt="shorts_only", now=1_000_000.0)
+    fk.precheck(env.services, env.paths, env.log, fmt="shorts_only", now=1_000_000.0 + fk.UNSURE_TTL_S - 1)
+    fk.precheck(env.services, env.paths, env.log, fmt="shorts_only", now=1_000_000.0 + fk.UNSURE_TTL_S)
     assert sites["pixabay"].searches == 4                         # unsure: kept 30 minutes, then asked again
     env.services.clip_sources = [_source("pixabay", sites["pixabay"], env.paths.cache_search, KEY + "x")]
-    fk.precheck(env.services, env.paths, env.log, now=1_000_000.0 + fk.UNSURE_TTL_S)
+    fk.precheck(env.services, env.paths, env.log, fmt="shorts_only", now=1_000_000.0 + fk.UNSURE_TTL_S)
     assert sites["pixabay"].searches == 5                         # a new key is asked about at once
 
 
@@ -448,7 +474,8 @@ def test_a_torn_cache_file_is_asked_again(sites: dict[str, StandIn], tmp_home: P
 
     env = _night_env(tmp_home, sites, {"pixabay": KEY})
     (env.paths.cache_search / fk.CHECK_FILE).write_text('{"pixabay": {"key_id"', encoding="utf-8")
-    assert [a.kind for a in fk.precheck(env.services, env.paths, env.log, now=5.0)] == ["ok"]
+    kinds = [a.kind for a in fk.precheck(env.services, env.paths, env.log, fmt="shorts_only", now=5.0)]
+    assert kinds == ["ok"]
     assert sites["pixabay"].searches == 1
     kept = json.loads((env.paths.cache_search / fk.CHECK_FILE).read_text(encoding="utf-8"))
     assert kept["pixabay"]["kind"] == "ok"
@@ -533,3 +560,212 @@ def test_the_sheet_offers_an_optional_credit_line():
     # a sheet an earlier release wrote (no credit line) is not taken for one the owner edited
     earlier = "\n".join(ln for ln in with_credit.splitlines() if not ln.startswith("OPTIONAL CREDIT")) + "\n"
     assert yr.bare_sheet(earlier) == yr.bare_sheet(with_credit)
+
+
+def _meta(description: str, hashtags: list[str], sources: list[str]) -> Any:
+    from ns_common.models import Metadata
+
+    return Metadata.model_validate({
+        "channel": "after-dark", "job_id": "after-dark-20261111-0e02", "kind": "short", "k": 1, "title": "T",
+        "description": description, "tags": [], "hashtags": hashtags, "publish_after": "2026-11-12T18:00",
+        "ai_disclosure": "no", "made_for_kids": False, "age_restrict_suggested": False, "combo_id": "x",
+        "prompt_versions": {}, "clips": [{"id": str(i), "url": "u", "license": "l", "source": s}
+                                         for i, s in enumerate(sources)]})
+
+
+def test_the_credit_counts_against_youtubes_5000_bytes():
+    """Review blocker B: the credit is offered only when description + hashtags + credit stay within R3's
+    5,000 bytes; else the sheet says it was left out. A Japanese description fitted to the limit by the
+    sheet's own `fit` leaves no room; both ends of the bound are tested with multi-byte text."""
+    from ns_studio.media import outbox
+    from ns_studio.media import youtube_rules as yr
+
+    tags = ["#怖い話"]
+    fitted = yr.fit(title="T", description="夜の廊下で誰かが待っている。" * 400, tags=[], hashtags=tags)
+    full = outbox.sheet_text(_meta(fitted.description, fitted.hashtags, ["pixabay"]), "s1.mp4")
+    line = next(ln for ln in full.splitlines() if ln.startswith("OPTIONAL CREDIT"))
+    assert line.startswith("OPTIONAL CREDIT left out:") and "of YouTube's 5,000 bytes" in line
+    assert "paste it" not in line
+    credit = "\n\nStock footage from Pixabay."
+    room = 5000 - yr.hashtag_line_bytes(tags) - yr.description_bytes(credit)  # line breaks count CR LF
+    exact = "あ" * (room // 3) + "a" * (room % 3)  # exactly `room` bytes: the credit fits to the last byte
+    assert len(exact.encode()) == room
+    at_limit = outbox.sheet_text(_meta(exact, tags, ["pixabay"]), "s1.mp4")
+    assert yr.CREDIT_PREFIX + "Stock footage from Pixabay." in at_limit
+    over = outbox.sheet_text(_meta(exact + "a", tags, ["pixabay"]), "s1.mp4")
+    assert yr.CREDIT_PREFIX not in over and "OPTIONAL CREDIT left out" in over
+
+
+# ------------------------------------------------------------------------------- review round 1 (0b2467e)
+def test_the_one_question_has_one_answer_per_row(sites: dict[str, StandIn], tmp_home: Path):
+    """Review blocker A: `needs_stock`, one row per line of its table."""
+    from ns_studio import footage_keys as fk
+    from ns_studio.stages import STATE_FILE
+
+    env = _night_env(tmp_home, sites, {"pixabay": KEY})
+    services = env.services
+    fake = jobs.open_env(light=True).services  # placeholder footage (the light env's fake source)
+    job = env.paths.jobs_dir / "after-dark-20261111-aaaa"
+    job.mkdir(parents=True)
+
+    def state(entries: dict[str, Any] | str) -> Path:
+        (job / STATE_FILE).write_text(entries if isinstance(entries, str) else json.dumps(entries), "utf-8")
+        return job
+
+    done = {"status": "done", "inputs_hash": "x"}
+    rows = {
+        "placeholders": fk.needs_stock(fake, "shorts_only"),
+        "no stock stage (the clip feature)": fk.needs_stock(services, "clip"),
+        "new story job": fk.needs_stock(services, "shorts_only"),
+        "resumed, clips not done": fk.needs_stock(services, "shorts_only", state({"story": done})),
+        "resumed, clips done": fk.needs_stock(services, "shorts_only", state({"clips": done})),
+        "resumed master, clips done, shorts_derive not": fk.needs_stock(
+            services, "master_first", state({"clips": done})),
+        "resumed master, both done": fk.needs_stock(
+            services, "master_first", state({"clips": done, "shorts_derive": done})),
+        "resumed, record unreadable": fk.needs_stock(services, "shorts_only", state("{torn")),
+    }
+    (job / "job.json").write_text(json.dumps({"fmt": "shorts_only"}), "utf-8")
+    rows["resumed, format from job.json"] = fk.needs_stock(services, "", state({"clips": done}))
+    (job / "job.json").unlink()
+    rows["resumed, format named nowhere"] = fk.needs_stock(services, "", state({"clips": done}))
+    assert rows == {
+        "placeholders": False, "no stock stage (the clip feature)": False, "new story job": True,
+        "resumed, clips not done": True, "resumed, clips done": False,
+        "resumed master, clips done, shorts_derive not": "shorts_derive" in _plan("master_first"),
+        "resumed master, both done": False, "resumed, record unreadable": True,
+        "resumed, format from job.json": False, "resumed, format named nowhere": True,
+    }
+
+
+def _plan(fmt: str) -> list[str]:
+    from ns_studio.orchestrator import plan_names
+
+    return plan_names(fmt, True)
+
+
+def test_retry_checks_a_resumed_job_only_while_it_still_fetches_stock(
+    sites: dict[str, StandIn], tmp_home: Path, stock_plan: None, monkeypatch: pytest.MonkeyPatch
+):
+    """Review blocker A, the Retry route (`studio run --resume`): past `clips` with every key refused, the
+    job runs to its end and nothing is asked; before `clips`, it is refused with no stage run."""
+    from ns_studio import footage_keys as fk
+    from ns_studio.cli import app
+    from ns_studio.stages import STATE_FILE
+    from tests.test_cli import _job_ids
+
+    monkeypatch.setattr(jobs, "load_keys", lambda: {"pixabay": KEY})
+    first = CliRunner().invoke(app, ["run", "--fake-services=llm,tts", "--format", "shorts_only"])
+    assert first.exit_code == 0, first.output
+    job_id = _job_ids(first.output)[0]
+    job, paths = Paths.from_env().job_dir(job_id), Paths.from_env()
+    sites["pixabay"].mode = "key_wrong"
+    (paths.cache_search / fk.CHECK_FILE).unlink(missing_ok=True)
+
+    def undo(*stages: str) -> None:
+        st = json.loads((job / STATE_FILE).read_text(encoding="utf-8"))
+        for s in stages:
+            st.pop(s, None)
+        (job / STATE_FILE).write_text(json.dumps(st), encoding="utf-8")
+
+    undo("stub_b")  # interrupted after clips
+    asked = sites["pixabay"].searches
+    CALLS.clear()
+    past = CliRunner().invoke(app, ["run", "--fake-services=llm,tts", "--resume", job_id])
+    assert past.exit_code == 0 and CALLS == ["b"], past.output
+    assert sites["pixabay"].searches == asked  # nothing asked: it needs no more footage
+    undo("clips", "stub_b")  # interrupted before clips
+    CALLS.clear()
+    before = CliRunner().invoke(app, ["run", "--fake-services=llm,tts", "--resume", job_id])
+    assert before.exit_code == 1 and CALLS == [] and "NS-E502" in before.output, before.output
+
+
+def test_the_nightly_continues_a_job_past_clips_with_every_key_refused(
+    sites: dict[str, StandIn], tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Review blocker A, the nightly route (`daily._attempt` of `_resume_interrupted`)."""
+    from functools import partial
+
+    from ns_studio.stages import STATE_FILE
+
+    sites["pixabay"].mode = "key_wrong"
+    env = _night_env(tmp_home, sites, {"pixabay": KEY})
+    ch = __import__("ns_studio.channels.crud", fromlist=["get_channel"]).get_channel(env.paths, "after-dark")
+    ctx = jobs.make_job(env, ch, "shorts_only", rng=random.Random(2))
+    done = {"status": "done", "inputs_hash": "x"}
+
+    def attempt(entries: dict[str, Any]) -> tuple[str | None, list[str]]:
+        (ctx.job_dir / STATE_FILE).write_text(json.dumps(entries), encoding="utf-8")
+        ran: list[str] = []
+        report: dict[str, Any] = {"jobs": [], "failures": []}
+        code = daily._attempt(env, lambda c: ran.append(c.job_id) or [], report,
+                              partial(jobs.load_job, env, ctx.job_id), "after-dark", run_id="daily-test",
+                              fmt="shorts_only", resume_dir=ctx.job_dir, resumed=True)
+        return code, ran
+
+    assert attempt({"clips": done}) == (None, [ctx.job_id])         # past clips: it runs to its end
+    code, ran = attempt({"story": done})                            # before clips: refused, nothing runs
+    assert (code, ran) == ("NS-E502", [])
+
+
+def test_a_search_that_finds_the_key_refused_corrects_the_kept_answer(
+    sites: dict[str, StandIn], tmp_home: Path
+):
+    """Review note 1: an "ok" kept, then the `clips` stage's search finds the key refused: the next job
+    stops at its start without asking."""
+    from ns_studio import footage_keys as fk
+
+    env = _night_env(tmp_home, sites, {"pixabay": KEY})
+    fk.precheck(env.services, env.paths, env.log, fmt="shorts_only")
+    sites["pixabay"].mode = "key_wrong"
+    with pytest.raises(NsError):
+        env.services.clip_sources[0].search("fog", orientation="landscape")
+    asked = sites["pixabay"].searches
+    with pytest.raises(NsError) as ei:
+        fk.precheck(env.services, env.paths, env.log, fmt="shorts_only")
+    assert ei.value.code == "NS-E502" and sites["pixabay"].searches == asked
+
+
+def test_one_wrong_key_beside_an_unsure_site_says_that_site_could_not_be_checked(
+    sites: dict[str, StandIn], tmp_home: Path
+):
+    """Review note 5: the note names only sites that answered ok; an unsure one is said as such."""
+    sites["pexels"].mode, sites["pixabay"].mode = "key_wrong", "failing"
+    env = _night_env(tmp_home, sites, {"pexels": KEY, "pixabay": KEY}, per_day=1)
+    _night(env)
+    notes = [n for n in _notes(env.paths) if "Pexels did not accept" in n]
+    assert len(notes) == 1 and "Pixabay could not be checked now" in notes[0]
+    assert "footage only" not in notes[0]
+
+
+def test_create_answers_with_a_key_the_kept_check_found_refused(sites: dict[str, StandIn], tmp_home: Path):
+    """Review note 6: Create's own answer carries the sentence (from the kept check; no request)."""
+    from ns_dashboard.handlers import build_state
+    from ns_dashboard.supervisor_link import SupervisorLink
+    from ns_dashboard.svc_channels import ChannelsService
+    from ns_dashboard.svc_jobs import JobsService
+    from ns_studio import footage_keys as fk
+    from tests.test_round3_footage_key import Keyring
+
+    sites["pexels"].mode = "key_wrong"
+    env = _night_env(tmp_home, sites, {"pexels": KEY, "pixabay": KEY})
+    fk.precheck(env.services, env.paths, env.log, fmt="shorts_only")  # one refused, one ok: kept
+    link = SupervisorLink("http://127.0.0.1:9", timeout_s=0.2)
+    state = build_state(env.paths, fake_services=True, link=link)
+    state.adapters.keyring = Keyring({"pexels_api_key": KEY, "pixabay_api_key": KEY})  # type: ignore[assignment]
+    state.fake_services = False
+    asked = sites["pexels"].searches
+    jobs_svc = JobsService(state, ChannelsService(state))
+    job = jobs_svc.create_run({"channel": "after-dark", "format": "shorts_only"})
+    assert "Pexels did not accept the key" in job["message"]
+    assert "Settings > Stock footage keys" in job["message"]
+    assert sites["pexels"].searches == asked
+
+
+def test_keys_left_in_an_answers_file_have_their_own_code():
+    """Review note 3: s07's check no longer reuses NS-E501 (a refused Pexels key)."""
+    from ns_common.errors import describe
+
+    src = (Path(__file__).resolve().parents[1] / "installer/stage2/steps/s07_configs.py").read_text("utf-8")
+    assert 'make_error("NS-E501"' not in src and 'make_error("NS-E126", f"API keys are still written' in src
+    assert "answers file" in describe("NS-E126").message and "Pexels" not in describe("NS-E126").hint

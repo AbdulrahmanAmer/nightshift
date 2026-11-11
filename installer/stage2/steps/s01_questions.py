@@ -148,10 +148,9 @@ def validate_pixabay(client: httpx.Client, key: str) -> sa.Answer:
 
 
 def unchecked_words(label: str, answer: sa.Answer, *, saved: bool) -> str:
-    """What setup says about a key the site could not be asked about now: why, and that it is kept."""
-    which = f"the saved {label} key" if saved else f"the {label} key"
-    return (f"Could not check {which} now: {answer.sentence} Setup keeps it; Nightshift checks it again "
-            "before the first video.")
+    """The detail of NS-W501/NS-W502 (whose message names the site and whose hint says it is kept): why."""
+    which = f"the {label} key saved earlier" if saved else f"the {label} key"
+    return f"{answer.sentence} ({which}, {answer.code})"
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -318,11 +317,14 @@ class S01Questions(Step):
     # ---- keys ----
     @staticmethod
     def _say_unchecked(ctx: StepContext, name: str, label: str, answer: sa.Answer, *, saved: bool) -> None:
-        """Tell the owner (setup's window or console, once per key) that a key could not be checked now."""
+        """Tell the owner (setup's window or console, once per key) that a key could not be checked now: a
+        warning (NS-W501 Pexels, NS-W502 Pixabay) that the window keeps as a notice on Verify and Done, and
+        the install summary lists (`ctx.warn`)."""
         if answer.checked:
             return
-        ctx.ui.say(unchecked_words(label, answer, saved=saved), "yellow")
         ctx.log.warn("key_unchecked", name=name, kind=answer.kind, code=answer.code, detail=answer.why)
+        ctx.warn("NS-W501" if answer.provider == "pexels" else "NS-W502",
+                 unchecked_words(label, answer, saved=saved))
 
     def _keys(self, ctx: StepContext) -> None:
         if ctx.simulate:
