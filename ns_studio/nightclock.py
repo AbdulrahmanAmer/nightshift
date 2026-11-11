@@ -60,12 +60,19 @@ BEAT_S = 30.0
 BEAT_FILE = "night-beat.json"
 #: A task start this far in the future is not this night's (a clock set back, a variable from elsewhere).
 FUTURE_SLACK_S = 300
+#: Card night-fits-b, 4b.4: the PC's sleep counter (`Clock.asleep`) grew by more than this between two beats:
+#: the PC slept (a `slept` ledger line). A job whose error comes within `WAKE_GRACE_S` after the wake stopped
+#: because of the sleep: it is interrupted. A later error is an ordinary failure.
+SLEEP_GAP_S = 90
+WAKE_GRACE_S = 120
 
 START_STUB, START_ANCESTOR, START_PROCESS = "stub", "ancestor", "process"
 
 
 class Clock(Protocol):
-    """Wall time (aware, UTC) and a monotonic counter for durations."""
+    """Wall time (aware, UTC) and a monotonic counter for durations. A clock may also have `asleep()`: the
+    seconds the PC has spent asleep or hibernating since it started (None when unknown); without it the night
+    finds no sleep (`Night.tick`)."""
 
     def now(self) -> datetime: ...
 
@@ -80,6 +87,33 @@ class SystemClock:
 
     def monotonic(self) -> float:
         return time.monotonic()
+
+    def asleep(self) -> float | None:
+        """`ns_common.winevents.asleep_s`: the interrupt time minus the unbiased one (sleep and hibernation
+        only; a change of the wall clock or a stalled process does not move it)."""
+        from ns_common.winevents import asleep_s
+
+        return asleep_s()
+
+
+def _asleep(clock: Clock) -> float | None:
+    read = getattr(clock, "asleep", None)
+    if read is None:
+        return None
+    try:
+        value = read()
+    except Exception:  # noqa: BLE001 - unknown: no sleep is found
+        return None
+    return float(value) if isinstance(value, int | float) else None
+
+
+@dataclass(frozen=True)
+class Sleep:
+    """A sleep of the PC during the night: between the last beat before it and the first one after it."""
+
+    frm: datetime
+    to: datetime
+    slept_s: float
 
 
 def limit_words(limit_s: int) -> str:
@@ -292,9 +326,13 @@ class Night:
     overhead_s: float | None = None
     #: the simulated card's mark (`simulated_card_mark`, read once when the night opens), or None
     card: str | None = None
+    #: the PC's sleeps found during this night (4b.4), oldest first
+    sleeps: list[Sleep] = field(default_factory=list)
     _beat_warned: bool = False
     _stop: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = None
+    _prev: tuple[datetime, float] | None = None
+    _tick_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
         if self.card is None:
@@ -467,14 +505,48 @@ class Night:
             raise OutOfTime(d)
         return d.wait_s
 
+    def slept_through(self, job_id: str) -> Sleep | None:
+        """4b.4, asked as a job's error comes out: the sleep that explains it, or None. A beat is taken first,
+        so a sleep the beat thread has not seen yet (the error came the moment the PC woke) is found now. It
+        explains the error only when the error came within `WAKE_GRACE_S` of the wake (the first beat after
+        it): a stage that was under way across the sleep and fails later fails by the ordinary rules, since
+        nothing shows the sleep caused it. (`job_id` is kept for the record of which job asked.)"""
+        try:
+            self.tick()
+        except Exception as e:  # noqa: BLE001 - the sleeps already found still count
+            if self.log is not None:
+                self.log.warn("night_beat_failed", str(e))
+        now = self.clock.now()
+        for gap in reversed(self.sleeps):
+            if 0 <= (now - gap.to).total_seconds() <= WAKE_GRACE_S:
+                return gap
+        return None
+
     # ------------------------------------------------------------------ the beat and the hard mark
     def beat_file(self) -> Any:
         return self.paths.home / "run" / BEAT_FILE
 
     def tick(self) -> None:
-        """S2 and S8: write the beat; past the hard mark, say once which stage the night is still in."""
+        """S2 and S8: write the beat; past the hard mark, say once which stage the night is still in.
+        4b.4: a sleep since the last beat is written once (`slept`)."""
+        with self._tick_lock:  # the beat thread and `slept_through` (the night's own thread)
+            self._tick()
+
+    def _tick(self) -> None:
         now = self.clock.now()
-        beat = {"run_id": self.run_id, "at": now.isoformat(timespec="seconds"), "pid": os.getpid()}
+        asleep = _asleep(self.clock)
+        prev, self._prev = self._prev, (now, asleep) if asleep is not None else None
+        if prev is not None and asleep is not None and asleep - prev[1] > SLEEP_GAP_S:
+            gap = Sleep(prev[0], now, round(asleep - prev[1], 3))
+            self.sleeps.append(gap)
+            job, _channel, stage, _plan, _began = self.current or (None, None, None, None, None)
+            span = {"from": gap.frm.isoformat(timespec="seconds"), "to": gap.to.isoformat(timespec="seconds")}
+            self.write("slept", job_id=job, stage=stage, slept_s=gap.slept_s, **span)
+            if self.log is not None:
+                self.log.warn("night_slept", "the PC slept during the night's run", slept_s=gap.slept_s,
+                              stage=stage)
+        beat = {"run_id": self.run_id, "at": now.isoformat(timespec="seconds"), "pid": os.getpid(),
+                "asleep_s": asleep}
         try:
             write_text_atomic(self.beat_file(), json.dumps(beat) + "\n")
         except OSError as e:

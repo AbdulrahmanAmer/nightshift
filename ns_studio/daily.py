@@ -19,7 +19,7 @@ from ns_common.db import claim_job_id
 from ns_common.errors import NsError, describe
 from ns_common.keepawake import keep_awake
 from ns_common.models import Channel
-from ns_studio import jobs, nightclock, nightfit, notifications, ownership
+from ns_studio import jobs, nightcause, nightclock, nightfit, notifications, ownership
 from ns_studio.channels import cadence
 from ns_studio.channels.crud import broken_channels, get_channel
 from ns_studio.context import JobContext
@@ -324,6 +324,7 @@ def _run_daily(
     env.log.info("daily_done", run_id=run_id, jobs=len(done), failures=len(report["failures"]))
     masters, shorts = notifications.output_counts(env.db, done)
     _leave_time_note(env, report, clock, now)
+    _leave_sleep_note(env, report, clock, now)
     notifications.send(env.paths, env.log, notifier, notifications.nightly_message(report, masters, shorts))
     finish = getattr(env.services.acquirer, "run_finished", None)
     if finish is not None:  # gap 25: the engine this run needed leaves once nobody else uses it
@@ -482,6 +483,12 @@ def _attempt(
     except Exception as e:  # an uncoded bug or corrupt file ends this job, never the night
         code, detail = UNEXPECTED, f"{UNEXPECTED}: {describe_unexpected(e)}"
         env.log.error("daily_job_crashed", job_id=job_id, traceback=traceback.format_exc())
+    if night is not None and job_id != "(not created)":
+        gap = night.slept_through(job_id)
+        # 4b.4: it stopped because the PC slept: interrupted and continued, not failed (unless it cannot be
+        # closed as interrupted: then it is the failure it was, with Retry)
+        if gap is not None and _slept_mid_job(env, report, night, job_id, slug, gap, code, resumed=resumed):
+            return SLEPT
     env.log.error("daily_job_failed", job_id=job_id, code=code, detail=detail)
     report["failures"].append({"job_id": job_id, "channel": slug, "code": code, "error": detail})
     return code
@@ -505,6 +512,89 @@ def _paused_mid_job(env: jobs.Env, report: dict, job_id: str, slug: str, *, resu
         except Exception as e:  # noqa: BLE001 - the record says failed; Retry and `studio run --resume` remain
             env.log.warn("paused_job_not_closed", str(e), job_id=job_id)
     _hold_for_pause(env, report, None, slug, 1, job_id=job_id)
+
+
+def slept_words(gap: nightclock.Sleep, channel: str, stage: str | None) -> str:
+    """4b.4's sentence (no full stop): when the PC slept and woke (each to within one beat), what it does
+    not hold off, and what became of the video."""
+    where = f" at {stage}" if stage else ""
+    return (
+        f"The PC went to sleep at about {nightcause.hhmm(gap.frm)} during the night's run and woke at about "
+        f"{nightcause.hhmm(gap.to)} ({ownership.SLEEP_WAYS}). {channel}'s video stopped{where} as it woke, "
+        f"and the next nightly run continues it{ownership.IF_NIGHTLY_ON}, or press Retry in the Queue"
+    )
+
+
+def _slept_mid_job(
+    env: jobs.Env,
+    report: dict,
+    night: nightclock.Night,
+    job_id: str,
+    slug: str,
+    gap: nightclock.Sleep,
+    code: str,
+    *,
+    resumed: bool,
+) -> bool:
+    """4b.4: the job's stage ended in an error because the PC slept (`Night.slept_through`). Not a failure:
+    the job is closed as interrupted at the stage it reached (owner `SLEPT_OWNER`, its finished stages kept),
+    so the next nightly run continues it like a job left for time; its card says so; the report lists it
+    under `slept` with the sentence the morning note shows (`_leave_sleep_note`). False (nothing said) when
+    it cannot be closed as interrupted: the caller then reports the failure it was."""
+    rec = ownership.read_record(env.paths, job_id) or {}
+    fmt = str(rec.get("fmt") or "")
+    stage = ownership.reached_stage(env.paths, job_id, fmt)
+    now = night.clock.now()
+    env.log.warn("daily_job_slept", job_id=job_id, channel=slug, stage=stage, error=code,
+                 slept_from=gap.frm.isoformat(timespec="seconds"),
+                 slept_to=gap.to.isoformat(timespec="seconds"))
+    if resumed:  # its card stands already: it now says why it waits
+        ownership.write_record(env.paths, job_id, state="interrupted", owner=ownership.SLEPT_OWNER,
+                               interrupted_at_stage=stage, reason=ownership.SLEPT_REASON,
+                               closed_at=now.isoformat(timespec="seconds"), cause=ownership.SLEPT_REASON,
+                               cause_said=None)
+        try:
+            ownership.settle_slept(env.db, job_id, stage)
+        except Exception as e:  # noqa: BLE001 - the record is right; the card keeps its older words
+            env.log.warn("slept_job_card_failed", str(e), job_id=job_id)
+    else:
+        try:  # the same closing as for a killed, paused or left job: the card first, then the record
+            closed = ownership._close_job(env.paths, env.db, {**rec, "id": job_id}, now,
+                                          ownership.SLEPT_OWNER)
+        except Exception as e:  # noqa: BLE001 - not closed: it stays the failure it was (Retry remains)
+            env.log.warn("slept_job_not_closed", str(e), job_id=job_id)
+            return False
+        if closed is None:  # finished, or nothing of it was written: nothing to continue
+            return False
+        ownership.write_record(env.paths, job_id, reason=ownership.SLEPT_REASON, cause=ownership.SLEPT_REASON)
+    report.setdefault("slept", []).append({
+        "job_id": job_id, "channel": slug, "stage": stage, "error": code, "resumed": resumed,
+        "from": gap.frm.isoformat(timespec="seconds"), "to": gap.to.isoformat(timespec="seconds"),
+        "slept_s": round(gap.slept_s), "said": slept_words(gap, slug, stage),
+    })
+    return True
+
+
+def _leave_sleep_note(env: jobs.Env, report: dict, clock: nightclock.Clock, started: datetime) -> None:
+    """4b.4: the morning note of the jobs a sleep stopped tonight, once per night, through the notes' one
+    owner (`ns_supervisor.notify`); a job the night's recovery note already tells (`in_recovery_note`) is
+    left out."""
+    told = [e for e in report.get("slept") or [] if not e.get("in_recovery_note")]
+    if not told or not notifications.notifications_enabled(env.paths):
+        return
+    message = " ".join(f"{e['said']}." for e in told)
+    since = started.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+
+    def said(notes: list[Any]) -> bool:
+        return any(n["message"] == message and str(n["at"]) >= since for n in notes)
+
+    try:
+        from ns_supervisor import notify
+
+        notify.leave_note(env.paths, notifications.TITLE, message, once=said,
+                          now=clock.now().astimezone().replace(tzinfo=None))
+    except Exception as e:  # noqa: BLE001 - a note never stops a night; the job's card says it
+        env.log.warn("morning_note_failed", str(e))
 
 
 def _decision_of(e: NsError | StudioError) -> nightfit.Decision | None:
@@ -705,6 +795,8 @@ def _leave_time_note(env: jobs.Env, report: dict, clock: nightclock.Clock, start
 Outcomes = dict[str, tuple[str, str | None]]
 #: What `_attempt` returns for a job another process is running (a Retry from the Queue): not an error code.
 BUSY = "busy"
+#: What `_attempt` returns for a job whose stage stopped because the PC slept (4b.4): not an error code.
+SLEPT = "slept"
 #: The `job_id` of the one `failures` entry that a night which could not be owned leaves (`_refuse_night`).
 NIGHT_NOT_STARTED = "(night did not start)"
 
@@ -772,6 +864,11 @@ def _resume_interrupted(
             outcomes[job_id] = ("gave_up" if gave_up else "out_of_time", str(left["said"]))
             left_channels[slug] = str(left["said"])
             continue
+        if code == SLEPT:  # 4b.4 while it was being continued: interrupted again, the next night continues it
+            slept = report["slept"][-1]
+            outcomes[job_id] = ("slept", str(slept["said"]))
+            left_channels[slug] = str(slept["said"])
+            continue
         if code == "NS-E201":  # the GPU is busy: it stays interrupted, the next night tries again
             ownership.write_record(env.paths, job_id, state="interrupted")
             # It is waiting, not failed and not skipped: `_attempt` listed the NS-E201 as a failure, which the
@@ -829,6 +926,9 @@ def _tonight(
     finally:
         if recovered is not None and recovered.any:
             ownership.leave_recovery_note(env.paths, env.log, recovered, outcomes)
+            in_note = {j.job_id for j in recovered.jobs}
+            for e in report.get("slept") or []:  # told there (its outcome): not again in the sleep note
+                e["in_recovery_note"] = e["job_id"] in in_note
     why: dict[str, str] = {}
     due = cadence.plan_daily(env.paths, env.db, now, why=why)
     for dj in due:
@@ -884,6 +984,8 @@ def _tonight(
                 if rest is not None and rest.answer != nightfit.BEGIN:
                     _left_entry(report, night, rest, channel=ch.slug, plan=dj.fmt, fmt=dj.fmt,
                                 jobs=dj.count - n - 1)
+                break
+            if code == SLEPT:  # 4b.4: its half-made job is continued next night; no second job of it tonight
                 break
             if code == PAUSED:  # paused while this job ran: it waits for the resume, the others do not start
                 if dj.count - n - 1:
