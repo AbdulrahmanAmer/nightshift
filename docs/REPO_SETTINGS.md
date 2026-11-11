@@ -125,6 +125,17 @@ Release tags cannot be moved or deleted (tag ruleset above), so each step is don
    hand with `gh release upload v0.1.0 <zip> <zip>.sha256`) and continue at step 4. To bump qwentts.cpp later, change
    `QWENTTS_SHA` in the workflow, tag the next release, and repeat step 4.
 
+### The release key (one Actions secret)
+
+`release.yml` signs `Nightshift-Update-<ver>.zip` and `Nightshift-Setup-<ver>.zip` in its step "Sign" and uploads
+`<zip>.sig` beside each. The step reads one repository secret, `NS_RELEASE_SIGNING_KEY` (base64 of the 32-byte
+Ed25519 private key); no other step, job or workflow is given it. The owner creates it once with
+`dev\release_keys.ps1 -Create -BackupFolder <off the PC>` (OPERATOR.md, "The release key"), which also writes the
+two public keys into `ns_common/release_keys.py`. State of the secret: NOT SET until that step is done. Without
+it a candidate of a commit that pins no key is published unsigned (a warning in the run summary); a final tag,
+and any tag of a commit that pins keys, fails in "Sign". The step installs `cryptography` from
+`dev/sign-requirements.txt` with `--require-hashes` and runs the shipped verifier on what it signed.
+
 ### Release asset names (from v0.1.2)
 
 | Asset | Meaning | Before (v0.1.0, v0.1.1) |

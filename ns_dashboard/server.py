@@ -728,12 +728,13 @@ def create_app(
     async def update_file(request: Request) -> SafeJSONResponse:
         form = await read_form(request)
         upload = form.get("file")
-        side = form.get("checksum")
+        side, sig = form.get("checksum"), form.get("signature")
         if upload is None or not getattr(upload, "filename", None):
-            raise ApiError(400, "no_file", "Choose the Nightshift-Update zip and its .sha256 file.")
+            raise ApiError(400, "no_file", "Choose the Nightshift-Update zip, its .sha256 and its .sig file.")
         side_fh = side.file if side is not None and getattr(side, "filename", None) else None
+        sig_fh = sig.file if sig is not None and getattr(sig, "filename", None) else None
         apply = dash.library.update_apply_file
-        result = await run_in_threadpool(apply, upload.filename, upload.file, side_fh)
+        result = await run_in_threadpool(apply, upload.filename, upload.file, side_fh, sig_fh)
         await form.close()
         return ok(result)
 

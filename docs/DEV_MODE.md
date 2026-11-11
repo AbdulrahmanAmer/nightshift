@@ -476,6 +476,17 @@ test install before a release exists, a test install can be aimed at a fake GitH
   with the `.sha256` beside it when there is one and a digest it computes otherwise. It listens on 127.0.0.1,
   writes `ready.json` (`port`, `pid`, `url`: the value for the variable) and `requests.jsonl` into the folder,
   and is stopped by that pid. `--prerelease` marks the release a prerelease, to see the refusal.
+- **Signatures.** A test source decides only where a release is downloaded from, never who may have made it:
+  the keys an install trusts are those its own program pins (`ns_common/release_keys.py` `TRUSTED`), on every
+  install, and neither `NS_RELEASE_SOURCE`, dev mode nor any file of the home adds one. There is no test key
+  in the program or in the repository. While `TRUSTED` is empty (before the owner's key step) the install
+  accepts the fake's packages on their SHA256, as it accepts any. To see the signature check on a test
+  install, the proof makes a throwaway key (a file outside the repository), installs a program built with
+  that key's public half pinned between the markers of `release_keys.py`, and starts the fake with
+  `--key-file <that file>`: before it answers, the fake signs each package of the folder that has no `.sig`,
+  once per file name for as long as it runs. A zip changed afterwards keeps the old signature (refused with
+  `NS-E707`, "does not match"); a `.sig` deleted afterwards is not made again (refused, "is missing").
+  Without `--key-file`, or with `--unsigned`, it makes no `.sig` at all (a release from before the key).
 - **Tests.** `tests/test_release_source.py`.
 
 ## Where the code is

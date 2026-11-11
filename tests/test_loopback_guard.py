@@ -899,7 +899,7 @@ def test_a_form_reaches_the_dashboard_only_from_its_own_page(tmp_home: Path, mon
 
     installed: list[str] = []
     monkeypatch.setattr(
-        LibraryService, "update_apply_file", lambda self, name, zip_fh, sha_fh: installed.append(name) or {"ok": True}
+        LibraryService, "update_apply_file", lambda self, name, *files: installed.append(name) or {"ok": True}
     )
     app = dashboard(tmp_home)
     tc = TestClient(app, base_url=BASE, raise_server_exceptions=False)

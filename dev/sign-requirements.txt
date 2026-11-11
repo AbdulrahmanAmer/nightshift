@@ -1,0 +1,15 @@
+# What the release run's "Sign" step installs before dev/sign_release.py signs the packages (release.yml):
+#     python -m pip install --require-hashes -r dev/sign-requirements.txt
+# on windows-latest with Python 3.12. The versions are those of uv.lock. The hashes of cffi and pycparser are
+# uv.lock's own; uv.lock holds cryptography's Linux wheels only (nothing on Windows needs it at run time), so
+# the hash of its Windows wheel, cryptography-50.0.2-cp311-abi3-win_amd64.whl, is the sha256 PyPI publishes
+# for that file (https://pypi.org/pypi/cryptography/50.0.2/json, read on 2026-11-11; the source archive's
+# hash there equals uv.lock's). When uv.lock moves one of the three, move it here from the same sources:
+# tests/test_sign_release.py::test_the_signing_requirements_are_pinned_from_the_lock compares the two files.
+--only-binary :all:
+cryptography==50.0.2 \
+    --hash=sha256:7afa5a6602a9f29af1f3a2965f831bae7c9d5d597b7cbb716d41ab3b7d89879c
+cffi==2.1.1 \
+    --hash=sha256:f53e442b08449d42821fa4a4fba000095af9f62742a500f978a9f557ec44339a
+pycparser==3.12 \
+    --hash=sha256:a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e

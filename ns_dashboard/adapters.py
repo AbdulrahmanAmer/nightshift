@@ -158,7 +158,7 @@ class UpdateAdapter(Protocol):
     def apply(self) -> dict[str, Any]: ...
 
     def apply_file(self, zip_path: Path) -> dict[str, Any]:
-        """Install an update zip from disk (`ns update <zip>`, its `.sha256` beside it)."""
+        """Install an update zip from disk (`ns update <zip>`, its `.sha256` and `.sig` beside it)."""
         ...
 
     def models_available(self) -> bool:
