@@ -83,20 +83,10 @@ def old_marker(dest: Path) -> None:
                                             "sha256": sha(dest.read_bytes())}), encoding="utf-8")  # fmt: skip
 
 
-def make_install(
-    root: Path,
-    *,
-    home: Path | None = None,
-    completed: bool = True,
-    files: bool = True,
-    markers: str = "new",
-    runtime: bool = True,
-    custom: dict[str, Any] | None = None,
-    big: dict[str, int] | None = None,
-) -> Install:
-    """A finished gpu install (small tier, voice design, the story model) whose models are 2 KiB files."""
-    app = root / "app"
-    app.mkdir(parents=True, exist_ok=True)
+def standin_manifest(big: dict[str, int] | None = None) -> dict[str, Any]:
+    """The repository's manifest.json with the gpu profile's model pins (and every pinned program) replaced by
+    the SHA256 and size of the 2 KiB stand-in of each file (``content``); ``big`` gives a story model tier
+    another size through the manifest only."""
     man = json.loads((repo_root() / "manifest.json").read_text(encoding="utf-8"))
     gpu = man["profiles"]["gpu"]
     for key in ("llm", "llm_balanced", "llm_best", "story_llm", "embed"):
@@ -111,6 +101,25 @@ def make_install(
     for key, pin in man["bins"].items():
         if isinstance(pin, dict) and dl.pinned_sha256(pin.get("sha256")):
             pin["sha256"] = sha(content(key))
+    return man
+
+
+def make_install(
+    root: Path,
+    *,
+    home: Path | None = None,
+    completed: bool = True,
+    files: bool = True,
+    markers: str = "new",
+    runtime: bool = True,
+    custom: dict[str, Any] | None = None,
+    big: dict[str, int] | None = None,
+) -> Install:
+    """A finished gpu install (small tier, voice design, the story model) whose models are 2 KiB files."""
+    app = root / "app"
+    app.mkdir(parents=True, exist_ok=True)
+    man = standin_manifest(big)
+    gpu = man["profiles"]["gpu"]
     (app / "manifest.json").write_text(json.dumps(man, indent=2), encoding="utf-8")
     paths = Paths(home or root / "home")
     paths.ensure()
@@ -476,6 +485,182 @@ def test_the_setup_window_over_a_finished_install_with_a_damaged_model_opens_the
     assert "models/llm/a.gguf: size changed" in said and "Continue checks every model file by hash" in said
 
 
+class _Wire:
+    """The wizard's stdout as the setup window's engine reads it: one JSON event per line, handed on."""
+
+    def __init__(self, emit: Callable[[dict[str, Any]], None]) -> None:
+        self._emit, self._buf = emit, ""
+
+    def write(self, text: str) -> int:
+        self._buf += text
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if line.strip():
+                self._emit(json.loads(line))
+        return len(text)
+
+    def flush(self) -> None:
+        return None
+
+
+def test_the_setup_window_brings_back_a_model_file_deleted_with_its_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Blocker 1 of the final review, written by its builder, NOT RUN. The owner emptied ``models\\embed``
+    (the file and its marker gone) and the language model is damaged with its size and date kept (nothing
+    has seen it). `ns doctor` says "choose Repair"; the window used to show Done from the markers. Now it
+    decides from the plan: it opens on the models step, and Continue runs the real wizard's models step
+    (behind the window's engine, its events on the window's wire) against the download site's stand-in:
+    the Repair hashes every model, sets the damaged one aside, fetches both, deletes the ``.bad`` and
+    clears its flag."""
+    import io
+
+    from installer.stage2.bridge import BridgeUi
+    from installer.stage2.steps.s03_download_models import S03DownloadModels
+    from installer.stage2.wizard import Wizard
+    from tests.test_installer_app_copy import app_setup, fake_zip_folder
+    from tests.test_installer_web_controller import finished_install
+
+    zip_a = fake_zip_folder(tmp_path / "zip-a", "0.1.4")
+    (zip_a / "manifest.json").write_text(json.dumps(standin_manifest(), indent=2), encoding="utf-8")
+    first = app_setup(tmp_path, monkeypatch, zip_a)
+    items = finished_install(first, zip_a, content=lambda i: content(i.name))
+    healthy = app_setup(tmp_path, monkeypatch, zip_a).snap()
+    assert healthy["run"] == "finished", healthy["log"]  # every planned file verified: Done, as before
+    home = first.home
+    embed = next(Path(i.dest) for i in items if Path(i.dest).parent.name == "embed")
+    llm = next(Path(i.dest) for i in items if Path(i.dest).parent.name == "llm")
+    embed.unlink()
+    dl._marker(embed).unlink()                     # no marker is left to say the file is gone
+    flip(llm)
+    served = {i.url: content(i.name) for i in items}
+    fetched: list[str] = []
+    client = site(served, fetched, set())
+    codes: list[int] = []
+
+    def wizard(e: Any) -> None:
+        assert e.wait_command("keys", 10)
+        e.emit({"type": "hello", "pid": os.getpid(), "version": "0.1.4", "resumed": True})
+        app = home / "app"
+        wire: Any = _Wire(e.emit)               # (a text stream to BridgeUi: write and flush are all it uses)
+        ctx = make_test_context(tmp_path, ui=BridgeUi(out=wire, inp=io.StringIO()),
+                                manifest=load_manifest(app / "manifest.json"), app_path=app, simulate=False,
+                                http=lambda: client)  # fmt: skip
+        codes.append(Wizard(ctx, [S03DownloadModels()], backoff=()).run())
+        e.exit(codes[-1])
+
+    window = app_setup(tmp_path, monkeypatch, zip_a, wizard)
+    state = window.snap()
+    steps = {st["id"]: st["status"] for st in state["steps"]}
+    assert state["run"] != "finished" and steps["s03_download_models"] == "pending", steps
+    assert all(s in ("done", "skipped") for k, s in steps.items() if k != "s03_download_models"), steps
+    said = " ".join(line["text"] for line in state["log"])
+    assert f"{embed.relative_to(home).as_posix()}: missing" in said, said
+    assert window.ctl.do_action("start")[0] == 200
+    state = window.until(lambda st: st["run"] in ("finished", "waiting", "stopped"), timeout=60.0,
+                         what="the Repair to end")  # fmt: skip
+    assert codes == [0] and state["run"] == "finished", (codes, state["failure"])
+    assert {st["id"]: st["status"] for st in state["steps"]}["s03_download_models"] == "done"
+    assert embed.read_bytes() == content(embed.name) and dl.is_verified(embed, sha(content(embed.name)))
+    assert llm.read_bytes() == content(llm.name) and dl.is_verified(llm, sha(content(llm.name)))
+    assert not list((home / "models").rglob("*.bad"))
+    flags = json.loads((home / "config" / "wizard_flags.json").read_text(encoding="utf-8"))
+    assert "models_recheck" not in flags, flags
+    assert sorted(fetched) == sorted(i.url for i in items if Path(i.dest) in (embed, llm)), fetched
+    assert app_setup(tmp_path, monkeypatch, zip_a).snap()["run"] == "finished"   # the next window: Done
+
+
+def test_the_windows_plan_of_model_files_is_the_models_steps_plan(tmp_path: Path) -> None:
+    """Written by the builder of blocker 1, NOT RUN. The setup window (standard library) repeats the models
+    step's plan (`plan_models` without optional files, plus `story_item`) to decide what a finished install
+    owes: the same files with the same pins for every profile, tier, own model, voice design, engine-test and
+    dev choice, and the story model once `runtime.json` uses it."""
+    from installer.stage2.web import modelmarks, plan
+    from ns_common.models import LlmCustom
+
+    assert modelmarks.WHISPER_REQUIRED == dl.WHISPER_REQUIRED and modelmarks.TIER_KEYS == plan.TIER_KEYS
+    raw = json.loads((repo_root() / "manifest.json").read_text(encoding="utf-8"))
+    man = load_manifest(repo_root() / "manifest.json")
+    paths = Paths(tmp_path / "home")
+    paths.ensure()
+    custom = {"repo": "someone/Tiny-GGUF", "file": "sub/tiny-custom.gguf", "size": SIZE}
+    cases: list[dict[str, Any]] = [
+        {"profile": "gpu", "tier": "small"}, {"profile": "gpu", "tier": "balanced"},
+        {"profile": "gpu", "tier": "best"}, {"profile": "gpu", "tier": "small", "voicedesign": True},
+        {"profile": "gpu", "tier": "balanced", "voice": False},
+        {"profile": "gpu", "tier": "best", "custom": custom},
+        {"profile": "cpu-dev", "tier": "small"}, {"profile": "cpu-dev", "tier": "small", "dev": True},
+    ]
+
+    def key(t: tuple[Path, str | None]) -> str:
+        return str(t[0])
+
+    def wizards(c: dict[str, Any]) -> list[tuple[Path, str | None]]:
+        own = LlmCustom(**c["custom"]) if c["custom"] else None
+        items = dl.plan_models(
+            man, c["profile"], c["tier"], paths.home, custom=own,
+            include_voicedesign=c["voicedesign"], dev=c["dev"], include_voice=c["voice"],
+        )
+        story = None if c["dev"] else vd.story_item(man, c["profile"], paths)
+        return [(Path(i.dest), i.sha256) for i in items + ([story] if story else []) if not i.optional]
+
+    for case in cases:
+        c = {"custom": None, "voicedesign": False, "voice": True, "dev": False, **case}
+        got = sorted(modelmarks.planned_files(paths.home, raw, **c), key=key)
+        assert got == sorted(wizards(c), key=key), case
+    # two models: runtime.json names the story model, and both plans add it (not on a dev install)
+    rt = Runtime.default("gpu")
+    rt.llama.story_model_path = str(paths.models_llm / Path(raw["profiles"]["gpu"]["story_llm"]["file"]).name)
+    save_runtime(paths, rt)
+    for case in ({"profile": "gpu", "tier": "small"}, {"profile": "cpu-dev", "tier": "small", "dev": True}):
+        c = {"custom": None, "voicedesign": False, "voice": True, "dev": False, **case}
+        got = sorted(modelmarks.planned_files(paths.home, raw, **c), key=key)
+        assert got == sorted(wizards(c), key=key), case
+    assert any("Heretic" in p.name for p, _pin in modelmarks.planned_files(
+        paths.home, raw, profile="gpu", tier="small"))  # fmt: skip
+
+
+def test_the_window_names_each_way_a_planned_model_is_not_verified(tmp_path: Path) -> None:
+    """Written by the builder of blocker 1, NOT RUN. `modelmarks.repair_owed` with the plan: one line per
+    file, the reason in words, nothing for a verified file or one that is not planned."""
+    from installer.stage2.web import modelmarks
+
+    home = tmp_path / "home"
+    folder = home / "models" / "llm"
+    folder.mkdir(parents=True)
+    pin = sha(b"good")
+
+    def made(name: str, data: bytes = b"good", marker: str | None = pin) -> Path:
+        path = folder / name
+        path.write_bytes(data)
+        dl.write_marker(path, marker)
+        return path
+
+    ok = made("ok.gguf")
+    gone_with_marker = made("gone1.gguf")
+    gone_with_marker.unlink()
+    gone = made("gone2.gguf")
+    gone.unlink()
+    dl._marker(gone).unlink()
+    unmarked = made("unmarked.gguf")
+    dl._marker(unmarked).unlink()
+    torn = made("torn.gguf")
+    dl._marker(torn).write_text("{", encoding="utf-8")
+    repinned = made("repinned.gguf")
+    nopin = made("nopin.gguf", marker=None)
+    planned = [(p, pin) for p in (ok, gone_with_marker, gone, unmarked, torn, repinned)]
+    planned[-1] = (repinned, sha(b"another"))
+    planned.append((nopin, None))
+    lines = modelmarks.repair_owed(home, planned)
+    assert sorted(lines) == sorted([
+        "models/llm/gone1.gguf: missing", "models/llm/gone2.gguf: missing",
+        "models/llm/unmarked.gguf: no record that setup checked it",
+        "models/llm/torn.gguf: its check record cannot be read",
+        "models/llm/repinned.gguf: this version pins another file",
+    ]), lines
+    assert modelmarks.repair_owed(home, [(ok, pin), (nopin, None)]) == []
+
+
 # ------------------------------------------------------------------------------------------------- M6
 def test_a_model_that_fails_to_load_is_checked_and_named(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -567,9 +752,10 @@ def test_the_night_tells_a_damaged_model_once(tmp_home: Path, monkeypatch: pytes
 
 
 def test_a_file_no_night_job_loads_does_not_stop_the_night(tmp_path: Path) -> None:
-    """Written by the final reviewer, NOT RUN. The pre-check stops a night only for the files its jobs load
-    (the language and story model, the talkers and tokenizer of a synthesis, whisper); the design talker
-    and the embed model are said beside it. A failed voice start does not look at the design talker."""
+    """Written by the final reviewer, changed by the builder of blocker 1; NOT RUN. The pre-check stops a
+    night only for the files its jobs load (the language and story model, the embed model of the stages that
+    embed text, the talkers and tokenizer of a synthesis, whisper); the design talker and the face finder are
+    said beside it. A failed voice start does not look at the design talker."""
     from ns_studio import notifications
     from ns_supervisor import modelcheck
     from ns_tts import engine as tts_engine
@@ -578,27 +764,72 @@ def test_a_file_no_night_job_loads_does_not_stop_the_night(tmp_path: Path) -> No
     inst = make_install(tmp_path)
     design = next(Path(i.dest) for i in inst.items if modelcheck.design_only(i))
     embed = next(Path(i.dest) for i in inst.items if Path(i.dest).parent.name == "embed")
+    finder = inst.file("yunet")
     voice = [Path(i.dest) for i in modelcheck.files_for("tts", [], inst.items)]
     assert design not in voice and inst.file("talker-1.7b-base") in voice and len(voice) == 3, voice
+    tonight = {Path(i.dest) for i in modelcheck.night_files(inst.paths, inst.items)}
+    assert embed in tonight and design not in tonight and finder not in tonight, tonight
     design.unlink()
-    flip(embed)
-    check = modelcheck.FileCheck(inst.paths, app=inst.app)
-    assert check.after_failure("embed", ["llama-server.exe", "-m", str(embed)]).damaged is not None
+    finder.unlink()
     aside: list[str] = []
     assert modelcheck.precheck(inst.paths, inst.app, others=aside) == [], "the night was stopped"
     assert len(aside) == 2 and any(design.name in s for s in aside), aside
-    assert any(s.startswith("NS-E127") and embed.name in s for s in aside), aside
+    assert any(str(finder) in s for s in aside), aside
     note = notifications.model_aside_note({"said": " ".join(aside)}) or ""
     assert "stopped no video" in note and "choose Repair" in note and design.name in note, note
     assert notifications.model_aside_note(None) is None
     # a failed voice start with the design talker gone: the files of that start are there, nothing is named
+    check = modelcheck.FileCheck(inst.paths, app=inst.app)
     found = check.after_failure("tts", ["python.exe", "-m", "ns_tts.server"])
     assert found.damaged is None and design.name not in found.note, found
-    # a file the night does load still stops it
+    # the embed model IS loaded by a night's jobs (`ideas`, `chapters_critic`, `continuity`, `critic_revise`,
+    # the text policy gate): recorded damaged, it stops the night
+    flip(embed)
+    assert check.after_failure("embed", ["llama-server.exe", "-m", str(embed)]).damaged is not None
+    stops = modelcheck.precheck(inst.paths, inst.app)
+    assert len(stops) == 1 and stops[0].startswith("NS-E127") and embed.name in stops[0], stops
+    # and so does a talker
     talker = inst.file("talker-1.7b-base")
     talker.unlink()
     stops = modelcheck.precheck(inst.paths, inst.app)
-    assert len(stops) == 1 and talker.name in stops[0], stops
+    assert len(stops) == 2 and any(talker.name in s for s in stops), stops
+
+
+def test_a_file_no_night_job_loads_is_told_in_the_morning_note_and_the_night_runs(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Written by the builder of blocker 1, NOT RUN (the reviewer's NOT DONE). Through `run_daily`: the voice
+    design talker is gone; the night still makes its video, fails nothing, and leaves one morning note
+    (`notifications.model_aside_note`) naming the file, that it stopped no video, and Repair."""
+    from datetime import UTC, datetime, timedelta
+
+    from ns_studio import daily, jobs, notifications
+    from ns_studio.channels import crud
+    from ns_supervisor import modelcheck
+    from tests import d31_driver as driver
+    from tests.helpers import make_channel
+    from tests.test_interrupted_nightly import _notes, _setup
+
+    paths, db = _setup(tmp_home)
+    created = (datetime.now(UTC) - timedelta(weeks=11)).isoformat(timespec="seconds")
+    crud.add_channel(paths, db, make_channel(
+        slug="tiny-mysteries", display_name="Tiny Mysteries", format="master_first", created_at=created,
+        niche="small locked-room puzzles solved in under ten minutes", voice_notes="Dry, quick, amused.",
+    ))  # fmt: skip
+    driver.install(monkeypatch)
+    inst = make_install(tmp_home.parent / "inst", home=tmp_home, runtime=False)
+    design = next(Path(i.dest) for i in inst.items if modelcheck.design_only(i))
+    design.unlink()
+    ran: list[str] = []
+    report = daily.run_daily(jobs.open_env(light=True), rng=random.Random(1),
+                             run_fn=lambda ctx: ran.append(ctx.job_id) or [])  # fmt: skip
+    assert ran, "the night made nothing: a file no night job loads stopped it"
+    assert not [f for f in report["failures"] if f.get("code") == "NS-E127"], report["failures"]
+    assert not [s for s in report.get("skipped") or [] if s.get("reason") == daily.MODEL_SKIPPED], report
+    assert "model_aside" not in report and "model_damaged" not in report     # the note's words only
+    notes = [n["message"] for n in _notes(tmp_home) if "stopped no video" in n["message"]]
+    assert len(notes) == 1 and design.name in notes[0] and "choose Repair" in notes[0], notes
+    assert notifications.model_aside_note({"said": design.name}) is not None
 
 
 # --------------------------------------------------------------------------------- the seams themselves

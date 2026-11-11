@@ -946,7 +946,7 @@ def _model_precheck(env: jobs.Env, report: dict) -> str | None:
     except Exception as e:  # noqa: BLE001 - a check that breaks never stops the night
         env.log.warn("model_precheck_failed", str(e))
         return None
-    if aside:   # a file no night job loads (the design talker, the embed model, the face finder): the night
+    if aside:   # a file no night job loads (the design talker, the face finder): the night
         env.log.warn("daily_model_files_aside", " ".join(aside))    # runs; the morning note names it
         report["model_aside"] = {"said": " ".join(aside)}
     if not found:

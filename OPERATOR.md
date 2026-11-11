@@ -129,13 +129,19 @@ date stay the same, so the quick check of a rerun cannot see it. Nightshift find
 - **`ns verify --downloads`** reads every model by hash (see above) and writes `logs/model-check.json`. A file
   another program holds open is `unreadable`, not damaged: Stop All, then run it again. Ctrl+C stops it at once and
   changes nothing.
-- **The way out: Repair.** Run INSTALL.cmd again from the Nightshift zip and choose this install's folder. A setup
-  run over a finished install checks every model file by hash (about a minute for 20 GB on an SSD, three on a hard
-  disk, with each file's progress). A damaged file is renamed `<name>.bad`, downloaded again (continuing a `.part`
-  that is there), and the `.bad` is deleted once the new file passed its check: until then you always have one of
-  the two. Setup first checks that the drive has room for the new file beside the old one (`NS-E104` says how much
-  is needed). Offline or the site down: `NS-E105`, press Retry later. The setup window, opened over a finished
-  install with a damaged or missing model, opens on the models step instead of Done: press Continue.
+- **The way out: Repair.** Run INSTALL.cmd again from the Nightshift zip and choose this install's folder. The
+  setup window opens on the models step instead of Done when a model file of this install is missing (also when
+  its `.ok` file went with it), was changed since setup checked it, is pinned differently by this version, was
+  recorded damaged (by `ns verify --downloads` or by a model that failed to load) or was set aside by a Repair
+  that did not finish; the log names each file. Press Continue: that run checks every model file by hash (about a
+  minute for 20 GB on an SSD, three on a hard disk, with each file's progress). A damaged file is renamed
+  `<name>.bad`, downloaded again (continuing a `.part` that is there), and the `.bad` is deleted once the new file
+  passed its check: until then you always have one of the two. Setup first checks that the drive has room for the
+  new file beside the old one (`NS-E104` says how much is needed). Offline or the site down: `NS-E105`, press
+  Retry later. With none of those, the window shows Done and checks nothing: a file damaged with its size and
+  date kept is known only once something has read it by hash. When you suspect one, run `ns verify --downloads`
+  first (it names the file), then INSTALL.cmd. (An unattended INSTALL.cmd run, with an answers file, checks every
+  model file by hash in any case.)
 - A story model you named yourself has no published SHA256: only its size can be checked, and the rows say so.
 
 ## If GitHub is down on install day

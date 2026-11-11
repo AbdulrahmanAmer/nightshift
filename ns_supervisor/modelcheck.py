@@ -73,21 +73,29 @@ def design_only(item: DownloadItem) -> bool:
 def night_files(paths: Paths, items: list[DownloadItem]) -> list[DownloadItem]:
     """The planned model files a night's jobs load, taken from where the stages take them: llama's ``-m``
     files as ``runtime.json`` names them (the language model and, with two models, the story model), the
-    voice files a synthesis uses (the talkers and the tokenizer, not the design talker) and whisper's files.
-    Not among them: the design talker, the embed model and the face finder; should a job load one of those
-    after all, the engine's check after the failed load names it (``FileCheck``). When ``runtime.json``
-    cannot be read or names no planned file, every file of ``models\\llm`` counts."""
+    embed service's ``-m`` file (the stages that embed text and hold the ``embed`` lease,
+    ``ns_studio.orchestrator.embed_lease``: ``ideas`` first in both nightly story plans, ``chapters_critic``,
+    ``continuity``, ``critic_revise``, the text policy gate and the owner-script imports), the voice files a
+    synthesis uses (the talkers and the tokenizer, not the design talker) and whisper's files. Not among
+    them: the design talker (only "design a voice" loads it) and the face finder (only a Clipper job's
+    ``clip_analyze`` reads it, and the nightly run plans and continues no Clipper job); should a job load one
+    of those after all, the engine's check after the failed load names it (``FileCheck``). When
+    ``runtime.json`` cannot be read or names no planned file, every file of ``models\\llm`` (and of
+    ``models\\embed``) counts."""
     from ns_common.config import load_runtime
 
     try:
-        llama = load_runtime(paths).llama
-        cmd = [x for p in (llama.model_path, llama.story_model_path) if p for x in ("-m", str(p))]
+        rt = load_runtime(paths)
+        cmd = [x for p in (rt.llama.model_path, rt.llama.story_model_path) if p for x in ("-m", str(p))]
         language = files_for("llama", cmd, items)
+        embed = files_for("embed", ["-m", str(rt.embed.model_path)] if rt.embed.model_path else [], items)
     except Exception:  # noqa: BLE001 - no usable runtime.json: the folder decides
-        language = []
+        language, embed = [], []
     if not language:    # runtime.json names no planned file (or cannot be read): the safe side, every one
         language = [i for i in items if Path(i.dest).parent.name == "llm"]
-    return language + files_for("tts", [], items) + files_for("whisper", [], items)
+    if not embed:
+        embed = [i for i in items if Path(i.dest).parent.name == "embed"]
+    return language + embed + files_for("tts", [], items) + files_for("whisper", [], items)
 
 
 def files_for(service: str, cmd: list[str], items: list[DownloadItem]) -> list[DownloadItem]:
@@ -206,7 +214,7 @@ def precheck(paths: Paths, app: Path | None = None, *, others: list[str] | None 
     """A night's start: one sentence per model file a night's job loads (``night_files``) that cannot load
     (missing, the wrong size, or recorded damaged for its present size and date); the morning note adds the
     way out (Repair), a stopped download says that it continues. The same sentence about a file no night job
-    loads (the design talker, the embed model, the face finder) goes to ``others``: it stops no night and is
+    loads (the design talker, the face finder) goes to ``others``: it stops no night and is
     said beside it. No hash. Nothing when setup never verified the models (its models step is not done: a
     test home, an unfinished install)."""
     from installer.stage2 import verify_downloads as vd

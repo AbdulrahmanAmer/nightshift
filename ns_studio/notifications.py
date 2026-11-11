@@ -123,7 +123,7 @@ def model_note(found: dict[str, Any] | None) -> str | None:
 
 def model_aside_note(found: dict[str, Any] | None) -> str | None:
     """Card model-file-damaged: the morning note about a damaged or missing model file that no nightly video
-    loads (the voice design model, the embed model, the face finder; ``found``: the night's ``model_aside``).
+    loads (the voice design model, the face finder; ``found``: the night's ``model_aside``).
     It stopped nothing, and says so; the way out is the same Repair. None when there is none."""
     if not isinstance(found, dict) or not found.get("said"):
         return None
