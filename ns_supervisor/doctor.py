@@ -21,7 +21,7 @@ from pathlib import Path
 
 import installer.stage2.commands as commands
 import installer.stage2.shortcut_owner as so
-from installer.stage2.web import venvrepair
+from installer.stage2.web import uvpin, venvrepair
 from ns_common import (
     __version__,
     commandline,
@@ -371,6 +371,7 @@ def diagnose(
     app = Path(st.app_path) if st.app_path else repo_root()
     rows.append(program_folders(paths, app, on_wait))
     rows.append(python_environments(paths, app))
+    rows.append(uv_row(paths, app))
     return rows
 
 
@@ -517,6 +518,14 @@ def python_environments(paths: Paths, app: Path) -> tuple[str, bool, str]:
 
 #: A row that is not a failure but needs the owner: printed as `[WARN]` by `ns doctor`.
 WARN = "WARN: "
+
+
+def uv_row(paths: Paths, app: Path) -> tuple[str, bool, str]:
+    """The row "uv" (item uv-pin-on-update): the install's uv against the version the program in `app` pins
+    (`manifest.json` `bins.uv`). They differ after an update or rollback that was killed between its uv swap
+    and its program swap; the row says so with the way out. It runs `uv --version` and changes nothing."""
+    ok, text = uvpin.doctor_line(paths.home, app)
+    return ("uv", True, text if ok else WARN + text)
 
 
 def commands_row(
