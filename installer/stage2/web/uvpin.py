@@ -29,8 +29,8 @@ Folders and what a kill leaves (``settle`` runs first in every ``prepare``, with
   put back whole (the fetched uv stays in the cache); otherwise ``bin\\uv.swap`` is not needed and goes. With
   no pin of ``<app>.prev`` to go by (``older`` None) it is left.
 
-Standard library only at import (setup's own server imports this package without httpx); the download
-imports httpx and ``ns_supervisor.releases`` when it is called, which only the updater does.
+Standard library only, every import of it (setup's own server imports this package on the bare Python, which
+has no httpx). The download is the caller's ``fetch``: the updater passes ``ns_supervisor.releases.fetch_uv``.
 """
 
 from __future__ import annotations
@@ -46,7 +46,6 @@ import zipfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from installer.stage2.web import filesdir
 
@@ -190,30 +189,14 @@ def _unlink(path: Path) -> None:
         pass        # never read under this name without its SHA256 being checked again
 
 
-def download(url: str, dest: Path) -> None:
-    """The pin's URL into ``dest`` (trusted host only: GitHub, or the test source in force)."""
-    import httpx
-
-    from ns_supervisor import releases
-
-    if not releases.trusted(url):
-        raise OSError(f"{urlsplit(url).netloc or url} is not an address Nightshift downloads from")
-    with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(60, read=300)) as http:
-        with http.stream("GET", url) as resp:
-            resp.raise_for_status()
-            with dest.open("wb") as out:
-                for block in resp.iter_bytes(1 << 20):
-                    out.write(block)
-
-
 def obtain(
-    pin: Mapping[str, str], home: Path, files_root: Path | None, say: Callable[[str], None],
-    fetch: Fetch | None = None,
+    pin: Mapping[str, str], home: Path, files_root: Path | None, say: Callable[[str], None], fetch: Fetch,
 ) -> tuple[Path | None, str]:
     """U3: the pinned uv zip, SHA256 checked, at ``<home>\\cache\\uv-<version>.zip`` (kept for a rollback).
 
-    Sources in order: a ``files`` folder beside the update zip, the cache, the pin's URL. A source whose bytes
-    do not match the pin is skipped with one line and the next is tried. ``(None, why)`` when none has it.
+    Sources in order: a ``files`` folder beside the update zip, the cache, the pin's URL (``fetch``, the
+    caller's download: ``releases.fetch_uv`` for the updater). A source whose bytes do not match the pin is
+    skipped with one line and the next is tried. ``(None, why)`` when none has it.
     """
     version, url, sha = pin.get("version", ""), pin.get("url", ""), pin.get("sha256", "")
     cached = home / "cache" / zip_name(version)
@@ -243,7 +226,7 @@ def obtain(
         return None, f"{where}this release names no address for it"
     part = cached.with_name(cached.name + ".part")
     try:
-        (fetch or download)(url, part)
+        fetch(url, part)
         if _sha256(part) != sha.lower():
             say(f"the download of {names[0]} does not match its pin")
             return None, f"{where}the file GitHub sent does not match its SHA256"
@@ -428,13 +411,13 @@ class Plan:
 
 
 def prepare(
-    pin: Mapping[str, str], home: Path, *, files_root: Path | None = None,
-    say: Callable[[str], None] = lambda line: None, fetch: Fetch | None = None,
-    older: Mapping[str, str] | None = None,
+    pin: Mapping[str, str], home: Path, *, fetch: Fetch, files_root: Path | None = None,
+    say: Callable[[str], None] = lambda line: None, older: Mapping[str, str] | None = None,
 ) -> Plan:
     """U1 to U4, before anything of the install is changed. ``NotHad`` when the pinned uv cannot be had or
     does not run; ``bin\\uv`` and ``bin\\uv.prev`` are untouched then and ``bin\\uv.next`` is removed.
-    ``older``: the pin of the program in ``<app>.prev`` (``settle``)."""
+    ``fetch``: the download of the pin's URL (``obtain``). ``older``: the pin of the program in
+    ``<app>.prev`` (``settle``)."""
     plan = Plan(home, older=older)
     settle(home, older)  # U0: a bin/uv.next or a cut swap that a killed run left goes first, pin or no pin
     want = pin.get("version", "")

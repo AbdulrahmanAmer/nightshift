@@ -1937,7 +1937,9 @@ def _uv_plan(
     files = zip_path.parent / filesdir.FILES_DIR if zip_path is not None else None
     plan = uvpin.Plan(paths.home, older=older)
     try:
-        plan = uvpin.prepare(pin, paths.home, files_root=files, say=say, older=older)
+        plan = uvpin.prepare(
+            pin, paths.home, fetch=releases.fetch_uv, files_root=files, say=say, older=older
+        )
         # D-39a's holder check for `bin\uv`: a uv that still runs cannot be renamed. Looked at here, before
         # Nightshift is stopped, so the refusal (NS-E706) leaves everything running as it was
         dirs = [uvpin.uv_dir(paths.home, s) for s in (("", ".prev") if plan.how == "prev" else ("",))]

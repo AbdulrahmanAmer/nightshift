@@ -4,8 +4,9 @@ WRITTEN, NOT RUN (the owner's build method of 2026-11-11: tests run once, after 
 
 uv stands as a small text file ``uv.exe`` whose content is what ``uv --version`` prints ("uv 0.14.0 ...");
 ``uvpin.run_version`` is replaced by a reader of that file, so no process is started. The uv zip is a zip of
-that file with its SHA256 in the target's ``manifest.json``. Nothing reaches the network: ``uvpin.download``
-is replaced by ``Net``, which serves the bytes a test gives it and refuses every other address.
+that file with its SHA256 in the target's ``manifest.json``. Nothing reaches the network: the updater's
+download ``releases.fetch_uv`` is replaced by ``Net`` (and a direct ``uvpin.prepare`` is given ``Net``), which
+serves the bytes a test gives it and refuses every other address.
 Entry: ``update.update_app`` and ``update.rollback_app`` on a tmp install built as ``tests/test_ns_update.py``
 builds it. Not covered here: a real uv, a real kill of the worker by pid (a ``KeyboardInterrupt`` raised at
 that point stands for it), the export of a locked program (the venv test uses a program without a lock).
@@ -26,11 +27,11 @@ from installer.stage2.web import uvpin, venvrepair
 from ns_common import rollback_intent
 from ns_common.errors import NsError
 from ns_common.paths import Paths
-from ns_supervisor import doctor, update
+from ns_supervisor import doctor, releases, update
 from tests.test_ns_update import Env, make_app, make_zip
 
 LEAF = "uv-x86_64-pc-windows-msvc.zip"
-REAL_DOWNLOAD = uvpin.download
+REAL_DOWNLOAD = releases.fetch_uv
 
 
 def url(version: str) -> str:
@@ -80,7 +81,7 @@ def net(monkeypatch: pytest.MonkeyPatch) -> Net:
 
     fake = Net()
     monkeypatch.setattr(uvpin, "run_version", run_version)
-    monkeypatch.setattr(uvpin, "download", fake)
+    monkeypatch.setattr(releases, "fetch_uv", fake)   # the updater's download (update._uv_plan passes it)
     monkeypatch.setattr(update, "RENAME_TRIES", 2)
     monkeypatch.setattr(update, "RENAME_PAUSE_S", 0.0)
     return fake
@@ -177,7 +178,7 @@ def test_the_uv_comes_from_files_then_cache_then_github(tmp_path: Path, net: Net
     sha = uv_zip(home / "cache" / "uv-0.14.0.zip", "0.14.0")
     uv_zip(tmp_path / "files" / LEAF, "0.14.0", text="uv 0.14.0 (another build)\n")
     pin = {"version": "0.14.0", "url": url("0.14.0"), "sha256": sha}
-    plan = uvpin.prepare(pin, home, files_root=tmp_path / "files", say=said.append)
+    plan = uvpin.prepare(pin, home, fetch=net, files_root=tmp_path / "files", say=said.append)
     assert plan.how == "next" and version_at(home / "bin" / "uv.next") == "0.14.0"
     assert said == [f"files\\{LEAF} does not match its pin; trying the next source"]
     assert net.calls == []
@@ -186,7 +187,7 @@ def test_the_uv_comes_from_files_then_cache_then_github(tmp_path: Path, net: Net
     put_uv(home / "bin" / "uv", "0.13.6")
     sha = uv_zip(tmp_path / "good" / "files" / LEAF, "0.14.0")
     pin = {"version": "0.14.0", "url": url("0.14.0"), "sha256": sha}
-    plan = uvpin.prepare(pin, home, files_root=tmp_path / "good" / "files", say=said.append)
+    plan = uvpin.prepare(pin, home, fetch=net, files_root=tmp_path / "good" / "files", say=said.append)
     assert plan.how == "next" and net.calls == []
     assert hashlib.sha256((home / "cache" / "uv-0.14.0.zip").read_bytes()).hexdigest() == sha
     # 3. no files folder, a cache with other bytes (one line), then the pin's address
@@ -195,7 +196,7 @@ def test_the_uv_comes_from_files_then_cache_then_github(tmp_path: Path, net: Net
     uv_zip(home / "cache" / "uv-0.14.0.zip", "0.14.0", text="uv 0.14.0 (tampered)\n")
     net.serve[url("0.14.0")] = (tmp_path / "good" / "files" / LEAF).read_bytes()
     said.clear()
-    plan = uvpin.prepare(pin, home, say=said.append)
+    plan = uvpin.prepare(pin, home, fetch=net, say=said.append)
     assert plan.how == "next" and net.calls == [url("0.14.0")]
     assert said == ["cache\\uv-0.14.0.zip does not match its pin; trying the next source"]
     assert hashlib.sha256((home / "cache" / "uv-0.14.0.zip").read_bytes()).hexdigest() == sha
@@ -205,7 +206,7 @@ def test_the_uv_comes_from_files_then_cache_then_github(tmp_path: Path, net: Net
     put_uv(home / "bin" / "uv", "0.13.6")
     net.serve[url("0.14.0")] = b"not the pinned bytes"
     with pytest.raises(uvpin.NotHad) as ei:
-        uvpin.prepare(pin, home, say=said.append)
+        uvpin.prepare(pin, home, fetch=net, say=said.append)
     assert "does not match its SHA256" in str(ei.value) and LEAF in str(ei.value)
     assert not list((home / "cache").glob("uv-0.14.0.zip*")) and not (home / "bin" / "uv.next").exists()
 

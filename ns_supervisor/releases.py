@@ -384,6 +384,20 @@ def _signature(rel: Release, client: httpx.Client, source: Source) -> bytes | No
         raise _unreachable(e, source) from e
 
 
+def fetch_uv(url: str, dest: Path) -> None:
+    """The uv pin's URL into `dest` (trusted host only: GitHub, or the test source in force): the `fetch` the
+    updater gives `installer.stage2.web.uvpin.prepare`. It lives here, not in uvpin: the web package is
+    imported by setup's server on the bare Python, which has no httpx (item uv-pin-on-update)."""
+    if not trusted(url):
+        raise OSError(f"{urlparse(url).netloc or url} is not an address Nightshift downloads from")
+    with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(60, read=300)) as http:
+        with http.stream("GET", url) as resp:
+            resp.raise_for_status()
+            with dest.open("wb") as out:
+                for block in resp.iter_bytes(1 << 20):
+                    out.write(block)
+
+
 def _forget(target: Path) -> None:
     """Delete an older zip of the name with its `.sha256` and `.sig`; one that cannot be deleted (open
     elsewhere) hides no error. The two go too: they vouch for the zip that was just refused, not for
