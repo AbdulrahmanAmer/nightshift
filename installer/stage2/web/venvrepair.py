@@ -528,8 +528,11 @@ def main(argv: Sequence[str]) -> int:
 PROCESS_LIST = (
     "Get-CimInstance Win32_Process | ForEach-Object { $t = ''; "
     "if ($_.CreationDate) { $t = ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }; "
-    "'{0}|{1}|{2}{3}{4}{3}{5}' -f $_.ProcessId, $_.ExecutablePath, $_.CommandLine, [char]31, "
-    "$_.ParentProcessId, $t }"
+    # one process, one line: a command line may hold line breaks (`python -c` with a program of several
+    # lines) or the field separator itself; left in, they would cut the process's line short (its marker and
+    # home after the break unseen) and let the rest be read as lines of other processes
+    "'{0}|{1}|{2}{3}{4}{3}{5}' -f $_.ProcessId, $_.ExecutablePath, "
+    "($_.CommandLine -replace '[\\r\\n\\x1f]+', ' '), [char]31, $_.ParentProcessId, $t }"
 )
 FIELD = "\x1f"
 

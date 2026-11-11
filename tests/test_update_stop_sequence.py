@@ -43,21 +43,20 @@ windows = pytest.mark.skipif(sys.platform != "win32", reason="the engine's lock 
 #: seconds count from the moment that file exists, not from the start: a test makes it when the update begins
 #: to stop Nightshift, so "late" is late by the same amount however slow the machine was until then (counted
 #: from the start, a loaded machine found the engine already gone before the stop began).
-#: "ns_supervisor.app" is on its command line.
-ENGINE = """
-import sys, time
-from pathlib import Path
-from ns_common.singleton import FileLock
-lock = FileLock(Path(sys.argv[2]))
-lock.acquire()
-print('held', flush=True)
-late = float(sys.argv[3])
-after = Path(sys.argv[4]) if len(sys.argv) > 4 else None
-give_up = time.monotonic() + 600
-while after is not None and not after.exists() and time.monotonic() < give_up:
-    time.sleep(0.05)
-time.sleep(late if late >= 0 else 600)
-"""
+#: "ns_supervisor.app" is on its command line, and the program is ONE line, as a real engine's command line
+#: is: setup and the updater read the process listing line by line and know their own engine by what follows
+#: the program on that line (a program written over several lines hid it: setup then called this engine a
+#: foreign program, NS-E706 "Close them"). So the wait for `after` is a comprehension, not a `while` block.
+ENGINE = (
+    "import sys, time; from pathlib import Path; from ns_common.singleton import FileLock; "
+    "lock = FileLock(Path(sys.argv[2])); lock.acquire(); print('held', flush=True); "
+    "late = float(sys.argv[3]); after = Path(sys.argv[4]) if len(sys.argv) > 4 else None; "
+    "give_up = time.monotonic() + 600; "
+    "ready = lambda: after is None or after.exists() or time.monotonic() > give_up; "
+    "[time.sleep(0.05) for _ in iter(ready, True)]; "
+    "time.sleep(late if late >= 0 else 600)"
+)
+assert "\n" not in ENGINE
 
 
 def venv_python(paths: Paths, name: str) -> Path:
@@ -518,6 +517,30 @@ def test_setup_with_an_own_process_it_cannot_end_says_restart_and_not_that_night
     assert not detail.endswith(controller.ENGINE_BACK.strip()), "it says Nightshift runs; nothing answers"
     assert "Nightshift's own processes did not stop" in detail and "restart the PC" in detail, detail
     assert f"(process {engine.pid}" in detail and "Close them" not in detail, detail
+
+
+@windows
+def test_a_line_break_in_a_command_line_does_not_cut_the_process_listing(started: Any) -> None:
+    """Setup's listing is one process per line. A program started with line breaks on its command line used to
+    be cut at the first one: what follows (here the marker) was unseen for that process, and the rest of its
+    command line was read as lines of other processes (the second line here would have been a process 4)."""
+    from installer.stage2.web import venvrepair
+
+    marker = "nightshift-listing-marker"
+    # valid Python whose third line, alone, reads like the listing's line of a process 4
+    program = "import time\nx = '''\n4|C:/forged.exe|x\n'''\ntime.sleep(120)"
+    child = subprocess.Popen([sys.executable, "-c", program, marker])
+    started._note(child)
+    listing = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", venvrepair.PROCESS_LIST],
+        capture_output=True, text=True, timeout=120, check=False)   # read only
+    assert listing.returncode == 0, listing.stderr
+    assert child.poll() is None, "the stand-in ended before it was listed"
+    procs = venvrepair.parse_listing(listing.stdout)
+    (mine,) = [p for p in procs if p.pid == child.pid]
+    assert marker in mine.cmdline, f"the command line was cut at its line break: {mine.cmdline!r}"
+    assert mine.ppid == os.getpid() and mine.created is not None, "the fields after it were lost"
+    assert not [p for p in procs if "forged.exe" in p.exe], "a line of a command line was read as a process"
 
 
 # ---------------------------------------------------------------------------------- review notes
