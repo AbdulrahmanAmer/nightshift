@@ -1228,7 +1228,9 @@ def ensure_assistant_sound(paths: Paths, log: NsLogger | None, note: NoteFn) -> 
     damaged one is set aside in data/damaged and a new one starts. Only the dashboard opens it."""
     live = paths.assistant_db
     found = check(live)
-    if not found.damaged:
+    # The same decision as studio.db's: no copy of this file is kept, so "the copies" are positively none, and
+    # only SQLite's own damage answer (row L5) sets it aside; held, slow or unreadable leaves it (row L2).
+    if decide(found, None, lambda: Copies(True)).act is not Act.REBUILD:
         return found
     stamp = _now().strftime("%Y%m%d-%H%M%S")
     target = _aside_name(paths, stamp, "assistant")

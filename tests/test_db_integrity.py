@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import itertools
 import json
 import os
 import random
@@ -223,6 +224,11 @@ elif point == "after_rename":       # the copy is studio.db, the record still sa
         if Path(dst) == paths.db_path:
             os._exit(9)
     os.replace = replace
+elif point == "mid_put_back":       # killed between two inserts of the put-back (each is committed alone)
+    def some(db, rows):
+        db.execute(dbrestore._INSERT_OUTPUT, rows[0])
+        os._exit(9)
+    dbrestore.insert_videos = some
 elif point == "before_tell":        # migrated and the videos put back; no note yet
     dbrestore._tell = lambda *a: os._exit(9)
 elif point == "after_note":         # the note left, the record not yet removed
@@ -392,7 +398,7 @@ def test_another_process_holding_the_database_stops_the_restore_before_any_chang
         assert sha(paths.db_path) == before and aside(paths) == [], "nothing moved or copied"
         assert not (paths.home / "run" / "db-restore.json").exists() and not list(paths.data.glob("studio.db.restoring*"))
         (said,) = notes(paths)
-        assert said.startswith("NS-E209: Nightshift's database is damaged") and "another Nightshift window is using it" in said
+        assert said.startswith("NS-E209: Nightshift's database is damaged") and "another program is using it" in said
         assert "Close every Nightshift window (Stop All), then open the Dashboard" in said
         assert "Stop All" in str(refused.data.get("hint"))
 
@@ -415,7 +421,7 @@ def test_another_process_holding_the_database_stops_the_restore_before_any_chang
     assert len([n for n in aside(paths) if n.endswith(".db")]) == 1
 
 
-@pytest.mark.parametrize("point", ["before_copy", "after_rename", "before_tell", "after_note"])
+@pytest.mark.parametrize("point", ["before_copy", "after_rename", "mid_put_back", "before_tell", "after_note"])
 def test_a_restore_killed_after_the_set_aside_is_finished_by_the_next_start(tmp_home: Path, point: str) -> None:
     paths = home()
     backups(paths, [1, 2, 3])
@@ -537,6 +543,7 @@ def test_a_night_whose_database_breaks_mid_way_stops_with_one_note(tmp_home: Pat
     said = [n for n in notes(paths) if "NS-E209" in n]
     assert len(said) == 1 and "became damaged during tonight's run" in said[0]
     assert "Close every Nightshift window (Stop All), then open the Dashboard" in said[0]
+    assert (paths.home / "run" / "db-full-check.json").is_file(), "the next start checks in full (blocker 3)"
 
 
 def test_a_damaged_assistant_database_is_set_aside_and_started_fresh(tmp_home: Path) -> None:
@@ -590,14 +597,14 @@ def test_backups_made_by_the_previous_release_are_used(tmp_home: Path) -> None:
 
 
 # ------------------------------------------------------------------------------------------- the states
-@pytest.mark.parametrize("kind", ["page3", "half", "text", "zero_bytes", "missing"])
+@pytest.mark.parametrize("kind", ["page3", "half", "text", "schema", "zero_bytes", "missing"])
 def test_every_kind_of_damage_is_found_and_replaced(tmp_home: Path, kind: str) -> None:
     """D2: SQLite's own answers (page 3 0xFF, half a file, text) and a file lost from a home with history (zero
     bytes or none at all, with nightly copies there) all end with the newest good copy and the note."""
     paths = home()
     backups(paths, [1, 2])
     build_db(paths.db_path, "live")
-    {"page3": damage_page3, "half": cut_to_half, "text": as_text,
+    {"page3": damage_page3, "half": cut_to_half, "text": as_text, "schema": _broken_schema,
      "zero_bytes": lambda p: p.write_bytes(b""), "missing": lambda p: p.unlink()}[kind](paths.db_path)
 
     db = migrated(paths)
@@ -610,12 +617,22 @@ def test_every_kind_of_damage_is_found_and_replaced(tmp_home: Path, kind: str) -
     assert bool(aside(paths)) == (kind != "missing")
 
 
-def _newer_schema(path: Path) -> None:
+def _broken_schema(path: Path) -> None:
+    """A schema table SQLite cannot parse: its answer is SQLITE_CORRUPT ("malformed database schema"), which
+    is damage of page 1 (the review of a7573cf, note 2), not the mark of a newer program."""
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA writable_schema = ON")
     conn.execute("update sqlite_master set sql = 'CREATE TABLE runs(run_id TEXT) WITHOUT SOMETHING NEW' where name = 'runs'")
     conn.commit()
     conn.close()
+
+
+def _newer_format(path: Path) -> None:
+    """The schema format number (header bytes 44-47) of a later SQLite: "unsupported file format", the one
+    answer that says a newer program wrote the file."""
+    with path.open("r+b") as fh:
+        fh.seek(44)
+        fh.write((9).to_bytes(4, "big"))
 
 
 def _torn_wal(path: Path) -> None:
@@ -627,7 +644,7 @@ def _journal_left(path: Path) -> None:
 
 
 @pytest.mark.parametrize(("kind", "result"), [
-    ("torn_wal", "ok"), ("journal_left", "ok"), ("newer_schema", "newer"), ("locked", "not_checked"),
+    ("torn_wal", "ok"), ("journal_left", "ok"), ("newer_format", "newer"), ("locked", "not_checked"),
     ("too_slow", "too_slow"), ("new_install", "new"),
 ])
 def test_what_is_not_damage_is_opened_as_it_is(tmp_home: Path, monkeypatch: pytest.MonkeyPatch, kind: str, result: str) -> None:
@@ -645,8 +662,8 @@ def test_what_is_not_damage_is_opened_as_it_is(tmp_home: Path, monkeypatch: pyte
         _torn_wal(paths.db_path)
     elif kind == "journal_left":
         _journal_left(paths.db_path)
-    elif kind == "newer_schema":
-        _newer_schema(paths.db_path)
+    elif kind == "newer_format":
+        _newer_format(paths.db_path)
         before = sha(paths.db_path)
     elif kind == "locked":
         if dbrestore is not None:
@@ -672,9 +689,9 @@ def test_what_is_not_damage_is_opened_as_it_is(tmp_home: Path, monkeypatch: pyte
     record = paths.home / "run" / "db-check.json"
     assert record.is_file() and json.loads(record.read_text(encoding="utf-8"))["result"] == result
     assert aside(paths) == [] and notes(paths) == [] and not (paths.home / "run" / "db-restore.json").exists()
-    if kind in ("newer_schema", "locked", "too_slow"):
+    if kind in ("newer_format", "locked", "too_slow"):
         assert sha(paths.db_path) == before, "the file is left exactly as it was"
-    if kind in ("locked", "newer_schema", "too_slow"):
+    if kind in ("locked", "newer_format", "too_slow"):
         logged = [json.loads(line) for f in paths.logs.glob("studio-*.jsonl") for line in f.read_text(encoding="utf-8").splitlines()]
         assert [r["level"] for r in logged if r["event"] == "db_not_checked"] == ["INFO"], "one INFO"
 
@@ -787,8 +804,448 @@ def test_the_dashboard_answers_503_when_the_database_breaks_while_it_runs(tmp_ho
         assert answer.status_code == 503
         body = answer.json()["error"]
         assert body["code"] == "NS-E209" and "Close every Nightshift window (Stop All)" in body["message"]
+        assert (paths.home / "run" / "db-full-check.json").is_file(), "the next start checks in full (blocker 3)"
     finally:
         state.db.close()
+
+
+# ------------------------------------------------------------------------------------------- the one decision
+# The fix after the review of a7573cf (five blockers). The state table is in the run folder's fix-table.md;
+# TABLE below is that table, one test per row, and the tests after it are the five blockers' sequences.
+def start(paths: Paths) -> Any:
+    """One start's check of studio.db: what `open_studio_db` runs once per process."""
+    from ns_studio.notifications import db_note
+
+    return dbrestore.ensure_sound(paths, NsLogger("studio", paths.logs), db_note(paths))
+
+
+def _copies(*states: str, listed: bool = True) -> Any:
+    """Nightly copies newest first, each in `state`; the i-th one's path is `copy-<i>`."""
+    made = tuple(dbrestore.CopyState(f"studio-202611{20 - i:02d}.db", s, "why", f"copy-{i}") for i, s in enumerate(states))
+    return dbrestore.Copies(listed, "" if listed else "PermissionError: Access is denied", made)
+
+
+#: row, the live check, the record (step, ours, aside, begun) or None, the copies newest first (None: the row
+#: must not look at them; "unlistable": the folder cannot be listed), the act, the copy used.
+TABLE: list[tuple[str, str, tuple[Any, ...] | None, Any, str, str | None]] = [
+    ("L1", "ok", None, None, "keep", None),
+    ("L1", "new", None, None, "keep", None),
+    ("L2", "not_checked", None, None, "leave", None),
+    ("L2", "too_slow", None, None, "leave", None),
+    ("L2", "newer", None, None, "leave", None),
+    ("L/L3", "damaged", None, ("bad", "gone", "good"), "restore", "copy-2"),
+    ("L/L3", "lost", None, ("good", "good"), "restore", "copy-0"),
+    ("L/L4", "damaged", None, ("unknown", "good"), "stop", None),
+    ("L/L4", "damaged", None, ("bad", "unknown", "good"), "stop", None),
+    ("L/L4", "lost", None, "unlistable", "stop", None),
+    ("L/L5", "damaged", None, ("bad", "bad", "gone"), "rebuild", None),
+    ("L/L5", "lost", None, (), "rebuild", None),
+    ("R2", "ok", ("chosen", False, False, False), None, "drop_record", None),
+    ("R2", "ok", ("set_aside", False, True, False), None, "drop_record", None),
+    ("R3/L3", "damaged", ("chosen", False, False, False), ("good",), "restore", "copy-0"),
+    ("R3/L4", "damaged", ("chosen", False, False, False), ("unknown",), "stop", None),
+    ("R4/L3", "lost", ("chosen", False, True, False), ("good",), "restore", "copy-0"),
+    ("R4/L3", "lost", ("set_aside", False, True, False), ("bad", "good"), "restore", "copy-1"),
+    ("R4/L5", "new", ("set_aside", False, True, False), (), "rebuild", None),
+    ("R4/L4", "lost", ("set_aside", False, True, False), ("unknown",), "stop", None),
+    ("R4/L4", "lost", ("set_aside", False, True, False), "unlistable", "stop", None),
+    ("R5/L3", "damaged", ("set_aside", False, True, False), ("good",), "restore", "copy-0"),
+    ("R6", "not_checked", ("chosen", False, False, False), None, "leave", None),
+    ("R6", "too_slow", ("set_aside", False, True, False), None, "leave", None),
+    ("R6", "not_checked", ("in_place", False, True, False), None, "leave", None),
+    ("R6", "ok", ("set_aside", None, True, False), None, "leave", None),
+    ("R7", "ok", ("set_aside", True, True, False), None, "resume", None),
+    ("R8", "ok", ("in_place", True, True, False), None, "resume", None),
+    ("R8", "ok", ("in_place", False, True, False), None, "resume", None),
+    ("R8", "ok", ("in_place", False, True, True), None, "resume", None),
+    ("R8", "ok", ("put_back", False, True, True), None, "resume", None),
+    ("R9/L3", "damaged", ("in_place", False, True, True), ("good",), "restore", "copy-0"),
+    ("R9/L4", "lost", ("put_back", False, True, True), ("unknown",), "stop", None),
+]
+
+
+@pytest.mark.parametrize(("row", "live", "record", "copies", "act", "backup"), TABLE,
+                         ids=[f"{t[0]}-{t[1]}-{t[2][0] if t[2] else 'no_record'}-{n}" for n, t in enumerate(TABLE)])
+def test_the_decision_table_row_by_row(row: str, live: str, record: tuple[Any, ...] | None, copies: Any, act: str,
+                                       backup: str | None) -> None:
+    def ask() -> Any:
+        assert copies is not None, f"row {row} decides without looking at the copies"
+        return _copies(listed=False) if copies == "unlistable" else _copies(*copies)
+
+    d = dbrestore.decide(dbrestore.Check(live, "what SQLite said"), None if record is None else dbrestore.RecordState(*record), ask)
+    assert (d.act.value, d.row, d.backup) == (act, row, backup)
+    assert d.live.verdict == live, "the decision carries the evidence it rests on"
+    if act in ("restore", "rebuild", "stop"):
+        assert d.copies is not None and d.reason
+    if act == "rebuild":
+        assert len(d.refused) == len([s for s in copies if s == "bad"]), "only copies that were read and are bad are named"
+
+
+def test_no_decision_moves_a_database_without_positive_evidence() -> None:
+    """Every state there is (8 live answers x 49 records x 86 sets of copies): a restore or a new database only
+    with studio.db positively damaged or gone, the folder listed, and every copy before the one used read and
+    positively unusable; "could not look" always leaves or stops."""
+    lives = ["ok", "new", "damaged", "lost", "not_checked", "too_slow", "newer", "an_answer_of_a_later_version"]
+    records: list[Any] = [None] + [
+        dbrestore.RecordState(step, ours, was_aside, begun)
+        for step in ("chosen", "set_aside", "in_place", "put_back")
+        for ours in (True, False, None) for was_aside in (True, False) for begun in (True, False)
+    ]
+    sets = [_copies(listed=False)] + [
+        _copies(*states) for n in range(4) for states in itertools.product(("good", "bad", "gone", "unknown"), repeat=n)
+    ]
+    moving = (dbrestore.Act.RESTORE, dbrestore.Act.REBUILD)
+    seen: set[str] = set()
+    for live, record, copies in itertools.product(lives, records, sets):
+        d = dbrestore.decide(dbrestore.Check(live, ""), record, lambda copies=copies: copies)
+        seen.add(d.act.value)
+        state = (live, record, copies)
+        if live not in ("ok", "new", "damaged", "lost"):
+            assert d.act is dbrestore.Act.LEAVE, state
+        if d.act in moving:
+            assert live in ("damaged", "lost") or (live == "new" and record is not None), state
+            assert copies.listed, state
+            used = [c.path for c in copies.states].index(d.backup) if d.backup else len(copies.states)
+            assert all(c.state in ("bad", "gone") for c in copies.states[:used]), state
+            assert (d.act is dbrestore.Act.RESTORE) == (d.backup is not None), state
+            if d.backup:
+                assert copies.states[used].state == "good", state
+        if d.act is dbrestore.Act.DROP_RECORD:
+            assert live == "ok" and record is not None and record.ours is False, state
+            assert record.step in ("chosen", "set_aside"), state
+        if d.act is dbrestore.Act.KEEP:
+            assert record is None and live in ("ok", "new"), state
+        if d.act is dbrestore.Act.RESUME:
+            assert live == "ok" and record is not None, state
+    assert seen == {a.value for a in dbrestore.Act}, "every act is reached"
+
+
+@pytest.mark.parametrize(("verdict", "detail", "state"), [
+    ("damaged", "row 3 missing from index", "bad"), ("new", "zero bytes", "bad"), ("new", "no file", "gone"),
+    ("not_checked", "unable to open database file", "unknown"), ("too_slow", "interrupted", "unknown"),
+    ("newer", "unsupported file format", "unknown"),
+])
+def test_a_copy_that_could_not_be_read_is_unknown_never_bad(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verdict: str,
+                                                            detail: str, state: str) -> None:
+    monkeypatch.setattr(dbrestore, "check", lambda path, **_k: dbrestore.Check(verdict, detail))
+    assert dbrestore.copy_state(tmp_path / "studio-20261101.db").state == state
+
+
+# blocker 1 ---------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("how", ["held", "slow", "unlistable"])
+def test_copies_that_cannot_be_read_stop_the_restore_and_change_nothing(tmp_home: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                        how: str) -> None:
+    """studio.db is damaged while a backup tool holds the newest nightly copy (or its check runs out of time,
+    or the folder cannot be listed): NS-E209, nothing moves, no older copy is used, no empty database."""
+    paths = home()
+    backups(paths, [1, 2, 3])
+    build_db(paths.db_path, "live")
+    damage_page3(paths.db_path)
+    before = sha(paths.db_path)
+    copies_before = {p.name: sha(p) for p in paths.backup_dir.iterdir()}
+    real_pragma = dbrestore._pragma
+    if how == "unlistable":
+        def denied(p: Paths) -> Any:
+            raise PermissionError(13, "Access is denied", str(p.backup_dir))
+
+        monkeypatch.setattr(dbrestore, "_backups", denied)
+    else:
+        def pragma(uri: str, name: str, **k: Any) -> Any:
+            if "studio-20261103.db" in uri:  # SQLite's own answers for a file it cannot open, or a check cut short
+                raise sqlite3.OperationalError("unable to open database file" if how == "held" else "interrupted")
+            return real_pragma(uri, name, **k)
+
+        monkeypatch.setattr(dbrestore, "_pragma", pragma)
+    with pytest.raises(NsError) as stopped:
+        start(paths)
+    assert stopped.value.code == "NS-E209"
+    assert sha(paths.db_path) == before and aside(paths) == [], "nothing moved"
+    assert {p.name: sha(p) for p in paths.backup_dir.iterdir()} == copies_before
+    assert not (paths.home / "run" / "db-restore.json").exists() and not list(paths.data.glob("studio.db.restoring*"))
+    (said,) = notes(paths)
+    assert said.startswith("NS-E209") and "cannot be read now" in said and "nothing was changed" in said
+    assert "data\\backup" in said and "Stop All" in said and "gone" not in said
+
+    monkeypatch.setattr(dbrestore, "_pragma", real_pragma)
+    if how == "unlistable":
+        monkeypatch.undo()
+    start(paths)  # the tool let go: the NEWEST copy is used
+    assert runs_of(paths.db_path) == ["day-3"]
+    assert len([n for n in notes(paths) if n.startswith("NS-W213")]) == 1
+
+
+@windows_only
+def test_a_copy_locked_by_another_program_is_not_a_damaged_copy(tmp_home: Path) -> None:
+    """The same with a real lock: another handle holds a byte-range lock on the newest copy (what a backup
+    tool takes), so SQLite's read of it fails. No fake answer anywhere."""
+    import msvcrt
+
+    paths = home()
+    backups(paths, [1, 2])
+    build_db(paths.db_path, "live")
+    damage_page3(paths.db_path)
+    before = sha(paths.db_path)
+    newest = paths.backup_dir / "studio-20261102.db"
+    size = newest.stat().st_size
+    fh = newest.open("r+b")
+    try:
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, size)
+        with pytest.raises(NsError) as stopped:
+            start(paths)
+        assert stopped.value.code == "NS-E209"
+        assert sha(paths.db_path) == before and aside(paths) == []
+        assert not [n for n in notes(paths) if n.startswith("NS-W213")]
+    finally:
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, size)
+        fh.close()
+    start(paths)
+    assert runs_of(paths.db_path) == ["day-2"], "not the older copy, and not an empty database"
+
+
+# blocker 2 ---------------------------------------------------------------------------------------------------
+def _stopped_restore(paths: Paths, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """A restore stopped by a full disk at the copy: the record says `set_aside`, studio.db is in data/damaged.
+    Room is back when this returns. Returns what is set aside."""
+    real = dbrestore._copy_backup
+
+    def full(src: Path, dst: Path) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device", str(dst))
+
+    monkeypatch.setattr(dbrestore, "_copy_backup", full)
+    with pytest.raises(NsError):
+        start(paths)
+    monkeypatch.setattr(dbrestore, "_copy_backup", real)
+    record = json.loads((paths.home / "run" / "db-restore.json").read_text(encoding="utf-8"))
+    assert record["step"] == "set_aside" and not paths.db_path.exists()
+    return aside(paths)
+
+
+@pytest.mark.parametrize("by", ["the_owners_restore", "a_rollback_that_worked_on_a_new_one"])
+def test_a_sound_database_under_a_left_over_record_is_kept(tmp_home: Path, monkeypatch: pytest.MonkeyPatch, by: str) -> None:
+    """Sequences A and B of the review: a restore stopped at `set_aside`; then the owner's own `ns restore`, or
+    the previous release after a rollback, puts a database there (neither knows run/db-restore.json). The next
+    start checks the file that is there NOW: sound, so it stays, the record goes and the owner reads why."""
+    paths = home()
+    backups(paths, [1, 2])
+    build_db(paths.db_path, "live")
+    damage_page3(paths.db_path)
+    set_aside = _stopped_restore(paths, monkeypatch)
+    build_db(paths.db_path, "theirs")
+    if by == "a_rollback_that_worked_on_a_new_one":
+        conn = sqlite3.connect(paths.db_path)
+        conn.execute("insert into runs(run_id, started_at, mode) values ('worked-on', '2026-11-05T00:00:00', 'daily')")
+        conn.commit()
+        conn.close()
+    before = sha(paths.db_path)
+
+    assert start(paths).verdict == "ok"
+    assert sha(paths.db_path) == before, "the database that is there is not touched"
+    assert aside(paths) == set_aside, "nothing more is set aside (no -found)"
+    assert not (paths.home / "run" / "db-restore.json").exists(), "the record is gone"
+    kept = [n for n in notes(paths) if "was kept as it is" in n]
+    assert len(kept) == 1 and "had begun to replace its database" in kept[0] and "data\\damaged" in kept[0]
+    assert not [n for n in notes(paths) if n.startswith("NS-W213")], "nothing claims a restore that was not made"
+    count = len(notes(paths))
+    assert start(paths).verdict == "ok" and len(notes(paths)) == count and sha(paths.db_path) == before
+    assert "theirs" in runs_of(paths.db_path)
+
+
+@pytest.mark.parametrize("record", [
+    "this is not json",
+    '{"step": "set_aside"}',
+    '{"step": "a_later_step", "stamp": "20261101-000000", "found_at": "2026-11-01T00:00:00+00:00"}',
+    '{"version": 2, "step": "chosen", "stamp": "20261101-000000", "found_at": "2026-11-01T00:00:00+00:00"}',
+])
+def test_a_record_nobody_can_read_moves_nothing(tmp_home: Path, record: str) -> None:
+    """Row R1: an unreadable record, one without its fields, an unknown step, another version: set aside as
+    `.bad`, and the sound studio.db stays where it is (the build set it aside unchecked)."""
+    paths = home()
+    backups(paths, [1])
+    build_db(paths.db_path, "live")
+    before = sha(paths.db_path)
+    f = paths.home / "run" / "db-restore.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(record, encoding="utf-8")
+
+    assert start(paths).verdict == "ok"
+    assert sha(paths.db_path) == before and aside(paths) == [] and notes(paths) == []
+    assert not f.exists() and f.with_name(f.name + ".bad").is_file()
+
+
+def test_a_damaged_file_under_a_left_over_record_is_set_aside_as_found(tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Row R5: the file found under the record is checked, and it IS damaged: set aside (never deleted) under
+    its own name, and the restore goes on."""
+    paths = home()
+    backups(paths, [1, 2])
+    build_db(paths.db_path, "live")
+    damage_page3(paths.db_path)
+    _stopped_restore(paths, monkeypatch)
+    build_db(paths.db_path, "theirs")
+    damage_page3(paths.db_path)
+
+    start(paths)
+    assert runs_of(paths.db_path) == ["day-2"]
+    names = [n for n in aside(paths) if n.endswith(".db")]
+    assert len(names) == 2 and len([n for n in names if "-found" in n]) == 1, "both damaged files are kept"
+    assert len([n for n in notes(paths) if n.startswith("NS-W213")]) == 1
+
+
+# blocker 3 ---------------------------------------------------------------------------------------------------
+def _index_without_its_rows(path: Path) -> None:
+    """What a lost write leaves: an index whose content is not its table's (two indexes with their root pages
+    exchanged). The QUICK check passes; the full check does not; a query through the index answers wrongly."""
+    conn = sqlite3.connect(path)
+    conn.execute("create table zz(a integer primary key, b text, c text)")
+    conn.executemany("insert into zz(b, c) values (?, ?)", [(f"b{i:03d}", f"c{999 - i:03d}") for i in range(50)])
+    conn.execute("create index zz_b on zz(b)")
+    conn.execute("create index zz_c on zz(c)")
+    conn.commit()
+    roots = dict(conn.execute("select name, rootpage from sqlite_master where name in ('zz_b', 'zz_c')").fetchall())
+    conn.execute("PRAGMA writable_schema = ON")
+    conn.execute("update sqlite_master set rootpage = ? where name = 'zz_b'", (roots["zz_c"],))
+    conn.execute("update sqlite_master set rootpage = ? where name = 'zz_c'", (roots["zz_b"],))
+    conn.commit()
+    conn.close()
+    conn = sqlite3.connect(f"{path.as_uri()}?immutable=1", uri=True)
+    try:
+        assert conn.execute("PRAGMA quick_check").fetchall() == [("ok",)], "the quick check must not see it"
+        assert conn.execute("PRAGMA integrity_check").fetchall() != [("ok",)], "the full check must see it"
+    finally:
+        conn.close()
+
+
+def test_damage_only_the_full_check_finds_is_replaced_after_a_stop_in_use(tmp_home: Path) -> None:
+    """The review's sequence: the night stopped on "malformed", but the quick check of the next start says ok.
+    The stop left its mark, so that start runs the FULL check and replaces the database, as the note promised."""
+    paths = home()
+    backups(paths, [1, 2])
+    build_db(paths.db_path, "live")
+    _index_without_its_rows(paths.db_path)
+    before = sha(paths.db_path)
+    assert start(paths).verdict == "ok" and sha(paths.db_path) == before and aside(paths) == [], "quick check alone: nothing"
+
+    mark = paths.home / "run" / "db-full-check.json"
+    dbrestore.want_full_check(paths, "the night stopped: database disk image is malformed")
+    assert mark.is_file()
+    start(paths)
+    assert runs_of(paths.db_path) == ["day-2"] and [n for n in aside(paths) if n.endswith(".db")]
+    assert len([n for n in notes(paths) if n.startswith("NS-W213")]) == 1
+    assert not mark.exists(), "answered: the next start is a quick check again"
+
+
+def test_a_full_check_that_passes_after_a_stop_in_use_is_said_once(tmp_home: Path) -> None:
+    paths = home()
+    backups(paths, [1])
+    build_db(paths.db_path, "live")
+    before = sha(paths.db_path)
+    dbrestore.want_full_check(paths, "the dashboard: database disk image is malformed")
+
+    assert start(paths).verdict == "ok"
+    assert sha(paths.db_path) == before and aside(paths) == []
+    assert not (paths.home / "run" / "db-full-check.json").exists()
+    (said,) = notes(paths)
+    assert "full check" in said and "nothing was replaced" in said and "ns doctor --bundle" in said
+    assert start(paths).verdict == "ok" and len(notes(paths)) == 1
+
+
+# blocker 4 ---------------------------------------------------------------------------------------------------
+def test_nights_without_a_nightly_copy_are_counted_and_said(tmp_home: Path) -> None:
+    from ns_studio.notifications import db_note
+    from ns_supervisor.doctor import database_row
+
+    paths = home()
+    backups(paths, [1])
+    build_db(paths.db_path, "live")
+    log, note = NsLogger("studio", paths.logs), db_note(paths)
+    why = "the copy could not be written (OSError: No space left on device)"
+    for _night in (1, 2):
+        dbrestore.backup_failed(paths, why, log, note)
+    state = json.loads((paths.home / "run" / "db-backup.json").read_text(encoding="utf-8"))
+    assert state["failed_nights"] == 2 and state["last_error"] == why
+    (said,) = [n for n in notes(paths) if n.startswith("NS-W214")]  # the same words wait once
+    assert "No nightly copy" in said and why in said and "the newest nightly copy is from" in said
+    assert "while Automatic runs are on in Settings" in said
+    _name, ok, row = database_row(paths)
+    assert not ok and "no nightly copy was made on the last 2 night(s)" in row and "newest nightly copy" in row
+    assert not (paths.home / "run" / "db-full-check.json").exists(), "a full disk is not damage"
+
+    dbrestore.backup_failed(paths, "the copy failed its check (damaged: row 3 missing)", log, note, damaged=True)
+    assert (paths.home / "run" / "db-full-check.json").is_file(), "a copy that answered damage: the live file is checked in full"
+    dbrestore.backup_made(paths)
+    assert "no nightly copy" not in database_row(paths)[2]
+
+
+def test_a_backup_of_a_damaged_database_says_it_is_damage(tmp_path: Path) -> None:
+    live = tmp_path / "studio.db"
+    build_db(live, "live")
+    damage_page3(live)
+    db = Db(live)
+    try:
+        with pytest.raises(dbmod.BackupFailed) as failed:
+            db.backup(tmp_path / "backup")
+    finally:
+        db.close()
+    assert failed.value.damaged is True
+    assert list((tmp_path / "backup").glob("studio-*")) == [], "no copy of a damaged file is kept"
+
+
+def test_a_database_that_cannot_be_checked_is_said_from_the_third_start(tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """"Not checked" has a bound: two starts are an INFO, the third leaves NS-W214 (once) and `ns doctor` shows
+    the row as failed with the age of the newest copy; a start that can check ends it."""
+    from ns_supervisor.doctor import database_row
+
+    paths = home()
+    backups(paths, [1])
+    build_db(paths.db_path, "live")
+    monkeypatch.setattr(dbrestore, "CHECK_BUSY_MS", 200)
+    check_file = paths.home / "run" / "db-check.json"
+    holder = sqlite3.connect(paths.db_path, isolation_level=None)
+    holder.execute("PRAGMA locking_mode = EXCLUSIVE")
+    holder.execute("begin exclusive")
+    try:
+        for _start in (1, 2):
+            assert start(paths).verdict == "not_checked"
+            assert notes(paths) == [] and database_row(paths)[1] is True
+        start(paths)
+        assert json.loads(check_file.read_text(encoding="utf-8"))["not_checked_starts"] == 3
+        (said,) = notes(paths)
+        assert said.startswith("NS-W214") and "could not be checked" in said and "the newest nightly copy is from" in said
+        assert "Stop All" in said
+        start(paths)
+        assert len(notes(paths)) == 1, "the same words wait once"
+        _name, ok, row = database_row(paths)
+        assert not ok and "could not be checked at the last 4 starts" in row and "newest nightly copy" in row
+    finally:
+        holder.execute("rollback")
+        holder.close()
+    assert start(paths).verdict == "ok"
+    assert json.loads(check_file.read_text(encoding="utf-8"))["not_checked_starts"] == 0
+    assert database_row(paths)[1] is True and aside(paths) == []
+
+
+# blocker 5 ---------------------------------------------------------------------------------------------------
+def test_a_put_back_killed_between_two_videos_still_counts_them_all(tmp_home: Path) -> None:
+    """A kill INSIDE D8 (one row in, two to go): the ids were saved before the first insert, so the next start
+    puts the rest back and NS-W213 counts all three, not "No video was made since that copy"."""
+    paths = home()
+    backups(paths, [1, 2, 3])
+    made = finished_job(paths, "after-dark-20261103-bbbb", BASE + 3 * DAY + 60, items=("s1", "s2", "s3"))
+    build_db(paths.db_path, "live")
+    damage_page3(paths.db_path)
+
+    rc, out = run_child("mid_put_back", paths)
+    assert rc == 9, f"the child is stopped inside the put-back: {out}"
+    record = json.loads((paths.home / "run" / "db-restore.json").read_text(encoding="utf-8"))
+    assert record["step"] == "in_place" and sorted(record["put_back"]) == sorted(made), "saved before the first insert"
+
+    db = open_db(paths)
+    db.migrate()
+    assert sorted(r["output_id"] for r in db.query("select output_id from outputs where status='pending'")) == sorted(made)
+    db.close()
+    (said,) = [n for n in notes(paths) if n.startswith("NS-W213")]
+    assert "the 3 videos you made are back in the Queue" in said
+    assert sorted(restored_record(paths)["put_back"]) == sorted(made)
 
 
 # ------------------------------------------------------------------------------------------- the guard
