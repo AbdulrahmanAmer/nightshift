@@ -129,9 +129,12 @@ def model_aside_note(found: dict[str, Any] | None) -> str | None:
         return None
     said = str(found["said"]).rstrip(".")
     return (
-        f"{said}. The nightly videos do not load this file, so it stopped no video; what does use it fails "
-        "until it is fixed. Run INSTALL.cmd again from the Nightshift zip and choose Repair: it checks every "
-        "model file by hash and downloads a damaged or missing one again; nothing else is changed."
+        # "does not work", not "fails": with the face finder gone the Clipper still cuts, without its search
+        # for faces (`clipper.detect.load_detector` gives None), while "design a voice" is refused (NS-E314)
+        f"{said}. The nightly videos do not load this file, so it stopped no video; what does load it (such "
+        "as designing a voice, or the Clipper's search for faces) does not work until it is fixed. Run "
+        "INSTALL.cmd again from the Nightshift zip and choose Repair: it checks every model file by hash and "
+        "downloads a damaged or missing one again; nothing else is changed."
     )
 
 
