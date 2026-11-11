@@ -744,6 +744,76 @@ update if you want a copy kept again. A damaged copy is replaced and the result 
 at all (a program holds it open) stops the update before anything changes (`NS-E702`, or `NS-E115` from
 `INSTALL.cmd`); close the program and run the update again.
 
+### Who made an update: the three files of a release
+
+A release has three files for an update: `Nightshift-Update-<version>.zip`, its `.sha256` (the zip arrived
+whole) and its `.sig` (the release key signed it). Keep the three in one folder and do not rename them; in
+**Settings > Updates > From a file** choose all three at once (hold Ctrl). `ns update --github` and **Update now**
+fetch all three by themselves.
+
+A Nightshift that knows the release key installs an update only when the `.sig` was made with that key for
+exactly this file name, version and content. This is checked first, on every route (the Update shortcut,
+Settings, `ns update <zip>`, `ns update --github`), before anything is stopped or changed. A refusal is
+`NS-E707`, Nightshift keeps running as it was, and the sentence says which case it is:
+
+- **the `.sig` is missing** (or cannot be read, or is not a signature file): download the `.zip`, `.sha256` and
+  `.sig` of the same release again, all three, into one folder.
+- **signed with a key this version does not know**: do not install it. Download the package from the release
+  page again. If that one is refused too and the release notes say the release key was replaced, update with
+  the Setup zip of that release instead: extract it, run its `INSTALL.cmd` and choose this folder (it keeps your
+  settings, models and videos).
+- **the signature does not match the file**: the file was renamed or changed after it was signed, or it is not
+  a Nightshift release. Do not install it; download it again from the release page.
+
+A version from before the release key existed (0.1.14, and the candidates made until the key was created) says
+"This version of Nightshift does not check who made an update yet" in Settings > Updates and once in the update
+log: it accepts a package on its `.sha256` alone, as before, and ignores the `.sig`. That is how the first signed
+version gets installed. `ns update --rollback` goes back to the program kept on this PC and checks no package.
+Setup's `INSTALL.cmd` (a first install, **Continue** over an install, Repair) runs from the Setup zip you chose to
+run and checks no `.sig`: verify that zip with its `.sha256` from the release page.
+
+### The release key
+
+This is done ONCE, by the owner of the repository, before the first final release that signs. Nobody else does
+it and no program does it for you: the private key never passes through an assistant, a chat or a log.
+
+On the laptop with the repository, signed in to GitHub (`gh auth login`), with a USB stick plugged in, in
+Windows PowerShell in the repository folder:
+
+    powershell -ExecutionPolicy Bypass -File dev\release_keys.ps1 -Create -BackupFolder <the USB stick, for example E:\>
+
+It makes two key pairs. The **primary** private key goes straight into the repository's GitHub secret
+`NS_RELEASE_SIGNING_KEY` (it is never written to this PC and never shown); the release run signs with it. The
+**backup** private key is written to `<BackupFolder>\nightshift-release-backup-key.txt` and nowhere else. The two
+PUBLIC keys are written into `ns_common\release_keys.py`; commit that file. The script prints the two key ids and
+"Keep the backup file safe and off this PC; it is the only way to sign a release if the GitHub secret is lost."
+Run a second time it refuses: the keys already exist. If it stops halfway it says what is in place; running it
+again is always safe while `ns_common\release_keys.py` pins no key (it makes new keys and replaces the secret).
+
+What changes afterwards: every release cut from a commit that carries those public keys must be signed (the
+release run fails without the secret, also for a candidate), and every Nightshift of such a release refuses an
+update without a valid `.sig`. Until the step is done, a candidate is published unsigned with a warning in the
+run's summary, and a final tag fails with "The release key is not set up".
+
+### Lost key
+
+- **The GitHub secret is lost or was replaced by mistake** (the backup file exists): sign the release by hand
+  with the backup key, on the PC with the repository and the USB stick:
+  `pip install --require-hashes -r dev\sign-requirements.txt`, then
+  `python dev\sign_release.py --key-file <stick>\nightshift-release-backup-key.txt dist\Nightshift-Update-<version>.zip dist\Nightshift-Setup-<version>.zip`,
+  check with `python dev\sign_release.py --check <the two zips>` and upload the two `.sig` files to the release.
+  For the release after it, make a new primary key: add its public key to `ns_common\release_keys.py` beside
+  the backup key (a version trusts the keys ITS OWN list names, so the new key counts from the version that
+  lists it, and that version must itself be signed with a key the installed versions already know: the backup).
+- **The backup file is lost** (the secret still works): releases keep working. Add a new backup key the same
+  way in the next release, and remove the lost one from the list.
+- **Both are lost**: no installed Nightshift can take an update package any more. The way out is the Setup zip:
+  the release notes must say "update with the Setup zip: run INSTALL.cmd and choose your install folder", which
+  keeps settings, models and videos and trusts the download as a first install does. That release carries a new
+  pair of keys.
+- A key that may have been copied by someone else is handled like a lost one, and its line is removed from
+  `ns_common\release_keys.py` in the next release.
+
 ## If Nightshift did not run because its program folder is missing
 
 You find a file `Nightshift did not run.txt` on the Desktop, or a notification "Nightshift did not run last
