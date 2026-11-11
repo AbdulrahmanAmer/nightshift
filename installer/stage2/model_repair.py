@@ -46,6 +46,7 @@ from installer.stage2.downloader import (
 from installer.stage2.errors import make_error
 from installer.stage2.web import modelmarks
 from ns_common.atomic import replace_atomic
+from ns_common.errors import NsError
 
 RECHECK_FLAG = "models_recheck"
 #: Room kept free beyond the replacement's own size while it is downloaded beside the damaged copy.
@@ -109,7 +110,19 @@ def _set_aside(ctx: StepContext, item: vd.DownloadItem, row: vd.Row) -> None:
             "where it is (a damaged file found before it in this run is already set aside and is fetched by "
             "that next run).",
         )
-    replace_atomic(dest, dest.with_name(dest.name + modelmarks.SET_ASIDE))
+    try:
+        replace_atomic(dest, dest.with_name(dest.name + modelmarks.SET_ASIDE))
+    except (OSError, NsError) as e:
+        # Windows refuses to move a file a program has open (a damaged model can still be loaded and in use).
+        # `replace_atomic` words its refusal for the target name (`<name>.bad`), which nobody holds: say which
+        # file it is and the way out. Nothing was moved and the marker is as it was: the next run checks again
+        raise make_error(
+            "NS-E119",
+            f"{vd.what(item)} is damaged and could not be set aside for its replacement: Windows refused to "
+            f"move {dest} ({type(e).__name__}), which happens while a program has the file open (Nightshift "
+            "itself, a virus scan). Close Nightshift (Stop All) and that program, then run INSTALL.cmd again "
+            "(Repair); this file was left where it is.",
+        ) from e
     _marker(dest).unlink(missing_ok=True)
     ctx.log.warn("model_damaged", f"{dest} does not match its SHA256 ({row.detail}): set aside, to fetch")
 

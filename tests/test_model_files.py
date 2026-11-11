@@ -390,6 +390,31 @@ def test_a_repair_with_no_room_for_the_new_file_moves_nothing(
     assert not llm.with_name(llm.name + ".bad").exists()
 
 
+def test_a_damaged_file_that_is_held_open_is_refused_with_the_way_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Written by the final reviewer, NOT RUN. Windows refuses to move a file a program has open: the Repair
+    stops with NS-E119 naming the model and Stop All; the file and its marker stay, nothing is fetched."""
+    from installer.stage2 import model_repair
+
+    inst = make_install(tmp_path)
+    llm = inst.file("Qwen3-")
+    flip(llm)
+    damaged = llm.read_bytes()
+
+    def held(src: Path, dst: Path, **kw: Any) -> None:
+        raise PermissionError(13, "The process cannot access the file because it is being used", str(src))
+
+    monkeypatch.setattr(model_repair, "replace_atomic", held)
+    fetched: list[str] = []
+    served = {i.url: content(i.name) for i in inst.items}
+    assert repair_run(tmp_path, inst, site(served, fetched, set())) != 0
+    report = json.dumps(json.loads((inst.paths.logs / "install-report.json").read_text(encoding="utf-8")))
+    assert "NS-E119" in report, report
+    assert llm.read_bytes() == damaged and dl._marker(llm).is_file() and fetched == []
+    assert not llm.with_name(llm.name + ".bad").exists()
+
+
 def test_a_first_install_does_not_hash_twice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     inst = make_install(tmp_path, completed=False, files=False)
     served = {i.url: content(i.name) for i in inst.items}
