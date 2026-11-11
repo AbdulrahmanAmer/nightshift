@@ -149,6 +149,12 @@ def doctor_line(home: Path, program: Path) -> tuple[bool, str]:
     want = pin_of(program).get("version", "")
     exe = uv_dir(home) / EXE
     if not exe.is_file():
+        kept = uv_dir(home, ".prev")
+        if (kept / EXE).is_file():      # a swap cut between its two renames: this install has no uv in place
+            return False, (
+                f"none at {exe}, but one is kept in {kept}: an update or rollback was stopped while it "
+                f"exchanged them. Run that update or rollback again (it puts uv back first), or: {REPAIR}"
+            )
         return True, f"none at {exe} (this program pins {want or 'no version'})"
     runs, have = report(exe)
     if not runs:
