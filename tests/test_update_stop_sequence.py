@@ -491,10 +491,12 @@ def test_setup_with_an_own_process_it_cannot_end_says_restart_and_not_that_night
 # ---------------------------------------------------------------------------------- review notes
 def test_a_stop_request_that_does_not_answer_is_shown_and_bounded(monkeypatch: pytest.MonkeyPatch,
                                                                     tmp_path: Path) -> None:
-    from ns_supervisor import stopping
+    import importlib
 
-    monkeypatch.setattr(stopping, "PROGRESS_EVERY_S", 0.2)
-    monkeypatch.setattr(stopping, "SHUTDOWN_WAIT_S", 1.0, raising=False)
+    try:
+        stopping: Any = importlib.import_module("ns_supervisor.stopping")
+    except ImportError:                 # before the one stop sequence, control.stop sent the request
+        stopping = None
 
     class Slow:
         def is_up(self) -> bool:
@@ -506,10 +508,17 @@ def test_a_stop_request_that_does_not_answer_is_shown_and_bounded(monkeypatch: p
 
     said: list[str] = []
     t0 = time.monotonic()
-    done = stopping.stop_nightshift(Paths(tmp_path / "ns"), Slow(), say=said.append, note=lambda p: [])
+    slow: Any = Slow()
+    if stopping is None:
+        lines = control.stop(Paths(tmp_path / "ns"), slow, wait_s=1.0, exit_wait_s=1.0)
+    else:
+        monkeypatch.setattr(stopping, "PROGRESS_EVERY_S", 0.2)
+        monkeypatch.setattr(stopping, "SHUTDOWN_WAIT_S", 1.0)
+        done = stopping.stop_nightshift(Paths(tmp_path / "ns"), slow, say=said.append, note=lambda p: [])
+        lines = done.lines
     assert time.monotonic() - t0 < 4, "the sequence waited for the request's own timeout"
     assert any("has not answered its stop request yet" in s for s in said), said
-    assert any("had not answered its stop request" in s for s in done.lines), done.lines
+    assert any("had not answered its stop request" in s for s in lines), lines
 
 
 def test_an_own_process_that_cannot_be_ended_gets_no_shortcut_promise(tmp_path: Path) -> None:
