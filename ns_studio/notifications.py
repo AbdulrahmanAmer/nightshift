@@ -187,12 +187,19 @@ def time_note(report: dict[str, Any]) -> str | None:
 
     items = _noted(report)
     long_jobs: list[dict[str, Any]] = report.get("long_jobs") or []
-    if not (items or long_jobs):
-        return None
     timing: dict[str, Any] = report.get("timing") or {}
     limit, used = _limit(report), timing.get("used_s")
+    # night-fits-b: the night ran past the task's limit (a stage under way took longer than planned) and the
+    # run, not Windows, ended it: said here too, not only on the Last night card
+    worked = float(used) if isinstance(used, int | float) else None
+    over = worked - limit if worked is not None and limit is not None else 0.0
+    if not (items or long_jobs or over > 0):
+        return None
     head = "Last night's run"
-    if used is not None and limit:
+    if over > 0 and worked is not None and limit is not None:
+        head += (f" worked {words(worked)}, {words(over)} past the {limit_words(limit)} Windows allows "
+                 "the nightly task: the run went on past that limit and ended by itself")
+    elif used is not None and limit:
         head += f" used {words(used)} of the {limit_words(limit)} Windows allows it"
     elif used is not None:
         head += f" used {words(used)}"
@@ -211,7 +218,7 @@ def time_note(report: dict[str, Any]) -> str | None:
            for i in items):
         parts.append("To fit more into one night, set fewer Full videos per week for a channel in "
                      "Channels, or pause a channel.")
-    return " ".join(parts) + " (NS-W211)"
+    return " ".join(parts) + (" (NS-W211)" if items or long_jobs else "")  # an overrun alone left nothing
 
 
 def _fate(item: dict[str, Any]) -> str:
