@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib
 import json
 import os
 import re
@@ -52,10 +53,26 @@ POLL_S = 60.0
 OUT_LIMIT = 20_000
 ASK_TIMEOUT_S = 15 * 60
 EVENT_IDS = (1, 42, 41, 1074, 6006, 6008)  # power and restart events only
-STEPS = ("K0", "K1", "K2", "K3", "K4", "K5", "K6", "K7")
+STEPS = ("K0", "K1", "K2", "KS", "K3", "KC", "KV", "KN", "KA", "K4", "K5", "K6", "K7")
 TITLES = {"K0": "start", "K1": "record this PC", "K2": "test each model and run the proofs",
-          "K3": "make one story video", "K4": "switch Automatic runs on for two nights", "K5": "night 1",
-          "K6": "night 2", "K7": "collect everything and put Automatic runs back"}  # fmt: skip
+          "KS": "try the stock-footage keys", "K3": "make one story video",
+          "KC": "make one clip from the story video", "KV": "design a voice and clone one",
+          "KN": "Nightshift Code on the graphics card", "KA": "ask the Assistant one question",
+          "K4": "switch Automatic runs on for two nights", "K5": "night 1", "K6": "night 2",
+          "K7": "collect everything and put Automatic runs back"}  # fmt: skip
+STOCK_QUERIES = ("lighthouse in fog", "rain on a window at night", "empty country road at dusk")
+CLIP_BOUND_S = 90 * 60  # the clip job of 3 minutes of video, with its models loaded (bounded)
+VOICE_BOUND_S = 30 * 60
+CODE_LOAD_S = 15 * 60  # the coding model's first load
+CODE_PROMPT_S = 5 * 60
+FREED_WITHIN_S = (
+    5.0  # F-H47 / F-E30: the engine frees the card within 5 s of the Code window's process ending
+)
+ASK_BOUND_S = 10 * 60
+VOICE_DESCRIPTION = "A calm, warm adult narrator with a low, steady voice, speaking slowly and clearly."
+VOICE_TEST_LINE = "The house at the end of the road had waited a long time for someone to come home."
+CODE_PROMPT = "Reply with one short sentence: what is two plus two?"
+ASSISTANT_QUESTION = "In one sentence: what does the Outbox hold?"
 PLAN = (
     "What the kit does, in order. You can close this window at any time: run GPU-KIT.cmd again and it goes",
     "on from where it stopped. Nothing is sent anywhere; the only changes are the kit's own channel (active",
@@ -64,11 +81,14 @@ PLAN = (
     "  1. Start: checks this is the GPU install (seconds)",
     "  2. Record this PC: graphics card, driver, disk, sleep settings, model files (up to 15 minutes)",
     "  3. Test each model once and run the proof scripts (10 to 40 minutes)",
-    "  4. Make one story video with the real models on the kit's own paused channel (about 3 hours)",
-    "  5. Switch Automatic runs on for the next two nights if they are off (seconds); the kit then stops",
-    "  6. and 7. The two nights run by themselves, each making one more story video on the kit's channel;",
+    "  4. Try each stored stock-footage key: one search and one small download (a minute)",
+    "  5. Make one story video with the real models on the kit's own paused channel (about 3 hours)",
+    "  6. to 9. One clip from the video, a designed and a cloned test voice (removed again), Nightshift Code",
+    "     on the graphics card, one question to the Assistant (about an hour together)",
+    "  10. Switch Automatic runs on for the next two nights if they are off (seconds); the kit then stops",
+    "  11. and 12. The two nights run by themselves, each making one more story video on the kit's channel;",
     "     run GPU-KIT.cmd again after the second morning",
-    "  8. Collect everything into one zip and put Automatic runs back (about 5 minutes)",
+    "  13. Collect everything into one zip and put Automatic runs back (about 5 minutes)",
     "  Then a few questions only you can answer (about 15 minutes; 'later' keeps them for the next run).",
 )
 
@@ -116,6 +136,12 @@ class Product(Protocol):
     def start_engine(self, timeout: float) -> tuple[bool, str]: ...
     def night_now(self, limit_s: int, timeout: float) -> tuple[int | None, str]: ...
     def frame_grid(self, video: Path, out: Path, timeout: float) -> str | None: ...
+    def cut(self, src: Path, out: Path, start_s: float, seconds: float, audio: bool) -> str | None: ...
+    def start_code(self, launcher: Path) -> Proc: ...
+    def opencode_prompt(
+        self, exe: Path, prompt: str, cwd: Path, timeout: float
+    ) -> tuple[int | None, str]: ...
+    def kill_tree(self, pid: int, created: float | None) -> None: ...
 
 
 class Windows(Protocol):
@@ -136,11 +162,13 @@ class KitEnv:
     say: Callable[[str], None] = print
 
 
-def _run(argv: list[str], timeout: float, env: dict[str, str] | None = None) -> tuple[int | None, str]:
+def _run(
+    argv: list[str], timeout: float, env: dict[str, str] | None = None, cwd: Path | None = None
+) -> tuple[int | None, str]:
     """A program's exit code and output (its last OUT_LIMIT characters); rc None when it timed out."""
     try:
         done = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=timeout, env=env, check=False)  # fmt: skip
+                              timeout=timeout, env=env, check=False, cwd=cwd)  # fmt: skip
     except subprocess.TimeoutExpired:
         return None, f"did not finish in {timeout:.0f} s"
     except OSError as e:
@@ -236,6 +264,53 @@ class InstallProduct:
                          "fps=1/60,scale=320:-1,tile=4x4", "-frames:v", "1", str(out)], timeout)  # fmt: skip
         return None if rc == 0 and out.is_file() else (text or f"FFmpeg exit {rc}")
 
+    def cut(self, src: Path, out: Path, start_s: float, seconds: float, audio: bool) -> str | None:
+        """`seconds` of `src` from `start_s` with the install's FFmpeg: the video stream copied, or (audio)
+        mono 24 kHz WAV; None, or why not."""
+        from ns_common import ffmpeg
+
+        out.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            exe = ffmpeg.ffmpeg_exe()
+        except Exception as e:  # noqa: BLE001 - no FFmpeg: said, not a crash
+            return f"FFmpeg not found ({e})"
+        codec = ["-vn", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le"] if audio else ["-c", "copy"]
+        span = ["-ss", f"{start_s:.0f}", "-t", f"{seconds:.0f}"]
+        rc, text = _run([exe, "-y", "-v", "error", *span, "-i", str(src),
+                         *codec, str(out)], 600)  # fmt: skip
+        return None if rc == 0 and out.is_file() else (text or f"FFmpeg exit {rc}")
+
+    def start_code(self, launcher: Path) -> Proc:
+        """The Nightshift Code shortcut's own command, in a console window of its own (as the shortcut opens
+        it): the launcher takes the card as owner `opencode` and starts OpenCode."""
+        flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+        argv = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)]
+        return subprocess.Popen(argv,
+                                env=self.env, cwd=str(self.home), creationflags=flags)  # fmt: skip
+
+    def opencode_prompt(self, exe: Path, prompt: str, cwd: Path, timeout: float) -> tuple[int | None, str]:
+        """One prompt through OpenCode itself (`opencode run`), with the config the launcher wrote."""
+        cwd.mkdir(parents=True, exist_ok=True)
+        env = {**self.env, "OPENCODE_CONFIG": str(self.home / "config" / "opencode.json")}
+        return _run([str(exe), "run", prompt], timeout, env, cwd)
+
+    def kill_tree(self, pid: int, created: float | None) -> None:
+        """End the process `pid` (when it is still the one recorded) and its children: what closing its
+        console window with X does to the launcher and OpenCode. By the recorded pid, never by name."""
+        import psutil
+
+        try:
+            proc = psutil.Process(pid)
+            if created is not None and abs(proc.create_time() - created) >= 1.0:
+                return  # the pid was reused: not ours
+            family = [*proc.children(recursive=True), proc]
+        except (psutil.Error, OSError):
+            return
+        for p in family:
+            with contextlib.suppress(psutil.Error, OSError):
+                p.kill()
+        psutil.wait_procs(family, timeout=10)
+
 
 class RealWindows:
     """The PC's own readers, read only, no elevation. Refused under pytest (tests pass canned answers)."""
@@ -311,8 +386,9 @@ def timed_input(prompt: str, timeout_s: float = ASK_TIMEOUT_S) -> str | None:
 #: slashes, JSON's \u escapes, URL-encoded, and the 8.3 short name; a file saved as UTF-16 or in the PC's ANSI
 #: code page is read as such first (and written into the zip as UTF-8).
 MASKED = (
-    "the stock-footage keys (Pexels: 56 letters and digits; Pixabay: digits-32 hex) and any value named "
-    "key, token, secret, password or authorization",
+    "the stock-footage keys and tokens stored on this PC (read from Credential Manager, the key file and "
+    "answers.json when the zip is written; every occurrence of each value, in every form below), the usual "
+    "key shapes, and any value named key, token, secret, password or authorization",
     "Hugging Face (hf_), GitHub and Bearer tokens anywhere",
     "the Windows user name (and the profile folder C:\\Users\\<name>, also as its 8.3 short name)",
     "the install's home path (also as its 8.3 short name)",
@@ -357,6 +433,64 @@ def _forms(value: str) -> set[str]:
     return {f for f in out if f}
 
 
+def _secret_forms(value: str) -> set[str]:
+    """`_forms` of a stored secret, plus its Base64 (standard and URL-safe, with and without padding) and
+    its UTF-16 text as Base64 (PowerShell's -EncodedCommand)."""
+    import base64
+
+    out = set(_forms(value))
+    for raw in (value.encode("utf-8"), value.encode("utf-16-le")):
+        for enc in (base64.b64encode(raw), base64.urlsafe_b64encode(raw)):
+            text = enc.decode("ascii")
+            out |= {text, text.rstrip("=")}
+    return {f for f in out if len(f) >= 6}
+
+
+#: The names a secret is stored under in an answers file (setup moves the keys out and blanks them).
+_SECRET_FIELD = re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|_key$)")
+
+
+def stored_secrets(home: Path) -> tuple[str, ...]:
+    """The secrets this PC stores for the install, read now: the stock-footage keys from Credential
+    Manager (never under pytest) and from `config/secrets.dpapi`, and every secret-named value of the
+    answers files. Never raises; values shorter than 6 characters are not masked (they would mask words)."""
+    found: set[str] = set()
+    with contextlib.suppress(Exception):
+        from ns_common.paths import Paths
+        from ns_common.secret_file import load_secret, stored_names
+        from ns_common.secrets_names import KEY_NAMES, KEYRING_SERVICE
+
+        paths = Paths(home)
+        names = set(KEY_NAMES) | set(stored_names(paths))
+        for name in sorted(names):
+            with contextlib.suppress(Exception):
+                found.add(load_secret(paths, name) or "")
+        from ns_common import testguard
+
+        keyring: Any = None
+        with contextlib.suppress(Exception):
+            keyring = importlib.import_module("keyring")
+        if keyring is not None and not testguard.real_keyring(keyring):  # never the real one under pytest
+            for name in KEY_NAMES:
+                with contextlib.suppress(Exception):
+                    found.add(keyring.get_password(KEYRING_SERVICE, name) or "")
+
+    def walk(node: Any, key: str = "") -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, str(k))
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, key)
+        elif isinstance(node, str) and _SECRET_FIELD.search(key):
+            found.add(node)
+
+    for answers in (home / "config" / "answers.json", home / "app" / "answers.json", ROOT / "answers.json"):
+        with contextlib.suppress(OSError, ValueError):
+            walk(json.loads(answers.read_text(encoding="utf-8-sig")))
+    return tuple(sorted({v.strip() for v in found if len(v.strip()) >= 6}, key=lambda v: (-len(v), v)))
+
+
 @dataclass(frozen=True)
 class Masks:
     """The PC-specific words to mask: the home path, the user's name and profile folder, the PC's name, and
@@ -368,17 +502,19 @@ class Masks:
     computer: str
     short_home: str = ""
     short_profile: str = ""
+    secrets: tuple[str, ...] = ()  # the stored values (`stored_secrets`), masked wherever they appear
 
     @classmethod
     def here(cls, home: Path) -> Masks:
         e = os.environ
         profile = e.get("USERPROFILE", "")
         return cls(str(home), e.get("USERNAME", ""), profile, e.get("COMPUTERNAME", ""),
-                   _short_name(str(home)) or "", _short_name(profile) or "")  # fmt: skip
+                   _short_name(str(home)) or "", _short_name(profile) or "",
+                   stored_secrets(home))  # fmt: skip
 
     def pairs(self) -> list[tuple[str, str, bool]]:
         """(form, replacement, whole word only), longest first."""
-        out: list[tuple[str, str, bool]] = []
+        out: list[tuple[str, str, bool]] = [(f, "***", False) for s in self.secrets for f in _secret_forms(s)]
         short_user = self.short_profile.rstrip("\\/").rsplit("\\", 1)[-1] if self.short_profile else ""
         for value, word, whole in ((self.home, "<home>", False), (self.short_home, "<home>", False),
                                    (self.profile, "<profile>", False),
@@ -391,7 +527,11 @@ class Masks:
 
 def scrub_text(text: str, masks: Masks) -> str:
     """`text` with every item of MASKED replaced: secrets by `***`, the home by `<home>`, the profile folder
-    by `<profile>`, the PC's name by `<pc>`, the user name by `<user>` (every form of `Masks.pairs`)."""
+    by `<profile>`, the PC's name by `<pc>`, the user name by `<user>` (every form of `Masks.pairs`). The
+    stored values go first, whatever their shape; then the shapes and the named values."""
+    for value in masks.secrets:  # the values themselves, before any rule could cut one in two
+        for form in sorted(_secret_forms(value), key=len, reverse=True):
+            text = text.replace(form, "***")
     for rx in _SECRET_SHAPES:
         text = rx.sub("***", text)
 
@@ -592,10 +732,9 @@ class Kit:
         """On every way out of a run (end, Ctrl+C, the window closed, an error): the kit's channel goes back
         to paused unless its video is being made right now. Bounded and best effort: a night never plans the
         channel anyway (`cadence.KIT_CHANNEL`), and the next run of the kit puts it back too."""
+        self.put_back_extras()
         ch = (self.state.get("changes") or {}).get("channel")
-        if self.state.get(
-            "nights_armed"
-        ):  # active for the armed nights: step 8 or the night after puts it back
+        if self.state.get("nights_armed"):  # active for the armed nights: step 13 or the night after
             return
         job = self.state.get("job") or {}
         busy = bool(job.get("pid")) and self.product.alive(job["pid"], job.get("pid_created"))
@@ -605,6 +744,42 @@ class Kit:
             if self.pause_channel(start=False):
                 ch["put_back"] = True
                 self.save()
+
+    def put_back_extras(self) -> None:
+        """The kit's test clip in the footage cache, its test voices and the Code window it opened, removed on
+        every way out (each recorded before it was made; bounded, best effort: the next run tries again)."""
+        changes = self.state.get("changes") or {}
+        for what, ch in list(changes.items()):
+            if ch.get("put_back"):
+                continue
+            with contextlib.suppress(Exception):
+                if what.startswith("stock_clip_") and ch.get("clip"):
+                    if self.product.api("GET", "/api/health", timeout=10)[0] == 200:
+                        c = ch["clip"]
+                        st, _ = self.product.api(
+                            "DELETE", f"/api/library/footage/{c['source']}/{c['clip_id']}"
+                        )
+                        ch["put_back"] = st in (200, 404)
+                elif what.startswith("stock_clip_"):
+                    ch["put_back"] = True  # nothing was downloaded
+                elif what.startswith("voice_") and ch.get("name"):
+                    ch["put_back"] = self.remove_voice(str(ch["name"]))
+                elif what == "code_window" and ch.get("pid"):
+                    self.product.kill_tree(int(ch["pid"]), ch.get("created"))
+                    ch["put_back"] = True
+        if changes:
+            self.save()
+
+    def remove_voice(self, name: str) -> bool:
+        """The kit's own test voice folder removed (only a `gpukit-` name inside the voice library)."""
+        from ns_common.paths import Paths
+
+        root = Paths(self.home).models_tts_voices
+        folder = root / name
+        if not name.startswith("gpukit-") or folder.parent != root:
+            return False
+        shutil.rmtree(folder, ignore_errors=True)
+        return not folder.exists()
 
     def marked(self, text: str) -> str:
         """The simulated card's mark in front of a measured result (H-10): never read as the GPU PC's."""
@@ -743,14 +918,29 @@ class Kit:
                 "--tools", str(KIT_DIR / "tools"), "--runs", str(self.ev / "proofs"), "--all", "--strict",
                 "--no-window"]  # fmt: skip
         prc, out = self.product.prove(args, 60 * 60)
-        self.write_json("proofs.json", {"exit": prc, "output": out})
         tail = (out or "").strip().splitlines()
         summary = next((ln for ln in reversed(tail) if " passed, " in ln), tail[-1] if tail else "no output")
         if prc == 2 and "no proofs to run" in (out or ""):
+            self.write_json("proofs.json", {"exit": prc, "output": out})
             return Result("PASS", "every model answered its short test; no proof fits this install")
+        skipped = [
+            m.groups() for m in re.finditer(r"(?m)^SKIPPED (\S+) \[([^\]]*)\] \S+s(?:  (.*))?$", out or "")
+        ]
+        # proofs/README.md: F-B13/F-B14 never replace a real key, so on a real install with a stored key they
+        # skip by design; they are NOT RUN there, with that reason. Any other skip or failure still fails.
+        designed = [s for s in skipped if self.kind == "gpu" and {"F-B13", "F-B14"} & set(s[1].split(","))
+                    and "a stock footage key is already stored" in (s[2] or "")]  # fmt: skip
+        others = [s for s in skipped if s not in designed]
+        self.write_json(
+            "proofs.json", {"exit": prc, "output": out, "not_run_by_design": [s[0] for s in designed]}
+        )
+        line = f"every model answered its short test; proofs: {summary}"
+        if designed:
+            line += (f"; NOT RUN by design: {', '.join(s[0] for s in designed)} (a real stock-footage key is "
+                     "stored, and that proof never replaces a real key: proofs/README.md)")  # fmt: skip
         # a failed proof is a fact for the Head: the kit goes on
-        word = "PASS" if prc == 0 else "FAIL"
-        return Result(word, f"every model answered its short test; proofs: {summary}")
+        word = "PASS" if prc == 0 or (prc == 3 and designed and not others) else "FAIL"
+        return Result(word, line)
 
     # -------------------------------------------------------------------------------------- K3 story video
     def kit_jobs(self) -> list[dict[str, Any]]:
@@ -965,6 +1155,394 @@ class Kit:
             ),
         )
 
+    # -------------------------------------------------------------------------------------- shared by 4, 6-9
+    def room(self, need_s: float, what: str) -> Result | None:
+        """A bounded GPU step starts only when it ends (with 30 minutes to spare) before the nightly run."""
+        if self.night_now:
+            return None
+        now = self.now()
+        nxt = self.run_times(now, 1)[0]
+        if now + timedelta(seconds=need_s + GUARD_S) <= nxt:
+            return None
+        back = self.come_back(nxt + timedelta(seconds=NIGHT_LIMIT_S))
+        return Result("WAIT", f"not started now: {what} takes up to {_secs(need_s)} plus 30 minutes to "
+                      "spare, "
+                      f"and the nightly run starts at {self.when(nxt)}. Run GPU-KIT.cmd again after "
+                      f"{self.when(back)}.", done=False, stop=True)  # fmt: skip
+
+    def engine_status(self) -> dict[str, Any]:
+        """The Dashboard's engine object (`GET /api/status` -> engine: state, vram_owner)."""
+        _st, body = self.product.api("GET", "/api/status", timeout=30)
+        engine = body.get("engine") if isinstance(body, dict) else None
+        return engine if isinstance(engine, dict) else {}
+
+    def vram_used(self) -> int | None:
+        """The card's memory in use now, MiB (nvidia-smi through the install's source)."""
+        out = self.windows.nvidia_smi(["--query-gpu=memory.used", "--format=csv,noheader,nounits"]) or ""
+        m = re.search(r"\d+", out)
+        return int(m.group(0)) if m else None
+
+    def log_codes(self, codes: tuple[str, ...], since: datetime) -> list[str]:
+        """The product's log lines since `since` that carry one of `codes` (warnings such as NS-W404)."""
+        found: list[str] = []
+        for f in sorted((self.home / "logs").glob("*.jsonl")):
+            with contextlib.suppress(OSError):
+                for text in f.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if not any(c in text for c in codes):
+                        continue
+                    with contextlib.suppress(ValueError):
+                        ln = json.loads(text)
+                        if isinstance(ln, dict) and _when(ln.get("ts")) >= since:
+                            code = next(c for c in codes if c in text)
+                            found.append(f"{code} ({ln.get('event')})")
+        return list(dict.fromkeys(found))
+
+    def story_video(self) -> Path | None:
+        """The kit's own finished story video (step 5), or None."""
+        with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
+            story = json.loads((self.ev / "story" / "story.json").read_text(encoding="utf-8"))
+            video = Path(story["video"])
+            if story.get("outcome") == "done" and video.is_file():
+                return video
+        return None
+
+    # -------------------------------------------------------------------------------------- KS stock keys
+    def ks(self) -> Result:
+        """One real search and one real download of one clip per provider whose key is stored, through the
+        product's own route (`POST /api/library/footage/fetch`, count 1); the clip leaves the cache again."""
+        why = self.engine()
+        settings = None if why else self.settings()
+        if settings is None:
+            return Result("FAIL", f"the Dashboard did not answer ({why}). What to do: send the zip.",
+                          done=False, stop=True)  # fmt: skip
+        keys = settings.get("keys") or {}
+        rec = self.state.setdefault("stock", {})
+        lines, failed = [], False
+        for name in ("pixabay", "pexels"):
+            title = name.capitalize()
+            if not keys.get(name):
+                rec[name] = {"result": "NOT RUN", "line": f"{title}: NOT RUN (no {title} key is stored)"}
+            elif (rec.get(name) or {}).get("result") != "PASS":
+                rec[name] = self.try_stock(name)
+            self.save()
+            lines.append(rec[name]["line"])
+            failed = failed or rec[name]["result"] == "FAIL"
+        self.write_json("stock.json", rec)
+        if not any(keys.get(n) for n in ("pixabay", "pexels")):
+            return Result("NOT RUN", "no stock-footage key is stored (Settings > Stock footage keys): "
+                          "nothing "
+                          "to try; " + "; ".join(lines))  # fmt: skip
+        if failed:  # the video needs footage: it does not start on a key that does not work
+            return Result("FAIL", self.marked("; ".join(lines)), done=False, stop=True)
+        return Result("PASS", self.marked("; ".join(lines)))
+
+    def try_stock(self, name: str) -> dict[str, Any]:
+        title = name.capitalize()
+        self.change(
+            f"stock_clip_{name}", "not in the cache", "one clip, removed from the cache after the check"
+        )
+        for q in STOCK_QUERIES:
+            status, body = self.product.api("POST", "/api/library/footage/fetch",
+                                            {"q": q, "orientation": "landscape", "count": 1, "source": name},
+                                            timeout=600)  # fmt: skip
+            if status != 200 or not isinstance(body, dict):
+                return {"result": "FAIL", "line": f"{title}: {_stock_refusal(title, status, body)}",
+                        "status": status, "answer": body}  # fmt: skip
+            fresh = [c for c in body.get("clips") or [] if isinstance(c, dict) and c.get("new")]
+            if not fresh:
+                continue  # every clip found is already in the cache: another search downloads one
+            c = fresh[0]
+            path = Path(str(c.get("path")))
+            size = path.stat().st_size if path.is_file() else None
+            clip = {"source": c.get("source"), "clip_id": c.get("clip_id"), "size_bytes": size, "query": q}
+            self.state["changes"][f"stock_clip_{name}"]["clip"] = clip
+            self.save()
+            self.put_back_extras()  # the clip leaves the cache again
+            got = f"{size / 1e6:.1f} MB" if size else "an empty file"
+            ok = bool(size) and c.get("source") == name
+            line = (f"{title}: searched and downloaded one clip ({got}, {c.get('source')} "
+                    f"{c.get('clip_id')}, "
+                    f"{c.get('width')}x{c.get('height')})")  # fmt: skip
+            if c.get("source") != name:
+                line += f" from the install's {c.get('source')} source, not {title}"
+            return {"result": "PASS" if ok else "FAIL", "line": line, **clip}
+        return {"result": "FAIL", "line": f"{title}: {len(STOCK_QUERIES)} searches found no clip that is not "
+                "already in the cache. What to do: send the zip."}  # fmt: skip
+
+    # -------------------------------------------------------------------------------------- KC clip
+    def kc(self) -> Result:
+        """Create > Clips with its input made by the kit: about 3 minutes cut from the kit's story video, one
+        clip asked for, judged from the job's records and QC."""
+        video = self.story_video()
+        if video is None:
+            return Result("NOT RUN", "the story video was not made (step 5), so the clip has no input")
+        rec = self.state.setdefault("clip", {})
+        if not rec.get("job_id"):
+            held = self.room(CLIP_BOUND_S, "the clip")
+            if held is not None:
+                return held
+            why = self.engine()
+            if why:
+                return Result("FAIL", f"{why}. What to do: send the zip.")
+            src = self.ev / "clip" / "input-3min.mp4"
+            if not src.is_file():
+                problem = self.product.cut(video, src, 60, 180, False)
+                if problem:
+                    return Result(
+                        "NOT RUN", f"its input could not be cut from the story video ({problem[:300]})"
+                    )
+            self.change("clip_job", "none", "one clip job on the kit's channel (its clip waits in the Queue)")
+            body = {"channel": CHANNEL, "path": str(src), "rights_confirmed": True, "max_clips": 1}
+            status, answer = self.product.api("POST", "/api/jobs/clip", body)
+            if status != 201 or not isinstance(answer, dict) or not answer.get("job_id"):
+                return Result(
+                    "FAIL", self.marked(f"the clip job was refused (HTTP {status}: {str(answer)[:300]})")
+                )
+            rec.update({"job_id": answer["job_id"], "started": self.iso()})
+            self.save()
+        begun = self.at(rec["started"])
+        job: dict[str, Any] = {}
+        while True:
+            st, got = self.product.api("GET", f"/api/jobs/{rec['job_id']}")
+            job = got if st == 200 and isinstance(got, dict) else {}
+            if job.get("status") in ("done", "failed", "cancelled"):
+                break
+            if (self.now() - begun).total_seconds() > CLIP_BOUND_S:
+                break
+            self.say(
+                f"  the clip job: {job.get('status')}, {job.get('message') or ''} "
+                f"({_span(begun, self.now())})"
+            )
+            self.clock.sleep(POLL_S)
+        return self.kc_judge(rec, job, begun)
+
+    def kc_judge(self, rec: dict[str, Any], job: dict[str, Any], begun: datetime) -> Result:
+        got = job.get("result")
+        result: dict[str, Any] = got if isinstance(got, dict) else {}
+        sids = [str(s) for s in result.get("studio_job_ids") or []]
+        sql = "select output_id, path, kind, duration_s from outputs where "
+        outs = [r for s in sids for r in self.db(sql +
+                                                 "job_id = ?", (s,))]  # fmt: skip
+        qc: dict[str, Any] = {}
+        for s in sids:
+            with contextlib.suppress(OSError, ValueError):
+                qc.update(
+                    json.loads((self.home / "data" / "jobs" / s / "qc" / "report.json").read_text("utf-8"))
+                )
+        # since the job was queued, by the Dashboard's own clock (the logs' clock)
+        since = _when(job.get("created_at")) if job.get("created_at") else begun
+        warns = self.log_codes(("NS-W404", "NS-W401"), since)
+        rec.update({"status": job.get("status"), "message": job.get("message"), "studio_job_ids": sids,
+                    "outputs": outs, "qc": qc, "warnings": warns, "ended": self.iso()})  # fmt: skip
+        self.write_json("clip/clip.json", rec)
+        self.save()
+        said = f"; logged: {', '.join(warns)}" if warns else ""
+        if job.get("status") not in ("done", "failed", "cancelled"):
+            return Result("FAIL", self.marked(f"the clip job did not finish in {_secs(CLIP_BOUND_S)} (it was "
+                          f"{job.get('status')}: {job.get('message')}){said}"))  # fmt: skip
+        if job.get("status") != "done":
+            return Result("FAIL", self.marked(f"the clip job ended {job.get('status')}: {job.get('message')}"
+                                              f"{said}"))  # fmt: skip
+        passed = [k for k, v in qc.items() if isinstance(v, dict) and v.get("passed")]
+        if not outs or not passed:
+            return Result("FAIL", self.marked(f"the clip job ended done with {len(outs)} clip(s) and QC "
+                                              f"{len(passed)} of {len(qc)} passed{said}"))  # fmt: skip
+        return Result("PASS", self.marked(f"one clip from 3 minutes of the story video: {len(outs)} clip(s) "
+                                          f"made, QC {len(passed)} of {len(qc)} passed, in "
+                                          f"{_span(begun, self.now())}{said}"))  # fmt: skip
+
+    # -------------------------------------------------------------------------------------- KV voices
+    def kv(self) -> Result:
+        """Voice design from a description and a clone from the kit's own narration, each speaking one
+        sentence through the product's routes; each file non-silent by the product's own audio check; both
+        test voices removed again."""
+        held = self.room(VOICE_BOUND_S, "the two test voices")
+        if held is not None:
+            return held
+        why = self.engine()
+        if why:
+            return Result("FAIL", f"{why}. What to do: send the zip.")
+        rec = self.state.setdefault("voices", {})
+        day = self.now().strftime("%Y%m%d")
+        parts = []
+        for kind in ("design", "clone"):
+            if (rec.get(kind) or {}).get("result") not in ("PASS", "FAIL", "NOT RUN"):
+                rec[kind] = self.make_voice(kind, f"gpukit-{kind}-{day}")
+                self.save()
+            parts.append(f"{kind}: {rec[kind]['result']} ({rec[kind]['line']})")
+        self.put_back_extras()
+        self.write_json("voices/voices.json", rec)
+        results = {rec[k]["result"] for k in ("design", "clone")}
+        word = "FAIL" if "FAIL" in results else "PASS" if "PASS" in results else "NOT RUN"
+        return Result(word, self.marked("; ".join(parts) + "; both test voices removed"))
+
+    def make_voice(self, kind: str, name: str) -> dict[str, Any]:
+        body: dict[str, Any] = {"name": name, "test_line": VOICE_TEST_LINE}
+        if kind == "design":
+            body["description"] = VOICE_DESCRIPTION
+        else:
+            sample = self.narration_sample()
+            if sample is None:
+                return {"result": "NOT RUN", "line": "no narration of the kit's video to clone from"}
+            body.update({"sample_path": str(sample), "consent": True})
+        self.change(f"voice_{kind}", "absent", "a test voice of the kit, removed after its check")
+        self.state["changes"][f"voice_{kind}"]["name"] = name
+        self.save()  # the name first: a kill from here on still removes it
+        self.remove_voice(name)  # (left by a run killed after the voice was made)
+        begun = self.now()
+        status, answer = self.product.api("POST", f"/api/voices/{kind}", body, timeout=VOICE_BOUND_S)
+        took = _span(begun, self.now())
+        if status != 200 or not isinstance(answer, dict) or not answer.get("preview_wav_path"):
+            return {"result": "FAIL", "line": f"refused (HTTP {status}: {str(answer)[:240]})"}
+        wav = Path(str(answer["preview_wav_path"]))
+        keep = self.ev / "voices" / f"{kind}-preview.wav"
+        with contextlib.suppress(OSError):
+            keep.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(wav, keep)
+        audible, measured = _audible(wav)
+        word = "PASS" if audible else "FAIL"
+        what = "spoke the sentence" if audible else "is silent or unreadable"
+        return {"result": word, "line": f"{what}: {measured}, made in {took}", "measured": measured}
+
+    def narration_sample(self) -> Path | None:
+        """A few seconds of the kit's own narration: a narration file of its job (4 to 30 s), else 12 s of the
+        story video's sound."""
+        out = self.ev / "voices" / "sample.wav"
+        if out.is_file():
+            return out
+        job = str((self.state.get("job") or {}).get("id") or "")
+        for wav in sorted((self.home / "data" / "jobs" / job / "audio").glob("*.wav")) if job else []:
+            with contextlib.suppress(Exception):
+                from ns_tts.audio import read_wav
+
+                x, sr = read_wav(wav)
+                if 4.0 <= len(x) / max(1, sr) <= 30.0:
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(wav, out)
+                    return out
+        video = self.story_video()
+        if video is not None and self.product.cut(video, out, 30, 12, True) is None:
+            return out
+        return None
+
+    # -------------------------------------------------------------------------------------- KN Code
+    def kn(self) -> Result:
+        """Nightshift Code by its real route (the shortcut's launcher, in its own window), the model loaded,
+        one prompt through OpenCode, the window closed as with X (its processes ended), and the card freed in
+        the product's stated time (F-H47: the engine frees it within 5 s of the window's process ending)."""
+        exe = self.home / "bin" / "opencode" / "opencode.exe"
+        launcher = ROOT / "launchers" / "nightshift-code.ps1"
+        if not exe.is_file():
+            return Result("NOT RUN", "Nightshift Code is not installed on this PC (no "
+                          "bin\\opencode\\opencode.exe: "
+                          "setup's Nightshift Code choice was off)")  # fmt: skip
+        if not launcher.is_file():
+            return Result("NOT RUN", f"the Nightshift Code launcher is missing ({launcher})")
+        idle = _idle_unload_s(self.home)
+        held = self.room(CODE_LOAD_S + CODE_PROMPT_S + idle + 120, "the Nightshift Code check")
+        if held is not None:
+            return held
+        why = self.engine()
+        if why:
+            return Result("FAIL", f"{why}. What to do: send the zip.")
+        self.put_back_extras()  # a window left open by a killed run is closed first
+        rec: dict[str, Any] = {"vram_before": self.vram_used(), "started": self.iso()}
+        self.state["code"] = rec
+        self.change("code_window", "closed", "opened by the kit and closed again")
+        proc = self.product.start_code(launcher)
+        ch = self.state["changes"]["code_window"]
+        ch.update({"pid": proc.pid, "created": self.product.created(proc.pid)})
+        self.save()  # the pid first: a kill from here on still closes the window
+        begun, loaded = self.now(), None
+        while (self.now() - begun).total_seconds() < CODE_LOAD_S:
+            st = self.engine_status()
+            if st.get("vram_owner") == "opencode" and st.get("state") in ("ready", "working"):
+                loaded = self.now()
+                break
+            if proc.poll() is not None:
+                break
+            self.clock.sleep(5)
+        if loaded is None:
+            rc = proc.poll()
+            self.put_back_extras()
+            rec["outcome"] = "not loaded"
+            self.write_json("code/code.json", rec)
+            gone = (
+                f"the launcher ended (exit {rc}): its window said why" if rc is not None else "still loading"
+            )
+            return Result(
+                "FAIL", self.marked(f"the coding model did not load in {_secs(CODE_LOAD_S)} ({gone})")
+            )
+        rec.update({"load_s": round((loaded - begun).total_seconds()), "vram_loaded": self.vram_used()})
+        rc, text = self.product.opencode_prompt(exe, CODE_PROMPT, self.ev / "code", CODE_PROMPT_S)
+        rec["prompt"] = {"exit": rc, "answer": (text or "")[-2000:]}
+        closed = self.now()
+        self.product.kill_tree(proc.pid, ch.get("created"))  # the window closed with X
+        ch["put_back"] = True
+        self.save()
+        freed = None
+        while (self.now() - closed).total_seconds() <= FREED_WITHIN_S + 10:
+            if not self.engine_status().get("vram_owner"):
+                freed = round((self.now() - closed).total_seconds(), 1)
+                break
+            self.clock.sleep(1)
+        released, before = None, rec["vram_before"]
+        while (self.now() - closed).total_seconds() <= idle + 120:
+            used = self.vram_used()
+            if before is not None and used is not None and used <= before + 500:
+                released = round((self.now() - closed).total_seconds())
+                rec["vram_after"] = used
+                break
+            self.clock.sleep(10)
+        rec.update({"freed_s": freed, "memory_released_s": released, "idle_unload_s": idle})
+        self.write_json("code/code.json", rec)
+        answered = rc == 0 and bool((text or "").strip())
+        asked = "answered" if answered else f"not answered (exit {rc})"
+        held = f"freed in {freed} s" if freed is not None else "still held"
+        memory = (f"back to {rec.get('vram_after')} MiB in {_secs(released)}" if released is not None
+                  else "not released")  # fmt: skip
+        line = (
+            f"the model loaded in {_secs(rec['load_s'])}; the prompt was {asked}; after the window closed "
+            f"the card was {held} (stated: within {FREED_WITHIN_S:.0f} s) and its memory {memory} (idle "
+            f"unload {_secs(idle)}; {before} MiB before)"
+        )
+        ok = answered and freed is not None and freed <= FREED_WITHIN_S and released is not None
+        return Result("PASS" if ok else "FAIL", self.marked(line))
+
+    # -------------------------------------------------------------------------------------- KA Assistant
+    def ka(self) -> Result:
+        """One question that needs no confirmation, to the Assistant on the install's own model; the answer
+        must not be empty."""
+        why = self.engine()
+        if why:
+            return Result("FAIL", f"{why}. What to do: send the zip.")
+        begun = self.now()
+        status, body = self.product.api("POST", "/api/assistant/chat", {"message": ASSISTANT_QUESTION},
+                                        timeout=ASK_BOUND_S)  # fmt: skip
+        frames = _sse_frames(body if isinstance(body, str) else "")
+        kinds = [f.get("kind") for f in frames]
+        text = next((str((f.get("payload") or {}).get("text") or "") for f in reversed(frames)
+                     if f.get("kind") == "message"
+                     and not (f.get("payload") or {}).get("partial")), "")  # fmt: skip
+        self.write_json("assistant.json", {"question": ASSISTANT_QUESTION, "status": status, "events": kinds,
+                                           "answer": text, "frames": frames[-20:]})  # fmt: skip
+        took = _span(begun, self.now())
+        error = next((f.get("payload") or {} for f in frames if f.get("kind") in ("error", "busy")), None)
+        if status != 200:
+            return Result("FAIL", self.marked(f"the Assistant did not answer (HTTP {status})"))
+        if "confirm" in kinds:
+            return Result(
+                "FAIL", self.marked("the Assistant asked for a confirmation for a question that needs none")
+            )
+        if error is not None:
+            code = error.get("code") or "busy"
+            return Result("FAIL", self.marked(f"the Assistant answered with an error ({code}: "
+                                              f"{error.get('message')})"))  # fmt: skip
+        if not text.strip():
+            return Result("FAIL", self.marked(f"the Assistant's answer was empty (after {took})"))
+        short = " ".join(text.split())[:160]
+        return Result("PASS", self.marked(f'answered in {took}: "{short}"'))
+
     # -------------------------------------------------------------------------------------- K4 arm
     def nights_record(self) -> Any:
         """THE reader of the kit's nights record (`ns_supervisor.kitnights.read`): none, valid, expired or
@@ -975,7 +1553,7 @@ class Kit:
         return kitnights.read(Paths(self.home), self.now())
 
     def kit_video_s(self) -> float:
-        """How long the kit's own video took here (its stage times, measured in step 4), else the estimate."""
+        """How long the kit's own video took here (its stage times, measured in step 5), else the estimate."""
         with contextlib.suppress(OSError, ValueError, TypeError):
             story = json.loads((self.ev / "story" / "story.json").read_text(encoding="utf-8"))
             total = sum(
@@ -1056,7 +1634,7 @@ class Kit:
                                                for n, x in enumerate(nights, 1)]})  # fmt: skip
         status, body = self.product.api("GET", f"/api/channels/{CHANNEL}")
         was = str(((body or {}).get("profile") or {}).get("status")) if isinstance(body, dict) else "absent"
-        if status == 200 and was == "paused":  # the nights make its video: active until step 8 or night 3
+        if status == 200 and was == "paused":  # the nights make its video: active until step 13 or night 3
             self.change("channel_for_nights", "paused", "active")
             st, _ = self.product.api("POST", f"/api/channels/{CHANNEL}/resume", {"note": "GPU kit nights"})
             if st != 200:
@@ -1430,7 +2008,8 @@ class Kit:
                 ("machine.json", "step 2 has not run yet"),
                 ("verify.json", "step 3 has not run yet"),
                 ("proofs.json", "step 3 has not run yet"),
-                ("story/story.json", "step 4 has not finished"),
+                ("stock.json", "step 4 has not run yet"),
+                ("story/story.json", "step 5 has not finished"),
                 ("story/frames.png", "no finished video (or FFmpeg failed: story.json says why)"),
                 ("story/sheet.txt", "no finished video"),
                 ("story/sheet.json", "no finished video"),
@@ -1438,8 +2017,14 @@ class Kit:
                 ("watch.json", "not answered yet"),
                 ("paste.json", "not answered yet"),
                 ("morning.json", "not answered yet"),
-                ("task_end.json", "not asked yet (after step 5)"),
-                ("standby.json", "not asked yet (after step 5)"),
+                ("task_end.json", "not asked yet (after step 10)"),
+                ("standby.json", "not asked yet (after step 10)"),
+                ("clip/clip.json", "step 6 has not run (or had no input)"),
+                ("voices/voices.json", "step 7 has not run yet"),
+                ("voices/design-preview.wav", "no designed voice spoke yet"),
+                ("voices/clone-preview.wav", "no cloned voice spoke yet"),
+                ("code/code.json", "step 8 has not run (or Nightshift Code is not installed)"),
+                ("assistant.json", "step 9 has not run yet"),
             )
         ]
         out += [
@@ -1506,9 +2091,10 @@ class Kit:
     # -------------------------------------------------------------------------------------- the run
     def run(self) -> int:
         steps = self.state.setdefault("steps", {})
-        fns: dict[str, Callable[[], Result]] = {"K1": self.k1, "K2": self.k2, "K3": self.k3, "K4": self.k4,
-                                                "K5": lambda: self.night(0), "K6": lambda: self.night(1),
-                                                "K7": self.k7}  # fmt: skip
+        fns: dict[str, Callable[[], Result]] = {"K1": self.k1, "K2": self.k2, "KS": self.ks, "K3": self.k3,
+                                                "KC": self.kc, "KV": self.kv, "KN": self.kn, "KA": self.ka,
+                                                "K4": self.k4, "K5": lambda: self.night(0),
+                                                "K6": lambda: self.night(1), "K7": self.k7}  # fmt: skip
         stopped: str | None = None
         failed = False
         self.state.pop("come_back", None)
@@ -1615,6 +2201,68 @@ def _qc(job_dir: Path) -> dict[str, Any]:
         if m:
             out.update({"lufs": float(m.group(1)), "true_peak_dbtp": float(m.group(2))})
     return out
+
+
+def _stock_refusal(title: str, status: int | None, body: Any) -> str:
+    """What a refused footage fetch means, in the owner's words: the key, the rate limit, or the provider
+    or the connection (not the key)."""
+    text = json.dumps(body, default=str) if not isinstance(body, str) else body
+    m = re.search(r"HTTP (\d{3})", text)
+    code = int(m.group(1)) if m else None
+    said = f"refused (HTTP {status}: {text[:200]})"
+    if status is None:
+        return "the Dashboard did not answer. What to do: send the zip."
+    if code == 429 or "rate limit" in text.lower() or "429" in text:
+        return f"{said}: the rate limit. What to do: wait an hour, then run GPU-KIT.cmd again."
+    if "NS-E503" in text or (code is not None and code >= 500) or "not answering" in text:
+        return (f"{said}: {title} or the connection did not answer; this is NOT the key. What to do: check "
+                "the internet connection, then run GPU-KIT.cmd again later.")  # fmt: skip
+    if code in (400, 401, 403) or "key missing" in text.lower():
+        return (
+            f"{said}: {title} did not accept the key. What to do: copy the key again from the {title} "
+            "website, paste it in Settings > Stock footage keys (no spaces), then run GPU-KIT.cmd again."
+        )
+    return f"{said}. What to do: send the zip."
+
+
+def _audible(path: Path) -> tuple[bool, str]:
+    """The product's own audio check (`ns_tts.sample.analyse`: the loud frames reach -40 dBFS)."""
+    try:
+        from ns_tts.audio import read_wav
+        from ns_tts.sample import MIN_LEVEL_DBFS, analyse
+
+        x, sr = read_wav(path)
+        r = analyse(x, sr)
+    except Exception as e:  # noqa: BLE001 - unreadable: said
+        return False, f"unreadable ({type(e).__name__}: {e})"
+    return r.level_dbfs >= MIN_LEVEL_DBFS, f"{r.seconds:.1f} s, level {r.level_dbfs} dBFS"
+
+
+def _sse_frames(text: str) -> list[dict[str, Any]]:
+    """The `{kind, payload}` frames of a server-sent-events answer (`ns_dashboard.events.sse_frame`)."""
+    out: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        if line.startswith("data: "):
+            with contextlib.suppress(ValueError):
+                frame = json.loads(line[6:])
+                if isinstance(frame, dict):
+                    out.append(frame)
+    return out
+
+
+def _idle_unload_s(home: Path) -> float:
+    """How long the engine keeps an idle model loaded (`config/supervisor.json` idle_unload_s, else the
+    engine's default)."""
+    with contextlib.suppress(OSError, ValueError, TypeError, AttributeError):
+        value = json.loads((home / "config" / "supervisor.json").read_text("utf-8-sig")).get("idle_unload_s")
+        if isinstance(value, int | float) and value > 0:
+            return float(value)
+    try:
+        from ns_supervisor.core import SupervisorConfig
+
+        return float(SupervisorConfig.__dataclass_fields__["idle_unload_s"].default)  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001
+        return 600.0
 
 
 def _modern_standby(sleep_states: str | None) -> bool | None:

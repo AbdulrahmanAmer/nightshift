@@ -85,6 +85,50 @@ START = local(2026, 11, 12, 10, 0)  # a Thursday morning; the nightly run is at 
 PEXELS = "A" * 20 + "b" * 20 + "7" * 16  # 56 letters and digits: the shape of a Pexels key
 HF = "hf_" + "Q" * 34
 STUBS = ("kit_story", "kit_qc", "kit_outbox")
+#: Keys of each provider's REAL shape (no pattern of the scrubber matches them): the owner's Pixabay key is 8
+#: digits, a hyphen and 25 hex characters; Pexels keys are longer mixed strings.
+PIXABAY_REAL = "48213907-3fa9c0e1d2b4a5968f7e6d5c4"
+PEXELS_REAL = "Xk9mQ2wE7rT4yU1iO8pA3sD6fG0hJ5kL2zX9cV4bN7mQ1wE3rT6yU8iO0pA2sD5f"
+NEW_STEPS = ("KS", "KC", "KV", "KN", "KA")
+
+
+def tone_bursts(path: Path, seconds: float = 8.0) -> Path:
+    """Speech-like sound through the product's WAV writer: half-second tones and pauses (the product's sample
+    check wants a level and a quiet floor)."""
+    import numpy as np
+
+    from ns_tts.audio import write_wav
+
+    sr = 24000
+    n = np.arange(int(sr * seconds))
+    x = 0.3 * np.sin(2 * np.pi * 220 * n / sr) * ((n // (sr // 2)) % 2 == 0)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_wav(path, x.astype(np.float32), sr)
+    return path
+
+
+class StubFootage:
+    """A keyed stock source that never uses the network (the Dashboard's `footage_sources` seam): one
+    candidate per search, a file of a few KB; `refuse` makes it answer as the provider did."""
+
+    def __init__(self, name: str) -> None:
+        self.name, self.n = name, 0
+        self.refuse: Exception | None = None
+
+    def search(self, keyword: str, *, orientation: Any, per_page: int = 80) -> list[Any]:
+        from ns_studio.media.clip_sources import ClipCandidate
+
+        if self.refuse is not None:
+            raise self.refuse
+        self.n += 1
+        return [ClipCandidate(source=self.name, id=str(700 + self.n), page_url=f"https://{self.name}.example/v",
+                              download_url="https://cdn.example/v.mp4", width=1920, height=1080, duration=9.0,
+                              tags=("fog",), title="fog", license=f"{self.name} licence")]  # fmt: skip
+
+    def download(self, cand: Any, dest: Path) -> Path:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"v" * 5370)
+        return dest
 
 
 class Traps:
@@ -146,6 +190,8 @@ class KitStage:
         if w.fail_at == self.name:
             raise NsError("NS-E303", "the story failed its checks")
         ctx.write_json(self.outputs[0], {"stage": self.name})
+        if self.name == "kit_story":  # the narration, as the voice stage writes it (audio/<segment>.wav)
+            tone_bursts(Path(ctx.file("audio/s001.wav")))
         if self.name == "kit_qc":
             loud = qc.loudness_check(Loudness(-14.2, -1.4))
             result = QcResult(item="long", passed=True, checks={"loudness": loud}, reason=None)
@@ -247,6 +293,8 @@ class LocalProduct:
         out = self.http.api(method, path, body, timeout)
         if method == "PUT" and path == "/api/settings":
             self.world.traps.hit("settings applied")
+        if method == "POST" and path == "/api/jobs/clip" and out[0] == 201:
+            self.world.finish_clip(out[1]["job_id"])
         return out
 
     def cli(self, program: str, args: list[str], timeout: float) -> tuple[int | None, str]:
@@ -341,8 +389,53 @@ class LocalProduct:
         out.write_bytes(b"\x89PNG grid")  # (the install's FFmpeg; not on the laptop's test PATH)
         return None
 
+    def cut(self, src: Path, out: Path, start_s: float, seconds: float, audio: bool) -> str | None:
+        """(the install's FFmpeg; not on the laptop's test PATH): the cut's file, sound through the product's
+        WAV writer."""
+        self.calls.append(("cut", src.name, start_s, seconds, audio))
+        if audio:
+            tone_bursts(out, seconds)
+        else:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(src.read_bytes())
+        return None
+
+    def start_code(self, launcher: Path) -> Any:
+        """The launcher's effect on the engine: the card taken as owner `opencode` (the model loaded)."""
+        self.calls.append(("start_code", launcher.name))
+        self.world.traps.hit("code started")
+        self.world.supervisor.state.update(
+            {"gpu_owner": "opencode", "services": {"llama": {"state": "ready"}}}
+        )
+        proc = CodeProc(80000 + len(self.calls))
+        self.world.code = proc
+        return proc
+
+    def opencode_prompt(self, exe: Path, prompt: str, cwd: Path, timeout: float) -> tuple[int | None, str]:
+        self.calls.append(("opencode_prompt", exe.name, prompt))
+        return 0, "Two plus two is four."
+
+    def kill_tree(self, pid: int, created: float | None) -> None:
+        """The window closed: the launcher's process ends and the engine frees the card (holder gone)."""
+        self.calls.append(("kill_tree", pid))
+        if self.world.code is not None and self.world.code.pid == pid:
+            self.world.code.rc = 1
+            if self.world.frees_card:
+                self.world.supervisor.state.update({"gpu_owner": None, "services": {}})
+
     def count(self, *prefix: Any) -> int:
         return sum(1 for c in self.calls if c[: len(prefix)] == prefix)
+
+
+class CodeProc:
+    def __init__(self, pid: int) -> None:
+        self.pid, self.rc = pid, None
+
+    def poll(self) -> int | None:
+        return self.rc
+
+    def kill(self) -> None:
+        self.rc = -9
 
 
 class CannedWindows:
@@ -426,9 +519,19 @@ class World:
         static = tmp_path / "static"
         static.mkdir()
         (static / "index.html").write_text("<!doctype html><title>Nightshift</title>", encoding="utf-8")
-        self.server = _Server(
-            create_app(state=state, start_worker=False, static_dir=static, heartbeat_s=0.01)
-        )
+        from ns_dashboard.assistant.llm import ScriptedToolLlm, StaticProvider, say
+
+        self.llm = ScriptedToolLlm([say("The Outbox holds your finished videos and their sheets.")] * 20)
+        app = create_app(state=state, start_worker=False, static_dir=static, heartbeat_s=0.01,
+                         llm_provider=StaticProvider(self.llm))  # fmt: skip
+        self.dash_state = state
+        self.footage = {"pixabay": StubFootage("pixabay"), "pexels": StubFootage("pexels")}
+        app.state.dashboard.library.footage_sources = lambda keys, _p: [self.footage[n] for n in keys]
+        state.adapters.keyring.set("pixabay_api_key", PIXABAY_REAL)  # the owner's key (Pexels: none)
+        self.server = _Server(app)
+        self.code: CodeProc | None = None
+        self.frees_card = True
+        self.clip_status = "done"
         self.traps, self.clock = Traps(), Clock()
         self.product = LocalProduct(self)
         self.windows = CannedWindows(self)
@@ -440,6 +543,34 @@ class World:
     def close(self) -> None:
         self.server.stop()
         self.supervisor.stop()
+
+    def finish_clip(self, job_id: str) -> None:
+        """What the Dashboard's worker records for a clip job: the studio job's QC report (as the clipper's QC
+        stage writes it), its outputs row, a warning in the product's log, the job's end with its ids."""
+        from ns_common.logging import NsLogger
+
+        sid = f"clip-{job_id[-6:]}"
+        if self.clip_status == "done":
+            report = self.home / "data" / "jobs" / sid / "qc" / "report.json"
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text(json.dumps({"c1": {"passed": True, "reason": None}}), encoding="utf-8")
+            Db(self.paths.db_path).execute(
+                "insert into outputs (output_id, job_id, channel, kind, k, title, path, duration_s, "
+                "created_at) "
+                "values (?, ?, 'gpu-kit', 'clip', 1, 'Clip 1', ?, 41.0, ?)",
+                (
+                    f"{sid}/c1",
+                    sid,
+                    str(self.paths.outbox / "gpu-kit" / "clip1.mp4"),
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+            NsLogger("studio", self.paths.logs).warn("whisper_cpu", "captions on the CPU", code="NS-W404")
+            self.dash_state.store.finish(
+                job_id, "done", "Done", {"studio_job_ids": [sid], "output_ids": [f"{sid}/c1"]}
+            )
+        else:
+            self.dash_state.store.finish(job_id, "failed", "NS-E404: every clip failed QC", None)
 
     def ask(self, prompt: str) -> str | None:
         self.asked.append(prompt)
@@ -528,10 +659,12 @@ def test_a_first_run_goes_k0_to_k4_and_stops_with_the_morning_date(world: World)
         json.dumps({**runtime, "fake_gpu": True}), encoding="utf-8"
     )  # typed in
     assert world.run() == 0, world.out
-    assert world.results() == {"K0": "PASS", "K1": "PASS", "K2": "PASS", "K3": "PASS", "K4": "PASS",
+    assert world.results() == {"K0": "PASS", "K1": "PASS", "K2": "PASS", "KS": "PASS", "K3": "PASS",
+                               "KC": "PASS", "KV": "PASS", "KN": "NOT RUN", "KA": "PASS", "K4": "PASS",
                                "K5": "WAIT", "K6": "WAIT", "K7": "WAIT"}  # fmt: skip
     steps = world.state()["steps"]
-    assert all(steps[k]["done"] and steps[k]["version"] == VERSION for k in ("K0", "K1", "K2", "K3", "K4"))
+    assert all(steps[k]["done"] and steps[k]["version"] == VERSION
+               for k in ("K0", "K1", "K2", "KS", "K3", "KC", "KV", "KN", "KA", "K4"))  # fmt: skip
     assert world.out[-1] == "Run GPU-KIT.cmd again after Saturday 14 November 09:00."
     assert any("Friday 13 November 03:00 and Saturday 14 November 03:00" in line for line in world.out)
     machine = json.loads((world.ev / "machine.json").read_text(encoding="utf-8"))
@@ -551,10 +684,14 @@ INTERRUPTS = {  # step -> how the window is closed inside it
     "K0": ("trap", "api GET /api/status"),
     "K1": ("trap", "nvidia_smi"),
     "K2": ("trap", "prove"),
+    "KS": ("trap", "api POST /api/library/footage/fetch"),
     "K3": ("trap", "studio running"),
+    "KC": ("trap", "api POST /api/jobs/clip"),
+    "KV": ("trap", "api POST /api/voices/clone"),  # after the designed voice was made: it is removed
+    "KA": ("trap", "api POST /api/assistant/chat"),
     "K4": ("trap", "settings applied"),
-    "K5": ("say", "Step 6 of 8 (night 1): starting."),
-    "K6": ("say", "Step 7 of 8 (night 2): starting."),
+    "K5": ("say", "Step 11 of 13 (night 1): starting."),
+    "K6": ("say", "Step 12 of 13 (night 2): starting."),
     "K7": ("trap", "ns doctor --bundle"),
     "K8": ("trap", "ask"),
 }
@@ -571,6 +708,7 @@ def test_each_step_interrupted_resumes_on_the_next_run(world: World, step: str) 
     if not late:
         assert world.run() == 130, world.out[-8:]
         assert any(line.startswith("Stopped by you") for line in world.out)
+        assert not list(world.paths.models_tts_voices.glob("gpukit-*"))  # a test voice never stays
     assert world.run() == 0, world.out
     assert world.results()["K4"] == "PASS"
     world.nights_pass()
@@ -578,7 +716,11 @@ def test_each_step_interrupted_resumes_on_the_next_run(world: World, step: str) 
         assert world.run() == 130, world.out
         assert not world.state()["steps"][step]["done"]
     assert world.run() == 0, world.out
-    assert set(world.results().values()) == {"PASS"}
+    assert {k: v for k, v in world.results().items() if v != "PASS"} == {"KN": "NOT RUN"}  # (no Code here)
+    assert len(world.dash_state.store.list_jobs(None, "clip", 50)) == 1  # one clip job, whatever stopped it
+    assert not list(world.paths.models_tts_voices.glob("gpukit-*")) and not list(
+        world.paths.cache_clips.rglob("*.mp4")
+    )
     # done once, whatever stopped it: one kit channel, one story job, one switch each way, one zip
     assert world.product.count("api", "POST", "/api/channels") == 1
     assert world.product.count("studio", "run", "--channel") == 1
@@ -875,8 +1017,7 @@ def test_a_failing_step_still_yields_the_bundle(world: World) -> None:
     card = world.home / "run" / "fake_gpu.json"
     card.write_text('{"fail": "missing"}', encoding="utf-8")  # no driver: nvidia-smi is not there
     assert world.run() == 1
-    assert world.results() == {"K0": "PASS", "K1": "FAIL", "K2": "NOT RUN", "K3": "NOT RUN", "K4": "NOT RUN",
-                               "K5": "NOT RUN", "K6": "NOT RUN", "K7": "NOT RUN"}  # fmt: skip
+    assert world.results() == {"K0": "PASS", "K1": "FAIL", **dict.fromkeys(gpukit.STEPS[2:], "NOT RUN")}
     assert "install the newest NVIDIA driver" in world.state()["steps"]["K1"]["line"]
     assert world.product.count("studio") == 0 and world.puts() == []
     with zipfile.ZipFile(world.zips()[0]) as z:
@@ -1110,7 +1251,7 @@ def test_a_dry_run_on_the_simulated_card_is_marked_and_runs_both_nights_at_once(
     w = World(tmp_path, monkeypatch, test_install=True)
     try:
         assert w.run("--dry-run", "--night-now") == 0, w.out
-        assert set(w.results().values()) == {"PASS"}
+        assert {k: v for k, v in w.results().items() if v != "PASS"} == {"KN": "NOT RUN"}  # (no Code here)
         assert w.product.count("night_now") == 2 and w.puts() == []  # no task is armed
         mark = "simulated (fake_gpu)"
         assert w.out[1] == f"SIMULATED graphics card ({mark}): a test install; nothing measured here " \
@@ -1308,3 +1449,185 @@ def test_the_one_reader_of_the_nights_record(world: World, kind: str, reader: st
         if result.kind == "unreadable":
             assert "the nights record could not be read" in res7.line
         assert not kitnights.record_file(world.paths).exists()
+
+
+# ------------------------------------------------------------------------------------------------ additions
+def test_each_stored_stock_key_is_tried_through_the_products_route_before_the_video(world: World) -> None:
+    assert world.run() == 0, world.out
+    line = world.state()["steps"]["KS"]["line"]
+    assert line.startswith("Pixabay: searched and downloaded one clip (0.0 MB, pixabay 701, 1920x1080)"), line
+    assert "Pexels: NOT RUN (no Pexels key is stored)" in line
+    stock = json.loads((world.ev / "stock.json").read_text(encoding="utf-8"))
+    assert stock["pixabay"]["size_bytes"] == 5382 and stock["pixabay"]["source"] == "pixabay"
+    calls = [
+        c for c in world.product.calls if c[:2] == ("api", "POST") and c[2] == "/api/library/footage/fetch"
+    ]
+    assert [c[3]["count"] for c in calls] == [1] and calls[0][3]["source"] == "pixabay"
+    # the clip left the cache again (the product's own delete route), recorded as put back
+    assert world.product.count("api", "DELETE", "/api/library/footage/pixabay/701") == 1
+    assert not list(world.paths.cache_clips.rglob("*.mp4"))
+    assert world.state()["changes"]["stock_clip_pixabay"]["put_back"] is True
+    steps = [c for c in world.product.calls if c[0] in ("studio", "api") and c[1:3] in (
+        ("POST", "/api/library/footage/fetch"), ("run", "--channel"))]  # fmt: skip
+    assert steps[0][2] == "/api/library/footage/fetch"  # before the story video
+
+
+@pytest.mark.parametrize(("refusal", "says"), [
+    (("NS-E502", "HTTP 400"), "Pixabay did not accept the key. What to do: copy the key again"),
+    (("NS-E502", "rate limited (429) after 4 attempts"), "the rate limit. What to do: wait an hour"),
+    (("NS-E503", "pixabay.com is not answering right now; Nightshift will try again (HTTP 503 after 3 "
+                 "attempts)"), "Pixabay or the connection did not answer; this is NOT the key"),
+])  # fmt: skip
+def test_a_refused_key_says_why_and_the_video_does_not_start(
+    world: World, refusal: tuple[str, str], says: str
+) -> None:
+    world.footage["pixabay"].refuse = NsError(*refusal)
+    assert world.run() == 1, world.out
+    assert world.results()["KS"] == "FAIL" and not world.state()["steps"]["KS"]["done"]
+    assert says in world.state()["steps"]["KS"]["line"], world.state()["steps"]["KS"]["line"]
+    assert world.results()["K3"] == "NOT RUN" and world.product.count("studio") == 0
+    world.footage["pixabay"].refuse = None  # the owner fixed it: the next run tries again, then the video
+    assert world.run() == 0 and world.results()["KS"] == "PASS" and world.results()["K3"] == "PASS"
+
+
+def test_no_key_stored_is_not_run_and_the_video_goes_on(world: World) -> None:
+    world.dash_state.adapters.keyring.delete("pixabay_api_key")
+    assert world.run() == 0, world.out
+    assert world.results()["KS"] == "NOT RUN" and world.results()["K3"] == "PASS"
+    assert "no stock-footage key is stored" in world.state()["steps"]["KS"]["line"]
+
+
+DESIGNED_SKIP = (
+    "PASS    kit-reads-status [F-X99] 0.1s\n"
+    "SKIPPED f-b13-b14-footage-429 [F-B13,F-B14] 2.0s  a stock footage key is already stored ({'pexels': "
+    "False, 'pixabay': True}); the proof never replaces a real key\n"
+    "1 passed, 0 failed, 1 skipped; evidence in x\n"
+    "1 skipped: a skip is not a pass (--strict). Skipped, and why:\n"
+)
+
+
+@pytest.mark.parametrize(("output", "word"), [
+    (DESIGNED_SKIP, "PASS"),
+    (DESIGNED_SKIP.replace("PASS    kit-reads-status [F-X99] 0.1s",
+                           "SKIPPED other-proof [F-X98] 0.1s  no FFmpeg"),
+     "FAIL"),
+])  # fmt: skip
+def test_the_designed_skips_of_a_real_install_are_not_run_and_any_other_skip_fails(
+    world: World, monkeypatch: pytest.MonkeyPatch, output: str, word: str
+) -> None:
+    """proofs/README.md: F-B13/F-B14 skip by design when a real key is stored; `--strict` then exits 3."""
+    monkeypatch.setattr(world.product, "prove", lambda args, timeout: (3, output))
+    assert world.run() == (0 if word == "PASS" else 1), world.out
+    line = world.state()["steps"]["K2"]["line"]
+    assert world.results()["K2"] == word, line
+    assert "NOT RUN by design: f-b13-b14-footage-429 (a real stock-footage key is stored" in line
+    proofs = json.loads((world.ev / "proofs.json").read_text(encoding="utf-8"))
+    assert proofs["not_run_by_design"] == ["f-b13-b14-footage-429"]
+
+
+def test_the_stored_values_are_masked_whatever_their_shape(world: World) -> None:
+    """The scrubber reads the ACTUAL stored values when it writes the zip: a key of each provider's real
+    shape (no pattern matches it), planted where no named-value rule sees it, in every encoding."""
+    import base64
+    from urllib.parse import quote
+
+    from ns_common.secret_file import store_secret
+
+    kit_here()
+    store_secret(world.paths, "pixabay_api_key", PIXABAY_REAL, lock_down=lambda _p: None)  # DPAPI file
+    (world.paths.config / "answers.json").write_text(json.dumps({"pexels_api_key": PEXELS_REAL}), "utf-8")
+    assert set(gpukit.stored_secrets(world.home)) == {PIXABAY_REAL, PEXELS_REAL}
+    for raw in (PIXABAY_REAL, PEXELS_REAL):  # no shape rule would have caught them
+        assert (
+            gpukit.scrub_text(f"clip from {raw} failed", gpukit.Masks("", "", "", ""))
+            != "clip from *** failed"
+        )
+    planted = "\n".join([
+        f"clip from {PIXABAY_REAL} failed; pexels said {PEXELS_REAL}",
+        json.dumps({"seen": [PIXABAY_REAL.upper(), quote(PEXELS_REAL)]}),
+        base64.b64encode(PIXABAY_REAL.encode()).decode(),
+        base64.b64encode(PEXELS_REAL.encode("utf-16-le")).decode(),
+    ])  # fmt: skip
+    (world.home / "logs" / "studio-20261113.jsonl").write_text(planted + "\n", encoding="utf-8")
+    (world.home / "logs" / "launch-20261113.jsonl").write_text(PEXELS_REAL + "\r\n", encoding="utf-16")
+    assert world.run() == 0
+    world.nights_pass()
+    assert world.run() == 0
+    entries = _all_bytes(world.zips()[0])
+    planted_in = [n for n, data in entries if b"clip from *** failed; pexels said ***" in data]
+    assert planted_in  # the planted log is in the zip, masked
+    for name, data in entries:
+        if data[:2] == b"PK" or name.endswith(".wav"):
+            continue
+        for s in (PIXABAY_REAL, PEXELS_REAL):
+            forms = [*_encodings(s), base64.b64encode(s.encode()), base64.b64encode(s.encode("utf-16-le"))]
+            for form in forms:
+                assert form not in data, (name, form)
+    readme_bytes = next(d for n, d in entries if n.endswith("README.txt") and "diagnostics" not in n)
+    readme = readme_bytes.decode("utf-8")
+    assert "stored on this PC (read from Credential Manager, the key file and answers.json" in readme
+
+
+def test_the_day_one_features_each_have_their_own_result(world: World) -> None:
+    assert world.run() == 0, world.out
+    steps = world.state()["steps"]
+    clip = steps["KC"]["line"]
+    assert "one clip from 3 minutes of the story video: 1 clip(s) made, QC 1 of 1 passed" in clip
+    assert "logged: NS-W404 (whisper_cpu)" in clip
+    assert world.product.count("cut", "The House That Waited.mp4", 60, 180, False) == 1
+    voices = steps["KV"]["line"]
+    assert (
+        voices.startswith("design: PASS (spoke the sentence: ")
+        and "clone: PASS (spoke the sentence: " in voices
+    )
+    assert voices.endswith("both test voices removed") and not list(
+        world.paths.models_tts_voices.glob("gpukit-*")
+    )
+    body = next(c[3] for c in world.product.calls if c[:3] == ("api", "POST", "/api/voices/clone"))
+    assert body["consent"] is True and body["sample_path"].endswith("sample.wav")  # the kit's own narration
+    assert (world.ev / "voices" / "design-preview.wav").is_file()
+    assert steps["KN"]["line"].startswith("Nightshift Code is not installed on this PC")
+    assert steps["KA"]["line"].startswith('answered in 0 min 0 s: "The Outbox holds your finished videos')
+    asked = json.loads((world.ev / "assistant.json").read_text(encoding="utf-8"))
+    assert "confirm" not in asked["events"] and asked["events"][-1] == "done"
+
+
+def test_a_clip_job_that_fails_is_a_fail_and_the_kit_goes_on(world: World) -> None:
+    world.clip_status = "failed"
+    assert world.run() == 1, world.out
+    assert world.results()["KC"] == "FAIL" and world.results()["K4"] == "PASS"
+    assert "the clip job ended failed: NS-E404: every clip failed QC" in world.state()["steps"]["KC"]["line"]
+
+
+@pytest.mark.parametrize("frees", [True, False])
+def test_nightshift_code_is_opened_prompted_closed_and_frees_the_card(world: World, frees: bool) -> None:
+    exe = world.home / "bin" / "opencode" / "opencode.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"MZ")
+    world.frees_card = frees
+    assert world.run() == (0 if frees else 1), world.out
+    line = world.state()["steps"]["KN"]["line"]
+    assert world.results()["KN"] == ("PASS" if frees else "FAIL"), line
+    assert world.product.count("start_code", "nightshift-code.ps1") == 1
+    assert world.product.count("opencode_prompt") == 1 and world.product.count("kill_tree") >= 1
+    assert "the prompt was answered" in line
+    assert ("the card was freed in 0.0 s (stated: within 5 s)" in line) is frees
+    code = json.loads((world.ev / "code" / "code.json").read_text(encoding="utf-8"))
+    released = 0 if frees else 16  # (not freed: read after the 15 s wait)
+    assert code["vram_before"] == 812 and code["memory_released_s"] == released
+    assert code["freed_s"] == (0.0 if frees else None)
+    change = world.state()["changes"]["code_window"]
+    assert world.code is not None
+    assert change["put_back"] is True and change["pid"] == world.code.pid  # closed by its recorded pid
+    world.supervisor.state.update({"gpu_owner": None, "services": {}})
+
+
+def test_a_code_window_left_by_a_closed_kit_is_closed_on_the_next_run(world: World) -> None:
+    exe = world.home / "bin" / "opencode" / "opencode.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"MZ")
+    world.traps.armed.add("api POST /api/assistant/chat")  # closed after the Code check ended
+    assert world.run() == 130
+    assert world.state()["changes"]["code_window"]["put_back"] is True
+    first = world.code
+    assert first is not None and first.rc is not None  # its window was closed on the way out

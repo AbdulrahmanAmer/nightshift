@@ -239,7 +239,7 @@ The GPU kit shows whether Nightshift works on your own PC with the real models: 
 two nights run by themselves, and puts what it found into one zip that you send back. It sends nothing anywhere
 itself. Run it after you installed a release candidate with **INSTALL.cmd**.
 
-You need: the PC with the graphics card, about 4 hours on the first day (mostly waiting; you can use the PC), the PC
+You need: the PC with the graphics card, about 5 hours on the first day (mostly waiting; you can use the PC), the PC
 left plugged in and on or asleep (not shut down) for the next two nights, and 15 minutes on the third day.
 
 **Day 1**
@@ -255,11 +255,20 @@ left plugged in and on or asleep (not shut down) for the next two nights, and 15
    - **FAIL**: the line says the one thing to do (for example "install the newest NVIDIA driver, restart the PC").
      Do it, then double-click GPU-KIT.cmd again: it goes on from that step.
    - **NOT RUN**: a step that waits for a step before it.
-4. When the video is made, the window says how many questions only you can answer are open (about the video, the
+4. Before the video, the kit tries each stock-footage key you stored: one search and one small download through
+   Nightshift's own route (the clip leaves the cache again). If a provider refuses, the line says why: the key (copy
+   it again into Settings > Stock footage keys), the rate limit (wait an hour), or the provider or the connection
+   (not the key); the video does not start until the keys work. A provider with no key stored is NOT RUN.
+5. After the video, four short checks each get their own line: one clip cut by Create > Clips from 3 minutes of the
+   kit's video (it waits in the Queue like the video), a designed voice and a voice cloned from the kit's own
+   narration, each speaking one sentence (both test voices are removed again), Nightshift Code opened in its own
+   window, asked one question and closed again (the line says how fast the graphics card was freed), and one
+   question to the Assistant. A check whose input is missing (for example Nightshift Code not installed) is NOT RUN.
+6. When the video is made, the window says how many questions only you can answer are open (about the video, the
    paste check, and later the two hand checks and the morning note). Type **a** and press Enter to answer them now,
    or just press Enter (or wait 10 minutes) to leave them for the next time. Each question takes **y**, or **n** and
    what you saw, or **later**.
-5. Before it switches anything on, the kit says what the two nights will make: each night makes one more full story
+7. Before it switches anything on, the kit says what the two nights will make: each night makes one more full story
    video on the kit's channel, besides what your own channels have due that night, and it says how long that video
    took here. If Automatic runs were off, the kit switches them on for two nights and says so. Its last lines say
    when to come back, for example "Run GPU-KIT.cmd again after Saturday 14 November 09:00".
@@ -296,15 +305,19 @@ Good to know:
 - If you switch Automatic runs yourself after the kit switched them on (in Settings, with `ns schedule install`, or
   by answering the nightly question when you run setup again), the kit leaves them as you set them.
 - If the kit's record of its nights cannot be read (a damaged file, or one from a newer kit), every night runs as if
-  there were no record and says so once in its log; the kit's step 8 still puts back what it changed.
+  there were no record and says so once in its log; the kit's last step still puts back what it changed.
 - A line starting with **REFUSED** means the kit did not start and changed nothing; it says why and what to do (for
   example: another GPU kit window is still open, or this is not the install with the graphics card).
 - What the kit changes: its own channel "GPU kit (test video)", which is active only for the two nights and paused
-  otherwise (its videos wait in the Queue: post them or reject them as you like), and Automatic runs for two nights. It reads your power and sleep settings and never
-  changes them.
-- The zip holds the PC's record (graphics card, driver, disk, sleep settings), the test and proof results, the video's
-  facts and one picture of its frames (one a minute), both nights' records, logs and Windows' power events of those
-  nights, the diagnostics zip, the hand checks' files and your answers. It never holds the video or the models.
+  otherwise (its videos and its clip wait in the Queue: post them or reject them as you like), and Automatic runs
+  for two nights. For a few minutes each it also adds one stock clip to the footage cache, two test voices to the
+  voice library and the Nightshift Code window; each is recorded before it is made and removed again, also when
+  the window is closed in the middle. It reads your power and sleep settings and never changes them.
+- The zip holds the PC's record (graphics card, driver, disk, sleep settings), the test and proof results, the
+  stock-key, clip, voice (with the two test sentences), Nightshift Code and Assistant results, the video's facts and
+  one picture of its frames (one a minute), both nights' records, logs and Windows' power events of those nights,
+  the diagnostics zip, the hand checks' files and your answers. It never holds the video or the models. Every key
+  and token stored on this PC is masked in it wherever it appears, whatever its shape.
   Before it is written, the stock-footage keys, any token, your Windows user name, your Nightshift folder's path, the
   PC's name and the account's id are replaced by `***` or a placeholder, however a file spells them.
 
