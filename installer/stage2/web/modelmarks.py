@@ -78,6 +78,18 @@ def write_entry(home: Path, key: str, entry: dict[str, Any]) -> None:
     write_text_atomic(target, json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
+def drop_entries(home: Path, keys: Iterable[str]) -> list[str]:
+    """Take these files' entries out of the record; returns the keys that were in it. The file is written
+    again (atomically) only when one was."""
+    data = read_record(home)
+    gone = [key for key in keys if key in data]
+    if gone:
+        for key in gone:
+            del data[key]
+        write_text_atomic(record_path(home), json.dumps(data, indent=2, sort_keys=True) + "\n")
+    return gone
+
+
 def still_same(entry: dict[str, Any], path: Path) -> bool:
     """True when ``path`` has the size and date the entry was written with."""
     try:

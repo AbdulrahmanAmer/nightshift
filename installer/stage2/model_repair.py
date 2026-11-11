@@ -22,7 +22,9 @@ Steps, each safe to interrupt and to run again:
 
 A file another program holds open is not damage: it is left as it is, said on the step's row, and the flag
 stays, so the next run checks it. Markers whose file is gone or changed and is no longer part of the plan
-(an old tier's model the owner deleted) are removed, so the setup window does not reopen s03 for them.
+(an old tier's model the owner deleted) are removed, so the setup window does not reopen s03 for them; for
+the same reason a ``bad hash`` entry of the check record about a file outside the plan is taken out
+(``_sweep_record``).
 """
 
 from __future__ import annotations
@@ -97,6 +99,27 @@ def _sweep_markers(ctx: StepContext, items: list[DownloadItem]) -> None:
                 ctx.log.info("stale_marker_removed", file=str(marker))
 
 
+def _sweep_record(ctx: StepContext, items: list[DownloadItem]) -> None:
+    """A ``bad hash`` entry of ``logs/model-check.json`` about a file that is no longer part of the plan (the
+    story model after ``runtime.json`` went back to one model, a file a later release no longer installs) is
+    taken out: this step neither checks nor fetches that file, so the entry would stay for good and the setup
+    window would open on the models step, and hash every model, at each INSTALL.cmd
+    (``modelmarks.repair_owed``). The file and its marker are not touched (they are outside this plan);
+    should the file be planned and loaded again, the engine's check after the failed load names it again."""
+    home = ctx.paths.home
+    planned = {modelmarks.key_of(home, Path(i.dest)) for i in items}
+    stale = [key for key in modelmarks.recorded_damage(home) if key not in planned]
+    if not stale:
+        return
+    try:
+        dropped = modelmarks.drop_entries(home, stale)
+    except OSError as e:        # the record cannot be written now: the next run sweeps it
+        ctx.log.warn("model_check_not_recorded", str(e))
+        return
+    for key in dropped:
+        ctx.log.info("stale_damage_record_removed", file=key)
+
+
 def _set_aside(ctx: StepContext, item: vd.DownloadItem, row: vd.Row) -> None:
     dest = Path(item.dest)
     need = (item.size or row.size or 0) + MARGIN_BYTES
@@ -130,6 +153,7 @@ def _set_aside(ctx: StepContext, item: vd.DownloadItem, row: vd.Row) -> None:
 def check_models(ctx: StepContext, items: list[DownloadItem]) -> list[DownloadItem]:
     """Step 1 (see the module): returns the damaged files set aside in this run."""
     _sweep_markers(ctx, items)
+    _sweep_record(ctx, items)
     todo = unhashed(ctx, items)
     if not todo:
         return []

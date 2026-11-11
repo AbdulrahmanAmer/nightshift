@@ -668,6 +668,38 @@ def test_the_window_names_each_way_a_planned_model_is_not_verified(tmp_path: Pat
     assert modelmarks.repair_owed(home, [(ok, pin), (nopin, None)]) == ["models/llm/gone1.gguf: missing"]
 
 
+def test_a_damage_record_of_a_file_no_longer_planned_does_not_reopen_the_models_step(tmp_path: Path) -> None:
+    """Written by the final reviewer of the fix round, NOT RUN. The story model was recorded damaged, then
+    `runtime.json` went back to one model: the file is no longer in setup's plan, so no Repair checks or
+    fetches it, and its entry made the setup window owe a Repair (and a hash of every model) at each
+    INSTALL.cmd for good. The Repair takes that entry out; the file, its marker and the planned files'
+    entries stay, and the next window owes nothing."""
+    from installer.stage2.web import modelmarks
+    from ns_common.config import load_runtime
+
+    inst = make_install(tmp_path)
+    home = inst.paths.home
+    story = inst.file("Heretic")
+    item = next(i for i in inst.items if Path(i.dest) == story)
+    flip(story)
+    found = vd.check_item(item)
+    assert found.status == vd.BAD, found
+    vd.record(inst.paths, item, found, 0.1)
+    key = modelmarks.key_of(home, story)
+    assert key in modelmarks.recorded_damage(home)
+    assert [line for line in modelmarks.repair_owed(home) if line.startswith(key + ": ")]
+    rt = load_runtime(inst.paths)
+    rt.llama.story_model_path = None                    # one model again: the story model is not planned
+    save_runtime(inst.paths, rt)
+    assert repair_run(tmp_path, inst, site({}, [], set())) == 0
+    after = modelmarks.read_record(home)
+    assert key not in after, after
+    llm = modelmarks.key_of(home, inst.file("Qwen3-"))
+    assert after[llm]["verdict"] == vd.OK, after     # the planned files were checked and keep their entries
+    assert story.is_file() and dl._marker(story).is_file()  # not this plan's file: left as it is
+    assert modelmarks.repair_owed(home) == []
+
+
 # ------------------------------------------------------------------------------------------------- M6
 def test_a_model_that_fails_to_load_is_checked_and_named(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
