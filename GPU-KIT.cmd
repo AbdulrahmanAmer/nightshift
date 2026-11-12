@@ -6,7 +6,9 @@ rem asked; the last line is one JSON object; exit code 0 done, 1 a step failed, 
 rem 4 another kit runs, 5 a step could not start now, 130 interrupted).
 setlocal
 title Nightshift GPU kit
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0dev\kit\gpukit.ps1" %*
+rem (Windows PowerShell by its full path, G-34: a shell started with NoDefaultCurrentDirectoryInExePath=1 and a PATH
+rem that lacks it would otherwise say "not recognized".)
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0dev\kit\gpukit.ps1" %*
 set "NS_EXIT=%ERRORLEVEL%"
 rem A person's window stays open until a key is pressed (for at most 99999 seconds). Nothing waits when the
 rem kit runs unattended, or when its input is not a keyboard (a pipe, a file, NUL): nobody could press a key.

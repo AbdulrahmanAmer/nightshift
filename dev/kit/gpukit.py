@@ -58,6 +58,7 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # after the venv: the install's own product modules win
 
 from dev.prove_ctx import SetupError, read_install  # noqa: E402
+from ns_common import nvsmi, sizes  # noqa: E402  (the one size formatter and the one nvidia-smi reader)
 
 CHANNEL = "gpu-kit"
 GUARD_S = 30 * 60  # the time guard's spare: the video must end this long before the nightly run
@@ -129,6 +130,8 @@ PLAN = (
     "on from where it stopped. Nothing is sent anywhere; the only changes are the kit's own channel (active",
     "for its video and the two nights only) and Automatic runs for two nights (switched off again at the end",
     "if they were off).",
+    "You can open Nightshift's Dashboard (Queue page) and watch the kit work; start nothing there until",
+    "the kit has ended. Type d at the question below and the kit opens it for you.",
     "  1. Start: checks this is the GPU install (seconds)",
     "  2. Record this PC: graphics card, driver, disk, sleep settings, model files (up to 15 minutes)",
     "  3. Test each model once and run the proof scripts (10 to 40 minutes; this test stops and reloads",
@@ -144,6 +147,12 @@ PLAN = (
     "  13. Collect everything into one zip and put Automatic runs back (about 5 minutes)",
     "  Then a few questions only you can answer (about 15 minutes; 'later' keeps them for the next run).",
 )
+
+
+def _mib_text(cell: str | None) -> str:
+    """nvidia-smi's ``16311 MiB`` as ``15.9 GB`` (the kit's one size formatter); any other text as it is."""
+    m = re.fullmatch(r"\s*(\d+)\s*MiB\s*", cell or "")
+    return sizes.size_text(int(m.group(1)) * sizes.MIB) if m else str(cell)
 
 
 class Refused(Exception):
@@ -256,6 +265,15 @@ class KitEnv:
     windows: Windows | None = None
     ask: Callable[[str], str | None] | None = None
     say: Callable[[str], None] = say_line
+    open_url: Callable[[str], None] | None = None  # a stand-in for the browser (tests); None opens a real one
+
+
+def _open_in_browser(url: str) -> None:
+    """The address in the PC's default browser (what a person's double click does)."""
+    import webbrowser
+
+    if not webbrowser.open(url):
+        raise OSError("no browser answered")
 
 
 def _run(
@@ -275,7 +293,20 @@ def _run(
     return done.returncode, ((done.stdout or "") + (done.stderr or ""))[-OUT_LIMIT:]
 
 
-POWERSHELL = ["powershell.exe", "-NoProfile", "-NonInteractive"]
+def windows_program(name: str, *sub: str) -> str:
+    """A Windows program by its full path (G-34): a shell with NoDefaultCurrentDirectoryInExePath=1 does not
+    look in the current folder, so a bare name can be "not recognized". SystemRoot, System32, `sub`, `name`;
+    the bare name only where there is no SystemRoot (not Windows)."""
+    root = os.environ.get("SystemRoot") or os.environ.get("windir")
+    return str(Path(root, "System32", *sub, name)) if root else name
+
+
+def powershell_exe() -> str:
+    """Windows PowerShell 5.1 by its full path."""
+    return windows_program("powershell.exe", "WindowsPowerShell", "v1.0")
+
+
+POWERSHELL = [powershell_exe(), "-NoProfile", "-NonInteractive"]
 
 
 class InstallProduct:
@@ -384,7 +415,7 @@ class InstallProduct:
         """The Nightshift Code shortcut's own command, in a console window of its own (as the shortcut opens
         it): the launcher takes the card as owner `opencode` and starts OpenCode."""
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-        argv = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)]
+        argv = [powershell_exe(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)]
         return subprocess.Popen(argv,
                                 env=self.env, cwd=str(self.home), creationflags=flags)  # fmt: skip
 
@@ -501,7 +532,7 @@ class RealWindows:
 
     def powercfg(self, args: list[str]) -> str | None:
         self._guard("power settings")
-        rc, text = _run(["powercfg.exe", *args], 30)
+        rc, text = _run([windows_program("powercfg.exe"), *args], 30)
         return text if rc == 0 else None
 
     def events(self, since: datetime, until: datetime) -> str | None:
@@ -510,7 +541,8 @@ class RealWindows:
         a, b = since.astimezone(UTC), until.astimezone(UTC)
         span = f"@SystemTime>='{a:{fmt}}' and @SystemTime<='{b:{fmt}}'"
         ids = " or ".join(f"EventID={i}" for i in EVENT_IDS)
-        rc, text = _run(["wevtutil", "qe", "System", f"/q:*[System[({ids}) and TimeCreated[{span}]]]",
+        rc, text = _run([windows_program("wevtutil.exe"), "qe", "System",
+                         f"/q:*[System[({ids}) and TimeCreated[{span}]]]",
                          "/rd:false", "/c:200", "/f:text"], 60)  # fmt: skip
         return text if rc == 0 else None
 
@@ -643,7 +675,9 @@ MASKED = (
     "answers.json when the zip is written; every occurrence of each value, in every form below), the usual "
     "key shapes, and any value named key, token, secret, password or authorization",
     "Hugging Face (hf_), GitHub and Bearer tokens anywhere",
-    "the Windows user name (and the profile folder C:\\Users\\<name>, also as its 8.3 short name)",
+    "the Windows user name where it stands as a name (the profile folder C:\\Users\\<name>, also as its 8.3 "
+    "short name; after a path or domain separator, after USERNAME= or an owner field), never as a word of "
+    "the kit's own sentences",
     "the install's home path (also as its 8.3 short name)",
     "the PC's name and the account's security id (S-1-5-21-...)",
 )
@@ -768,14 +802,21 @@ class Masks:
     def pairs(self) -> list[tuple[str, str, bool]]:
         """(form, replacement, whole word only), longest first."""
         out: list[tuple[str, str, bool]] = [(f, "***", False) for s in self.secrets for f in _secret_forms(s)]
-        short_user = self.short_profile.rstrip("\\/").rsplit("\\", 1)[-1] if self.short_profile else ""
         for value, word, whole in ((self.home, "<home>", False), (self.short_home, "<home>", False),
                                    (self.profile, "<profile>", False),
-                                   (self.short_profile, "<profile>", False), (self.computer, "<pc>", True),
-                                   (self.user, "<user>", True), (short_user, "<user>", True)):  # fmt: skip
+                                   (self.short_profile, "<profile>", False),
+                                   (self.computer, "<pc>", True)):  # fmt: skip
             if len(value) >= (2 if whole else 3):
                 out += [(f, word, whole) for f in _forms(value)]
         return sorted(set(out), key=lambda x: -len(x[0]))
+
+    def user_names(self) -> list[str]:
+        """The user name's forms (and its 8.3 short form's), longest first. They are masked only where a name
+        stands (see `scrub_text`), never as a word of a sentence: on a PC whose user name is an ordinary word
+        the kit's own text must stay readable (G-35)."""
+        short_user = self.short_profile.rstrip("\\/").rsplit("\\", 1)[-1] if self.short_profile else ""
+        forms = {f for v in (self.user, short_user) if len(v) >= 2 for f in _forms(v)}
+        return sorted(forms, key=lambda f: -len(f))
 
 
 def scrub_text(text: str, masks: Masks) -> str:
@@ -798,6 +839,14 @@ def scrub_text(text: str, masks: Masks) -> str:
         rx = (rf"(?:(?<![A-Za-z0-9])|(?<=%[0-9A-Fa-f]{{2}})){re.escape(form)}(?![A-Za-z0-9])" if whole
               else re.escape(form))  # fmt: skip
         text = re.sub(rx, word.replace("\\", "\\\\"), text, flags=re.IGNORECASE)
+    for form in masks.user_names():
+        e = re.escape(form)
+        # a name after a path or domain separator (C:\Users\<name>, PC\<name>, a file called <name>.log) ...
+        after_separator = r"(?:(?<=[\\/])|(?<=%5C)|(?<=%2F))"  # (matched without regard to case)
+        text = re.sub(rf"(?i){after_separator}{e}(?![A-Za-z0-9])", "<user>", text)
+        # ... and after USERNAME=, "user": or an owner field
+        text = re.sub(rf"(?i)(\b(?:USERNAME|USER_NAME|user|owner)\b[\"']?\s*[:=]\s*[\"']?){e}(?![A-Za-z0-9])",
+                      r"\1<user>", text)
     return text
 
 
@@ -1203,6 +1252,22 @@ class Kit:
             return None
         return f"Nightshift's engine did not start or did not answer ({text[-300:].strip()})"
 
+    def open_dashboard_if_asked(self) -> None:
+        """The owner answered `d` at the start (G-29): the Dashboard opens once in his browser, once its
+        engine answers, so he can watch the Queue page while the kit runs. It starts nothing."""
+        if not self.state.get("watch_dashboard") or self.state.get("watch_opened"):
+            return
+        self.state["watch_opened"] = True
+        self.save()
+        url = f"http://127.0.0.1:{getattr(self.product, 'port', 0)}/"
+        try:
+            (self.env.open_url or _open_in_browser)(url)
+        except Exception as e:  # noqa: BLE001 - watching is a courtesy: it never stops a step
+            self.say(f"The Dashboard could not be opened for you ({type(e).__name__}); open {url} yourself.")
+            return
+        self.say(f"Opened the Dashboard ({url}). Look at the Queue page; start nothing there until the kit "
+                 "has ended.")
+
     def enter(self, step: str) -> Result | None:
         """Every step's ONE entry, before the step talks to the product: the engine and the Dashboard brought
         up (`engine`, bounded) when the step needs them, what the kit left from a killed run put back, then
@@ -1215,6 +1280,7 @@ class Kit:
         why = self.engine()
         if why:
             return self.not_started(why)
+        self.open_dashboard_if_asked()
         self.put_back_extras()  # (the kit's own Code window, test voices or stock clip of a killed run)
         if need == "dashboard" or self.own_work_running(step):
             return None
@@ -1422,19 +1488,20 @@ class Kit:
             "table": w.nvidia_smi([]),
             "compute_apps": w.nvidia_smi(["--query-compute-apps=pid,used_memory", "--format=csv,noheader"]),
         }  # fmt: skip
-        found = {k: re.search(rf"{k} Version:\s*([\d.]+)", smi["table"] or "") for k in ("Driver", "CUDA")}
+        # the driver is the query's own column (G-30); the table's banner is the fallback and has two wordings
         line = ((smi["query_gpu"] or "").strip().splitlines() or [""])[0]
         cells = [c.strip() for c in line.split(",")] if line else []
         cell = lambda i: cells[i] if len(cells) > i else None  # noqa: E731
-        rec["gpu"] = {"name": cell(0), "driver": found["Driver"] and found["Driver"].group(1),
-                      "cuda": found["CUDA"] and found["CUDA"].group(1), "vram_total": cell(2),
+        rec["gpu"] = {"name": cell(0), "driver": nvsmi.read_driver(smi["query_gpu"], smi["table"]),
+                      "cuda": nvsmi.cuda_from_banner(smi["table"]), "vram_total": cell(2),
                       "vram_used": cell(3)}  # fmt: skip
         drive = os.path.splitdrive(str(self.home))[0] or str(self.home)[:2]
         usage = shutil.disk_usage(self.home)
-        rec["disk"] = {
+        rec["disk"] = {  # binary GB, as Windows shows the drive (G-31)
             "drive": drive,
-            "free_gb": round(usage.free / 1e9, 1),
-            "total_gb": round(usage.total / 1e9, 1),
+            "free_gb": sizes.gb_value(usage.free),
+            "total_gb": sizes.gb_value(usage.total),
+            "free": sizes.size_text(usage.free),
             "physical": w.physical_disk(drive),
         }
         rec["power"] = {"wake_timers": w.powercfg(["/q", "SCHEME_CURRENT", "SUB_SLEEP", "RTCWAKE"]),
@@ -1445,7 +1512,7 @@ class Kit:
         with contextlib.suppress(Exception):
             import psutil
 
-            rec["ram_gb"] = round(psutil.virtual_memory().total / 1e9, 1)
+            rec["ram_gb"] = sizes.gb_value(psutil.virtual_memory().total)
         with contextlib.suppress(OSError, ValueError, AttributeError):
             runtime = (self.home / "config" / "runtime.json").read_text("utf-8-sig")
             rec["llama"] = json.loads(runtime).get("llama")
@@ -1478,8 +1545,9 @@ class Kit:
         fails = [ln.strip() for ln in rows if ln.strip().startswith("[FAIL]")]
         mark = f"{self.mark}: " if self.mark else ""
         return Result("PASS", f"recorded this PC: {mark}{rec['gpu']['name']}, driver {rec['gpu']['driver']}, "
-                      f"{rec['gpu']['vram_total']} of video memory; {drive} has {rec['disk']['free_gb']} GB "
-                      f"free; ns doctor: {'; '.join(fails) or 'no FAIL row'}")  # fmt: skip
+                      f"{_mib_text(rec['gpu']['vram_total'])} of video memory; "
+                      f"{drive} has {rec['disk']['free']} free; "
+                      f"ns doctor: {'; '.join(fails) or 'no FAIL row'}")  # fmt: skip
 
     # -------------------------------------------------------------------------------------- K2 checks
     def k2(self) -> Result:
@@ -1966,7 +2034,7 @@ class Kit:
             self.state["changes"][what]["clip"] = clip
             self.save()
             self.put_back_extras()  # the clip leaves the cache again
-            got = f"{size / 1e6:.1f} MB" if size else "an empty file"
+            got = sizes.size_text(size) if size else "an empty file"
             ok = bool(size) and c.get("source") == name
             line = (f"{title}: searched and downloaded one clip ({got}, {c.get('source')} "
                     f"{c.get('clip_id')}, "
@@ -3078,7 +3146,7 @@ class Kit:
             return
         if self.mark:
             self.say(f"SIMULATED graphics card ({self.mark}): this zip is a test, not the GPU PC's proof.")
-        size = f"{target.stat().st_size / 1e6:.1f} MB"
+        size = sizes.size_text(target.stat().st_size)
         if (self.state["steps"].get("K7") or {}).get("done"):
             self.say(f"Send this one file: {target} ({size}). The kit sent nothing anywhere.")
         elif blocked:  # a FAIL stopped the steps after it
@@ -3472,10 +3540,14 @@ def _main(args: argparse.Namespace, env: KitEnv) -> int:
             env.say(line)
         if not kit.state.get("confirmed"):
             # (unattended: no pause before the start; the switch is the go-ahead, and it is recorded)
-            go = "" if unattended else kit.ask("Press Enter to start, or type q and Enter to stop.")
+            go = "" if unattended else kit.ask(
+                "Press Enter to start, type d and Enter to start and open the Dashboard to watch, or type "
+                "q and Enter to stop.")
             if (go or "").strip().lower() == "q":
                 env.say("Nothing was changed (only the kit's folder was made). Run GPU-KIT.cmd when ready.")
                 return 0
+            if (go or "").strip().lower() == "d":
+                kit.state["watch_dashboard"] = True
             kit.state["confirmed"] = True
             kit.save()
         env.say(f"PASS    {kit.label('K0')}: {kit.state['steps']['K0']['line']}")

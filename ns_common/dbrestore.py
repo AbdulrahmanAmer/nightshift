@@ -76,6 +76,7 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.singleton import AlreadyRunning, FileLock
+from ns_common.sizes import size_text
 
 #: Leaves one morning note (the owner of the notes is `ns_supervisor.notify`, out of `ns_common`'s reach).
 NoteFn = Callable[[str], object]
@@ -1196,7 +1197,7 @@ def _free_words(paths: Paths) -> str:
         free = shutil.disk_usage(paths.data).free
     except OSError:
         return "the free space could not be read"
-    return f"{paths.data.anchor or paths.data} has {free / 1e6:.0f} MB free"
+    return f"{paths.data.anchor or paths.data} has {size_text(free)} free"
 
 
 def _put_back(paths: Paths, log: NsLogger | None, note: NoteFn, rec: dict[str, Any]) -> None:

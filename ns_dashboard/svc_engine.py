@@ -16,6 +16,7 @@ from ns_common.commandline import render
 from ns_common.config import load_install_state, load_runtime
 from ns_common.errors import NsError
 from ns_common.models import GpuStatus, StatusGpuWait
+from ns_common.sizes import gb_value
 from ns_dashboard.errors import ApiError, SupervisorUnavailable
 from ns_dashboard.events import iter_sse
 from ns_dashboard.state import (
@@ -53,8 +54,8 @@ def disk_info(home: Path) -> dict[str, Any]:
     except OSError:
         return {"free_gb": None, "total_gb": None, "home": str(home)}
     return {
-        "free_gb": round(usage.free / 1e9, 1),
-        "total_gb": round(usage.total / 1e9, 1),
+        "free_gb": gb_value(usage.free),  # binary GB, as Windows shows the drive (G-42)
+        "total_gb": gb_value(usage.total),
         "home": str(home),
     }
 

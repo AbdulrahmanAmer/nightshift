@@ -234,7 +234,8 @@ def test_the_setup_zip_carries_the_gpu_kit():
     raw.decode("ascii")
     assert b"\r\n" in raw and b"\n" not in raw.replace(b"\r\n", b"")  # CRLF only
     text = raw.decode("ascii")
-    assert r'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0dev\kit\gpukit.ps1" %*' in text
+    assert (r'"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile '
+            r'-ExecutionPolicy Bypass -File "%~dp0dev\kit\gpukit.ps1" %*') in text
     # a person's window waits for a key, by time; `pause` (which reads its input and never ends on a pipe
     # nobody writes to, as an agent's shell gives) is gone; unattended, or with no keyboard, nothing waits
     assert '\r\n"%SystemRoot%\\System32\\timeout.exe" /t 99999 >nul 2>nul\r\n' in text
