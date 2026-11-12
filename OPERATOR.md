@@ -471,6 +471,10 @@ talks, not how high the voice is.
   (logged only).
 - `vram.idle`: video memory Nightshift left after it unloaded everything, other programs' share taken off.
   Target 300 MB or lower. It says "n/a" when the other programs' share could not be read.
+- `job.fake_services` (full `ns verify` only): one sample Short made with stand-in models, in a folder of its own
+  (`run\verify-job` in the install), which is removed when the check ends. Nothing of it lands in your Queue,
+  Outbox, ledger or history. If that folder could not be removed (a program held a file in it), the row says so
+  and the next `ns verify` removes it.
 - "1 target missed": everything works, one number is off its target. Send the diagnostics zip when you can.
 - "1 part did not work": a model or a program failed. The row's next line says why and what to do.
 

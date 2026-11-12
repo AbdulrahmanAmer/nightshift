@@ -2964,6 +2964,8 @@ class Kit:
             "- the clip job's imported 3-minute input (Library > Sources), named in step 6's line",
             "- one Assistant conversation (the kit's question), in the Assistant's history",
             "- one OpenCode session (the kit's prompt), in OpenCode's own folder of the user's profile",
+            "The model test (ns verify) leaves nothing: its sample job runs in a folder of its own that is "
+            "removed when it ends.",
             "",
             "Masked in every text file:",
             *(f"- {m}" for m in MASKED),

@@ -555,6 +555,12 @@ What each number measures (card verify-limits, 2026-11-12):
 - **Idle VRAM** (`vram.idle`, `bench.idle_vram_mb`): memory in use after unload minus memory in use before the
   test loaded anything of Nightshift's, read only at a moment the supervisor's status shows none of its card
   services (llama, tts, whisper) loaded; without such a moment the row is "n/a" with the reason and passes.
+- **The sample job** (`job.fake_services`, full only; card verify-job-isolated): the install's own `studio run
+  --fake-services --format shorts_only --count 1` in a home of its own, `<home>\run\verify-job`, made new for
+  each run (real files only: the install's `runtime.json` and formats copied in, no link) and handed over with
+  `NIGHTSHIFT_HOME` and `NS_HOME_EXPLICIT`. Its data, Outbox, ledger and logs are its own; it is removed when the
+  check ends, pass or fail, and at the next run's start after a kill, only when it is directly under `run`, no
+  link, and carries the marker the check wrote. A failed job's error lines go into the row and the verify log.
 - **Missed target or a part that did not work**: a failed row that carries a limit is a missed target; one
   without a limit is a part that did not work. `ns verify`'s last line says which; its exit code is non-zero
   for either, as before. The GPU kit goes on after missed targets only (they stay a FAIL of its step 3).
