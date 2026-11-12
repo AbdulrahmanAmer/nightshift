@@ -105,6 +105,9 @@ def test_an_idea_is_removed_with_its_row_in_the_record(tmp_home: Path):
     dash, state = make(tmp_home)
     seed_channel(state.db, state.paths)
     idea = dash.library.add_idea({"channel": "after-dark", "premise": "A doorbell camera that records tomorrow."})
+    # the embed service is not running here, so add_idea stored no vector: give the row the blob the record
+    # must leave out (float32 little-endian, contracts/schema.sql)
+    state.db.execute("UPDATE ideas SET embedding = ? WHERE idea_id = ?", (b"\x00\x00\x80\x3f" * 4, idea["idea_id"]))
     out = dash.library.remove_idea(idea["idea_id"])
     assert state.db.one("SELECT 1 FROM ideas WHERE idea_id = ?", (idea["idea_id"],)) is None
     rec = record_of(out)
