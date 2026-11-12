@@ -32,7 +32,7 @@ from ns_studio.text.idea_redraw import next_unused_idea
 from ns_studio.text.prompts import RUBRIC_KEYS, call_json, call_text, parse_model
 from ns_studio.text.seo import finalize_seo
 from ns_studio.text.story_profile import profile_of
-from ns_studio.text.validators import check_banned, load_banned, raise_if, validate_story
+from ns_studio.text.validators import Violation, check_banned, load_banned, raise_if, validate_story
 from ns_studio.voice_wpm import job_wpm
 
 __all__ = [
@@ -157,13 +157,18 @@ def in_window(text: str, budget: Budget) -> bool:
     return budget.min_words <= word_count(text) <= budget.max_words
 
 
-def length_failure(text: str, budget: Budget, where: str, repairs: int) -> NsError:
-    """NS-E303 for a text whose length repairs are spent: where, the words and the window (S2)."""
-    return NsError(
-        "NS-E303",
-        f"{where}length: {word_count(text)} words, allowed {budget.min_words}-{budget.max_words} "
-        f"after {repairs} length repairs",
+def length_failure(
+    text: str, budget: Budget, where: str, repairs: int, violations: list[Violation]
+) -> NsError:
+    """NS-E303 for a text whose length repairs are spent: where, the words and the window (S2).
+
+    `violations` are those of the stage's full validator on the last text, so a rule it breaks besides its
+    length (reading level, banned phrase, repeated opening) is named too, as the validator names it today.
+    """
+    said = "; ".join(f"{v.rule}: {v.detail}" for v in violations) or (
+        f"length: {word_count(text)} words, allowed {budget.min_words}-{budget.max_words}"
     )
+    return NsError("NS-E303", f"{where}after {repairs} length repairs: {said}")
 
 
 def repair_length(
@@ -532,6 +537,16 @@ class CriticReviseStage:
         budget = ideas_budget(ctx)
         revisions = repairs = attempt = 0
         critique: dict[str, Any] = {}
+        past = [
+            r["opening_line"]
+            for r in ctx.db.query(
+                "select opening_line from stories where channel=? and job_id!=? "
+                "order by created_at desc limit 50",
+                (ctx.channel.slug, ctx.job_id),
+            )
+        ]
+        if is_dev(ctx.paths):
+            past = []      # the fake LLM tells the same story every run; dev mode must not fail on that
         # Bounded: every pass breaks, raises, or spends a revision (at most 2) or a repair (at most 2).
         while True:
             critique = call_json(ctx, "critic", story=text, banned=load_banned())
@@ -542,7 +557,10 @@ class CriticReviseStage:
                 if in_window(text, budget):
                     break
                 if repairs >= MAX_LENGTH_REPAIRS:
-                    raise length_failure(text, budget, "", repairs)
+                    every = validate_story(
+                        text, budget, past_openings=past, embed=ctx.services.embed, profile=profile_of(ctx)
+                    )
+                    raise length_failure(text, budget, "", repairs, every)
                 repairs += 1
                 text = repair_length(
                     ctx, text, budget, attempt=repairs, chapter={"n": 1, "title": "the whole story"},
@@ -555,16 +573,6 @@ class CriticReviseStage:
                 ctx, "revise", story=text, fixes=critique["fixes"], **window_vars(text, budget)
             ).strip()
             revisions += 1
-        past = [
-            r["opening_line"]
-            for r in ctx.db.query(
-                "select opening_line from stories where channel=? and job_id!=? "
-                "order by created_at desc limit 50",
-                (ctx.channel.slug, ctx.job_id),
-            )
-        ]
-        if is_dev(ctx.paths):
-            past = []      # the fake LLM tells the same story every run; dev mode must not fail on that
         raise_if(
             validate_story(
                 text, budget, past_openings=past, embed=ctx.services.embed, profile=profile_of(ctx)

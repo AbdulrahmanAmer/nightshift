@@ -277,7 +277,11 @@ class ChaptersCriticStage:
                     if in_window(text, budget):
                         break
                     if repairs >= MAX_LENGTH_REPAIRS:
-                        raise length_failure(text, budget, f"chapter {ch['n']}: ", repairs)
+                        every = validate_chapter(
+                            text, budget, chapter_n=ch["n"], past_openings=past, embed=ctx.services.embed,
+                            profile=profile,
+                        )  # fmt: skip
+                        raise length_failure(text, budget, f"chapter {ch['n']} ", repairs, every)
                     repairs += 1
                     text = repair_length(
                         ctx, text, budget, attempt=repairs, chapter={"n": ch["n"], "title": ch["title"]},
