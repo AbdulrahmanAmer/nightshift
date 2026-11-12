@@ -262,15 +262,17 @@ def set_idea_aside(ctx: JobContext, row: Any, why: str) -> dict[str, Any]:
     cols = set(row.keys())
     title = str((row["title"] if "title" in cols else "") or "").strip() or str(row["premise"])[:80]
     category, reason = _split_reason(why)
+    aside = {"idea_id": row["idea_id"], "title": title, "category": category, "reason": reason}
+    # The record first: a kill between the two leaves the idea `approved` (checked again on a Retry), never
+    # `new` with no record, which would let a Retry of a hand-started job write a story of its own instead.
+    kept = _set_aside(ctx)
+    ctx.write_json(SET_ASIDE_FILE, [*[a for a in kept if a.get("idea_id") != row["idea_id"]], aside])
     sets, params = "status='new', used=0, job_id=NULL", []
     if "updated_at" in cols:
         sets, params = sets + ", updated_at=?", [now_iso()]
     ctx.db.execute(
         f"update ideas set {sets} where idea_id=? and status='approved'", (*params, row["idea_id"])
     )
-    aside = {"idea_id": row["idea_id"], "title": title, "category": category, "reason": reason}
-    kept = _set_aside(ctx)
-    ctx.write_json(SET_ASIDE_FILE, [*[a for a in kept if a.get("idea_id") != row["idea_id"]], aside])
     ctx.log.warn(
         "idea_set_aside",
         "the idea check refused an approved idea: it is back in Library > Ideas as new",
