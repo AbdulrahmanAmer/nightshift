@@ -378,6 +378,37 @@ def test_t5_a_folder_another_live_model_test_uses_is_left(home: Paths, studio: S
     assert not studio.ran()
 
 
+def test_t5_a_folder_whose_process_cannot_be_told_alive_is_left(home: Paths, studio: SimpleNamespace) -> None:
+    """Review of block E2, finding 6: a liveness check that cannot be made counts as alive."""
+    folder = verify.make_scratch(home)
+    (folder / verify.SCRATCH_MARKER).write_text(marker_text([4242]), encoding="utf-8")
+    (folder / "busy.txt").write_text("in use", encoding="utf-8")
+    with pytest.raises(NsError) as e:
+        verify.fake_job(home, command=studio.command, alive=lambda pid: None)
+    assert "could not be told" in e.value.detail and "4242" in e.value.detail, e.value.detail
+    assert (folder / "busy.txt").read_text(encoding="utf-8") == "in use"
+    assert not studio.ran()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="tasklist is Windows'")
+def test_a_tasklist_that_cannot_answer_is_not_known(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    def fails(*_a: Any, **_k: Any) -> Any:
+        raise OSError("stand-in: tasklist did not start")
+
+    monkeypatch.setattr(verify.subprocess, "run", fails)
+    assert verify.pid_alive(4242) is None
+    monkeypatch.setattr(verify.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", ""))
+    assert verify.pid_alive(4242) is None
+    gone = "INFO: No tasks are running which match the specified criteria.\n"
+    monkeypatch.setattr(verify.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, gone, ""))
+    assert verify.pid_alive(4242) is False
+    row = '"python.exe","4242","Console","1","10,000 K"\n'
+    monkeypatch.setattr(verify.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, row, ""))
+    assert verify.pid_alive(4242) is True
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="a file held open blocks its removal on Windows only")
 def test_t5_a_held_file_never_fails_the_check_and_the_next_run_removes_it(
     home: Paths, studio: SimpleNamespace, monkeypatch: pytest.MonkeyPatch

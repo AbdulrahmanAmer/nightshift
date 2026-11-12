@@ -448,14 +448,34 @@ def _marker_of(folder: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) and data.get("kind") == SCRATCH_KIND else None
 
 
-def pid_alive(pid: int) -> bool:
-    """True while a process with this pid exists (`tasklist`; a reused pid only keeps a folder longer)."""
-    from ns_supervisor import control
+def pid_alive(pid: int) -> bool | None:
+    """True while a process with this pid exists, False when it is gone, None when that cannot be told (a
+    `tasklist` that did not run or answered nothing; review of block E2, finding 6: the caller then leaves the
+    folder). A reused pid only keeps a folder one run longer."""
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return None
+        return True
+    try:
+        r = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True,
+            timeout=15, check=False, env=child_env(), creationflags=window_flags(),
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = (r.stdout or "").strip()
+    if r.returncode != 0 or not out:
+        return None
+    return out.startswith('"')  # a CSV row names the process; "INFO: No tasks ..." (any language) does not
 
-    return control.image_name(pid) is not None
 
-
-def not_ours(paths: Paths, alive: Callable[[int], bool] = pid_alive) -> str | None:
+def not_ours(paths: Paths, alive: Callable[[int], bool | None] = pid_alive) -> str | None:
     r"""Why what is at `<home>\run\verify-job` must be left alone (J6), in words; None only when it is
     provably the folder this check made and no live process of another run uses it:
     `<home>\run` is no link; the name is no link and a real folder; its resolved path is directly under the
@@ -478,9 +498,14 @@ def not_ours(paths: Paths, alive: Callable[[int], bool] = pid_alive) -> str | No
                 f"folder out of {run}, then run the test again")
     pids = mark.get("pids")
     others = [p for p in (pids if isinstance(pids, list) else []) if isinstance(p, int) and p != os.getpid()]
-    busy = [p for p in others if alive(p)]
+    said = {p: alive(p) for p in others}
+    busy = [p for p, up in said.items() if up]
     if busy:
         return f"{folder} is in use by another model test (process {busy[0]} still runs)"
+    unknown = [p for p, up in said.items() if up is None]
+    if unknown:  # not known is alive (finding 6): the folder waits for a run that can tell
+        return (f"{folder} may be in use by another model test (whether process {unknown[0]} still runs "
+                "could not be told)")
     return None
 
 
@@ -586,7 +611,7 @@ def _empty_unmarked(paths: Paths) -> bool:
         return False
 
 
-def remove_scratch(paths: Paths, alive: Callable[[int], bool] = pid_alive) -> str | None:
+def remove_scratch(paths: Paths, alive: Callable[[int], bool | None] = pid_alive) -> str | None:
     """Remove the sample job's folder when `not_ours` proves it is this check's (J6). Never raises.
 
     Returns the sentence for the row, or None when nothing was there or it all went: what was left alone and
@@ -740,7 +765,7 @@ def _run_studio(
 
 def fake_job(
     paths: Paths, *, command: Sequence[str] | None = None, timeout_s: float = JOB_TIMEOUT_S,
-    alive: Callable[[int], bool] = pid_alive,
+    alive: Callable[[int], bool | None] = pid_alive,
 ) -> JobRun | None:
     """`studio run --fake-services --format shorts_only --count 1` in its own home (card verify-job-isolated).
 
