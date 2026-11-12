@@ -334,7 +334,10 @@ def blocked_for_job(ctx: JobContext, previous: Sequence[str]) -> set[tuple[str, 
     if not ctx.attempt:
         return blocked
     last = _last_regen(ctx)
-    if last is not None and str(last["code"]) not in FOOTAGE_REJECTED:
+    # `short_hook` shares NS-E611 but is a hook not voiced at the start (`regen.REGEN_FROM_CHECK`, redone from
+    # the voice): the footage is fine and is kept (the detail starts with the check's name, `gate.run_gate`)
+    hook_only = last is not None and str(last.get("detail") or "").startswith("short_hook")
+    if last is not None and (str(last["code"]) not in FOOTAGE_REJECTED or hook_only):
         return blocked | black_shot_clips(ctx, previous, last)
     for name in previous:
         if not ctx.file(name).exists():

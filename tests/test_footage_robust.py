@@ -306,6 +306,20 @@ def test_f2_a_redo_for_black_frames_blocks_the_item_when_its_render_is_gone(tmp_
 
 
 @needs_ffmpeg
+def test_f2_a_short_hook_redo_keeps_the_footage(tmp_home: Path):
+    ctx = make_ctx(tmp_home)
+    _prepare_job(ctx)
+    src = ctx.services.clip_sources[0]
+    ClipsStage().run(ctx)
+    first = list(src.downloads)
+    ctx.write_json("policy_attempts.json", {"regenerations": 1, "history": [
+        {"code": "NS-E611", "detail": "short_hook: s1 does not open with its hook", "rejected_to": None,
+         "cause": "media"}]})
+    ClipsStage().run(ctx)
+    assert src.downloads == first  # a hook redo downloads no new footage
+
+
+@needs_ffmpeg
 def test_qc_black_spans_of_a_black_video(tmp_path: Path):
     black = ff.make_test_clip(tmp_path / "b.mp4", width=64, height=64, seconds=1.0, kind="color",
                               color="0x000000")
