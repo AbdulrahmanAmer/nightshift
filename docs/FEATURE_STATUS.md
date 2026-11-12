@@ -10,13 +10,13 @@ Every partial and missing row is a box in section H at the end; `dev/finalizatio
 |---|---|---|---|---|---|
 | Installer, install sources, uninstall, update | 87 | 15 | 2 | 7 | 111 |
 | Runtime, supervisor, services, launchers, CLI, logging, errors | 115 | 12 | 2 | 0 | 129 |
-| Studio pipeline: master-first, Shorts, formats, TTS chunking, captions, QC, SEO, publishing | 107 | 12 | 2 | 3 | 124 |
+| Studio pipeline: master-first, Shorts, formats, TTS chunking, captions, QC, SEO, publishing | 107 | 13 | 2 | 3 | 125 |
 | Variation, prompts, rubric, validators, calibration, presets, safety and growth playbook, governor, learning | 92 | 35 | 0 | 0 | 127 |
 | Nightshift Clipper | 80 | 9 | 3 | 4 | 96 |
 | Dashboard pages, API, job worker | 109 | 26 | 2 | 2 | 139 |
 | Assistant and Series Workshop | 54 | 18 | 3 | 0 | 75 |
 | Setup window | 143 | 33 | 2 | 6 | 184 |
-| **All** | **787** | **160** | **16** | **22** | **985** |
+| **All** | **787** | **161** | **16** | **22** | **986** |
 
 ## Decisions the operator took where the spec contradicts itself (2026-11-09)
 
