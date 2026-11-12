@@ -1274,6 +1274,10 @@ EXEMPT: dict[str, str] = {
         "copies runtime.json and a channel into the scratch home of the setup window's test render, never "
         "into the settings of the install"
     ),
+    "ns_supervisor/verify.py:_copy_settings": (
+        "copies runtime.json and the formats into the model test's own scratch home "
+        "(<home>\\run\\verify-job); the install's settings are only read"
+    ),
 }
 #: Writers of settings files whose names are read at run time (the scan cannot see the name): each must call
 #: the guard, or be part of the settings copy itself (run only by `ns update` and the rollback, which call
