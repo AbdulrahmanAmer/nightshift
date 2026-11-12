@@ -1476,8 +1476,9 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
         env.sync(app)
         clear_record(paths, app, log)    # W7: every venv holds the new program
         at = "the check of the new version"
+        since = time.time()
         if not env.verify(app):
-            raise NsError("NS-E702", "ns verify --quick failed on the new version")
+            raise _verify_error(paths, since)
         at = "the re-registration of the nightly task"
         notes += env.reregister(app)
         notes += _voice_notes(paths)
@@ -2240,6 +2241,37 @@ def _run(cmd: list[str], env: dict[str, str] | None = None) -> tuple[int, str]:
     return r.returncode, " | ".join((r.stderr or r.stdout).strip().splitlines()[-3:])
 
 
+def verify_failed(paths: Paths, since: float) -> str:
+    """F67: which checks of the verify step just run failed, with their numbers and log line, from the report
+    it wrote (`logs\\verify-report.json`, written at or after `since`: an older report is not this run's).
+    "" when there is none to read (the step then failed before writing it)."""
+    f = paths.logs / "verify-report.json"
+    try:
+        if f.stat().st_mtime < since - 1:
+            return ""
+        data = json.loads(read_text_retry(f, "utf-8-sig"))
+    except (OSError, ValueError):
+        return ""
+    checks = data.get("checks") if isinstance(data, dict) else None
+    out: list[str] = []
+    for c in checks if isinstance(checks, list) else []:
+        if not isinstance(c, dict) or c.get("passed") is not False:
+            continue
+        line = str(c.get("name") or "a check")
+        if c.get("value") is not None or c.get("limit"):
+            line += f" ({c.get('value')}, limit {c.get('limit')})"
+        if c.get("log"):
+            line += f": {c['log']}"
+        out.append(line)
+    return "; ".join(out)
+
+
+def _verify_error(paths: Paths, since: float) -> NsError:
+    failed = verify_failed(paths, since)
+    tail = f": {failed}" if failed else " (it wrote no report: see logs\\verify-*.log)"
+    return NsError("NS-E702", f"ns verify --quick failed on the new version{tail}")
+
+
 def verify_quick(app: Path, python: str | None = None) -> bool:
     """`ns verify --quick` with the new code (a fresh interpreter in the app directory).
 
@@ -2373,8 +2405,9 @@ def _git_update(
         env.sync(app)
         clear_record(paths, app, log)
         at = "the check of the new version"
+        since = time.time()
         if not env.verify(app):
-            raise NsError("NS-E702", "ns verify --quick failed on the new version")
+            raise _verify_error(paths, since)
         at = "the re-registration of the nightly task"
         notes = env.reregister(app) + _voice_notes(paths)
     except RecordLeft as e:     # the commit and its environments are good: not undone, nothing started
