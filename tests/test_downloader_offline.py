@@ -54,11 +54,15 @@ def test_a_wake_from_sleep_does_not_count_as_an_attempt(tmp_path: Path, monkeypa
 
 
 def test_a_site_that_fails_with_the_network_up_still_ends_in_e105(tmp_path: Path, monkeypatch):
+    # card download-outage N1: nine failures (about three minutes of backoff) are now inside the ten-minute
+    # window and the file would finish, so the link here never comes back; the end is still NS-E105
     monkeypatch.setattr(dl, "network_is_up", lambda url, timeout=5.0: True)
+    sleeps: list[float] = []
     with pytest.raises(NsError) as ei:
-        dl.download(URL, tmp_path / "a.bin", SHA, client=make_client(fail_first=9, fail_error=True),
-                    sleep=lambda s: None)
-    assert ei.value.code == "NS-E105"
+        dl.download(URL, tmp_path / "a.bin", SHA, client=make_client(fail_first=999, fail_error=True),
+                    sleep=sleeps.append)
+    assert ei.value.code == "NS-E105" and ei.value.data["side"] == "network"
+    assert sum(sleeps) >= dl.NETWORK_WINDOW_S
 
 
 def test_a_network_that_never_returns_still_ends_in_e105(tmp_path: Path, monkeypatch):

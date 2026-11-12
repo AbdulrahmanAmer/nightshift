@@ -134,6 +134,8 @@ RETRY_NOTES = {
     "network": "The connection dropped, trying again",
     "offline": "No internet right now, waiting for it to come back",
     "hash": "The file failed its check, downloading it again",
+    # the network stopped the file for this pass (downloader ``run_plan``, card download-outage N3)
+    "later": "The internet stopped this file; it is tried again when the other files are done",
 }
 
 

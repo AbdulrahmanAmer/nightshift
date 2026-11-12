@@ -7,7 +7,8 @@ run. In bridge mode stdout carries nothing else: stray rich output goes to stder
 
 Events out: hello, step, say, table, plan, file, warn, failure, verify, sample, bundle, bye.
 Commands in: keys (always the first line), decision, pause, resume, stop.
-A ``file`` event is start, progress, retry (a stalled or failed transfer waits to be tried again) or finish.
+A ``file`` event is start, progress, retry (a stalled or failed transfer waits to be tried again; reason
+``later``: the network stopped it, it is tried again after the other files, and it may start again) or finish.
 A retry with reason ``site`` also carries ``host``, ``status`` and ``leftS``: a download site that answers 5xx
 or 429 is waited out for ten minutes. A ``failure`` event carries ``host``, ``status`` and ``side`` when the
 error has them (NS-E105: ``side`` is ``site`` when the wait was used up).
@@ -93,9 +94,17 @@ class BridgeReporter:
         )
 
     def retrying(self, name: str, attempt: int, reason: str, wait_s: float) -> None:
-        """A transfer failed (reason stall, network or hash) and is tried again after ``wait_s`` seconds."""
+        """A transfer failed (reason stall, network, offline or hash) and is tried again after ``wait_s``
+        seconds; reason ``later``: the network stopped it for this pass, it is tried again at the end.
+
+        ``of`` (the row's "try 2 of 3") is sent for a wrong hash only: network trouble is not ended by a count
+        but by its ten-minute window (card download-outage N1), so "try 3 of 3" would not be true."""
         self._ui.emit({"type": "file", "key": name, "event": "retry", "attempt": attempt, "reason": reason,
-                       "waitS": wait_s, "of": self.tries})
+                       "waitS": wait_s, "of": self.tries if reason == "hash" else 0})
+
+    def check_stop(self) -> None:
+        """Raise ``SetupStopped`` after Stop (the wait before another pass of the downloads calls it)."""
+        self._ui.check_stop()
 
 
     def site_wait(self, name: str, host: str, status: int, wait_s: float, left_s: float) -> None:

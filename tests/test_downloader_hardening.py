@@ -251,10 +251,14 @@ def test_the_bridge_reporter_never_waits_at_the_gate_for_a_download_and_obeys_st
     ui.stop.set()
     with pytest.raises(SetupStopped):
         rep.update_nowait("a", 20, 100)
+    # card download-outage N1: network trouble is ended by its window, not by a count, so the row gets no
+    # "try 2 of 3" for it (of 0); a wrong hash still has its count
     rep.retrying("a", 1, "network", 2.0)
     assert json.loads(out.getvalue().splitlines()[-1]) == {
         "type": "file", "key": "a", "event": "retry", "attempt": 1, "reason": "network", "waitS": 2.0,
-        "of": 3}
+        "of": 0}
+    rep.retrying("a", 1, "hash", 2.0)
+    assert json.loads(out.getvalue().splitlines()[-1])["of"] == 3
 
 
 # ---------------------------------------------------------------------------------------------- progress
@@ -334,13 +338,17 @@ def test_retries_and_the_backoff_are_capped(tmp_path: Path, monkeypatch):
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     sleeps: list[float] = []
+    # card download-outage N1: network trouble ends when the attempts AND the window are used up; a window of
+    # 1 s is used up after the first wait, so the attempt count is what this test sees
     with pytest.raises(NsError) as ei:
-        dl.download(URL, tmp_path / "a.bin", None, client=client, retries=99, sleep=sleeps.append)
+        dl.download(URL, tmp_path / "a.bin", None, client=client, retries=99, sleep=sleeps.append,
+                    network_window_s=1.0)
     assert ei.value.code == "NS-E105" and sleeps == [2, 4, 8, 16]        # five attempts, never more
     monkeypatch.setattr(dl, "MAX_RETRIES", 8)
     sleeps.clear()
     with pytest.raises(NsError):
-        dl.download(URL, tmp_path / "a.bin", None, client=client, retries=8, sleep=sleeps.append)
+        dl.download(URL, tmp_path / "a.bin", None, client=client, retries=8, sleep=sleeps.append,
+                    network_window_s=1.0)
     assert sleeps == [2, 4, 8, 16, 30, 30, 30]                           # the wait stops growing at 30 s
 
 
