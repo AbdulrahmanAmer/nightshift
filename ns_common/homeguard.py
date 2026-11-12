@@ -102,6 +102,10 @@ COMMANDS: dict[str, Rule] = {
     "studio voice design": _W,
     "studio voice clone": _W,
     "studio voice apply-pending": _W,
+    "studio voice remove": _W,              # moves a designed or cloned voice to removed\ (WP6)
+    "studio remove idea": _W,
+    "studio remove story": _W,
+    "studio remove footage": _W,
     "studio review": _R,                    # the list (the group's own callback)
     "studio review show": _R,
     "studio review approve": _W,
@@ -145,7 +149,8 @@ DASHBOARD_WRITES: frozenset[str] = frozenset({
     "PUT /api/settings", "POST /api/settings/keys", "POST /api/diagnostics", "POST /api/settings/export",
     "POST /api/settings/import",
     "POST /api/voices/preview", "POST /api/voices/apply-pending", "POST /api/voices/design",
-    "POST /api/voices/clone",
+    "POST /api/voices/clone", "DELETE /api/voices/{name}", "DELETE /api/library/ideas/{idea_id}",
+    "DELETE /api/library/stories/{job_id}",
     "POST /api/library/ideas", "PUT /api/library/ideas/{idea_id}", "POST /api/library/footage/fetch",
     "DELETE /api/library/footage/{source}/{clip_id}", "POST /api/library/formats",
     "PUT /api/library/formats/{format_id}", "POST /api/library/series/{slug}/produce",
