@@ -343,6 +343,43 @@ def test_a_recorded_pid_of_a_newer_or_unrelated_process_is_not_ours(tmp_path: Pa
 
 
 # ------------------------------------------------------------ the engine's own exit is bounded (the cause)
+@windows
+def test_a_noted_process_is_not_alive_the_moment_it_has_ended_while_its_parent_still_holds_it() -> None:
+    """CI of PR 216, shard 5: psutil 7.2.2 calls an ended process running for as long as Windows lists its pid
+    (here: this test's Popen keeps its handle), so the stop sequence said "could not be ended" (NS-E706) of a
+    process that had ended. `Own.alive` asks Windows itself: after kill and wait it is False at once, every
+    time, and it is True for the living process (same pid and creation time)."""
+    from ns_supervisor.stopping import Own
+
+    # psutil's answer as it was on the busy PC (an ended process "running"): Windows' answer must decide.
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        own = Own(psutil.Process(proc.pid), "a stand-in", "python.exe")
+        proc.kill()
+        proc.wait(timeout=30)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(psutil.Process, "is_running", lambda self: True)
+            mp.setattr(psutil.Process, "status", lambda self: psutil.STATUS_RUNNING)
+            assert not own.alive(), "psutil's stale 'running' decided over Windows' exit code"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=30)
+
+    for _ in range(20):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            own = Own(psutil.Process(proc.pid), "a stand-in", "python.exe")
+            assert own.alive()
+            proc.kill()
+            proc.wait(timeout=30)
+            assert not own.alive(), "an ended process (its handle still held by its parent) read as alive"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=30)
+
+
 def test_the_engine_ends_within_its_bound_even_with_a_thread_that_never_returns() -> None:
     code = (
         "import threading, time\n"
