@@ -14,6 +14,10 @@ stays the total number of regenerations (`JobContext.attempt`, the hotter prompt
 before the counters (no `causes`) reads as that one count for all three, so a job in flight never gets more
 retries than it had. An NS-E601 marked `final` (the owner's own idea refused in a job he started by hand)
 ends the job at once and spends nothing.
+
+The owner's idea is never redrawn by a refusal of its story (S3b, `same_idea_start`): when the job's idea is
+banked, a story-level failure that would restart at `ideas` restarts at the stage after it, so the one text
+retry writes the story again from the same idea; when that retry is spent the job ends with the reason.
 """
 
 from __future__ import annotations
@@ -217,6 +221,46 @@ def cause_of(ctx: JobContext, err: NsError, names: list[str]) -> str:
     return "media" if err.code in MEDIA_CODES else "text"
 
 
+def idea_is_banked(ctx: JobContext) -> bool:
+    """True when this job's idea is one the owner approved (card story-robust S3b).
+
+    The fact on disk: the `ideas` row this job claimed from the bank (`draw_banked_idea` sets `status='used'`
+    and this job's id in one update; an idea of the model's own is inserted with `status='new'`, `used=1`)
+    whose premise is the premise of the job's `idea.json`. Both survive a kill and a resume, and a job claimed
+    by an older version carries the same row. An idea that was redrawn after a critic failure no longer
+    matches the claimed row's premise.
+    """
+    try:
+        idea = ctx.read_json("idea.json")
+    except (OSError, ValueError):
+        return False
+    premise = idea.get("premise") if isinstance(idea, dict) else None
+    if not isinstance(premise, str) or not premise:
+        return False
+    row = ctx.db.one(
+        "select idea_id from ideas where job_id=? and status='used' and premise=? limit 1",
+        (ctx.job_id, premise),
+    )
+    return row is not None
+
+
+def same_idea_start(ctx: JobContext, cause: str, start: str, names: list[str]) -> str:
+    """Where a story's refusal restarts (S3b): never at `ideas` when the job's idea is the owner's.
+
+    A failure whose restart stage is `ideas` but that is not the idea stage's own refusal (the text gate's
+    or the final gate's NS-E601, NS-E605, an `ideas` fallback) would draw another idea in place of his. For a
+    banked idea the story is written again from the SAME idea: the first stage after `ideas`. A job whose idea
+    is the model's own keeps `start`.
+    """
+    if start != "ideas" or cause == "idea" or _ideas_unfinished(ctx, names):
+        return start
+    i = names.index("ideas")
+    if i + 1 >= len(names) or not idea_is_banked(ctx):
+        return start
+    ctx.log.info("same_idea_restart", job_id=ctx.job_id, restart_at=names[i + 1])
+    return names[i + 1]
+
+
 def _count(value: object) -> int:
     """A counter read from the file; one that is not a number reads as spent (never more retries)."""
     try:
@@ -342,7 +386,7 @@ def _run_job_guarded(ctx: JobContext, *, resume: bool) -> list[str]:
             counts = cause_counts(att)
             n = counts[cause]
             check = str(e.data.get("check") or "") or None
-            start = earliest_stage(e.code, names, e.detail, check)
+            start = same_idea_start(ctx, cause, earliest_stage(e.code, names, e.detail, check), names)
             if (ctx.owner_script and start == names[0]) or not has_restart_stage(e.code, names, e.detail):
                 # Only the import of the owner's own text would be redone: it would fail the same way.
                 att["history"].append(

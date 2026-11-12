@@ -355,6 +355,77 @@ def test_t9_a_second_text_refusal_is_final(tmp_home: Path, monkeypatch):
     assert [n for n, _a in seen].count("critic_revise") == 2 and "voice" not in [n for n, _a in seen]
 
 
+#: The text gate refuses the written story (box 3's NS-E601, at story level): `REGEN_FROM` restarts at `ideas`.
+def _story_refused(detail: str = "story: minors; the judge's sentence") -> NsError:
+    return NsError("NS-E601", detail, check="unsafe_topics")
+
+
+def _same_idea_plan(monkeypatch, draft_fails: list[NsError]) -> list[tuple[str, int]]:
+    """The real ideas stage, then a `draft` that raises `draft_fails` in turn, then `voice`."""
+    seen: list[tuple[str, int]] = []
+    monkeypatch.setitem(REGISTRY, "draft", Stub("draft", draft_fails, seen))
+    monkeypatch.setitem(REGISTRY, "voice", Stub("voice", [], seen))
+    monkeypatch.setitem(orch.FORMAT_STAGES, "robust", ["ideas", "draft", "voice"])
+    return seen
+
+
+def test_s3b_a_refused_story_of_the_owners_idea_is_written_again_from_the_same_idea(tmp_home: Path, monkeypatch):
+    seen = _same_idea_plan(monkeypatch, [_story_refused()])
+    ctx = make_ctx(tmp_home, fmt="robust")
+    ctx.log = Spy(ctx.log)  # type: ignore[misc]
+    mine = _bank(ctx, "A night janitor finds footage of students", "Hidden Camera", "2026-11-01")
+    other = _bank(ctx, "A ferry that docks one stop too many", "Last Ferry", "2026-11-02")
+    assert regen.run_job_guarded(ctx) == ["ideas", "draft", "voice"]
+    # Before S3b the retry restarted at `ideas`, which drew "Last Ferry" in place of his idea, in silence.
+    assert ctx.read_json("idea.json")["premise"] == "A night janitor finds footage of students"
+    assert tuple(_row(ctx, mine)) == ("used", 1, ctx.job_id)
+    assert tuple(_row(ctx, other)) == ("approved", 0, None)
+    assert [n for n, _a in seen] == ["draft", "draft", "voice"]
+    assert [e["restart_at"] for e in ctx.log.of("policy_regenerate")] == ["draft"]
+    assert ctx.read_json(regen.ATTEMPTS_FILE)["causes"] == {"idea": 0, "text": 1, "media": 0}
+    assert _calls(ctx, "ideas") == []
+
+
+def test_s3b_a_second_refusal_of_the_owners_story_ends_the_job_with_the_reason(tmp_home: Path, monkeypatch):
+    fails = [_story_refused(), _story_refused("story: minors; refused again")]
+    seen = _same_idea_plan(monkeypatch, fails)
+    ctx = make_ctx(tmp_home, fmt="robust")
+    mine = _bank(ctx, "A night janitor finds footage of students", "Hidden Camera", "2026-11-01")
+    other = _bank(ctx, "A ferry that docks one stop too many", "Last Ferry", "2026-11-02")
+    with pytest.raises(NsError) as ei:
+        regen.run_job_guarded(ctx)
+    assert ei.value.code == "NS-E601" and ei.value.detail == "story: minors; refused again"
+    assert [n for n, _a in seen] == ["draft", "draft"]
+    assert ctx.read_json("idea.json")["premise"] == "A night janitor finds footage of students"
+    assert tuple(_row(ctx, mine)) == ("used", 1, ctx.job_id) and tuple(_row(ctx, other)) == ("approved", 0, None)
+
+
+class ModelIdea(Stub):
+    """The ideas stage of a job with no banked idea: the model's own premise, recorded as `IdeasStage` does."""
+
+    def __init__(self, name: str, fails: list[NsError], seen: list[tuple[str, int]]) -> None:
+        super().__init__(name, fails, seen)
+        self.outputs = ("idea.json",)  # done means done: only a restart at `ideas` runs it again
+
+    def run(self, ctx) -> None:
+        self.seen.append((self.name, ctx.attempt))
+        premise = f"A premise of the model's own, pass {ctx.attempt}"
+        ctx.db.execute(
+            "insert into ideas(channel, job_id, premise, twist, created_at, used) values (?,?,?,?,?,1)",
+            (ctx.channel.slug, ctx.job_id, premise, "a twist", "2026-11-12"),
+        )
+        ctx.write_json("idea.json", {"premise": premise})
+
+
+def test_s3b_a_refused_story_of_the_models_own_idea_still_restarts_at_ideas(tmp_home: Path, monkeypatch):
+    seen = _same_idea_plan(monkeypatch, [_story_refused()])
+    monkeypatch.setitem(REGISTRY, "ideas", ModelIdea("ideas", [], seen))
+    ctx = make_ctx(tmp_home, fmt="robust")
+    assert regen.run_job_guarded(ctx) == ["ideas", "draft", "voice"]
+    assert [n for n, _a in seen] == ["ideas", "draft", "ideas", "draft", "voice"]
+    assert ctx.read_json("idea.json")["premise"] == "A premise of the model's own, pass 1"
+
+
 @pytest.mark.parametrize(
     ("stage", "error"),
     [
