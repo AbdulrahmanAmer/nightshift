@@ -7,7 +7,9 @@ every expert in RAM (--cpu-moe) +2534. Fit's lines are F2's, word for word.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,10 +17,13 @@ from types import SimpleNamespace
 import pytest
 
 from ns_common.config import load_runtime, save_runtime
+from ns_common.errors import NsError
 from ns_common.models import Runtime
 from ns_common.paths import Paths
-from ns_supervisor import fitlog, fitmigrate, ramroom, services, vram
+from ns_supervisor import fitlog, fitmigrate, gpu, procs, ramroom, services, vram
+from ns_supervisor.core import Supervisor
 from ns_supervisor.services import ServiceDef
+from ns_supervisor.testing import StubTable, fast_config
 
 TOTAL = 16311
 NOW = datetime(2026, 11, 12, 21, 0, 0)
@@ -172,6 +177,32 @@ def test_the_ladder_by_the_settled_free_memory(tmp_path: Path, desktop: int, ste
     assert chosen is (b if step == "mtp_off" else a)
 
 
+@pytest.mark.parametrize(("desktop", "step"), [(838, "tuned"), (1161, "mtp_off"), (1752, "mtp_off"),
+                                               (2400, "experts_in_ram")])  # fmt: skip
+def test_the_ladder_with_the_card_deltas_measured_under_fit(tmp_path: Path, desktop: int, step: str) -> None:
+    """Evidence 14 (no -ngl, 16k q8_0, load-mode none): C2a +14426 with MTP, C2b +13138 without. Beside
+    Firefox (838: free 15473 >= 14426 + 1024) MTP stays; the quiet desktop's top (1161) and 1752 take MTP off;
+    2400 (free 13911 < 13138 + 1024) leaves it to fit's experts in RAM."""
+    paths = Paths(tmp_path)
+    a, b = services.ladder_of(llama())
+    keep(paths, a, mb=[14426])
+    keep(paths, b, mb=[13138])
+    v, chosen, got = vram.choose(paths, [a, b], settled_verdict(desktop))
+    assert got == step and v.ok, (desktop, v.numbers())
+
+
+def test_the_retry_after_a_spill_is_said_as_its_own_step(tmp_path: Path) -> None:
+    """After a spill the engine retries with the MTP-off definition ALONE (`options = rest`): its step is
+    "mtp_off", never "tuned" (the words in /status, the log and verify's speed row)."""
+    paths = Paths(tmp_path)
+    _a, b = services.ladder_of(llama())
+    _, chosen, got = vram.choose(paths, [b], settled_verdict(838))
+    assert chosen is b and got == "mtp_off"
+    keep(paths, b, mb=[13138])
+    _, _, got = vram.choose(paths, [b], settled_verdict(3600))
+    assert got == "experts_in_ram_mtp_off"
+
+
 def test_a_first_load_is_as_tuned_and_mtp_off_is_estimated_from_a_measured_tuned_need(tmp_path: Path) -> None:
     paths = Paths(tmp_path)
     a, b = services.ladder_of(llama())
@@ -255,9 +286,31 @@ def test_migration_moves_a_tuned_install_once_and_keeps_a_count_set_by_hand(
     later.llama.flags.ctx = 32768
     assert fitmigrate.migrate(paths, later).llama.flags.ctx == 32768
 
+    # an owner's own edit on disk stays his too
+    save_runtime(paths, later)
+    assert fitmigrate.migrate(paths, load_runtime(paths)).llama.flags.ctx == 32768
+
     hand = Paths(tmp_path / "hand")
     save_runtime(hand, gpu_runtime(n_gpu_layers=30))
     assert fitmigrate.migrate(hand, load_runtime(hand)).llama.flags.n_gpu_layers == 30
+
+
+def test_migration_runs_again_on_the_file_a_rollback_put_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plan's release path: update (the gate's verify starts the new engine: moved), `ns update
+    --rollback` (config/runtime.json back from the settings copy, byte for byte; run/ keeps the marker),
+    update again."""
+    paths = Paths(tmp_path / "ns")
+    with_caps(monkeypatch, frozenset(services.CAPS_PROBE))
+    save_runtime(paths, gpu_runtime(ctx=32768, kv_type="f16"))
+    rc5_bytes = paths.runtime_file.read_bytes()
+    fitmigrate.migrate(paths, load_runtime(paths))
+    assert load_runtime(paths).llama.flags.ctx == 16384 and fitmigrate.marker(paths).exists()
+    paths.runtime_file.write_bytes(rc5_bytes)  # the rollback's settings copy
+    again = fitmigrate.migrate(paths, load_runtime(paths))
+    assert (again.llama.flags.ctx, again.llama.flags.kv_type) == (16384, "q8_0")
+    assert load_runtime(paths).llama.flags.ctx == 16384
 
 
 def test_migration_takes_tunes_own_smaller_count_and_skips_without_fit(
@@ -283,3 +336,106 @@ def test_a_system_managed_page_file_may_grow_to_three_times_ram_within_the_disk(
     tight = lambda d: SimpleNamespace(total=1000 * 1024**3, free=1 * 1024**3)  # noqa: E731
     assert ramroom.growth_mb(["?:\\pagefile.sys"], 32666, 9500, "C:", tight) == 1024
     assert ramroom.Room(commit_mb=37400, limit_mb=41400, limit_max_mb=None).commit_room_mb == 4000
+
+
+# -------------------------------------------------------------------------- the engine's spill retry (rule 4)
+FITTED_STUB = ["--fit", "on", "--fit-target", "1024", "-c", "16384"]
+MTP_STUB = ["--spec-type", "draft-mtp", "--spec-draft-n-max", "3"]
+
+
+class PcCard(gpu.FakeSmi):
+    """The GPU PC's card (16311 MiB, an 838 MiB desktop); the running llama takes `take(its command)` MiB."""
+
+    def __init__(self, paths: Paths, sup: Supervisor, take: Callable[[list[str]], int]) -> None:
+        super().__init__(paths, tenants=sup._gpu_tenants)
+        self.sup, self.take = sup, take
+
+    def card(self) -> gpu.Card:
+        r = self.sup.services.get("llama")
+        mib = self.take(r.definition.cmd) if r is not None and r.proc is not None else 0
+        return gpu.Card(total_mb=TOTAL, base_mb=838, services={"llama": mib})
+
+
+def spill_engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, take: Callable[[list[str]], int],
+                 extra: list[str]) -> tuple[Supervisor, list[list[str]]]:  # fmt: skip
+    monkeypatch.setattr(ramroom, "read", lambda: ramroom.Room())  # the laptop's memory decides nothing here
+    paths = Paths(tmp_path / "ns")
+    starts: list[list[str]] = []
+
+    def starter(d: ServiceDef, logs: Path, job: object = None) -> procs.Proc:
+        starts.append(list(d.cmd))
+        return procs.start(d, logs, job=job)
+
+    sup = Supervisor(paths, Runtime.default("gpu"), config=fast_config(),
+                     resolver=StubTable(extra={"llama": extra}), starter=starter)  # fmt: skip
+    sup.smi = gpu.SmiSource(PcCard(paths, sup, take))
+    return sup, starts
+
+
+def run_acquire(sup: Supervisor) -> tuple[dict[str, object] | NsError, dict[str, object]]:
+    async def main() -> tuple[dict[str, object] | NsError, dict[str, object]]:
+        try:
+            try:
+                got: dict[str, object] | NsError = await sup.acquire("llama", "opencode", model_alias="code")
+            except NsError as e:
+                got = e
+            return got, sup.status()["services"]["llama"]
+        finally:
+            await sup.stop_all()
+            sup.close_job()
+
+    return asyncio.run(main())
+
+
+def test_a_spill_after_ready_is_stopped_and_loaded_once_more_with_the_mtp_draft_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With MTP the load leaves 73 MiB free (16311 - 838 - 15400): a spill. The engine stops it and loads the
+    MTP-off step (13138: 2335 free), which stays; /status says that step."""
+    sup, starts = spill_engine(tmp_path, monkeypatch, lambda cmd: 15400 if "--spec-type" in cmd else 13138,
+                               FITTED_STUB + MTP_STUB)  # fmt: skip
+    got, llama_status = run_acquire(sup)
+    assert not isinstance(got, NsError), got
+    assert len(starts) == 2 and "--spec-type" in starts[0] and "--spec-type" not in starts[1], starts
+    assert llama_status["step"] == "mtp_off" and llama_status["mtp"] is False, llama_status
+    spills = [json.loads(ln) for f in sup.paths.logs.glob("supervisor-*.jsonl")
+              for ln in f.read_text(encoding="utf-8").splitlines() if '"vram_spill"' in ln]  # fmt: skip
+    assert len(spills) == 1 and spills[0]["data"]["free_after_mb"] == 73, spills
+
+
+def test_a_second_spill_is_ns_e203_after_exactly_one_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sup, starts = spill_engine(tmp_path, monkeypatch, lambda cmd: 15400, FITTED_STUB + MTP_STUB)
+    got, _ = run_acquire(sup)
+    assert isinstance(got, NsError) and got.code == "NS-E203", got
+    assert len(starts) == 2, starts
+
+
+def test_without_a_next_step_the_retry_asks_fit_for_2048_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sup, starts = spill_engine(tmp_path, monkeypatch, lambda cmd: 15400 if "1024" in cmd else 13000,
+                               FITTED_STUB)  # fmt: skip
+    got, _ = run_acquire(sup)
+    assert not isinstance(got, NsError), got
+    assert len(starts) == 2 and starts[1][starts[1].index("--fit-target") + 1] == "2048", starts
+
+
+def test_the_retry_does_not_start_for_an_acquire_that_lost_the_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stop All, Release or the holder gone while the spilled load was stopped and the card settled: no
+    second spawn (the GPU handover invariant, `_guard`)."""
+    sup, starts = spill_engine(tmp_path, monkeypatch, lambda cmd: 15400 if "--spec-type" in cmd else 13138,
+                               FITTED_STUB + MTP_STUB)  # fmt: skip
+    kept = vram.record_failure
+
+    def lost(*a: object, **kw: object) -> None:
+        kept(*a, **kw)  # type: ignore[arg-type]
+        sup.lock.state.owner = "studio:another"  # someone else holds the card now
+
+    monkeypatch.setattr(vram, "record_failure", lost)
+    got, _ = run_acquire(sup)
+    assert isinstance(got, NsError) and got.code == "NS-E202", got
+    assert len(starts) == 1, starts
