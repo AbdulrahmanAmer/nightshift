@@ -150,7 +150,7 @@ DASHBOARD_WRITES: frozenset[str] = frozenset({
     "POST /api/settings/import",
     "POST /api/voices/preview", "POST /api/voices/apply-pending", "POST /api/voices/design",
     "POST /api/voices/clone", "DELETE /api/voices/{name}", "DELETE /api/library/ideas/{idea_id}",
-    "DELETE /api/library/stories/{job_id}",
+    "DELETE /api/library/stories/{job_id}", "POST /api/drafts/{draft_id}/open",
     "POST /api/library/ideas", "PUT /api/library/ideas/{idea_id}", "POST /api/library/footage/fetch",
     "DELETE /api/library/footage/{source}/{clip_id}", "POST /api/library/formats",
     "PUT /api/library/formats/{format_id}", "POST /api/library/series/{slug}/produce",
