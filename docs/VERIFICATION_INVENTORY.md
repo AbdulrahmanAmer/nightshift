@@ -5,7 +5,7 @@ are kept between runs and maintained by the verification loop (docs/VERIFICATION
 starts as `U`; `tests/test_verification_inventory.py` fails when the code has an item this
 file does not list.
 
-Items: 261 (V-dev 151, V-ci 52, V-gpu 0, U 58).
+Items: 275 (V-dev 151, V-ci 52, V-gpu 0, U 72).
 
 | kind | id | status | evidence |
 |---|---|---|---|
@@ -68,9 +68,12 @@ Items: 261 (V-dev 151, V-ci 52, V-gpu 0, U 58).
 | api | `POST /api/voices/apply-pending` | V-dev | test-loop-2026-11-08.md 2026-11-09 10:36-10:41 (0.1.12 dev, Create it now from a setup-pending voice) |
 | api | `POST /api/voices/design` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/voices/clone` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `DELETE /api/voices/{name}` | U |  |
 | api | `GET /api/library/ideas` | V-dev | journey-2026-11-04.md |
 | api | `POST /api/library/ideas` | V-dev | journey-2026-11-04.md |
 | api | `PUT /api/library/ideas/{idea_id}` | V-dev | journey-2026-11-04.md (approve for production) |
+| api | `DELETE /api/library/ideas/{idea_id}` | U |  |
+| api | `DELETE /api/library/stories/{job_id}` | U |  |
 | api | `GET /api/library/stories` | V-dev | journey-2026-11-04.md |
 | api | `GET /api/library/footage` | V-dev | journey-2026-11-04.md |
 | api | `POST /api/library/footage/fetch` | V-dev | journey-2026-11-04.md (real Pixabay clips) |
@@ -86,6 +89,8 @@ Items: 261 (V-dev 151, V-ci 52, V-gpu 0, U 58).
 | api | `GET /api/models/state` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/update/file` | U |  |
 | api | `POST /api/update/apply` | U |  |
+| api | `GET /api/drafts/{draft_id}` | U |  |
+| api | `POST /api/drafts/{draft_id}/open` | U |  |
 | api | `POST /api/assistant/chat` | V-dev | journey-2026-11-04.md (tool call, card) |
 | api | `POST /api/assistant/confirm` | V-dev | journey-2026-11-04.md (Yes ran fetch_footage) |
 | api | `POST /api/assistant/dismiss` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
@@ -114,10 +119,14 @@ Items: 261 (V-dev 151, V-ci 52, V-gpu 0, U 58).
 | cli | `studio voice preview` | V-ci | tests/test_voice_setup.py |
 | cli | `studio voice design` | V-ci | tests/test_voice_setup.py |
 | cli | `studio voice clone` | V-ci | tests/test_voice_setup.py |
+| cli | `studio voice remove` | U |  |
 | cli | `studio voice apply-pending` | V-ci | tests/test_pending_voice_run.py |
 | cli | `studio review show` | V-ci | tests/test_review.py |
 | cli | `studio review approve` | V-ci | tests/test_review.py |
 | cli | `studio review reject` | V-ci | tests/test_review.py |
+| cli | `ns_studio/cli.py:remove_app idea` | U |  |
+| cli | `ns_studio/cli.py:remove_app story` | U |  |
+| cli | `ns_studio/cli.py:remove_app footage` | U |  |
 | cli | `studio mark-uploaded` | V-ci | tests/test_review.py |
 | cli | `studio pause` | V-ci | tests/test_review.py |
 | cli | `studio resume` | V-ci | tests/test_review.py |
@@ -263,6 +272,11 @@ Items: 261 (V-dev 151, V-ci 52, V-gpu 0, U 58).
 | assistant-tool | `workshop_approve` | V-ci | tests/test_dashboard_workshop_tools.py, tests/test_series_workshop.py |
 | assistant-tool | `workshop_design` | V-ci | tests/test_dashboard_workshop_tools.py, tests/test_series_workshop.py |
 | assistant-tool | `workshop_produce` | V-ci | tests/test_dashboard_workshop_tools.py, tests/test_series_workshop.py |
+| assistant-tool | `draft_create` | U |  |
+| assistant-tool | `draft_append_part` | U |  |
+| assistant-tool | `draft_read` | U |  |
+| assistant-tool | `start_job_from_draft` | U |  |
+| assistant-tool | `list_drafts` | U |  |
 | service | `llama` | V-dev | dev fakes through the supervisor; real engines are V-gpu |
 | service | `embed` | V-dev | dev fakes through the supervisor; real engines are V-gpu |
 | service | `tts` | V-dev | dev fakes through the supervisor; real engines are V-gpu |

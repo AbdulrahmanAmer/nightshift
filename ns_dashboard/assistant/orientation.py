@@ -36,6 +36,7 @@ FOLDERS: dict[str, str] = {
     "rejected": REJECTED_LAYOUT,
     "removed": REMOVED_LAYOUT,
     "logs": "<component>-YYYYMMDD.jsonl, one JSON line per event",
+    "drafts": "<id>.md story drafts the Assistant writes part by part; the owner can edit them",
 }
 SERVICES: dict[str, str] = {
     "llama": "8080 language model (GPU)",

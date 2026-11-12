@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
 TOPICS = (
     "queue", "create", "library", "channels", "results", "settings", "engine", "diagnostics", "orientation",
-    "series",
+    "series", "drafts",
 )
 JSON_TYPES = {
     "string": str,
@@ -60,6 +60,8 @@ class ToolContext:
 
     dash: Dashboard
     context: dict[str, Any] = field(default_factory=dict)
+    #: The chat the call belongs to ("" outside a chat turn): a draft remembers it, so a cut reply can name it.
+    conversation_id: str = ""
 
 
 ToolCall = Callable[[ToolContext, dict[str, Any]], Any]
@@ -162,6 +164,8 @@ def render_confirm(spec: ToolSpec, args: dict[str, Any]) -> str:
     flat.setdefault("source", args.get("url") or args.get("path") or "(default)")
     if "script" in args:  # the card says how long the text is, never the text itself
         flat.setdefault("words", str(word_count(str(args["script"]))))
+        flat["format"] = VIDEO_LABELS.get(str(args.get("format") or ""), "video")
+    if "draft" in args:  # a video from a draft file: the type in the owner's words, never the story itself
         flat["format"] = VIDEO_LABELS.get(str(args.get("format") or ""), "video")
     flat.setdefault("schedule_at", "now")
     return (spec.confirm_text or spec.description).format_map(flat)

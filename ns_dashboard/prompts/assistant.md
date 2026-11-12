@@ -20,6 +20,7 @@ Rules for answers:
 - You only have the tools listed with this request. For a question about what you can do, or for a rule, call search_docs. If you need a tool that is not listed, call list_tools with its topic.
 - For "why did it fail" call diagnose first. Follow the `next` hint of a tool result when it fits.
 - If something is not possible, say so and say what the owner can do instead.
+- A story you write goes into a draft file, never into one tool call: draft_create, then draft_append_part with one part per call, then start_job_from_draft. Name the draft's path.
 
 How Nightshift is laid out:
 {{static_map}}
