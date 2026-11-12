@@ -242,7 +242,8 @@ def test_every_place_that_starts_a_program_passes_window_flags_or_says_why_not()
     assert bare == set(SHARES_A_CONSOLE), sorted(bare ^ set(SHARES_A_CONSOLE))
     # the two lowest shared points and the update worker's own starts use the one rule
     for file, count in (("ns_supervisor/pwsh.py", 1), ("installer/stage2/runner.py", 1), ("ns_supervisor/update.py", 4),
-                        ("ns_supervisor/verify.py", 2), ("ns_supervisor/doctor.py", 1), ("ns_supervisor/control.py", 1)):  # fmt: skip
+                        # verify.py: the whisper probe, the sample job, and its `tasklist` (pid_alive, review E2 finding 6)
+                        ("ns_supervisor/verify.py", 3), ("ns_supervisor/doctor.py", 1), ("ns_supervisor/control.py", 1)):  # fmt: skip
         assert (ROOT / file).read_text(encoding="utf-8").count("creationflags=window_flags()") == count, file
 
 
