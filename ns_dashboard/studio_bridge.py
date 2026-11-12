@@ -48,7 +48,7 @@ class StageWatchLogger(NsLogger):
     """
 
     def __init__(
-        self, base: NsLogger, on_stage: Callable[[str], None], on_note: Callable[[str], None] | None = None
+        self, base: NsLogger, on_stage: Callable[[str], None], on_note: Callable[[str], object] | None = None
     ) -> None:
         super().__init__(base.component, base.logs_dir, echo=base.echo, clock=base.clock)
         self._on_stage = on_stage
