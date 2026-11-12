@@ -3,6 +3,24 @@
 Writes `logs\\verify-report.json` shaped like `GateReport` (spec 15.6) with the spec 14.6 table as
 `bench.*` checks. Every check is tolerant: a missing component becomes a failed check carrying the
 NS code and fix hint, never an exception.
+
+What the voice and memory numbers measure (card verify-limits, spec 14.6):
+- `tts.preset`, `tts.design`, `tts.clone`: the voice speaks. One sentence each, quick or full; the value is
+  the whole call in seconds (the voice program's start and model load included), and the row carries NO
+  limit: it passes when sound came back (L1).
+- `tts.rate` (full only): the speaking rate on the product's real route, ONE batch request of six sentences
+  through `/v1/audio/speech/batch`: (arrival of the last sentence - arrival of the first) / (audio seconds
+  of the sentences after the first), from the stamps the service took while it read the voice program's
+  output. Limit: the RTF target; `bench.tts_rtf` records it (L2). An engine without stamps (fake, Windows
+  speech, reference) gives the whole batch call over its audio instead, and the row's log says so.
+- `tts.start_s` (full only): seconds from the service beginning that batch to its first sentence: the voice
+  program's start, its model load and one sentence. `bench.tts_start_s` has a SOFT target of 15 s (L3).
+- `save_rtf` still gets the single calls' whole ratio (the worst), as before this card (L4).
+- `vram.idle` / `bench.idle_vram_mb`: what Nightshift left on the card, (in use after unload) minus (in use
+  before the test loaded anything of ours), read only when the supervisor's status showed none of our
+  services loaded; without such a moment the row is "n/a" with the reason and passes (L5).
+- A failed row that carries a `limit` is a missed target; a failed row without one is a part that did not
+  work (`split_failures`, L6). The exit code is unchanged: non-zero when any row failed.
 """
 
 from __future__ import annotations
@@ -29,7 +47,7 @@ from ns_common.llm_client import LlmClient
 from ns_common.logging import NsLogger
 from ns_common.models import GateCheck, GateReport, Runtime
 from ns_common.paths import Paths
-from ns_common.tts_client import TtsClient
+from ns_common.tts_client import TtsClient, TtsItem, TtsStamp
 from ns_common.tts_timeout import save_rtf
 from ns_supervisor import check_names as names
 from ns_supervisor import procs
@@ -40,6 +58,24 @@ from ns_supervisor.gpu import SIMULATED_EVIDENCE, labelled, simulated_mark, smi_
 OWNER = "verify"
 TTS_SENTENCE = "Nightshift verification sentence. The quick brown fox jumps over the lazy dog."
 NOT_MEASURED = "short_job_s,master_job_s,nightly_run_s"
+#: The batch `tts.rate` is measured on: six plain sentences of about the length of a narration's, one per item
+#: (one chunk each), all with the first talker's voice, so the service runs them in ONE voice process.
+RATE_SENTENCES: tuple[str, ...] = (
+    "The rain had stopped by the time the last train left the station.",
+    "Nobody on the platform noticed the man with the grey umbrella.",
+    "He walked to the end of the line and waited without a word.",
+    "A light came on in the signal box, then went out again.",
+    "Somewhere in the town a church bell rang eleven times.",
+    "When the silence came back, the man and his umbrella were gone.",
+)
+#: The soft target of `bench.tts_start_s` (L3): logged when missed, never a failure.
+TTS_START_SOFT_S = 15.0
+#: Supervisor states of a service that holds nothing on the card (`ns_supervisor.core`: stopped, starting,
+#: ready, stopping, error; "error" is a service that crashed out and has no process).
+UNLOADED_STATES = ("stopped", "error")
+#: The services that load a model onto the graphics card (`ns_supervisor.services`: the memory index and the
+#: Dashboard run on the processor, and the Dashboard is up during every `ns verify`).
+CARD_SERVICES = ("llama", "tts", "whisper")
 #: How long the first talker (the preset: the engine check, which carries the cold load of the voice engine)
 #: may take to answer, as it always had, and how long each further talker may take. Up to three talkers are
 #: spoken one after the other, and 0.1.14's updater runs `ns verify --quick` with no timeout of its own while
@@ -120,6 +156,77 @@ def read_talker_warnings(paths: Paths) -> list[str]:
     except (OSError, ValueError, KeyError, TypeError):
         return []
     return talker_warnings(checks)
+
+
+def speaking_rate(stamps: tuple[TtsStamp, ...] | None) -> tuple[float, float, float] | None:
+    """(rate, start seconds, audio seconds after the first) from a batch's stamps (L2, L3); None when they
+    cannot give one: no stamps, one utterance, no audio after the first, or two utterances that did not
+    arrive one after the other (a voice program that held its output and wrote it at once would otherwise
+    give a rate near 0, a pass measured on nothing)."""
+    if not stamps or len(stamps) < 2:
+        return None
+    after = sum(s.audio_s for s in stamps[1:])
+    if after <= 0 or any(b.at_s <= a.at_s for a, b in zip(stamps, stamps[1:], strict=False)):
+        return None
+    return (stamps[-1].at_s - stamps[0].at_s) / after, stamps[0].at_s, after
+
+
+def nothing_of_ours_loaded(status: dict[str, Any]) -> str | None:
+    """None when the supervisor's status shows none of our services loaded and nobody holding the card; else
+    the reason, in words (L5: only then is the card's memory in use a baseline of the other programs)."""
+    services = status.get("services")
+    if not isinstance(services, dict):
+        return "the supervisor's status named no services"
+    loaded = sorted(
+        str(n) for n, s in services.items()
+        if n in CARD_SERVICES
+        and (not isinstance(s, dict) or s.get("state") not in UNLOADED_STATES or s.get("pid") is not None)
+    )
+    if loaded:
+        return f"{', '.join(loaded)} {'was' if len(loaded) == 1 else 'were'} loaded"
+    if status.get("gpu_owner"):
+        return f"{status.get('gpu_owner')} held the graphics card"
+    return None
+
+
+#: `bench.*` rows that record the same figure as a check row: when both miss, it is ONE target missed, said
+#: by the check row (the studio PC's report counted the voice speed and the idle memory twice each).
+MIRRORS: dict[str, str] = {"bench.tts_rtf": names.TTS_RATE, "bench.idle_vram_mb": names.VRAM_IDLE}
+
+
+def split_failures(checks: list[GateCheck]) -> tuple[list[GateCheck], list[GateCheck]]:
+    """(targets missed, parts that did not work) of a report's failed rows (L6).
+
+    The rule, with no field of its own: a failed row that carries a `limit` measured something and missed
+    its target; a failed row without one is a part that did not work. A bench row whose check row (`MIRRORS`)
+    also failed is that same target and is not counted again.
+    """
+    failed = [c for c in checks if not c.passed]
+    gone = {c.name for c in failed}
+    missed = [c for c in failed if c.limit and MIRRORS.get(c.name) not in gone]
+    return missed, [c for c in failed if not c.limit]
+
+
+def _missed(c: GateCheck) -> str:
+    return f"{c.name} {c.value} (limit {c.limit})"
+
+
+def verdict(checks: list[GateCheck]) -> str:
+    """The report in one plain sentence (the printed table's last line, L6)."""
+    missed, broken = split_failures(checks)
+    if not missed and not broken:
+        return "ALL CHECKS PASSED"
+    said: list[str] = []
+    if broken:
+        n = len(broken)
+        said.append(f"{n} {'part' if n == 1 else 'parts'} did not work: {', '.join(c.name for c in broken)}.")
+    else:
+        said.append("Everything works.")
+    if missed:
+        n = len(missed)
+        rows = "; ".join(_missed(c) for c in missed)
+        said.append(f"{n} {'target' if n == 1 else 'targets'} missed: {rows}.")
+    return " ".join(said)
 
 
 class Controller(Protocol):
@@ -306,6 +413,7 @@ class Deps:
     ram: Callable[[], float | None] = ram_gb
     tts_engine: Callable[[str], str | None] = tts_engine_kind
     sleep: Callable[[float], None] = time.sleep
+    clock: Callable[[], float] = time.perf_counter  # times the voice's calls (tests give a fake one)
 
 
 @dataclass
@@ -406,6 +514,39 @@ def run_verify(
     if not quick:
         rec.run(names.SUPERVISOR_COLD_START, cold_start)
 
+    # A real install on a PC without an NVIDIA card (profile cpu-dev, answer `allow_cpu`) renders with libx264
+    # and has no nvidia-smi: the encoder check runs on the processor and nothing measures video memory.
+    no_card = rt.profile == "cpu-dev"
+
+    # -- the card's memory before the test loads anything of ours (L5) -----------------------------------
+    # Read only when the supervisor's own status shows none of our services loaded (quick: at the start;
+    # full: after the cold start stopped them). Without such a moment `vram.idle` compares nothing, says why.
+    baseline: dict[str, Any] = {}
+
+    def read_baseline() -> None:
+        if rt.dev_mode or no_card or mark is not None:
+            return
+        try:
+            why = nothing_of_ours_loaded(ctl.status())
+        except NsError as e:
+            why = f"the supervisor's status could not be read ({e.code})"
+        except Exception as e:  # tolerant by design: a baseline that cannot be had is said, never guessed
+            why = f"the supervisor's status could not be read ({type(e).__name__})"
+        if why is None:
+            try:
+                used = vram_used()
+            except Exception:
+                used = None
+            if used is None:
+                why = "nvidia-smi gave no figure"
+            else:
+                baseline["mb"] = float(used)
+        if why is not None:
+            baseline["why"] = why
+        rec.log.info("vram_baseline", mb=baseline.get("mb"), why=baseline.get("why"))
+
+    read_baseline()
+
     # -- llama -----------------------------------------------------------------------------
     llama: list[Endpoint] = []
 
@@ -480,6 +621,65 @@ def run_verify(
 
     rec.run(names.TTS_START, tts_start, "NS-E203")
 
+    def speaking(client: TtsClient, voice: str, out_dir: Path) -> None:
+        """`tts.rate` and `tts.start_s` (L2, L3): six sentences in ONE batch request, the product's own route.
+
+        A batch that fails is a part that did not work (a row without a limit); a rate over the target is a
+        missed target (the row carries the limit); a slow start is logged only (a soft bench).
+        """
+        say = progress or (lambda line: None)
+        say(f"timing the voice {voice} on six sentences in one request ...")
+        items = [TtsItem(f"rate-{k + 1}", text, voice) for k, text in enumerate(RATE_SENTENCES)]
+        rec.log.info("speaking_rate", voice=voice, sentences=len(items))
+        t0 = d.clock()
+        try:
+            batch = client.speak_batch_stamped(items, out_dir)
+        except Exception as e:  # tolerant by design: the row says what failed
+            err = e if isinstance(e, NsError) else NsError("NS-E310", f"{type(e).__name__}: {e}")
+            rec.log.warn("speaking_rate_failed", code=err.code, detail=err.detail)
+            rec.checks.append(GateCheck(
+                name=names.TTS_RATE, passed=False,
+                log=f"six sentences in one request with the voice {voice!r} failed: {explain(err)}",
+            ))
+            return
+        whole_s = d.clock() - t0
+        audio_s = sum(f.seconds for f in batch.files)
+        got = speaking_rate(batch.stamps)
+        if got is not None:
+            rate, start_s, after_s = got
+            how = (f"speaking only: first to last of {len(batch.stamps or ())} sentences in one request, "
+                   f"over the {after_s:.2f} s of audio after the first (the whole call took {whole_s:.1f} s)")
+        elif audio_s > 0:
+            rate, start_s = whole_s / audio_s, None
+            why = ("its per-sentence times did not arrive one after the other" if batch.stamps else
+                   "this voice engine gives no per-sentence times (fake, Windows speech, reference engine)")
+            how = (f"the whole call over its audio: {why}; {len(batch.files)} sentences, {audio_s:.2f} s "
+                   "of audio")
+        else:
+            rec.checks.append(GateCheck(
+                name=names.TTS_RATE, passed=False,
+                log=f"six sentences in one request with the voice {voice!r} came back without sound",
+            ))
+            return
+        ok = rate <= tg.rtf
+        rec.checks.append(GateCheck(
+            name=names.TTS_RATE, passed=ok, value=round(rate, 3), limit=f"<= {tg.rtf} RTF", log=how
+        ))
+        rec.bench("tts_rtf", round(rate, 3), f"<= {tg.rtf}", ok)
+        if start_s is None:
+            rec.checks.append(GateCheck(
+                name=names.TTS_START_S, passed=True, value="n/a",
+                log="no usable per-sentence times came back, so the start is not told apart from speaking",
+            ))
+            return
+        rec.checks.append(GateCheck(
+            name=names.TTS_START_S, passed=True, value=round(start_s, 1),
+            log="seconds to the first sentence of that request: the voice program's start, its model load "
+                "and one sentence",
+        ))  # fmt: skip
+        soft = f"<= {TTS_START_SOFT_S:.0f} s (soft)"
+        rec.bench("tts_start_s", round(start_s, 1), soft, start_s <= TTS_START_SOFT_S, soft=True)
+
     def tts_modes() -> Out:
         base_url = _need(tts[0] if tts else None, "tts").base_url
         client = TtsClient(base_url, timeout_s=FIRST_TALKER_TIMEOUT_S)
@@ -494,21 +694,24 @@ def run_verify(
         picked = [(m, by_mode[m]) for m in order if m in by_mode]
         picked = picked or list(by_mode.items())[:1]
         # One sentence with every installed talker, quick or not (the Base talker of clone voices and
-        # VoiceDesign are tested at install, not at the first video); only the RTF bench is left out of
-        # quick. The first talker (the preset) is the engine check: when it does not speak its row fails, as
-        # it always did. A designed or cloned voice that does not speak is a WARNING row naming the mode and
-        # the voice (`talker_warning`): the run, an update and setup go on, and the next talker is still
-        # spoken.
+        # VoiceDesign are tested at install, not at the first video): it proves the voice SPEAKS, so the row
+        # carries no limit and its value is the whole call in seconds (L1; one sentence is one start of the
+        # voice program and its model, so its time says nothing about speaking speed). The first talker (the
+        # preset) is the engine check: when it does not speak its row fails, as it always did. A designed or
+        # cloned voice that does not speak is a WARNING row naming the mode and the voice (`talker_warning`):
+        # the run, an update and setup go on, and the next talker is still spoken. The speed is measured
+        # after them, full run only, on the batch route (`speaking`).
         say = progress or (lambda line: None)
         rtfs: list[float] = []
         failed: list[str] = []
+        first_spoke = False
         try:
             with tempfile.TemporaryDirectory(prefix="ns-verify-") as tmp:
                 for i, (mode, voice) in enumerate(picked):
                     line = f"speaking a test sentence with the {mode} voice {voice} ..."
                     say(line)
                     rec.log.info("speaking", mode=mode, voice=voice)
-                    t0 = time.perf_counter()
+                    t0 = d.clock()
                     try:
                         audio_s = (client if i == 0 else later).speak(
                             TTS_SENTENCE, voice, 1.0, Path(tmp) / f"{mode}.wav"
@@ -531,36 +734,35 @@ def run_verify(
                         failed.append(mode)
                         rec.checks.append(talker_warning(mode, voice, "the answer had no sound"))
                         continue
-                    rtf = (time.perf_counter() - t0) / audio_s if audio_s > 0 else float("inf")
-                    rtfs.append(rtf)
-                    ok = audio_s > 0 and (quick or rtf <= tg.rtf)
+                    whole_s = d.clock() - t0
+                    if audio_s > 0:
+                        rtfs.append(whole_s / audio_s)
+                        first_spoke = first_spoke or i == 0
                     rec.checks.append(
                         GateCheck(
                             name=names.tts_mode(mode),
-                            passed=ok,
-                            value=round(rtf, 3),
-                            limit=f"<= {tg.rtf} RTF" if not quick else None,
+                            passed=audio_s > 0,
+                            value=round(whole_s, 3),
+                            limit=None,
                             log=f"voice={voice} audio_s={audio_s}",
                         )
                     )
+                if not quick and first_spoke:
+                    speaking(client, picked[0][1], Path(tmp) / "rate")
         finally:
             client.client.close()
             later.client.close()
         if rtfs:
-            worst = max(rtfs)
-            save_rtf(paths, worst, quick=quick)  # the voice stage sizes its batch time limit from it (gap L4)
-            if not quick:
-                rec.bench("tts_rtf", round(worst, 3), f"<= {tg.rtf}", worst <= tg.rtf)
+            # L4: the voice stage sizes its batch time limit from this figure, so it keeps getting exactly
+            # what it got before card verify-limits: the single calls' whole ratio (start and load included).
+            # The rate of `tts.rate` is smaller, and nothing yet shows a real job's limit may shrink to it.
+            save_rtf(paths, max(rtfs), quick=quick)
         note = "modes exercised" if not failed else f"modes exercised; did not speak: {', '.join(failed)}"
         return Out(True, ",".join(m for m, _ in picked), log=note)
 
     rec.run(names.TTS_VOICES, tts_modes, "NS-E202")
     if tts:
         release("tts")
-
-    # A real install on a PC without an NVIDIA card (profile cpu-dev, answer `allow_cpu`) renders with libx264
-    # and has no nvidia-smi: the encoder check runs on the processor and nothing measures video memory.
-    no_card = rt.profile == "cpu-dev"
 
     # -- whisper ---------------------------------------------------------------------------
     def whisper() -> Out:
@@ -608,17 +810,26 @@ def run_verify(
             ctl.stop_all()
         except NsError as e:  # no supervisor means nothing of ours is loaded; still measure the GPU
             rec.log.warn("stop_all_failed", e.detail)
+        base = baseline.get("mb")
         used: int | None = None
-        for _ in range(10):
+        for _ in range(10):  # the driver frees a stopped process's memory within a few seconds
             used = vram_used()
-            if used is None or used <= tg.idle_vram_mb:
+            if used is None or base is None or used - base <= tg.idle_vram_mb:
                 break
             d.sleep(0.5)
         if used is None:
             raise NsError("NS-E102", "nvidia-smi is not available")
-        ok = used <= tg.idle_vram_mb
-        rec.bench("idle_vram_mb", float(used), f"<= {tg.idle_vram_mb:.0f} MB", ok)
-        return Out(ok, float(used), f"<= {tg.idle_vram_mb:.0f} MB", "GPU memory in use after unload")
+        if base is None:
+            return Out(True, "n/a", log=(
+                f"{used:.0f} MB in use after unload, not compared: what other programs held could not be "
+                f"read at a moment with none of Nightshift's models loaded ({baseline.get('why')})"
+            ))  # fmt: skip
+        ours = max(0.0, float(used) - base)  # (other programs may have freed memory meanwhile: never below 0)
+        limit = f"<= {tg.idle_vram_mb:.0f} MB"
+        ok = ours <= tg.idle_vram_mb
+        rec.bench("idle_vram_mb", ours, limit, ok)
+        return Out(ok, ours, limit, f"{used:.0f} MB in use, {base:.0f} MB of it held by other programs "
+                                    "before the test")  # fmt: skip
 
     rec.run(names.VRAM_IDLE, idle_vram, "NS-E102")
 
@@ -665,7 +876,8 @@ def format_lines(report: GateReport) -> list[str]:
         lines.append(f"[{mark}] {c.name}{val}{lim}")
         if c.log and (not c.passed or warn or c.log.startswith("NS-W")):
             lines.append(f"       {c.log}")
-    result = "ALL CHECKS PASSED" if report.passed else "SOME CHECKS FAILED"
+    # L6: a failed row is said as a missed target (it carries its limit) or a part that did not work
+    result = verdict(report.checks) if not report.passed else "ALL CHECKS PASSED"
     if report.passed and warned:
         result += " (a voice did not speak: see the WARN lines above)"
     lines.append("Result: " + result)
