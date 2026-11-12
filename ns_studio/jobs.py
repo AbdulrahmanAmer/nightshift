@@ -214,6 +214,10 @@ def open_env(fake: frozenset[str] = frozenset(), *, light: bool = False) -> Env:
             "NS-E327", f"{paths.db_path} could not be opened ({type(e).__name__}: {e}); if another program "
             "holds it, close that program and run this again",
         ) from e
+    if not light and homeguard.may_write(paths.home):
+        from ns_common import dbrestore
+
+        dbrestore.daily_backup(paths, log)  # the day's copy before the first job; a failure is a WARN only
     if light:
         fake = FAKEABLE
     if light and paths.runtime_file.exists():

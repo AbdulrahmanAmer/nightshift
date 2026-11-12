@@ -100,6 +100,9 @@ def open_db(paths: Paths) -> LockedDb:
             raise
         return LockedDb(UnusableDb(paths.db_path, e))
     db.migrate()
+    from ns_common import dbrestore
+
+    dbrestore.daily_backup(paths, NsLogger("dashboard", paths.logs))  # the day's copy; never stops the start
     return LockedDb(db)
 
 

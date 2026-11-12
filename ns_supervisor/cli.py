@@ -469,6 +469,9 @@ def cmd_backup(
     except OSError as e:  # a full disk, a folder that refuses files: a sentence, not a traceback
         raise _die(f"The backup could not be written: {e}") from e
     echo(f"Backup written to {f}")
+    from ns_common import dbrestore
+
+    dbrestore.daily_backup(Paths.from_env())  # the day's copy in data\backup too: the doctor looks there
     for line in notes:
         echo(line)
 

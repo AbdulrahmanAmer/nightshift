@@ -154,6 +154,15 @@ def model_aside_note(found: dict[str, Any] | None) -> str | None:
     )
 
 
+def model_intact_note(found: dict[str, Any] | None) -> str | None:
+    """The morning note about a model file that setup verified but whose size differs from this version's list
+    (a home made by an older release; ``found``: the night's ``model_intact``). The night ran with it. The
+    sentences carry the way out (Repair). None when there is none."""
+    if not isinstance(found, dict) or not found.get("said"):
+        return None
+    return str(found["said"])
+
+
 def vram_part() -> str:
     """The toast's part of a night whose model could not load for the card's memory (card vram-busy)."""
     return (
