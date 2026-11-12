@@ -1,11 +1,25 @@
 """Regenerate-once policy for gate failures (spec section 18.8, component C7).
 
 A failure moves the item to `rejected\\` with the reason, regenerates once from the earliest
-affected stage, and logs the code. A second failure ends the job.
+affected stage, and logs the code. A second failure of the same cause ends the job.
 
 Besides the policy codes NS-E601 to NS-E614 the same rule covers the other failures of J3 step 2: NS-E303,
 NS-E304 (the ideas stage), NS-E305, NS-E402, NS-E403 and NS-E404 (QC). A story that misses the critic's
 bar has its own rule (spec 16.2): the idea is discarded and the next one drawn, three ideas at most.
+
+One retry per cause (card story-robust S4): `policy_attempts.json` keeps three counters under `causes`,
+each at most `MAX_REGENERATIONS`: `idea` (NS-E601 raised by the ideas stage), `text` (NS-E303, E304, E305
+and the text gate's codes) and `media` (NS-E402, E403, E404 and the final gate's codes). `regenerations`
+stays the total number of regenerations (`JobContext.attempt`, the hotter prompts, the seeds). A file from
+before the counters (no `causes`) reads as that one count for all three, so a job in flight never gets more
+retries than it had. An NS-E601 marked `final` (the owner's own idea refused in a job he started by hand)
+ends the job at once and spends nothing.
+
+The owner's idea is never redrawn by a refusal of its story (S3b, `same_idea_start`): when the job's idea is
+banked, a story-level failure that would restart at `ideas` restarts at the stage after it, so the one text
+retry writes the story again from the same idea; when that retry is spent the job ends with the reason. A
+story of his idea that misses the critic's bar (NS-E304 of a critic stage) is not redrawn either: the same
+text retry, then NS-E304 with its detail.
 """
 
 from __future__ import annotations
@@ -186,6 +200,86 @@ def _attempts(ctx: JobContext) -> dict:
         return fresh
 
 
+#: The three causes that each have their own retry (S4).
+CAUSES: tuple[str, ...] = ("idea", "text", "media")
+#: Failures of the rendered media and of the final gate: the `media` cause. NS-E601 of the final gate's
+#: re-check restarts at `ideas` (a new story) and counts as `text`, like the text gate's.
+MEDIA_CODES: frozenset[str] = frozenset(
+    {"NS-E402", "NS-E403", "NS-E404", "NS-E611", "NS-E612", "NS-E613", "NS-E614"}
+)
+
+
+def _ideas_unfinished(ctx: JobContext, names: list[str]) -> bool:
+    """True when the plan has `ideas` and it has not finished: the failure came from the ideas stage."""
+    if "ideas" not in names:
+        return False
+    return StageState.load(ctx.job_dir).entries.get("ideas", {}).get("status") != "done"
+
+
+def cause_of(ctx: JobContext, err: NsError, names: list[str]) -> str:
+    """Which retry `err` spends: `idea` (the ideas stage refused an idea), `media` or `text` (S4)."""
+    if err.code == "NS-E601" and (err.data.get("stage") == "ideas" or _ideas_unfinished(ctx, names)):
+        return "idea"
+    return "media" if err.code in MEDIA_CODES else "text"
+
+
+def idea_is_banked(ctx: JobContext) -> bool:
+    """True when this job's idea is one the owner approved (card story-robust S3b).
+
+    The fact on disk: the `ideas` row this job claimed from the bank (`draw_banked_idea` sets `status='used'`
+    and this job's id in one update; an idea of the model's own is inserted with `status='new'`, `used=1`)
+    whose premise is the premise of the job's `idea.json`. Both survive a kill and a resume, and a job claimed
+    by an older version carries the same row. An idea that was redrawn after a critic failure no longer
+    matches the claimed row's premise.
+    """
+    try:
+        idea = ctx.read_json("idea.json")
+    except (OSError, ValueError):
+        return False
+    premise = idea.get("premise") if isinstance(idea, dict) else None
+    if not isinstance(premise, str) or not premise:
+        return False
+    row = ctx.db.one(
+        "select idea_id from ideas where job_id=? and status='used' and premise=? limit 1",
+        (ctx.job_id, premise),
+    )
+    return row is not None
+
+
+def same_idea_start(ctx: JobContext, cause: str, start: str, names: list[str]) -> str:
+    """Where a story's refusal restarts (S3b): never at `ideas` when the job's idea is the owner's.
+
+    A failure whose restart stage is `ideas` but that is not the idea stage's own refusal (the text gate's
+    or the final gate's NS-E601, NS-E605, an `ideas` fallback) would draw another idea in place of his. For a
+    banked idea the story is written again from the SAME idea: the first stage after `ideas`. A job whose idea
+    is the model's own keeps `start`.
+    """
+    if start != "ideas" or cause == "idea" or _ideas_unfinished(ctx, names):
+        return start
+    i = names.index("ideas")
+    if i + 1 >= len(names) or not idea_is_banked(ctx):
+        return start
+    ctx.log.info("same_idea_restart", job_id=ctx.job_id, restart_at=names[i + 1])
+    return names[i + 1]
+
+
+def _count(value: object) -> int:
+    """A counter read from the file; one that is not a number reads as spent (never more retries)."""
+    try:
+        return max(0, int(value))  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return MAX_REGENERATIONS
+
+
+def cause_counts(att: dict) -> dict[str, int]:
+    """The regenerations spent per cause; a file from before the counters gives its one count to all three."""
+    raw = att.get("causes")
+    if not isinstance(raw, dict):
+        total = _count(att.get("regenerations", 0))
+        return dict.fromkeys(CAUSES, total)
+    return {c: _count(raw.get(c, 0)) for c in CAUSES}
+
+
 def reject_artifacts(ctx: JobContext, err: NsError, attempt: int) -> Path:
     """Move rendered media and copy the text artifacts to `rejected\\<slug>\\<date>\\<job>\\attempt<N>`."""
     now = datetime.now(UTC)
@@ -276,29 +370,50 @@ def _run_job_guarded(ctx: JobContext, *, resume: bool) -> list[str]:
             if e.code not in POLICY_CODES and e.code not in J3_CODES:
                 raise
             att = _attempts(ctx)
-            n = int(att["regenerations"])
             names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir), ctx.policy)]
-            if e.code == "NS-E304" and _critic_failed(ctx, names):
+            if e.data.get("final"):
+                # The owner's own idea was refused in a job he started by hand (IdeasStage, S3): it is back
+                # in his bank and nothing may be written in its place. No retry is spent.
+                att["history"].append(
+                    {"code": e.code, "detail": e.detail, "rejected_to": None, "cause": "idea"}
+                )
+                ctx.write_json(ATTEMPTS_FILE, att)
+                ctx.log.error("policy_fail_final", code=e.code, job_id=ctx.job_id, detail=e.detail)
+                raise
+            # A story that missed the critic's bar draws the next idea (spec 16.2), unless the idea is the
+            # owner's: then it takes the one text retry from the SAME idea below (`same_idea_start`, S3b).
+            if e.code == "NS-E304" and _critic_failed(ctx, names) and not idea_is_banked(ctx):
                 _redraw_idea(ctx, e, att, names)
                 first = False
                 continue
+            cause = cause_of(ctx, e, names)
+            counts = cause_counts(att)
+            n = counts[cause]
             check = str(e.data.get("check") or "") or None
-            start = earliest_stage(e.code, names, e.detail, check)
+            start = same_idea_start(ctx, cause, earliest_stage(e.code, names, e.detail, check), names)
             if (ctx.owner_script and start == names[0]) or not has_restart_stage(e.code, names, e.detail):
                 # Only the import of the owner's own text would be redone: it would fail the same way.
-                att["history"].append({"code": e.code, "detail": e.detail, "rejected_to": None})
+                att["history"].append(
+                    {"code": e.code, "detail": e.detail, "rejected_to": None, "cause": cause}
+                )
                 ctx.write_json(ATTEMPTS_FILE, att)
                 ctx.log.error("policy_fail_final", code=e.code, job_id=ctx.job_id, detail=e.detail)
                 raise
             dest = reject_artifacts(ctx, e, len(att["history"]) + 1)
-            att["history"].append({"code": e.code, "detail": e.detail, "rejected_to": str(dest)})
+            att["history"].append(
+                {"code": e.code, "detail": e.detail, "rejected_to": str(dest), "cause": cause}
+            )
+            att["causes"] = counts  # an old one-counter file is written in the new form, with nothing added
             if n >= MAX_REGENERATIONS:
                 ctx.write_json(ATTEMPTS_FILE, att)
-                ctx.log.error("policy_fail_final", code=e.code, job_id=ctx.job_id, detail=e.detail)
+                ctx.log.error(
+                    "policy_fail_final", code=e.code, cause=cause, job_id=ctx.job_id, detail=e.detail
+                )
                 raise
-            att["regenerations"] = n + 1
+            counts[cause] = n + 1
+            att["regenerations"] = _count(att.get("regenerations", 0)) + 1
             ctx.write_json(ATTEMPTS_FILE, att)
-            ctx.log.warn("policy_regenerate", code=e.code, restart_at=start, job_id=ctx.job_id)
+            ctx.log.warn("policy_regenerate", code=e.code, cause=cause, restart_at=start, job_id=ctx.job_id)
             only = REGEN_ONLY.get(e.code)
             if not (only and invalidate_only(ctx, names, only)):
                 invalidate_from(ctx, names, start)

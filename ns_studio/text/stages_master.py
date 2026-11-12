@@ -39,11 +39,16 @@ from ns_studio.text.seo import finalize_seo, finalize_seo_long
 from ns_studio.text.stages_shorts import (
     CLOSING_MAX_WORDS,
     HOOK_MAX_WORDS,
+    MAX_LENGTH_REPAIRS,
     closing_is_clean,
     critic_numbers,
+    in_window,
     job_master_budget,
+    length_failure,
     now_iso,
     repair_beats,
+    repair_length,
+    window_vars,
 )
 from ns_studio.text.story_profile import profile_of
 from ns_studio.text.validators import (
@@ -219,7 +224,7 @@ class ChaptersDraftStage:
 
 
 class ChaptersCriticStage:
-    """M4a: critique and revise every chapter (at most 2 revisions each), then validate it."""
+    """M4a: critique and revise every chapter (at most 2 revisions, 2 length repairs), then validate it."""
 
     name: str = "chapters_critic"
     tenant: Tenant = "llama"
@@ -228,10 +233,20 @@ class ChaptersCriticStage:
     outputs: tuple[str, ...] = ("story_revised.json", "critic.json")
 
     def run(self, ctx: JobContext) -> None:
-        """Write `story_revised.json` and `critic.json`; NS-E304 when a chapter misses the bar twice over."""
+        """Write `story_revised.json` and `critic.json`; NS-E304 when a chapter misses the bar twice over.
+
+        Card story-robust S1, S2: every `revise` is told the chapter's window and its length now. A chapter
+        that meets the bar but lies outside its window (after a rewrite, or its first draft) gets a length
+        repair inside this loop (`repair_length`: lengthen with `expand.md`, trim with `revise.md`), at most
+        `MAX_LENGTH_REPAIRS` per chapter, and is scored again: the bar and the window must both hold.
+        Repairs spent: NS-E303 with the chapter, the words and the window. The other validator rules
+        (banned phrase, repeated opening, reading level, sentence length) raise as before. The stage writes
+        its outputs only at the end: a kill in the middle of a repair redoes the stage from the drafts.
+        """
         draft = ctx.read_json("story_draft.json")
         plan = parse_model(Plan, ctx.read_json("plan.json"), "plan.json")
         budgets = {c.n: c.word_budget for c in plan.chapters}
+        beats_of = {c.n: list(c.beats) for c in plan.chapters}
         bar = ctx.channel.critic_bar
         wpm = _wpm(ctx)
         profile = profile_of(ctx)
@@ -242,10 +257,12 @@ class ChaptersCriticStage:
         revisions_total = 0
         for ch in draft["chapters"]:
             text: str = ch["text"]
-            revisions = 0
+            budget = chapter_budget(budgets.get(ch["n"], plan.target_words // total), wpm, profile)
+            revisions = repairs = attempt = 0
             critique: dict[str, Any] = {}
             avg = low = 0.0
-            for attempt in range(3):
+            # Bounded: every pass breaks, raises, or spends a revision (at most 2) or a repair (at most 2).
+            while True:
                 critique = call_json(
                     ctx,
                     "critic",
@@ -255,17 +272,33 @@ class ChaptersCriticStage:
                 )
                 avg, low = critic_numbers(critique)
                 ctx.log.info("critic", chapter=ch["n"], avg=avg, low=low, attempt=attempt, job_id=ctx.job_id)
+                attempt += 1
                 if avg >= bar and low >= 6:
-                    break
-                if attempt == 2:
+                    if in_window(text, budget):
+                        break
+                    if repairs >= MAX_LENGTH_REPAIRS:
+                        every = validate_chapter(
+                            text, budget, chapter_n=ch["n"], past_openings=past, embed=ctx.services.embed,
+                            profile=profile,
+                        )  # fmt: skip
+                        raise length_failure(text, budget, f"chapter {ch['n']} ", repairs, every)
+                    repairs += 1
+                    text = repair_length(
+                        ctx, text, budget, attempt=repairs, chapter={"n": ch["n"], "title": ch["title"]},
+                        beats=beats_of.get(ch["n"], []), log_fields={"chapter": ch["n"]},
+                    )  # fmt: skip
+                    continue
+                if revisions >= 2:
                     detail = f"chapter {ch['n']}: critic avg {avg:.1f}, low {low:.0f}, {revisions} revisions"
                     raise NsError("NS-E304", detail)
-                text = call_text(ctx, "revise", story=text, fixes=critique["fixes"]).strip()
+                text = call_text(
+                    ctx, "revise", story=text, fixes=critique["fixes"], **window_vars(text, budget)
+                ).strip()
                 revisions += 1
             raise_if(
                 validate_chapter(
                     text,
-                    chapter_budget(budgets.get(ch["n"], plan.target_words // total), wpm, profile),
+                    budget,
                     chapter_n=ch["n"],
                     past_openings=past,
                     embed=ctx.services.embed,

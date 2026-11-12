@@ -894,7 +894,7 @@ Horror and dark themes are allowed **as fiction** with implied, not graphic, vio
 | `audio_only_voice` | final | Any non-voice audio track present (no music by design); fails on the stream count and on a noise floor above -55 dBFS; spectral flatness of the quiet frames is measured and warned only (`qc/audio_flatness.json`, no code) until calibrated on real narration | E614 |
 | `disclosure_advice` | final | Always runs; writes the §18.7 answers | — |
 
-A failure moves the item to `rejected\` with the reason, regenerates once from the earliest affected stage, and logs the code. Second failure ends the job.
+A failure moves the item to `rejected\` with the reason, regenerates once from the earliest affected stage, and logs the code. Each cause has its own one regeneration: the idea (the idea check refused an idea), the text and the media; a second failure of the same cause ends the job. A text outside its length window is repaired in its own critic stage before it can fail with NS-E303. An idea the owner approved is never replaced: a refused or failed story of it is written again from the same idea, and a job he started by hand whose idea is refused ends with the reason.
 
 ### 18.9 Learning loop (local)
 1. Export analytics from YouTube Studio as CSV (Content → Shorts and Videos, with: views, viewed vs swiped away, average % viewed, average view duration, likes, comments, shares, subscribers).
@@ -1135,7 +1135,7 @@ Each step names the component that serves it, so coverage can be checked against
 
 ### J3 — Nightly automation (every night, zero touch)
 1. 03:00: the scheduled task wakes the PC, starts the supervisor headless, runs the cadence governor's plan per active channel (§18.6). **C2 C7**
-2. Each job: text → policy gate → voice → captions → clips → render → QC → final gate → Outbox. Failures go to `rejected\` with a reason; one regeneration attempt. **C5 C6 C7**
+2. Each job: text → policy gate → voice → captions → clips → render → QC → final gate → Outbox. Failures go to `rejected\` with a reason; one regeneration attempt per cause (idea, text, media, §18.8). **C5 C6 C7**
 3. Supervisor exits when done; PC may sleep. **C2**
 4. Morning: owner opens the Dashboard; Overview shows "Last night: 1 master + 5 Shorts ready, 0 rejected" and the Review queue. Owner approves and uploads per the sheet's recommended order and dates (master first, Shorts spread over the next days). **C9**
 
