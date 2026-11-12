@@ -11,7 +11,8 @@ Numbers of the card (written out here, so the tests read on a base that has none
 1800 s, a stub service with no model file and no context needs the estimate's 700 MiB.
 
 The rule since review c913351: only a MEASURED need, compared with a SETTLED reading, refuses a load (or makes
-a nightly wait), and only for memory OTHER programs hold. So a test of a refusal first gives the model a
+a nightly wait); since card vram-spill (G-53) a measured need that does not fit is never tried, and NS-E203
+(not NS-E208) says when it would not fit even an idle card. So a test of a refusal first gives the model a
 measured need (`Engine.measured`, the file `run/vram-need.json` as a load would leave it); an estimate never
 refuses (`test_a_first_load_is_tried_with_the_manifests_real_sizes_on_a_16_gb_card`). A reading that does
 not fit is read once more to see that it stopped falling, so a refusal takes two readings.
@@ -333,7 +334,8 @@ def test_our_own_processes_are_not_blamed(tmp_path: Path) -> None:
         rows = [(tts_pid, "C", "python.exe", 300), (4321, "C", "python.exe", 300),
                 (88, "C+G", "C:\\Windows\\System32\\dwm.exe", 300), (90, "G", "csrss.exe", 100),
                 (4242, "C", "D:\\Games\\game.exe", 500)]  # fmt: skip
-        eng.smi.cards = [card(STUB_NEED + MARGIN - 600 - short, rows, per="mb")]
+        # llama takes 50 MiB once loaded (vram-spill: a load leaving less than the margin free spilled)
+        eng.smi.cards = [card(STUB_NEED + MARGIN - 600 - short, rows, per="mb", llama=50)]
         try:
             await eng.acquire("llama", "studio:night-1", model_alias="story", pid=4321)
         except NsError as e:
@@ -809,26 +811,36 @@ def test_a_measured_need_larger_than_the_card_is_a_tuning_matter_not_another_pro
     tmp_path: Path,
 ) -> None:
     """A measured need (17,000 MiB) that no idle card of 16,000 could hold: never a wait nor "another
-    program"; it is tried, and when it fails the error is NS-E203, whose hint says ns doctor, then ns tune."""
-    table = StubTable(extra={"llama": ["--exit-immediately"]})
-    eng = Engine(tmp_path, [card(15000, [(4242, "C", "game.exe", 200)])], table=table)
+    program", and since card vram-spill never tried either ("load and hope" spilled into system memory,
+    G-53): NS-E203 at once, whose hint says ns doctor, then ns tune."""
+    eng = Engine(tmp_path, [card(15000, [(4242, "C", "game.exe", 200)])])
     eng.measured(17000)
     e = eng.run(lambda: refused(eng, "llama", "studio:night-1", model_alias="story", vram_wait=True))
     assert e.code == "NS-E203", str(e)
     assert "more than the graphics card's" in e.detail and "game.exe" not in e.detail, e.detail
-    assert eng.starts == ["llama"] and eng.vram_events() == []
+    assert eng.starts == [] and eng.vram_events() == []
 
 
-def test_the_studios_own_context_is_not_another_program(tmp_path: Path) -> None:
-    """The nightly's studio process (its pid named at the acquire) keeps whisper's CUDA context, 400 MiB that
-    WDDM never reports per process. llama is measured at 6,500 on an 8,000 MiB card whose idle is 800: with
-    that context it does not fit, without it it would, and nothing else is on the card. Not "another
-    program": no wait, no NS-E208; the load is tried."""
+def test_the_studios_own_context_no_longer_hides_memory_in_use(tmp_path: Path) -> None:
+    """G-53 (card vram-spill): the idle allowance and the studio's own context (512) once made "others" 0
+    and let a measured need through that did not fit. llama measured at 6,500 on an 8,000 MiB card with
+    1,200 in use: 6,800 free < 6,500 + 512. Beside the idle card (800) and the studio's context (512) it
+    could never fit: NS-E203 at once (no wait, nothing started), its numbers count the 1,200 in use."""
     eng = Engine(tmp_path, [card(8000 - 1200, total=8000)], process_probe=lambda p: 1.0)
     eng.measured(6500, idle=800)
-    eng.run(lambda: eng.acquire("llama", "studio:night-1", model_alias="story", vram_wait=True, pid=4321))
-    assert eng.starts == ["llama"]
-    assert eng.vram_events() == [] and eng.log("vram_busy") == []
+    e = eng.run(lambda: refused(eng, "llama", "studio:night-1", model_alias="story", vram_wait=True,
+                                pid=4321, timeout_s=3))  # fmt: skip
+    assert e.code == "NS-E203" and eng.starts == [] and eng.vram_events() == [], str(e)
+    (big,) = eng.log("vram_too_big")
+    assert big["data"]["others_mb"] == 1200 and big["data"]["free_mb"] == 6800, big
+
+    # beside an idle card alone it would fit (no studio holder): the nightly waits, then NS-E208 naming 1.2 GB
+    eng2 = Engine(tmp_path / "b", [card(8000 - 1200, total=8000)])
+    eng2.measured(6500, idle=800)
+    e2 = eng2.run(lambda: refused(eng2, "llama", "studio:night-1", model_alias="story", vram_wait=True,
+                                  timeout_s=3))  # fmt: skip
+    assert e2.code == "NS-E208" and eng2.starts == [], str(e2)
+    assert "using 1.2 GB" in e2.detail, e2.detail
 
 
 @pytest.mark.parametrize("code", ["NS-E201", "NS-E208"])

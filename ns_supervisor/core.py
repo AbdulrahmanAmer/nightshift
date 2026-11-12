@@ -32,11 +32,28 @@ from ns_common.errors import NsError, describe
 from ns_common.logging import NsLogger
 from ns_common.models import Runtime
 from ns_common.paths import Paths
-from ns_supervisor import modelcheck, notify, presence, procs, vram
-from ns_supervisor.gpu import GpuProbe, NullGpuProbe, SmiSource, simulated_mark, smi_source, source_probe
+from ns_supervisor import fitlog, modelcheck, notify, presence, procs, ramroom, vram
+from ns_supervisor.gpu import (
+    GpuProbe,
+    NullGpuProbe,
+    SmiSource,
+    labelled,
+    simulated_mark,
+    smi_source,
+    source_probe,
+)
 from ns_supervisor.lock import GpuLock
 from ns_supervisor.schedule_cfg import read_run_time, seconds_until_next_run
-from ns_supervisor.services import SERVICES, ServiceDef, build_service
+from ns_supervisor.services import (
+    FIT_RETRY_TARGET_MB,
+    SERVICES,
+    ServiceDef,
+    build_service,
+    fitted,
+    ladder_of,
+    mtp_on,
+    with_fit_target,
+)
 from ns_supervisor.services import fake_gpu as fake_gpu_on
 
 Resolver = Callable[[str, str | None], ServiceDef]
@@ -182,6 +199,22 @@ class ServiceRuntime:
     error: str | None = None
     abort: bool = False
     op_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    load_mb: int | None = None  # what the running load took on the card (used after `ready` - before spawn)
+    setting: dict[str, Any] | None = None  # llama's running setting (rule 4): step, fit's choice, tok/s
+
+
+def _private_mb(pid: int) -> int | None:
+    """A process's private bytes (Windows: the commit it holds) in MiB; None when not read."""
+    try:
+        info = psutil.Process(pid).memory_info()
+    except (psutil.Error, OSError):
+        return None
+    private = getattr(info, "private", None)
+    return int(private // (1024 * 1024)) if isinstance(private, int) else None
+
+
+class _Spilled(Exception):  # noqa: N818 (a signal between two methods, never raised out of the engine)
+    """A load spilled into system memory after `ready` (rule 4) and was stopped: one more load is tried."""
 
 
 class Supervisor:
@@ -436,22 +469,50 @@ class Supervisor:
 
     async def _start_locked(self, rt: ServiceRuntime, d: ServiceDef, owner: str | None = None) -> None:
         await self._guard(owner, rt.name, "start")  # nothing is spawned for an acquire that lost the GPU
-        # vram-busy: no model process starts while other programs hold the memory it was measured to need
-        # (refused at once, or a nightly waits); `before` is the settled reading the measurement starts from
-        before = await self._vram_room(rt, d, owner) if d.gpu else None
+        if not d.gpu:
+            await self._start_one(rt, d, owner, None, "")
+            return
+        # vram-busy and the plan's rule 2: the settled reading, then the ladder step it allows (a fitted
+        # llama: as tuned, MTP off, or experts in RAM; anything else: its one setting). Refused only by
+        # `vram.judge` (a nightly waits). Rule 4: a load that spilled after `ready` is stopped and ONE more
+        # load is made: the next step, or (no next step, fitted) the same with fit's target at 2048 MiB;
+        # a second spill, or nothing left to try, is NS-E203.
+        options = ladder_of(d)
+        retried = False
+        while True:
+            before, chosen, step = await self._vram_room(rt, options, owner)
+            try:
+                await self._start_one(rt, chosen, owner, before, step)
+                return
+            except _Spilled as sp:
+                rest = options[options.index(chosen) + 1:]
+                if retried or not (rest or fitted(chosen)):
+                    self.log.error("vram_spill_gave_up", str(sp), code="NS-E203", service=rt.name)
+                    raise NsError("NS-E203", f"{sp}; Nightshift stopped it instead of letting it run slowly "
+                                             "(ns doctor, then ns tune)") from None  # fmt: skip
+                retried = True
+                options = rest or [with_fit_target(chosen, FIT_RETRY_TARGET_MB)]
+
+    async def _start_one(
+        self, rt: ServiceRuntime, d: ServiceDef, owner: str | None, before: vram.Verdict | None, step: str
+    ) -> None:
+        """Spawn `d`, wait for its health; a GPU load is then read (rule 4: measured, or stopped: spill)."""
         rt.definition = d
         rt.state = "starting"
         rt.abort = False
         rt.error = None
+        rt.load_mb, rt.setting = None, None
         rt.starting_since = self.clock()
         self._emit(rt, "starting")
-        self.log.info("service_start", service=rt.name, cmd=d.cmd)
+        self.log.info("service_start", service=rt.name, cmd=d.cmd, step=step or None)
         try:
             proc = await asyncio.to_thread(self._start_proc, d, self.paths.logs, job=self.job)
         except NsError as e:
             self._record_crash(rt, str(e))
             raise
         rt.proc = proc
+        log_path = getattr(proc, "log_path", None)  # where llama.cpp's fit lines of THIS load start
+        log_from = await asyncio.to_thread(fitlog.size, log_path) if fitted(d) else 0
         self.write_state()
         deadline = self.clock() + self.cfg.health_timeout_s
         try:
@@ -505,11 +566,13 @@ class Supervisor:
             if isinstance(e, NsError) and note:
                 raise NsError(e.code, f"{e.detail}; model files: {note}") from e
             raise
+        if before is not None:
+            spill = await self._vram_after_ready(rt, proc, d, before, step, log_path, log_from)
+            if spill is not None:
+                raise _Spilled(spill)
         rt.state = "ready"
         rt.starting_since = None
         rt.vram_mb = await asyncio.to_thread(procs.vram_mb, proc.pid, self.smi)
-        if before is not None:
-            await self._vram_measure(d, before.reading.used_mb)
         self.write_state()
         mark = simulated_mark(self.smi)  # a simulated card's number says so wherever it is written (H-10)
         card = {} if mark is None else {"card": mark}
@@ -562,9 +625,31 @@ class Supervisor:
         """The check has a card to read: the gpu profile, or the simulated card (cpu-dev has none)."""
         return self.runtime.profile == "gpu" or self.fake_gpu
 
+    def _ours(self) -> set[int]:
+        ours = {r.proc.pid for r in list(self.services.values()) if r.proc is not None}
+        holder = self._current_holder()
+        if holder is not None:
+            ours.add(holder.pid)
+        return ours
+
+    async def _vram_choose(
+        self, options: list[ServiceDef], release: vram.Release | None = None
+    ) -> tuple[vram.Verdict | None, ServiceDef, str]:
+        """The settled reading for `options[0]` and the ladder step it allows (`vram.choose`); a fitted load
+        reads the PC's memory too (rule 3)."""
+        d = options[0]
+        room = await asyncio.to_thread(ramroom.read) if fitted(d) else None
+        v = await self._vram_check(d, release=release, room=room)
+        if v is None:
+            return None, d, ("tuned" if fitted(d) else "")
+        model_dir = self.runtime.tts.model_dir if d.name == "tts" else None
+        return await asyncio.to_thread(vram.choose, self.paths, options, v, self._ours(), model_dir=model_dir,
+                                       room=room)  # fmt: skip
+
     async def _vram_check(
-        self, d: ServiceDef, *, release: vram.Release | None = None, programs: bool = False
-    ) -> vram.Verdict | None:
+        self, d: ServiceDef, *, release: vram.Release | None = None, programs: bool = False,
+        room: ramroom.Room | None = None,
+    ) -> vram.Verdict | None:  # fmt: skip
         """`vram.check` off the event loop. Ours, never named nor held against a load: every process this
         engine runs and the GPU holder's own process; a studio holder's own CUDA context (whisper ran in it,
         WDDM never reports it) is allowed for (`HOLDER_CONTEXT_MB`)."""
@@ -577,7 +662,7 @@ class Supervisor:
         return await asyncio.to_thread(
             vram.check, self.smi, self.paths, d, ours, model_dir=model_dir, release=release,
             programs=programs,
-            holder_mb=vram.HOLDER_CONTEXT_MB if studio else 0, poll_s=self.cfg.vram_settle_poll_s,
+            holder_mb=vram.HOLDER_CONTEXT_MB if studio else 0, poll_s=self.cfg.vram_settle_poll_s, room=room,
         )
 
     async def _note_release(self, rt: ServiceRuntime) -> None:
@@ -588,8 +673,11 @@ class Supervisor:
         mem = await asyncio.to_thread(vram.read_memory, self.smi)
         if mem is None:
             return
-        n = await asyncio.to_thread(vram.need, self.paths, rt.definition, None, simulated_mark(self.smi))
-        gone = n.mb if n.measured and not n.lower else None
+        if rt.load_mb is not None and rt.load_mb > 0:  # what this very load took on the card (a fitted load's
+            gone: int | None = rt.load_mb  # need counts the whole model, more than the card held)
+        else:
+            n = await asyncio.to_thread(vram.need, self.paths, rt.definition, None, simulated_mark(self.smi))
+            gone = n.mb if n.measured and not n.lower and not fitted(rt.definition) else None
         if self._release is not None and self.clock() - self._release_at > vram.RELEASE_STALE_S:
             self._release = None
         if self._release is not None:  # two of ours stopped before one load: from the first reading, both MiB
@@ -610,33 +698,42 @@ class Supervisor:
         if self._vram_wake is not None:
             self._vram_wake.set()
 
-    async def _vram_room(self, rt: ServiceRuntime, d: ServiceDef, owner: str | None) -> vram.Verdict | None:
-        """V0 to V6 of card vram-busy, right before `d`'s process would start: the settled verdict the load
-        goes ahead on (its reading is where the measurement starts), None without a reading. Refused (NS-E208)
-        only by the rule of `vram.judge`: a MEASURED need, a SETTLED reading, memory held by OTHERS that an
-        idle card would have free. Then at once, unless the acquire said it may wait (`vram_wait`, the
-        nightly): it waits up to `vram_wait_s`, never past the acquire's own `timeout_s` (the night's time
-        decision gave it), looking again every `vram_poll_s` with `_guard` before each look. Stop All,
-        Release, a gone holder and shutdown end the wait at once (`_wake_vram`)."""
+    async def _vram_room(
+        self, rt: ServiceRuntime, options: list[ServiceDef], owner: str | None
+    ) -> tuple[vram.Verdict | None, ServiceDef, str]:
+        """V0 to V6 of card vram-busy, right before a process would start: the settled verdict the load goes
+        ahead on (its reading is where the measurement starts; None without a reading), the setting of
+        `options` (`services.ladder_of`) it loads with and its ladder step (`vram.choose`, plan rule 2).
+        Refused only by the rule of `vram.judge`: a MEASURED need on a SETTLED reading that the card (or, for
+        a fitted load, card + RAM) cannot hold; NS-E203 at once when not even an idle card would hold it
+        (`oversize`), else NS-E208 at once, unless the acquire said it may wait (`vram_wait`, the nightly):
+        it waits up to `vram_wait_s`, never past the acquire's own `timeout_s` (the night's time decision
+        gave it), looking again every `vram_poll_s` with `_guard` before each look. Stop All, Release, a gone
+        holder and shutdown end the wait at once (`_wake_vram`)."""
         release, self._release = self._release, None
         if release is not None and self.clock() - self._release_at > vram.RELEASE_STALE_S:
             release = None  # (an idle unload long ago: its memory had its time; what is held now is not ours)
         if not self._vram_on():
             self._vram_not_checked("the cpu-dev profile has no graphics card to read (fake_gpu is off)")
-            return None
-        v = await self._vram_check(d, release=release)
+            return None, options[0], ("tuned" if fitted(options[0]) else "")
+        v, d, step = await self._vram_choose(options, release)
         if v is None:
             self._vram_not_checked(
                 f"nvidia-smi gave no answer within {vram.READ_TIMEOUT_S:.0f} s (not installed, failing or "
                 "too slow)"
             )
-            return None
+            return None, d, step
         if v.ok:
             self._vram_idle(v, release)
+            self._vram_chosen(rt, d, step, v, owner)
             why = v.why_tried()
             if why is not None:  # it does not fit the reading, and still goes ahead: said in the log, why
                 self.log.info("vram_tried", why, owner=owner, service=rt.name, **v.numbers())
-            return v
+            return v, d, step
+        if v.oversize:  # no program to close would make room: a tuning matter, never a wait
+            detail = v.too_big()
+            self.log.warn("vram_too_big", detail, code="NS-E203", owner=owner, service=rt.name, **v.numbers())
+            raise NsError("NS-E203", detail)
         may_wait, until = self._vram_plan.get(owner, (False, 0.0)) if owner is not None else (False, 0.0)
         bound = min(self.vram_wait_s, until - self.clock()) if may_wait else 0.0
         if bound <= 0:  # V4: an interactive owner (or a warmup) is refused at once
@@ -675,16 +772,37 @@ class Supervisor:
                 if rt.abort:
                     raise NsError("NS-E202", f"the wait of {rt.name} for the card's memory was stopped")
                 await self._guard(owner, rt.name, "memory wait")
-                again = await self._vram_check(d)
+                again, d, step = await self._vram_choose(options)
                 if again is None or again.ok:
                     waited = self.clock() - self._vram_since
                     self.log.info("vram_wait_ended", f"the memory came free after {waited:.0f} s",
                                   owner=owner, service=rt.name, waited_s=round(waited))  # fmt: skip
-                    return again
+                    if again is not None:
+                        self._vram_chosen(rt, d, step, again, owner)
+                    return again, d, step
                 v = again
                 self._vram_wait = {**info, "said": v.waiting(), **v.numbers()}
         finally:
             self._vram_wait, self._vram_wake = None, None
+
+    def _vram_chosen(self, rt: ServiceRuntime, d: ServiceDef, step: str, v: vram.Verdict,
+                     owner: str | None) -> None:  # fmt: skip
+        """A fitted load's ladder step (rule 2), said in the log before the spawn; a step other than "as
+        tuned" is also published (`vram_step`) for the Dashboard."""
+        if not step:
+            return
+        said = (f"{vram.model_words(d)} loads {vram.STEP_WORDS.get(step, step)}: {vram.gb(v.free_mb)} of the "
+                f"graphics card's {vram.gb(v.reading.total_mb)} were free")  # fmt: skip
+        self.log.info("vram_step", said, owner=owner, service=rt.name, step=step, mtp=mtp_on(d),
+                      **v.numbers())  # fmt: skip
+        if step != "tuned":
+            self.publish("service", {"event": "vram_step", "service": rt.name, "owner": owner, "said": said,
+                                     "step": step, "mtp": mtp_on(d)})  # fmt: skip
+
+    def _llama_ctx(self, r: ServiceRuntime) -> int:
+        """The running process's `-c`, else runtime.json's."""
+        running = vram.ctx_of(r.definition) if r.proc is not None else None
+        return running if running is not None else self.runtime.llama.flags.ctx
 
     def _vram_idle(self, v: vram.Verdict, release: vram.Release | None) -> None:
         """Keep the reading as this PC's idle card when nothing of ours was on it (no process of ours, no
@@ -707,7 +825,11 @@ class Supervisor:
         a MEASURED need did not fit either reading, it is more than what was free: that lower bound is kept
         (`record_failure`), so the next check compares it. Others held memory an idle card would have had
         free: NS-E208 with the original in its detail. The need does not fit even an idle card: NS-E203 (a
-        tuning matter: its hint says ns doctor, then ns tune). Else None: the original error stands."""
+        tuning matter: its hint says ns doctor, then ns tune). Else None: the original error stands.
+        A fitted load (llama.cpp's own fit) never: fit places what the card cannot hold, so its failure to
+        start is not told as card memory (and keeps no lower bound); the original error stands."""
+        if fitted(d):
+            return None
         after = await self._vram_check(d, programs=True)
         # a lower bound only for a need that was MEASURED: the first start of a model only estimated may have
         # failed for a damaged file (NS-E202's ground), never to be told later as "too big" (NS-E203)
@@ -718,8 +840,9 @@ class Supervisor:
                                     self.now())  # fmt: skip
             except OSError as err:
                 self.log.warn("vram_need_not_written", str(err))
+        # (others now count the desktop too, vram-spill cause 1: only a MEASURED need blames them)
         blame = next((v for v in (after, before) if v is not None and not v.fits and not v.oversize
-                      and v.others_mb > 0), None)  # fmt: skip
+                      and v.need.measured and v.others_mb > 0), None)  # fmt: skip
         if blame is not None:
             detail = f"{blame.detail()}; the start failed: {e.detail}"
             self.log.warn("vram_busy", detail, code="NS-E208", service=rt.name, original=e.code,
@@ -732,15 +855,85 @@ class Supervisor:
             return NsError("NS-E203", detail)
         return None
 
-    async def _vram_measure(self, d: ServiceDef, before: int) -> None:
-        """What the load took: total used now minus total used just before the spawn (works under WDDM)."""
+    async def _vram_after_ready(
+        self, rt: ServiceRuntime, proc: procs.Proc, d: ServiceDef, before: vram.Verdict, step: str,
+        log_path: Path | None, log_from: int,
+    ) -> str | None:  # fmt: skip
+        """Rule 4, right after `ready`: read the card. Less than `vram.SPILL_FREE_MB` free, or llama.cpp's
+        "failed to fit": the driver spilled. The process is stopped at once, its delta is NOT kept (it is what
+        fit, not what the model needs), the setting's need becomes a lower bound above what was free
+        (`record_failure`), the next check waits for the memory to come back (`_release`), and the sentence is
+        returned (the caller tries once more). Otherwise the load is measured (used now - used before the
+        spawn, which works under WDDM): a fitted load with what fit chose (`fitlog`, optional) and its private
+        bytes (Windows commit), kept as the running setting (`/status`). Free below `vram.READY_FREE_MB` is
+        said, not stopped. "Shared GPU memory" is never read."""
         mem = await asyncio.to_thread(vram.read_memory, self.smi)
         if mem is None:
-            return
+            return None
+        used, total = mem
+        free_after = total - used
+        delta = used - before.reading.used_mb
+        mark = simulated_mark(self.smi)
+        is_fit = fitted(d)
+        fit = fitlog.parse(await asyncio.to_thread(fitlog.read_from, log_path, log_from)) if is_fit else None
+        room = await asyncio.to_thread(ramroom.read) if is_fit else None
+        commit = await asyncio.to_thread(_private_mb, proc.pid) if is_fit else None
+        numbers: dict[str, Any] = {"step": step or None, "free_before_mb": before.free_mb,
+                                   "free_after_mb": free_after, "card_mb": delta, "total_mb": total,
+                                   "private_mb": commit}  # fmt: skip
+        numbers.update(fit.as_dict() if fit else {})
+        numbers.update(room.as_dict() if room else {})  # commit used and limits at every fitted load
+        if vram.spilled(total, used, fit):
+            why = ("llama.cpp said it could not fit it to the card" if fit is not None and fit.failed else
+                   f"it left {free_after} MiB of the graphics card's {total} free (less than "
+                   f"{vram.SPILL_FREE_MB})")  # fmt: skip
+            said = (f"{vram.model_words(d)} ({vram.STEP_WORDS.get(step, 'its setting')}) spilled into system "
+                    f"memory through the graphics driver: {why}; it was stopped")  # fmt: skip
+            self.log.warn("vram_spill", labelled(mark, said) or said, service=rt.name, cmd=d.cmd, **numbers)
+            await asyncio.to_thread(procs.terminate, proc, self.cfg.term_grace_s)
+            rt.proc = None
+            rt.state = "stopped"
+            rt.starting_since = None
+            self.write_state()
+            self._emit(rt, "stopped")
+            self._release, self._release_at = (used, None), self.clock()
+            try:
+                vram.record_failure(self.paths, d, before.free_mb, mark, self.now())
+            except OSError as e:
+                self.log.warn("vram_need_not_written", str(e))
+            return labelled(mark, said) or said
+        rt.load_mb = delta if delta > 0 else None
+        kept: int | None = None
         try:
-            vram.record(self.paths, d, mem[0] - before, simulated_mark(self.smi), self.now())
+            if fit is not None:
+                kept = vram.record_fit(self.paths, d, delta, fit, commit, mark, self.now(), free_after)
+            else:
+                vram.record(self.paths, d, delta, mark, self.now())
         except OSError as e:  # the next load measures again; the estimate or older numbers stand meanwhile
             self.log.warn("vram_need_not_written", str(e))
+        if fit is None:
+            return None
+        known = await asyncio.to_thread(vram.need, self.paths, d, None, mark)
+        rt.setting = {
+            "step": step or "tuned",
+            "said": vram.STEP_WORDS.get(step, step),
+            "ctx": vram.ctx_of(d),
+            "mtp": mtp_on(d),
+            "ram_mib": fit.host_mb if fit.moved else (0 if fit.seen else None),
+            "experts_in_ram_layers": fit.overflow_layers if fit.seen else None,
+            "fit": fit.words(),
+            "card_mb": delta,
+            "card_free_mb": free_after,
+            "tok_s": known.tok_s,
+        }
+        self.log.info("vram_fit", f"{vram.model_words(d)} loaded {vram.STEP_WORDS.get(step, step)}; "
+                                  f"{fit.words()}; {free_after} MiB of the card left free",
+                      service=rt.name, need_kept_mb=kept, **numbers)  # fmt: skip
+        if free_after < vram.READY_FREE_MB:
+            tight = (f"{vram.model_words(d)} left only {free_after} MiB of the graphics card free (rule 4 "
+                     f"wants {vram.READY_FREE_MB})")  # fmt: skip
+            self.log.warn("vram_tight", tight, service=rt.name, **numbers)
+        return None
 
     async def _guard(self, owner: str | None, service: str, step: str) -> None:
         """The GPU handover invariant: an acquire acts on the GPU only while it is the lock's recorded owner,
@@ -1110,10 +1303,21 @@ class Supervisor:
                 "owners": sorted(self._owners_of(r)),
                 "crashes": len(r.crashes),
                 "error": r.error,
-                # the context llama-server is (or will be) started with: this engine's copy of runtime.json,
-                # read when the engine started. Nightshift Code compares it with what OpenCode needs (D-34).
-                "ctx": self.runtime.llama.flags.ctx if n == "llama" else None,
+                # the context llama-server runs with, else the one it will be started with (this engine's copy
+                # of runtime.json, read when the engine started). Nightshift Code compares it with what
+                # OpenCode needs (D-34).
+                "ctx": self._llama_ctx(r) if n == "llama" else None,
             }
+            if n == "llama":  # the running setting (plan rule 4): ladder step, MTP, experts in RAM, speed
+                s = r.setting if r.proc is not None else None
+                tuned_mtp = bool(self.runtime.llama.flags.spec_type)
+                info.update({
+                    "step": s.get("step") if s else None,
+                    "mtp": mtp_on(r.definition) if r.proc is not None else tuned_mtp,
+                    "ram_mib": s.get("ram_mib") if s else None,
+                    "tok_s": s.get("tok_s") if s else None,
+                    "setting": s,
+                })  # fmt: skip
             if r.state == "starting" and r.starting_since is not None:
                 info["elapsed_s"] = round(now - r.starting_since, 1)
             services[n] = info

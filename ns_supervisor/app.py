@@ -33,7 +33,7 @@ from ns_common.models import Runtime
 from ns_common.paths import Paths, repo_root
 from ns_common.secret_file import relock_existing
 from ns_common.singleton import AlreadyRunning, FileLock
-from ns_supervisor import launch_reach, notify, tmpsweep, update_check
+from ns_supervisor import fitmigrate, launch_reach, notify, tmpsweep, update_check
 from ns_supervisor.core import Supervisor, SupervisorConfig
 from ns_supervisor.health_cfg import read_health_timeout
 from ns_supervisor.scheduled import overdue_scheduled_jobs
@@ -349,6 +349,8 @@ def _serve(args: argparse.Namespace, paths: Paths) -> int:
         runtime = load_runtime(paths)
     except NsError:
         runtime = Runtime.default("gpu")  # no runtime.json yet: the engine still comes up
+    else:
+        runtime = fitmigrate.migrate(paths, runtime)  # once: llama.cpp's fit places the model (never raises)
     port = args.port or runtime.supervisor_port
     if not args.headless and sys.platform == "win32":
         import ctypes
