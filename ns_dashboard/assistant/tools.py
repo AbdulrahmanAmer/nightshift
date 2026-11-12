@@ -73,6 +73,9 @@ NO_TOOL: dict[Route, str] = {
     ("GET", "/api/notes"): "notes for the bell and Last night (the owner reads them)",
     ("POST", "/api/notes/clear"): "the owner has read the notes",
     ("DELETE", "/api/library/footage/{source}/{clip_id}"): "never: deleting files is the owner's decision (Library page)",
+    ("DELETE", "/api/library/ideas/{idea_id}"): "never: removing an idea is the owner's decision (Library page)",
+    ("DELETE", "/api/library/stories/{job_id}"): "never: removing a story and its videos is the owner's decision (Library page)",
+    ("DELETE", "/api/voices/{name}"): "never: removing a voice is the owner's decision (Library page)",
 }
 
 

@@ -13,6 +13,7 @@ from ns_dashboard.assistant import docs_index
 from ns_dashboard.assistant.registry import ToolContext
 from ns_dashboard.logs_tail import tail
 from ns_dashboard.svc_library import like
+from ns_studio.media.outbox import OUTBOX_LAYOUT, REJECTED_LAYOUT, REMOVED_LAYOUT
 
 PAGES: list[tuple[str, str]] = [
     ("Queue", "get finished videos onto YouTube: approve, copy title/description/tags, mark posted"),
@@ -31,8 +32,9 @@ FOLDERS: dict[str, str] = {
     "data": "studio.db, assistant.db, jobs/<job_id>/ working files, backup/",
     "cache": "clips (stock footage), search, dashboard (thumbnails, previews)",
     "imports": "clipper/<source_id>/ uploaded videos, analytics/ CSV exports",
-    "outbox": "<channel>/<date>/<job_id>/ finished videos and upload sheets",
-    "rejected": "videos that failed a check, with the reason",
+    "outbox": OUTBOX_LAYOUT,
+    "rejected": REJECTED_LAYOUT,
+    "removed": REMOVED_LAYOUT,
     "logs": "<component>-YYYYMMDD.jsonl, one JSON line per event",
 }
 SERVICES: dict[str, str] = {

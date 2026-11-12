@@ -636,6 +636,10 @@ def create_app(
     async def voices_clone(request: Request) -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.voices.clone, await body_json(request)))
 
+    @app.delete("/api/voices/{name}")
+    async def voices_remove(name: str) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.voices.remove, name))
+
     # ------------------------------------------------------------ library
     @app.get("/api/library/ideas")
     async def library_ideas(request: Request) -> SafeJSONResponse:
@@ -659,6 +663,16 @@ def create_app(
             raise ApiError(404, "not_found", "That idea was not found.")
         body = await body_json(request)
         return ok(await run_in_threadpool(dash.library.set_idea_status, int(idea_id), body.get("status")))
+
+    @app.delete("/api/library/ideas/{idea_id}")
+    async def library_ideas_remove(idea_id: str) -> SafeJSONResponse:
+        if not idea_id.isdigit():
+            raise ApiError(404, "not_found", "That idea was not found.")
+        return ok(await run_in_threadpool(dash.library.remove_idea, int(idea_id)))
+
+    @app.delete("/api/library/stories/{job_id}")
+    async def library_stories_remove(job_id: str) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.remove_story, job_id))
 
     @app.get("/api/library/stories")
     async def library_stories(request: Request) -> SafeJSONResponse:

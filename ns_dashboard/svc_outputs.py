@@ -19,7 +19,7 @@ from ns_dashboard.security import is_within
 from ns_dashboard.state import AppState
 from ns_studio.errors import StudioError
 from ns_studio.media import sheet_read as sr
-from ns_studio.media.outbox import disclosure_for, read_sheet, refit_output
+from ns_studio.media.outbox import MARKER, disclosure_for, read_sheet, refit_output
 from ns_studio.media.youtube_rules import WARNING_PREFIX, read_notes
 
 URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
@@ -358,6 +358,7 @@ class OutputsService:
             )
         except OSError as e:
             raise NsError("NS-E326", f"the files could not be moved back to the Outbox: {e}") from e
+        self._mark_story_folder(dest, str(row["job_id"]))
         parent = src.parent  # drop the folders the reject made, now they are empty
         base = paths.rejected.resolve()
         while parent.resolve() != base and base in parent.resolve().parents:
@@ -367,6 +368,23 @@ class OutputsService:
                 break
             parent = parent.parent
         return dest
+
+    def _mark_story_folder(self, video: Path, job_id: str) -> None:
+        """A Reject takes away the emptied story folder with its `.nightshift-job` marker; when the video
+        comes back, the folder `outbox/<channel>/stories/<title>` gets the marker again, so a later story of
+        the same title does not read it as another job's folder. Best effort: a marker that cannot be
+        written is only a `-2` suffix later."""
+        try:
+            rel = video.resolve().relative_to(self.s.paths.outbox.resolve())
+        except (OSError, ValueError):
+            return
+        if len(rel.parts) >= 4 and rel.parts[1] == "stories":
+            marker = self.s.paths.outbox / Path(*rel.parts[:3]) / MARKER
+            try:
+                if not marker.exists():
+                    marker.write_text(job_id, encoding="utf-8")
+            except OSError:
+                self.s.log.warn("story_marker_failed", f"{marker} could not be written", output_id=job_id)
 
     def mark_uploaded(self, output_id: str, url: str | None) -> dict[str, Any]:
         """Record the YouTube URL (so analytics can be matched later) and set status `uploaded`."""

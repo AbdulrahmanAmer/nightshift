@@ -53,26 +53,52 @@ def _read_json(path: Path) -> Any:
         return None
 
 
-def _verdicts(qc_dir: Path) -> list[bool]:
-    """One pass/fail per checked item of a job: the per-item files, else `report.json`."""
+def _verdicts(qc_dir: Path, skip: frozenset[str] = frozenset()) -> list[bool]:
+    """One pass/fail per checked item of a job: the per-item files, else `report.json`.
+
+    `skip` holds item names (`long`, `s1`) that do not count: the videos the owner rejected (G-42)."""
     out: list[bool] = []
+    left_out = False
     for f in sorted(qc_dir.glob("*.json")):
         if f.name == "report.json":
+            continue
+        if f.stem in skip:
+            left_out = True
             continue
         data = _read_json(f)
         if isinstance(data, dict) and isinstance(data.get("passed"), bool):
             out.append(data["passed"])
-    if out:
-        return out
+    if out or left_out:
+        return out  # item files that were left out are not counted again from report.json
     report = _read_json(qc_dir / "report.json")
     if isinstance(report, dict):
-        return [bool(v["passed"]) for v in report.values() if isinstance(v, dict) and "passed" in v]
+        return [
+            bool(v["passed"])
+            for k, v in report.items()
+            if k not in skip and isinstance(v, dict) and "passed" in v
+        ]
     return []
 
 
-def qc_tallies(paths: Paths, now: datetime | None = None, days: int = QC_WINDOW_DAYS) -> dict[str, QcTally]:
-    """QC pass counts per channel slug over the last `days` days."""
+def rejected_items(db: LockedDb) -> dict[str, frozenset[str]]:
+    """The items the owner rejected, per job id: `{job_id: {"long", "s1", ...}}` (the part after the `/`)."""
+    out: dict[str, set[str]] = {}
+    for r in db.query("SELECT job_id, output_id FROM outputs WHERE status = 'rejected'"):
+        item = str(r["output_id"]).split("/", 1)[-1]
+        out.setdefault(str(r["job_id"]), set()).add(item)
+    return {k: frozenset(v) for k, v in out.items()}
+
+
+def qc_tallies(
+    paths: Paths,
+    now: datetime | None = None,
+    days: int = QC_WINDOW_DAYS,
+    rejected: dict[str, frozenset[str]] | None = None,
+) -> dict[str, QcTally]:
+    """QC pass counts per channel slug over the last `days` days; a rejected video (`rejected`, from
+    `rejected_items`) is not counted: the owner threw it away, so it says nothing about the channel."""
     now = now or datetime.now(UTC)
+    rejected = rejected or {}
     cutoff = now - timedelta(days=days)
     out: dict[str, QcTally] = {}
     root = paths.jobs_dir
@@ -92,7 +118,7 @@ def qc_tallies(paths: Paths, now: datetime | None = None, days: int = QC_WINDOW_
         if created is None or created < cutoff:
             continue
         tally = out.setdefault(meta["channel"], QcTally())
-        for verdict in _verdicts(qc_dir):
+        for verdict in _verdicts(qc_dir, rejected.get(job_dir.name, frozenset())):
             tally.total += 1
             tally.passed += int(verdict)
     return out
@@ -131,7 +157,7 @@ def channel_stats(
 ) -> dict[str, dict[str, Any]]:
     """`stats` per channel slug, shaped as `ns_common.models.ChannelStats`."""
     now = now or datetime.now(UTC)
-    tallies = qc_tallies(paths, now)
+    tallies = qc_tallies(paths, now, rejected=rejected_items(db))
     week_since = (now - timedelta(days=7)).isoformat()
     out: dict[str, dict[str, Any]] = {}
     for ch in channels:
@@ -140,7 +166,8 @@ def channel_stats(
         # after four one-Short jobs and a clip job)
         kinds = "" if ch.format == "shorts_only" else " AND kind = 'long'"
         made = db.one(
-            f"SELECT COUNT(DISTINCT job_id) AS n FROM outputs WHERE channel = ? AND created_at >= ?{kinds}",
+            "SELECT COUNT(DISTINCT job_id) AS n FROM outputs WHERE channel = ? AND created_at >= ?"
+            f" AND status != 'rejected'{kinds}",
             (ch.slug, week_since),
         )
         pct, spark = _retention(db, ch.slug, now)
