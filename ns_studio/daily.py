@@ -343,6 +343,7 @@ def _run_daily(
             # night card reads (`failures`), and no key the dashboard does not declare
             model_found = report.pop("model_damaged", None)
             model_aside = report.pop("model_aside", None)  # a file no night job loads: said, stops nothing
+            model_intact = report.pop("model_intact", None)  # verified, of another size than the list's
         report["timing"] = _close_night(env, night, report)
         finished = clock.now()
         report["finished_at"] = finished.isoformat(timespec="seconds")
@@ -360,6 +361,7 @@ def _run_daily(
     _leave_vram_note(env, report, clock, now)
     _leave_model_note(env, model_found, clock, now)
     _leave_model_note(env, model_aside, clock, now, aside=True)
+    _leave_model_note(env, model_intact, clock, now, intact=True)
     notifications.send(env.paths, env.log, notifier, notifications.nightly_message(report, masters, shorts))
     finish = getattr(env.services.acquirer, "run_finished", None)
     if finish is not None:  # gap 25: the engine this run needed leaves once nobody else uses it
@@ -502,6 +504,16 @@ def _close_dead_work(env: jobs.Env, now: datetime, report: dict) -> ownership.Re
     return later if later.any else None
 
 
+def _idea_note(ctx: JobContext) -> str:
+    """The sentence the idea stage left in the job folder when it set an owner's idea aside and went on with
+    another (`idea_note.json`), or "" (none, or unreadable: the Queue then says nothing more)."""
+    try:
+        data = ctx.read_json("idea_note.json")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return str(data.get("message") or "") if isinstance(data, dict) else ""
+
+
 def _attempt(
     env: jobs.Env,
     run: RunFn,
@@ -538,6 +550,9 @@ def _attempt(
         with ownership.hold_job(env.paths, job_id, run_id=run_id, channel=slug, fmt=str(ctx.fmt)):
             ran = run(ctx)
         entry: dict[str, Any] = {"job_id": job_id, "channel": slug, "stages": len(ran)}
+        said = _idea_note(ctx)
+        if said:  # the Queue's "Last night" card shows it under the job (an idea was set aside)
+            entry["idea_note"] = said
         if resumed:
             entry["resumed"] = True
         report["jobs"].append(entry)
@@ -906,14 +921,17 @@ def _leave_vram_note(env: jobs.Env, report: dict, clock: nightclock.Clock, start
 
 def _leave_model_note(
     env: jobs.Env, found: dict[str, Any] | None, clock: nightclock.Clock, started: datetime, *,
-    aside: bool = False,
+    aside: bool = False, intact: bool = False,
 ) -> None:
     """Card model-file-damaged, M7: the one morning note of a night that met a damaged (or missing) model
     file (`notifications.model_note`: which file, the way out), once per night, through the notes' one owner.
     Settings > Notifications off leaves none; the Last night card still lists the failure and the skipped.
     `aside`: the note about a file no night job loads (`notifications.model_aside_note`): it stopped
     nothing."""
-    message = notifications.model_aside_note(found) if aside else notifications.model_note(found)
+    if intact:
+        message = notifications.model_intact_note(found)
+    else:
+        message = notifications.model_aside_note(found) if aside else notifications.model_note(found)
     if not message or not notifications.notifications_enabled(env.paths):
         return
     since = started.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
@@ -1008,10 +1026,14 @@ def _model_precheck(env: jobs.Env, report: dict) -> str | None:
         from ns_supervisor import modelcheck
 
         aside: list[str] = []
-        found = modelcheck.precheck(env.paths, others=aside)
+        intact: list[str] = []
+        found = modelcheck.precheck(env.paths, others=aside, intact=intact)
     except Exception as e:  # noqa: BLE001 - a check that breaks never stops the night
         env.log.warn("model_precheck_failed", str(e))
         return None
+    if intact:  # a home made by an older release: verified files of another size than this version's list
+        env.log.warn("daily_model_files_intact", " ".join(intact))
+        report["model_intact"] = {"said": " ".join(intact)}
     if aside:   # a file no night job loads (the design talker, the face finder): the night
         env.log.warn("daily_model_files_aside", " ".join(aside))    # runs; the morning note names it
         report["model_aside"] = {"said": " ".join(aside)}

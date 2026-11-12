@@ -39,6 +39,7 @@ from ns_common.loopback import OWN_PAGE, Choose, LoopbackGuard, media_type
 from ns_common.paths import Paths
 from ns_dashboard import DEFAULT_PORT, media
 from ns_dashboard.adapters import Adapters
+from ns_dashboard.assistant import drafts
 from ns_dashboard.assistant.llm import LlmProvider
 from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.events import sse_frame
@@ -636,6 +637,10 @@ def create_app(
     async def voices_clone(request: Request) -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.voices.clone, await body_json(request)))
 
+    @app.delete("/api/voices/{name}")
+    async def voices_remove(name: str) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.voices.remove, name))
+
     # ------------------------------------------------------------ library
     @app.get("/api/library/ideas")
     async def library_ideas(request: Request) -> SafeJSONResponse:
@@ -659,6 +664,16 @@ def create_app(
             raise ApiError(404, "not_found", "That idea was not found.")
         body = await body_json(request)
         return ok(await run_in_threadpool(dash.library.set_idea_status, int(idea_id), body.get("status")))
+
+    @app.delete("/api/library/ideas/{idea_id}")
+    async def library_ideas_remove(idea_id: str) -> SafeJSONResponse:
+        if not idea_id.isdigit():
+            raise ApiError(404, "not_found", "That idea was not found.")
+        return ok(await run_in_threadpool(dash.library.remove_idea, int(idea_id)))
+
+    @app.delete("/api/library/stories/{job_id}")
+    async def library_stories_remove(job_id: str) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.remove_story, job_id))
 
     @app.get("/api/library/stories")
     async def library_stories(request: Request) -> SafeJSONResponse:
@@ -742,6 +757,17 @@ def create_app(
     @app.post("/api/update/apply")
     async def update_apply() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.library.update_apply))
+
+    # ------------------------------------------------------------ the Assistant's story drafts (WP7b, G-47)
+    @app.get("/api/drafts/{draft_id}")
+    async def draft_get(draft_id: str) -> SafeJSONResponse:
+        """A draft card as the file reads now (the owner may have edited it)."""
+        return ok(await run_in_threadpool(lambda: drafts.card(drafts.load(st.paths, draft_id))))
+
+    @app.post("/api/drafts/{draft_id}/open")
+    async def draft_open(draft_id: str) -> SafeJSONResponse:
+        """The card's Open button: only a .md file directly inside <home>/drafts is ever opened."""
+        return ok(await run_in_threadpool(drafts.open_draft, st.paths, st.adapters.folder, draft_id))
 
     # ------------------------------------------------------------ assistant
     @app.post("/api/assistant/chat")

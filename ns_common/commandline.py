@@ -76,7 +76,8 @@ COMMANDS: dict[str, dict[str, tuple[str, ...]]] = {
     "studio": {
         "ask": (), "run": (), "mark-uploaded": (), "pause": (), "resume": (), "status": (), "dashboard": (),
         "learn": (), "calibrate": (), "channel": ("add", "edit", "list", "validate"),
-        "voice": ("apply-pending", "clone", "design", "list", "preview"), "clip": (),
+        "voice": ("apply-pending", "clone", "design", "list", "preview", "remove"), "clip": (),
+        "remove": ("footage", "idea", "story"),
         "series": (
             "approve", "choose", "concepts", "design", "list", "map", "produce", "regenerate", "revise",
             "start", "status", "write",

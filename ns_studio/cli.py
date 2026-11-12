@@ -20,7 +20,7 @@ from ns_common.errors import NsError
 from ns_common.keepawake import keep_awake
 from ns_common.models import Channel, JobRunRequest, Voice
 from ns_common.paths import Paths
-from ns_studio import dashboard_cmd, jobs, notifications, ownership, review, voice_setup
+from ns_studio import dashboard_cmd, jobs, notifications, ownership, removal, review, voice_setup
 from ns_studio.calibrate import run as calibration
 from ns_studio.channels import cadence, crud
 from ns_studio.clipper import cli as clipper_cli
@@ -640,6 +640,17 @@ def voice_clone(
         echo(f"voice {name} created: {folder}")
 
 
+@voice_app.command("remove")
+def voice_remove(
+    name: Annotated[str, typer.Argument(help="Library name of a voice you made.")],
+) -> None:
+    """Remove a voice you made: moved to removed/voices with a record. Refused while a channel uses it."""
+    with guarded():
+        paths = Paths.from_env()
+        out = removal.remove_voice(paths, name)
+        echo(f"voice {out['id']} removed: {out['folder']}")
+
+
 @voice_app.command("apply-pending")
 def voice_apply_pending(fake_services: FakeOpt = None) -> None:
     """Create the voice chosen during setup (queued in config/pending_voice.json), if it is not there yet."""
@@ -723,6 +734,41 @@ def review_reject(
         env = jobs.open_env(light=True)
         dest = review.reject(env.paths, env.db, output_id, reason)
         echo(f"rejected {output_id}: {dest}")
+
+
+remove_app = typer.Typer(help="Remove an idea, a story or a footage clip (moved to removed/ with a record)",
+                         no_args_is_help=True)
+app.add_typer(remove_app, name="remove")
+
+
+@remove_app.command("idea")
+def remove_idea_cmd(idea_id: Annotated[int, typer.Argument(help="The idea's number.")]) -> None:
+    """Remove an idea from the idea bank."""
+    with guarded():
+        env = jobs.open_env(light=True)
+        out = removal.remove_idea(env.paths, env.db, idea_id)
+        echo(f"idea {idea_id} removed: {out['folder']}")
+
+
+@remove_app.command("story")
+def remove_story_cmd(job_id: Annotated[str, typer.Argument(help="The story's job id.")]) -> None:
+    """Remove a story: its videos, rows, job folder and ledger lines. Refused while it is being made."""
+    with guarded():
+        env = jobs.open_env(light=True)
+        out = removal.remove_story(env.paths, env.db, job_id)
+        echo(f"story {job_id} removed ({out['videos']} videos): {out['folder']}")
+
+
+@remove_app.command("footage")
+def remove_footage_cmd(
+    source: Annotated[str, typer.Argument(help="pexels, pixabay ...")],
+    clip_id: Annotated[str, typer.Argument()],
+) -> None:
+    """Remove a cached stock clip (its file and rows)."""
+    with guarded():
+        env = jobs.open_env(light=True)
+        out = removal.remove_footage(env.paths, env.db, source, clip_id)
+        echo(f"footage {source} {clip_id} removed: {out['folder']}")
 
 
 @app.command("mark-uploaded")

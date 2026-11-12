@@ -279,6 +279,11 @@ If the same red error comes back after one retry, do not guess: press **Save a h
    result and how long it took. It never contains your keys, videos or the models.
 4. In the Dashboard you can do the same from **Settings, Updates, Make report**: it saves the zip on your Desktop and
    shows a **Download** button.
+5. When a Nightshift window closed by itself, or Nightshift Code ended oddly, also send the newest two text files in
+   the `logs` folder of your Nightshift folder: `launch-<date>.log` (the Dashboard shortcut: one line for every step,
+   the last line is where it stopped) and `code-<date>.log` (Nightshift Code: when it asked for the model, when
+   OpenCode ended and with which exit code, when the model was given back). They hold no keys. The Diagnostics zip
+   from step 1 is the same bundle with them inside, when they exist.
 
 ## The GPU kit (the first real nights on the GPU PC)
 
@@ -459,6 +464,75 @@ recording of one speaker and type exactly the words that are said in it. With th
 as one `speaker.bin`; with `qwentts` as `speaker.spk`, `speaker.rvq` and `ref.txt` in the voice folder. If you switch
 engine, make the voices again (`NS-E311`). The speed setting of a channel (0.7 to 1.3) changes how fast the narrator
 talks, not how high the voice is.
+
+## Memory: what the story model uses on a 16 GB card
+
+Sizes are as Windows shows them (1 GB = 1024^3 bytes). Measured on the studio PC (RTX 5060 Ti, 15.9 GB card,
+32 GB of memory) with a browser open; your PC can differ. Nightshift never uses two models on the card at once.
+
+| Part | Graphics card | PC memory (RAM) |
+|---|---|---|
+| Story model, whole on the card, with the speed-up draft (MTP) | 14.1 GB | 1.2 GB |
+| The same without the draft | 12.8 GB | 1.0 GB |
+| The same with every expert part in RAM (the slowest way) | 2.5 GB | 13.2 GB |
+| One voice call | +3.2 GB | 2.5 GB |
+| Captions (whisper) | +1.2 GB | 1.5 GB |
+
+Speed of the story model: 145.8 tokens per second with the draft, 119.7 without it, 43.3 with every expert in RAM.
+Your desktop (Windows, browser, chat programs) already holds 0.8 to 1.7 GB of the card.
+
+How it fits: Nightshift no longer forces the model onto the card. llama.cpp's own fit places it, and Nightshift
+steps down by what is free on the card when the model loads, in this order: (1) the tuned setting with the draft;
+(2) the same without the draft (about 1.2 GB less card, a little slower); (3) llama.cpp keeps a few expert parts in
+the PC's memory (slower again). It refuses only when the card and the PC's memory together cannot hold the model:
+the message (`NS-E208`) names the programs that hold the card, close them. After each load Nightshift checks the
+card: under 256 MiB free means Windows pushed part of it into slow system memory; the load is stopped and tried once
+more with more room, never left running slowly. The context is 16384 tokens (every feature fits it). "Shared GPU
+memory" in Task Manager is not a sign of this: it is a buffer llama.cpp keeps on purpose.
+
+Windows reserves (commits) about 16 GB for the model whichever way it fits, so the page file grows: keep free space
+on the drive C: (in the test it grew from 9.5 GB by about 1 GB after a dozen requests). `ns tune` says its winner in
+words, and the engine's status page (`http://127.0.0.1:8099/status`, `services`, `llama`: `step`, `ram_mib`, `tok_s`)
+names which of the three ways is in use. An install tuned by an older version is moved to this by itself once, the
+first time Nightshift starts. The numbers were measured on one PC with llama.cpp's fit switched on by hand; this
+version's own ladder has not yet run on a real PC: UNVERIFIED.
+
+Two optional things that give the card more room. Neither is needed, Nightshift never changes them itself, and
+neither has been tried on a real PC with this version (UNVERIFIED):
+- The NVIDIA setting "CUDA - Sysmem Fallback Policy" = "Prefer No Sysmem Fallback" for `llama-server.exe` (NVIDIA
+  Control Panel, Manage 3D settings, Program settings, add `bin\llama\llama-server.exe` from your Nightshift folder).
+  Then a model that does not fit fails at once instead of running slowly. Undo it by setting it back to "Use global
+  setting".
+- If your processor has built-in graphics (check its spec page; the studio PC's Ryzen 5 5600G has), plug the monitor cable into
+  the motherboard's video output (and switch the built-in graphics on in the BIOS). The desktop then stops using
+  0.8 to 1.3 GB of the card. Skip this if you are not sure.
+
+## Remove something you made
+
+Press **Remove** on a voice you made (Library, Voices), an idea or a story (Library), or a stock clip (Library,
+Footage). Nothing is deleted: it is moved to the folder `removed` in your Nightshift folder, in its own subfolder with a
+`record.json` that says what it was, so it can be put back by hand. A voice a channel speaks with and a story that is
+being made right now are refused, with the reason. A removed story takes its videos with it; the stock clips it used
+stay (remove them one by one). Rejecting a video in Ready also removes its empty folder now. From a command prompt:
+`studio voice remove NAME`, `studio remove idea 3`, `studio remove story <job id>`, `studio remove footage pixabay <clip id>`.
+
+## Your own story text and the Assistant's drafts
+
+**Create** has a box **Use my own story text** (a title and the text): the video narrates exactly that text. When
+the Assistant writes a story for you, it saves it as a file, one per story, in the folder `drafts` in your Nightshift
+folder (a `.md` file you can open in Notepad and edit), writes it part by part, and shows a card with an **Open**
+button. The video starts from that file when you press Yes, so what you edited is what is narrated. Lines that start
+with `#` (the part headings) are not read aloud. If a reply is cut off, the Assistant says so and names the draft; your
+text is not lost.
+
+## Backups of your database
+
+Nightshift copies the database (`data\studio.db`: channels, ideas, stories, history) once a day, the first time the
+engine starts that day and when a job starts, into `data\backup\studio-<date>.db`, and keeps the newest 14. Each copy is
+checked before it is kept. A copy that cannot be made is a warning (`NS-W214`), never a stop; `ns doctor` has a row
+**database** with its size and the newest copy, and it is red when no copy exists after a day of use. `ns backup` saves
+a full zip by hand (see "Move your settings to another PC"). If the database is damaged, Nightshift replaces it with the
+newest good copy at the next start and leaves a note.
 
 ## Read `ns verify`
 

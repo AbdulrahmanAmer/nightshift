@@ -122,6 +122,44 @@ def read(paths: Paths, *, months: int | None = HISTORY_MONTHS) -> list[dict[str,
     return [item for _at, _n, item in sorted(out, key=lambda t: (t[0], t[1]))]
 
 
+def take_job(paths: Paths, job_id: str) -> list[str]:
+    """Take every line of `job_id` out of the ledger files and return them (raw text, oldest file first).
+
+    For a story the owner removes (`ns_studio.removal`): its stage times were measured on a job that no longer
+    exists, so they must not keep steering the estimates, and the removal record keeps them. A file is
+    rewritten whole through a temporary file and only when it holds such a line; a line that is not JSON, and
+    every other job's line, stays exactly as it is. A file that cannot be read or replaced is left as it was
+    (its lines are then not returned) and the next call tries again. Never raises for a file error."""
+    from ns_common.atomic import write_text_atomic
+
+    taken: list[str] = []
+    with _write_lock:
+        for f in _month_files(paths, None):
+            try:
+                raw = f.read_bytes().decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            keep: list[str] = []
+            mine: list[str] = []
+            for text in raw.splitlines():
+                try:
+                    item = json.loads(text)
+                except ValueError:
+                    item = None
+                if isinstance(item, dict) and item.get("job_id") == job_id:
+                    mine.append(text)
+                else:
+                    keep.append(text)
+            if not mine:
+                continue
+            try:
+                write_text_atomic(f, "".join(line + "\n" for line in keep))
+            except OSError:
+                continue
+            taken.extend(mine)
+    return taken
+
+
 def stage_passes(lines: Iterable[Mapping[str, Any]], plan: str, stage: str) -> list[tuple[float, bool]]:
     """THE one rule for what the estimates count, as (seconds, is a miss), oldest first: the WORK of one pass
     of `stage` in a job of `plan`.

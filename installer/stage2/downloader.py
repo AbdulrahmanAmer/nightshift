@@ -62,6 +62,7 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import HfFile, LlmCustom, Manifest
 from ns_common.paths import Paths
+from ns_common.sizes import size_text
 
 HF = "https://huggingface.co"
 CHUNK = 1 << 20                  # hashing and copying
@@ -305,6 +306,20 @@ def hashed_at(dest: Path) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def marker_digest(dest: Path) -> str | None:
+    """The SHA256 the marker recorded for ``dest``, while the marker still matches the file; else None.
+
+    Every release writes the digest it compared (0.1.15-rc5 and older write no ``hashed_at``), so this is how
+    a model check tells a file setup verified on a home made by an older release (block G review 1, B2)."""
+    if not marker_matches(dest):
+        return None
+    try:
+        value = json.loads(_marker(dest).read_text(encoding="utf-8")).get("sha256")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
 def is_verified(dest: Path, sha256: str | None) -> bool:
     """True when ``dest`` exists and its marker matches size, mtime and the expected hash.
 
@@ -353,12 +368,8 @@ def disk_full_error(dest: Path, cause: OSError | None = None) -> NsError:
 
 
 def human_bytes(n: float) -> str:
-    """Readable size such as ``9.0 GB``."""
-    for unit in ("B", "KB", "MB", "GB"):
-        if abs(n) < 1024 or unit == "GB":
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} GB"
+    """Readable size such as ``9.0 GB`` in Windows units: the one formatter, ``ns_common.sizes``."""
+    return size_text(n)
 
 
 def eta_text(total_bytes: int, mbit_per_s: float = 50.0) -> str:

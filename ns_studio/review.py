@@ -227,7 +227,41 @@ def reject(paths: Paths, db: Db, output_id: str, reason: str) -> Path:
         "update outputs set status='rejected', review_note=?, path=? where output_id=?",
         (reason.strip(), str(new_path), output_id),
     )
+    if new_path != src:
+        prune_emptied(paths, src.parent, str(row["job_id"]))  # after the row: a failure here changes nothing
     return new_path
+
+
+def prune_emptied(paths: Paths, folder: Path, job_id: str) -> list[Path]:
+    """Remove the folders a Reject emptied: `folder` and its parents below the channel's folder in the Outbox.
+
+    Before, the story's folder stayed with its `.nightshift-job` marker, so `/api/outputs` and Explorer still
+    showed a story with nothing in it (G-42). A folder goes only when nothing is left in it but the marker
+    this job wrote (`outbox.MARKER`, holding the job id): another job's marker, another video's files, or any
+    file of the owner's keeps it. Never raises: a folder that cannot be removed stays. Returns what went."""
+    from ns_studio.media.outbox import MARKER
+
+    gone: list[Path] = []
+    try:
+        outbox = paths.outbox.resolve()
+        here = folder.resolve()
+    except OSError:
+        return gone
+    while here != outbox and here.parent != outbox and outbox in here.parents:
+        try:
+            names = [p.name for p in here.iterdir()]
+            if names and names != [MARKER]:
+                break
+            if names:
+                if (here / MARKER).read_text(encoding="utf-8").strip() != job_id:
+                    break
+                (here / MARKER).unlink()
+            here.rmdir()
+        except OSError:
+            break
+        gone.append(here)
+        here = here.parent
+    return gone
 
 
 def mark_uploaded(db: Db, job_id: str, item: str, url: str, now: datetime | None = None) -> str:

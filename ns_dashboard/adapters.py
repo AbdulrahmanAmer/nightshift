@@ -42,7 +42,16 @@ from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer, supervis
 from ns_dashboard.updater import RealBackupAdapter, RealUpdateAdapter
 from ns_dashboard.uploads import adopt_upload, tmp_dir
 
-PRESET_VOICES = [{"name": "Ryan", "mode": "preset", "source": "builtin"}]
+
+def preset_voices() -> list[dict[str, Any]]:
+    """The talker's built-in voices (`ns_tts.voices.PRESETS`, one source with the voice service), as the
+    voice list shows them. Known from the installed program, so the list is the same whether the voice service
+    runs or not (G-39). Ryan alone only when the voice package cannot be read."""
+    try:
+        from ns_tts.voices import PRESETS
+    except ImportError:  # the voice package is not in this install: the one voice every setup offers
+        return [{"name": "Ryan", "mode": "preset", "source": "builtin"}]
+    return [{"name": p, "mode": "preset", "source": "builtin"} for p in PRESETS]
 
 
 class RunAdapter(Protocol):
@@ -332,10 +341,17 @@ class StudioAdapter:
         """
         report = job_reporter(ctl)
         ended = False  # set once the run is over: an owner announced after that is released on arrival
+        at: list[str] = [""]  # the last stage line (`name (i/n)`): a progress note goes behind it
 
         def on_event(event: dict[str, Any]) -> None:
             name = event.get("ev")
-            if name == "stage":
+            if name == "note":
+                text = str(event.get("text") or "").strip()
+                if at[0] and text:  # same progress value, the stage line plus " - <note>" (`jobs._detail_of`)
+                    ctl.waiting(f"{at[0]} - {text}")
+            elif name == "stage":
+                step, steps = int(event.get("index", 0)) + 1, int(event.get("total", 1))
+                at[0] = f"{event.get('stage', '')} ({step}/{steps})"
                 report(
                     str(event.get("stage", "")),
                     int(event.get("index", 0)),
@@ -782,8 +798,8 @@ class RealKeyringAdapter:
 
 
 def scan_voice_library(paths: Paths) -> list[dict[str, Any]]:
-    """Voices found on disk: `models/tts/voices/<name>/voice.json` plus the built-in preset."""
-    out = list(PRESET_VOICES)
+    """Voices found on disk: `models/tts/voices/<name>/voice.json` plus the built-in presets."""
+    out = preset_voices()
     root = paths.models_tts_voices
     if root.exists():
         for meta in sorted(root.glob("*/voice.json")):
@@ -812,16 +828,17 @@ class RealTtsAdapter:
             return "http://127.0.0.1:8091"
 
     def voices(self) -> tuple[list[dict[str, Any]], bool]:
-        """(voices, live) where live says the TTS service answered."""
+        """(voices, live): the presets and the stored voices read from disk, the same list whether the TTS
+        service runs or not (G-39: it showed 1 voice stopped and 9 plus the stored ones running); `live` says
+        the service answered."""
         from ns_common.tts_client import TtsClient
 
-        client = TtsClient(self._base_url(), timeout_s=3)
+        live = False
         try:
-            if client.health():
-                return client.voices(), True
+            live = bool(TtsClient(self._base_url(), timeout_s=3).health())
         except Exception:  # service not running: not an error for the voice picker
             pass
-        return scan_voice_library(self.paths), False
+        return scan_voice_library(self.paths), live
 
     def preview(self, voice: str, text: str, speed: float) -> bytes:
         """Acquire the TTS service, speak `text`, release, return WAV bytes."""

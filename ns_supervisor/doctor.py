@@ -216,6 +216,14 @@ def database_row(paths: Paths, now: datetime | None = None) -> tuple[str, bool, 
             ok, said = False, str(chk.get("detail"))
         else:
             ok, said = False, f"found damaged {at}; opening the Dashboard replaces it with the newest copy"
+    if ok and not dbrestore.record_path(paths).exists():
+        found =dbrestore.check(paths.db_path)  # quick_check, read only; a held file is "not checked", no FAIL
+        if found.verdict == dbrestore.DAMAGED:
+            ok, said = False, f"{said}; quick check answers damaged ({found.detail})"
+        copy_ok, facts = dbrestore.backup_facts(paths, now)
+        if facts:
+            said += f"; {facts}"
+        ok = ok and copy_ok
     nights = dbrestore.read_json(dbrestore.backup_state_path(paths))
     if nights is not None and nights.get("failed_nights"):
         ok = False

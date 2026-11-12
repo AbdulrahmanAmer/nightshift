@@ -155,7 +155,10 @@ def test_code_launcher_acquires_as_opencode_and_releases_in_finally() -> None:
     text = read("nightshift-code.ps1")
     assert "$owner = 'opencode'" in text and "model_alias = 'code'" in text
     assert "OPENCODE_CONFIG" in text and "opencode.json" in text
-    assert text.index("/acquire") < text.index("OPENCODE_CONFIG") < text.rindex("/release")
+    # WP3: the release is one function (the finally and the error trap both call it, once)
+    assert "Invoke-NsPost -Path '/release'" in text[: text.index("trap {")]
+    released = text.rindex("Invoke-NsCodeRelease")
+    assert text.index("/acquire' -Body $body") < text.index("OPENCODE_CONFIG") < released
     assert "finally" in text[text.index("OPENCODE_CONFIG") :]
     # the baseURL is refreshed from runtime.json after the model is up and before OpenCode starts
     assert text.index("/acquire") < text.index("Sync-NsOpenCodePort") < text.index("OPENCODE_CONFIG")
@@ -630,7 +633,7 @@ def test_code_launcher_sends_its_own_pid_in_the_acquire_body() -> None:
     assert "owner = $owner" in body and "pid = $PID" in body, body
     assert text.index("$body = @{") < text.index("$ep = Invoke-NsPost -Path '/acquire' -Body $body")
     assert "finally" in text[text.index("OPENCODE_CONFIG") :]
-    assert text.rindex("finally") < text.rindex("/release")
+    assert text.rindex("finally") < text.rindex("Invoke-NsCodeRelease 'OpenCode ended'")
 
 
 @needs_powershell
@@ -658,6 +661,63 @@ def test_code_launcher_run_posts_its_pid_with_the_acquire_and_releases_after_ope
     assert isinstance(acquire, dict) and acquire["owner"] == "opencode" and acquire["model_alias"] == "code"
     assert acquire.get("pid") == int(found.group(1)), acquire  # an integer, the console's own process
     assert eng.posts[1][1] == {"service": "llama", "owner": "opencode"}
+
+
+def code_log(home: Path) -> list[str]:
+    out: list[str] = []
+    for f in sorted((home / "logs").glob("code-*.log")):
+        raw = f.read_bytes()
+        assert not raw.startswith(b"\xef\xbb\xbf")
+        out += raw.decode("utf-8").splitlines()
+    return out
+
+
+@needs_powershell
+def test_code_launcher_logs_its_steps_to_the_code_log(
+    engine: tuple[FakeEngine, dict[str, str]], tmp_path: Path
+) -> None:
+    """WP3: start, the acquire and its answer, OpenCode's start and exit code, the release's answer, in
+    logs\\code-<date>.log (not the Dashboard's launch log), in that order."""
+    eng, _env = engine
+    ok = code_launcher_run(eng, _env, tmp_path, 16384)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    got = code_log(tmp_path)
+    assert not list((tmp_path / "logs").glob("launch-*.log")), "Code's steps went to the Dashboard's log"
+    steps = [" nightshift-code.ps1 launcher started: ",
+             " acquire asking the engine for the coding model as opencode", " acquire granted after ",
+             " opencode starting ", " opencode ended with exit code 0 after ",
+             " release OpenCode ended: the engine answered ok="]
+    at = [next((i for i, ln in enumerate(got) if s in ln), -1) for s in steps]
+    assert -1 not in at and at == sorted(at), (at, got)
+    pid = re.search(r"pid=(\d+) ", got[0])
+    assert pid and f"opencode, pid {pid.group(1)}" in "\n".join(got)      # the pid the engine watches
+
+
+@needs_powershell
+def test_code_launcher_releases_and_logs_an_error_after_the_acquire(
+    engine: tuple[FakeEngine, dict[str, str]], tmp_path: Path
+) -> None:
+    """WP3: an error after the card was taken (here: %USERPROFILE%\\Projects is a file, so the folder OpenCode
+    starts in cannot be made) is logged, the card is released at once (before the pause, not after it), and
+    the window stays open with the message (Enter is sent to the pause; `-File`, as the shortcut runs it)."""
+    eng, env = engine
+    opencode = tmp_path / "bin" / "opencode" / "opencode.exe"
+    opencode.parent.mkdir(parents=True)
+    shutil.copy(Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32" / "hostname.exe", opencode)
+    (tmp_path / "profile").mkdir()
+    (tmp_path / "profile" / "Projects").write_text("a file, not a folder", encoding="ascii")
+    exe = pwsh.find_powershell()
+    assert exe is not None
+    launcher = str(LAUNCHERS / "nightshift-code.ps1")
+    r = subprocess.run([exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", launcher],
+                       input="\n", capture_output=True, text=True, timeout=120,
+                       env={**os.environ, **env, "USERPROFILE": str(tmp_path / "profile")})
+    assert r.returncode == 1 and "Nightshift Code stopped: " in r.stdout, r.stdout + r.stderr
+    assert [p for p, _ in eng.posts] == ["/acquire", "/release"], eng.posts      # released once
+    got = "\n".join(code_log(tmp_path))
+    assert " ERROR nightshift-code.ps1 error " in got
+    assert "release after the error: the engine answered" in got
+    assert got.index("release after the error") < got.index(" stopped exit 1: Nightshift Code stopped")
 
 
 def code_launcher_run(

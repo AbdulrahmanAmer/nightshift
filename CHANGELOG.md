@@ -9,9 +9,14 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [0.1.15] - 2026-11-12
 
-This is release candidate 0.1.15-rc7, published for testing. It is a prerelease: it is not offered as an update to a
-PC on 0.1.14 or on an earlier candidate, and you install it by hand (`Nightshift-Setup-0.1.15-rc7.zip` for a first
-install, or `Nightshift-Update-0.1.15-rc7.zip` through Settings > Updates > From a file). 0.1.15-rc7 adds what the first real Short on the GPU PC found (it was refused for black
+This is release candidate 0.1.15-rc8, published for testing. It is a prerelease: it is not offered as an update to a
+PC on 0.1.14 or on an earlier candidate, and you install it by hand (`Nightshift-Setup-0.1.15-rc8.zip` for a first
+install, or `Nightshift-Update-0.1.15-rc8.zip` through Settings > Updates > From a file). 0.1.15-rc8 is the first candidate that fits the story model beside a normal Windows desktop
+on a 16 GB card (rc6 and rc7 could not install on the GPU PC: their own model check refused the model by 28 to 202
+MB, and rc5 let it spill into the PC's memory): llama.cpp now places the model itself, the model file no longer
+holds 13 GB of the PC's memory, and the PC was measured at every step before a line was written. It also lets you
+remove what you do not want, keeps the Assistant's stories as files, backs your database up every day, and closing
+Nightshift Code gives the card back at once. 0.1.15-rc7 adds what the first real Short on the GPU PC found (it was refused for black
 frames, its redo died on one slow answer of Pixabay, and it downloaded 1.15 GB of footage): footage downloads are
 tried again and a dead clip is replaced, a redo keeps the footage it has, the story model is no longer loaded for
 steps a redo skips, and an update no longer calls a program it ended "could not be ended". 0.1.15-rc6 was the
@@ -47,6 +52,25 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
 "Shown by tests" means the change is covered by the test suite and no more is claimed.
 
 ### Setup and install
+
+- The story model fits a 16 GB card beside your desktop, and uses the PC's memory only on purpose (rc8; found on the
+  GPU PC, where the model was forced wholly onto the card, did not fit beside Windows and the open programs, and the
+  graphics driver spilled the rest into the PC's memory until 0.2 GB was free; rc6's stricter check then refused it
+  and its update could not install). Nightshift no longer forces the model's layers onto the card: llama.cpp's own
+  fitting places it, keeping 1 GB of the card free. Before each load the engine picks the fastest setting that fits
+  what is free at that moment: the whole model with its speed-up draft (measured: 145.8 tokens/s beside Firefox),
+  then the draft off (119.7), then part of the model in the PC's memory. The model is no longer memory-mapped, so it
+  takes about 1.2 GB of the PC's memory instead of 13.7 GB; its prompt cache is capped at 2 GB. Every load is read
+  back from the card; a load that spilled is stopped and loaded once more on a lighter setting. A load is refused
+  only when the card and the PC's memory together cannot hold it (Windows' page file may grow, and is counted so).
+  Context 16K and a compact cache are the new defaults on a GPU PC; your settings are moved once, and stay readable by
+  rc5 if you roll back. `ns tune` and the model check (which an update runs) follow the same rule: the card settles
+  before each try, speeds are the middle of three runs, and only the context, cache and draft are tried. Not covered:
+  measured by hand on the GPU PC, not yet through the product; the Assistant's reply limit at 16K is 1,200 tokens
+  (long stories go to draft files, below); the optional NVIDIA "Prefer No Sysmem Fallback" setting is not checked.
+- Sizes are shown in Windows units everywhere (one formatter: 1 GB = 1024^3 bytes, as Explorer shows them; speeds in
+  MB/s), the GPU kit reads the NVIDIA driver from `nvidia-smi` and no longer masks ordinary words that happen to be
+  the Windows user name, and it says you may open the Dashboard and watch.
 
 - The model test measures what it claims (verify-limits; found on the GPU PC, where `ns verify` failed a healthy
   install). "The voice speaks" is its own row (`tts.preset` and the designed and cloned voice's rows) and carries no
@@ -391,6 +415,21 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
   changed in a model file of an engine-test install) has not run on a real install.
 
 ### Updates, files and safety
+
+- A failed update names the check that failed and its message, and the update window ends with one short result line
+  instead of the whole release notes (rc8). Every Dashboard start writes `logs\launch-<date>.log`, and Nightshift
+  Code writes `logs\code-<date>.log`, so a start that stops says where. Closing Nightshift Code in any way (its
+  window, its program ended, Release) unloads the story model at once instead of after ten idle minutes; a model that
+  stops under Code is logged with the PC's free memory and commit, and loaded again. Not covered: why the Dashboard
+  shortcut once failed to start the engine (17:07 on the GPU PC) and why Code's model stopped once at 16:26 are not
+  known; both now leave a log.
+- Your database is copied every day (the first time Nightshift opens it that day, or the first job), checked, and the
+  last 14 copies are kept; a failed copy never stops work. `ns doctor` has a database row: health, size, newest copy,
+  and a FAIL when no copy exists after the first day.
+- You can remove what you do not want: a voice you made (refused while a channel uses it), an idea, a story or a
+  footage clip, from the Library (Remove, after a confirm) or with `studio voice remove` and `studio remove idea |
+  story | footage`. Nothing is deleted: it is moved to `removed\` in your Nightshift folder with a record. Reject no
+  longer leaves an empty folder in the Outbox, and rejected videos no longer count in the channel's pass rate.
 
 - An update or setup no longer refuses with NS-E706 "could not be ended" for a Nightshift program it had ended
   (rc6's last fix, found by CI under load): the stop sequence asks Windows whether the program still runs, not a
@@ -923,6 +962,12 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
 
 ### Videos and stories
 
+- A long video's footage gets the same black-clip check and redo rules as a Short; a clip download cut part-way goes
+  on from where it stopped when the server allows it, instead of starting again on your data; a check that cannot run
+  stops with NS-E401 instead of throwing clips away; the Dashboard shows the footage step's progress ("12 of 85
+  clips, 40 MB"); the error box shows the full path of the failed run's logs (rc8).
+- You can make a long video from your own story text: Create, "Use my own story text" (rc8).
+
 - Footage no longer ends a video, and costs less data (footage-robust, rc7; found on the GPU PC, where the first
   real Short was refused by QC for two black intervals, its redo downloaded a new set of clips and then ended with
   NS-E503 on one slow answer of Pixabay, and the run used 1.15 GB of the owner's data). A clip download that times
@@ -1190,6 +1235,13 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
   PC. Shown by tests.
 
 ### Clips and the Assistant
+
+- A story the Assistant writes is a file you can open and edit: `drafts\<id>.md` in your Nightshift folder, written
+  one part at a time and shown in the chat with Open; Yes starts the video from the file as it is then. A reply cut by
+  the reply limit no longer ends in NS-E301: the chat says the story was too long for one reply and names its draft;
+  a tool's refusal is shown in its own words (rc8; found on the GPU PC, where the owner's first planned long video was
+  lost inside a cut reply). Not covered: the Create page has no draft picker yet; drafts are not in the settings
+  backup.
 
 - Clips from a long video: the clip-picking prompt (v4) also asks the model for the moment's spoken text with
   capitals, commas, full stops and question marks put back; that text is laid over the recogniser's words, so the

@@ -1,7 +1,8 @@
 # Nightshift on the GPU PC: the first real install and the first runs
 
 Written for the candidate **v0.1.15-rc5** (a GitHub prerelease). A file written for a newer candidate replaces
-this one: then follow that file, not this one.
+this one: then follow that file, not this one. rc5 is what is installed on the owner's PC now: the next job is the
+update to an rc8 candidate (8.0), and 5.8 says what rc8 does with the graphics card.
 
 The whole brief for a Claude Code session on the owner's GPU PC; read it to the end first. You drive a shell; the
 owner does every click, every Windows prompt and every answer only a person can give.
@@ -68,6 +69,13 @@ passed unless you saw its result yourself (a line, a file, an exit code). What y
    they are no child of your shell), log to `$N`, and you record the pid and return. Then short checks, with your
    harness's own wait between them (one `Start-Sleep -Seconds 900`, or a background wait); never a printing loop.
    Begin every block with the `Invoke-Expression` line of step 3.2. All commands are Windows PowerShell 5.1.
+   Claude Code itself may stop a long background wait with "the system is running low on memory" (seen on this
+   PC with 13.5 of 31.9 GB free: Firefox, Discord and WebView2 were the largest users, no Nightshift process), and
+   then does not start that wait again unless the owner asks. So: prefer many short checks (one command, one
+   answer, a few minutes apart) to one long wait; when a wait was stopped, do not start another long one: ask
+   the owner for a word, or act on each "check" message the Head sends. Tell the owner before the kit that the
+   programs open on the PC cost memory too (the kit's Balanced story model beside 18 GB of other programs is
+   exactly what is to be watched).
 
 ## 3. Before installing
 
@@ -116,11 +124,16 @@ below: Small). If not: another Windows: stop and report (NS-E101). Below 16: sto
 3.4 Graphics card and driver.
 ```powershell
 nvidia-smi --query-gpu=name,driver_version,memory.total,memory.used --format=csv,noheader | Tee-Object -FilePath "$N\preflight.txt" -Append
-nvidia-smi | Select-String 'CUDA Version' | Tee-Object -FilePath "$N\preflight.txt" -Append
+nvidia-smi | Select-String 'CUDA.*Version' | Tee-Object -FilePath "$N\preflight.txt" -Append
 ```
-Acceptable: an RTX 5060 Ti with about 16 GB (`memory.total` at least 15000 MiB), driver 580 or newer, "CUDA
-Version: 13.0" or higher (an RTX 50 card runs only the CUDA 13 build; setup refuses an older driver with NS-E103).
-Write down `memory.used`: a program already holding video memory is a finding.
+Acceptable: an RTX 5060 Ti with about 16 GB (`memory.total` at least 15000 MiB), driver 580 or newer (the
+`driver_version` column of the first line is the driver), and a banner line with CUDA 13.0 or higher (an RTX 50
+card runs only the CUDA 13 build; setup refuses an older driver with NS-E103). A new driver's banner has no
+"Driver Version:" and no plain "CUDA Version:": it says `KMD Version` and `CUDA UMD Version` (driver 621.01
+did). Read the numbers from the line, not from a fixed word. All sizes here are MiB, as Windows shows them.
+Write down `memory.used`: a program already holding video memory is a finding. The story model needs most of
+the card (section 5.8): with a browser and a few windows open, 0.8 to 1.7 GB are normally in use before
+Nightshift loads anything on this PC. Note which programs are open.
 If not: `nvidia-smi` not found: stop and report (NS-E102). Older driver: stop; the owner installs the newest
 driver from nvidia.com/drivers and restarts the PC; then do 3.4 again.
 
@@ -134,22 +147,33 @@ now: they set Sleep > Allow wake timers to Enable themselves, or keep the PC awa
 
 3.6 Internet (any HTTP answer counts as reachable).
 ```powershell
-foreach ($u in 'https://huggingface.co','https://github.com','https://download.pytorch.org','https://api.pexels.com','https://pixabay.com','https://pypi.org','https://files.pythonhosted.org','https://api.github.com') {
+foreach ($u in 'https://huggingface.co','https://github.com','https://download.pytorch.org','https://api.pexels.com','https://pixabay.com','https://pypi.org','https://files.pythonhosted.org','https://api.github.com','https://api.nuget.org','https://download.visualstudio.microsoft.com') {
   try { $null = Invoke-WebRequest -Uri $u -Method Head -UseBasicParsing -TimeoutSec 10; "$u reachable" }
   catch { if ($_.Exception.Response) { "$u reachable (HTTP error)" } else { "$u NO ANSWER" } } }
 ```
-Acceptable: all reachable. If not: `github.com`, `pypi.org`, `files.pythonhosted.org` or `huggingface.co` with
-NO ANSWER: stop; ask the owner about a VPN, proxy or firewall, then repeat. Any other site: record it, go on.
+These are the same ten sites setup's PC check asks. Acceptable: all reachable. If not: `github.com`, `pypi.org`,
+`files.pythonhosted.org` or `huggingface.co` with NO ANSWER: stop; ask the owner about a VPN, proxy or firewall,
+then repeat. Any other site: record it, go on. `download.visualstudio.microsoft.com` serves only the Visual C++
+runtime: with the runtime installed (3.8) a NO ANSWER there is harmless, and setup does not ask it.
 
 3.7 An older Nightshift, and `gh`.
 ```powershell
 [Environment]::GetEnvironmentVariable('NIGHTSHIFT_HOME','User'); Test-Path "$env:LOCALAPPDATA\Nightshift\installs.txt"
 Get-ScheduledTask -TaskName 'Nightshift Daily' -ErrorAction SilentlyContinue | Select-Object TaskName, State
-Test-Path $H; gh --version; gh auth status
+Test-Path $H; Test-Path "$H\app\VERSION"; Test-Path "$H\config"; Get-ChildItem "$env:LOCALAPPDATA\Nightshift" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name; gh --version; gh auth status
 ```
-Acceptable: nothing for `NIGHTSHIFT_HOME`, `False`, no task, `False`. Anything else: a Nightshift was installed
-before: stop and ask the owner whether to install beside it (a new `$H`) or not at all; never uninstall it. `gh`
-missing or not logged in is not a stop (section 7 says what then; do not install it; the owner may).
+Acceptable: nothing for `NIGHTSHIFT_HOME`, `False`, no task, `False`, `False`, `False`, no names. Then tell three
+cases apart for `$H` (a folder that exists is not yet "an install"):
+- `$H\app\VERSION` or `$H\config` exists, or `NIGHTSHIFT_HOME` or the task is set: a Nightshift was installed
+  before: stop and ask the owner whether to install beside it (a new `$H`) or not at all; never uninstall it.
+- `$H` exists with other files only (on this PC `C:\Nightshift` held two old release zips and no install): leave
+  every file where it is, take `<drive>:\Nightshift-home` as `$H` instead (change it in `vars.ps1`, step 3.2), and
+  write both folders into the findings. Setup given a `home_path` that already holds foreign files installs into
+  it after one warning line, so never give it that folder.
+- `$H` does not exist: go on.
+`%LOCALAPPDATA%\Nightshift` listing names (`bootstrap` with `uv\uv.exe`, `installs.txt`) are leftovers of an
+earlier try: record them and go on; setup reuses that uv only at the version it pins. `gh` missing or not logged
+in is not a stop (section 7 says what then; do not install it; the owner may).
 
 3.8 The Visual C++ runtime (setup asks Windows for permission to install it, and a prompt from a background
 process shows only as a flashing taskbar button).
@@ -199,10 +223,13 @@ $tier = if ([math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMe
 4.4 The owner puts in their Pixabay key. From this moment until 4.7 confirms the keys were removed, never open,
 print or copy `answers.json`.
 ```powershell
-Start-Process notepad.exe "$W\answers.json"
+Start-Process notepad.exe "$W\answers.json" -Wait
 ```
-Tell the owner: find the line `"pixabay_api_key":  ""`, paste your key between the two quotes, save, close
-Notepad. (A Pexels key, if they have one, goes the same way into `pexels_api_key`.) Then check without seeing it:
+`-Wait` holds your shell until the owner closes Notepad; without it nothing tells you they finished typing. If
+your tool cuts the call off first, start Notepad without `-Wait` and wait for the owner's word that the file is
+saved and closed. Tell the owner: find the line `"pixabay_api_key":  ""`, paste your key between the two
+quotes, save, close Notepad. (A Pexels key, if they have one, goes the same way into `pexels_api_key`.) Run the
+check below only after Notepad closed or the owner said so:
 ```powershell
 try { $j = Get-Content -Encoding UTF8 "$W\answers.json" -Raw | ConvertFrom-Json -ErrorAction Stop; "pixabay key filled in: $([bool]$j.pixabay_api_key)" } catch { 'answers.json is not valid JSON' }; Remove-Variable j -ErrorAction SilentlyContinue
 ```
@@ -221,16 +248,21 @@ from ... (unattended mode).", then the PC check's rows `[ OK ]`, `[WARN]` or `[F
 code. If not: `NOT STARTED`: record it, stop and report. "Setup is already running on this PC": an earlier start
 still works: 4.6. "Setup cannot continue until the red items are fixed": 4.8.
 
-4.6 Follow it every 15 minutes. Balanced downloads about 22 GB of models and 3 GB of programs (about 35 minutes at
-100 Mbit/s, 3 hours at 20 Mbit/s), then installs and tests a voice and a short video.
+4.6 Follow it every 15 minutes. Balanced downloads 20.9 GB of models (Windows units) and about 1.3 GB of
+programs, then installs the environments (about 1.2 to 1.5 GB more) and tests a voice and a short video: on this
+PC about 2 hours 50 minutes at about 3 MB/s. Sizes below are as Windows shows them (1 GB = 1024^3 bytes).
 ```powershell
 $log = (@(Get-Content "$N\setup-runs.txt")[-1] -split ' ', 2)[1]; "setup running: $(Test-Running "$N\setup-runs.txt")"
-'{0:N2} GB in models' -f ((Get-ChildItem "$H\models" -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1GB)
+function Get-OpenLength([string]$p) { try { $s = [IO.File]::Open($p, 'Open', 'Read', 'ReadWrite,Delete'); try { $s.Length } finally { $s.Dispose() } } catch { 0 } }
+$sum = 0; Get-ChildItem "$H\models" -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $sum += Get-OpenLength $_.FullName }
+'{0:N2} GB in models' -f ($sum / 1GB)
 Get-Item $log | Select-Object LastWriteTime; Get-Content -Encoding UTF8 $log -Tail 8; Test-Path "$H\logs\install-report.json"
 ```
-Expected: the GB number grows or the log changes (retries and waits for a busy site are said in the log). If not:
-nothing changed for 30 minutes: record the last 30 log lines and the `.part` files under `$H\models` with their
-sizes; stop and report.
+`Get-ChildItem ... Length` and `Measure-Object` under-read a file that is still being written (0.46 GB shown for
+1.3 GB real): each length here is read through an opened handle. Expected: the GB number grows or the log
+changes (retries and waits for a busy site are said in the log). A stall is judged by both: no growth of any
+`.part` file's length AND no change of the log's write time for 30 minutes. If so: record the last 30 log lines
+and the `.part` files under `$H\models` with their sizes; stop and report.
 
 4.7 Done when `install-report.json` exists.
 ```powershell
@@ -362,6 +394,47 @@ step not done: only while `kit running: False` and the last state is `done`, or 
 ```
 Write each answer into the findings as the owner gave it.
 
+5.8 The story model and the 16 GB card (rc8). On rc5 the story model was forced onto the card (`-ngl 99`,
+32768 context, MTP draft): +14594 MiB (14.3 GB) beside a desktop that held 0.8 to 1.7 GB, so it did not fit, the
+driver spilled into system memory, and llama.cpp's own fitting was switched off by the `-ngl`. rc8 does this:
+- llama is started WITHOUT `-ngl` and `--n-cpu-moe`, with a 16384 context, q8_0 KV cache, `--fit on
+  --fit-target 1024`, `--load-mode none` and `--cache-ram 2048`. llama.cpp places the layers itself. An install
+  tuned by rc5 or earlier is moved to this once, at the first engine start (`run\migrated-0.1.15-fit`); a
+  layer count set by hand is kept and keeps fitting off.
+- The ladder, by the card's free memory after the last model was given back (settled): (a) the tuned setting
+  with the MTP draft, when its measured need plus 1024 MiB fits; (b) else the MTP draft off (about 1.2 GB less
+  card); (c) else the tuned setting and llama.cpp keeps some expert layers in the PC's memory. A load is refused
+  (NS-E203, or NS-E208 naming the programs that hold the card) only when the card plus the PC's memory cannot hold
+  it. A night waits as before.
+- After every load the engine reads the card: under 256 MiB free means the driver spilled: the load is stopped,
+  kept as a lower bound, loaded once more with `--fit-target 2048`, then NS-E203. "Shared GPU memory" in Task
+  Manager is never read as a spill (with `--load-mode none` it is llama.cpp's pinned buffer).
+Measured on this PC (Firefox open, desktop 838 MiB; 3 requests, median): 16k q8_0 with the MTP draft: +14426 MiB
+(14.1 GB) of the card, 145.8 tok/s, 1.2 GB of PC memory (working set); no draft: +13138 MiB (12.8 GB), 119.7
+tok/s; every expert in PC memory: +2534 MiB (2.5 GB), 43.3 tok/s, 13.2 GB of PC memory. Windows commits about
+16 GB for the model in every mode, so the page file grows (9.5 GB there, +1 GB after twelve requests): C: needs
+free space. The voice takes +3.2 GB of the card and 2.5 GB of PC memory per call, whisper +1.2 GB and 1.5 GB.
+UNVERIFIED on a real PC with rc8: the migration, the ladder choosing (b) or (c) beside a heavier desktop, the
+speed of step (c) at 16k (90 to 100 tok/s was measured at 32k), and the spill stop.
+What to look at (after the update of 8.3, and after the first story video):
+```powershell
+(Invoke-RestMethod 'http://127.0.0.1:8099/status').services.llama | Select-Object state, step, mtp, ctx, ram_mib, tok_s
+(Invoke-RestMethod 'http://127.0.0.1:8099/status').services.llama.setting | Select-Object said, card_mb, card_free_mb, fit
+nvidia-smi --query-gpu=memory.used,memory.free,memory.total --format=csv,noheader
+```
+Expected with the model loaded: `step` is `tuned`, `ctx` 16384, `card_free_mb` 512 or more. `step` `mtp_off` or an
+`experts_in_ram` step is allowed, not a failure: record it with the free card before the load. Any `vram_spill` or
+NS-E203 line in `$H\logs\supervisor-*.jsonl` is a finding. Never set Windows' or NVIDIA's settings yourself (rule
+2): the optional driver setting and the monitor cable are the owner's, OPERATOR.md names them.
+The launchers log every step: `$H\logs\launch-<yyyymmdd>.log` (the Dashboard shortcut: a start that ends with no
+window says at which step it stopped; its last line is the last step that ran) and `$H\logs\code-<yyyymmdd>.log`
+(Nightshift Code: acquire, OpenCode's start and exit code, the release). Send the newest of each when a window
+vanished or Code ended oddly (they hold no key). Nightshift Code's window ending in any way now gives the
+model back (the engine unloads it at its next check, within seconds): check `step`/`state` of llama 1 minute
+after the window closed. UNVERIFIED on a real PC.
+While the kit runs you may open the Dashboard (Queue page) and watch: start nothing there until the kit has
+ended. In an attended kit start (not `-Unattended`) the question says so and the answer `d` opens it.
+
 ## 6. Judging
 
 When a kit run has ended (5.4), its exit code decides the one next action:
@@ -470,6 +543,32 @@ Out-Null; Copy-Item "$N\findings.md" $z`.
 Report also when everything worked: step by step, with the observed lines.
 
 ## 8. After a patch
+
+8.0 The update from rc5 to an rc8 candidate (the Head hands over the zip BEFORE any tag; it is not on GitHub
+yet). The Head gives you the path of `Nightshift-Update-<version>.zip` and its `.sha256` (the update refuses a
+zip without the sidecar: NS-E701). Put both in `$W\download\rc8`, then do 8.2 (nothing running), check the hash
+as in 4.2 (with the Update zip's name), and apply it exactly as 8.3 does, from the local file:
+```powershell
+$U = Get-ChildItem "$W\download\rc8\Nightshift-Update-*.zip" | Select-Object -First 1
+& "$H\cmd\ns.cmd" update $U.FullName --detach
+```
+What the update does: rc5's own updater runs the candidate's quick verify (the case that stopped rc6 with NS-E702:
+the story model did not fit beside the desktop). On rc8 the llama row passes at any ladder step and a speed miss
+is only noted. A failed update names the failed check, its value and limit in the message and the follow output
+ends with a line `Result: ...` (the release notes are no longer printed). Then, in this order, each time with its
+`follow` script as in 8.3:
+1. Update: expected exit 0, `$H\app\VERSION` is the candidate, `ns doctor` as in 8.3, llama's `/status` as in 5.8.
+2. Rollback check: `& "$H\cmd\ns.cmd" update --rollback --detach`; `$H\app\VERSION` is rc5 again; `ns doctor`
+   shows no FAIL but the supervisor row. The rollback puts back the settings copy kept for rc5 (so llama is
+   back to `-ngl 99` and its old context: expected, it is rc5); without a usable copy it strips the settings
+   rc5 does not know and says which. Record which of the two happened (the settings format is unchanged, so
+   rc5 can read either).
+3. Update again, as 1, and then keep it.
+Afterwards look at: `/status` `services.llama` (`step`, `card_free_mb`), `$H\logs\launch-*.log`,
+`$H\logs\code-*.log`, `$H\data\backup\` (a copy dated today after the Dashboard's first open), and the doctor's
+database row. One Short, then one long video, belong to the Head's list, not to this section. If an update fails:
+record the message and the last 30 lines of the log it names; do not retry more than once.
+UNVERIFIED on the real PC: all of 8.0 (the rc5 to candidate update, the rollback, the second update).
 
 8.1 The Head answers on the issue with the fixed tag. Add it to the variables file (in place of `<FIXED>`):
 ```powershell

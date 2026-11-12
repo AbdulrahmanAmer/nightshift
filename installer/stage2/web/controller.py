@@ -68,6 +68,7 @@ from ns_common.paths import Paths
 from ns_common.secret_file import stored_names
 from ns_common.secrets_names import PEXELS_KEY, PIXABAY_KEY
 from ns_common.singleton import AlreadyRunning, FileLock
+from ns_common.sizes import size_text, speed_text
 from ns_common.uv import bootstrap_uv, find_uv
 from ns_common.vcruntime import missing as vcruntime_missing
 
@@ -2063,7 +2064,7 @@ class SetupController:
             return
         # Measured numbers only: the file's own speed, then the whole download's speed and time left
         # (the same trailing average the setup window shows), never an assumed line speed.
-        speed = f"  {row['speedBps'] / 1e6:.1f} MB/s" if row["speedBps"] else ""
+        speed = f"  {speed_text(row['speedBps'])}" if row["speedBps"] else ""
         total = snap.get("overall") or {}
         left = ""
         if total.get("etaS"):
@@ -2071,12 +2072,12 @@ class SetupController:
             left = f"  all files: about {mins // 60} h {mins % 60:02d} min left" if mins >= 60 else \
                 f"  all files: about {mins} min left"
             if total.get("speedBps"):
-                left += f" at {total['speedBps'] / 1e6:.1f} MB/s"
+                left += f" at {speed_text(total['speedBps'])}"
         elif row["status"] == "active":
             left = "  measuring the speed"
         self.fx.console(
-            f"{datetime.now():%H:%M:%S}  {row['file'] or key}  {row['bytesDone'] / 1024 ** 3:.1f} of "
-            f"{row['bytesTotal'] / 1024 ** 3:.1f} GB{speed}{left}", "info")
+            f"{datetime.now():%H:%M:%S}  {row['file'] or key}  {size_text(row['bytesDone'])} of "
+            f"{size_text(row['bytesTotal'])}{speed}{left}", "info")
 
     def _ev_warn(self, ev: dict[str, Any]) -> None:
         code = str(ev.get("code", ""))

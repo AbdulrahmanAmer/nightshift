@@ -22,6 +22,7 @@ from ns_dashboard.common import now_iso
 from ns_dashboard.errors import AdapterUnavailable, ApiError, room_refusal
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
+from ns_studio import removal
 from ns_studio.footage_keys import NO_FOOTAGE_KEY
 
 #: The names `ns models get` takes: the VoiceDesign talker and the story LLM.
@@ -46,6 +47,14 @@ _SAFE_CLIP_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")  # becomes a file name in the
 #: The update package the release carries (`Nightshift-Update-0.1.8.zip`; releases up to 0.1.1 named it `nightshift-app-...`).
 UPDATE_ZIP_RE = re.compile(r"^(?:Nightshift-Update|nightshift-app)-\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?\.zip$", re.IGNORECASE)
 MAX_UPDATE_BYTES = 200 * 1024 * 1024  # the Update zip is a few MB; the bundle check allows 25 MB
+
+
+_REMOVAL_STATUS = {"not_found": 404, "in_use": 409, "busy": 409, "invalid": 422, "failed": 500}
+
+
+def removal_error(e: removal.RemovalError) -> ApiError:
+    """A refused or failed removal as the API's error: 404 not there, 409 in use or held open, 422 bad name."""
+    return ApiError(_REMOVAL_STATUS.get(e.reason, 500), f"remove_{e.reason}", e.message, hint=e.hint or None)
 
 
 def _save_upload(
@@ -432,23 +441,35 @@ class LibraryService:
         return out
 
     def delete_footage(self, source: str, clip_id: str) -> dict[str, Any]:
-        """Remove a cached stock clip: its rows and its file (only a file inside the Nightshift home)."""
-        from ns_dashboard.security import is_within
+        """Remove a cached stock clip: its rows and its file (only a file inside the Nightshift home) are moved
+        aside with a record (`removed\\footage`), not deleted (`ns_studio.removal`)."""
+        try:
+            out = removal.remove_footage(self.s.paths, self.s.db, source, clip_id)
+        except removal.RemovalError as e:
+            raise removal_error(e) from e
+        self.s.log.info("footage_deleted", source=source, clip_id=clip_id, file_removed=out["file_removed"])
+        return {
+            "ok": True, "source": source, "clip_id": clip_id, "file_removed": out["file_removed"],
+            "record": out["record"],
+        }
 
-        row = self.s.db.one("SELECT local_path FROM clips WHERE source = ? AND clip_id = ?", (source, clip_id))
-        if row is None:
-            raise ApiError(404, "not_found", "That clip is not in the cache.")
-        with self.s.db.tx() as db:
-            db.execute("DELETE FROM clip_usage WHERE source = ? AND clip_id = ?", (source, clip_id))
-            db.execute("DELETE FROM clips WHERE source = ? AND clip_id = ?", (source, clip_id))
-        removed = False
-        if row["local_path"]:
-            path = Path(row["local_path"])
-            if is_within(self.s.paths.home, path) and path.is_file():
-                path.unlink(missing_ok=True)
-                removed = True
-        self.s.log.info("footage_deleted", source=source, clip_id=clip_id, file_removed=removed)
-        return {"ok": True, "source": source, "clip_id": clip_id, "file_removed": removed}
+    def remove_idea(self, idea_id: int) -> dict[str, Any]:
+        """Remove an idea from the idea bank (its row goes into a record under `removed\\ideas`)."""
+        try:
+            out = removal.remove_idea(self.s.paths, self.s.db, idea_id)
+        except removal.RemovalError as e:
+            raise removal_error(e) from e
+        self.s.log.info("idea_removed", idea_id=idea_id, record=out["record"])
+        return {"ok": True, "idea_id": idea_id, "record": out["record"]}
+
+    def remove_story(self, job_id: str) -> dict[str, Any]:
+        """Remove a story with its videos, rows, files and ledger lines (moved to `removed\\stories`)."""
+        try:
+            out = removal.remove_story(self.s.paths, self.s.db, job_id)
+        except removal.RemovalError as e:
+            raise removal_error(e) from e
+        self.s.log.info("story_removed", job_id=job_id, videos=out["videos"], record=out["record"])
+        return {"ok": True, "job_id": job_id, "videos": out["videos"], "record": out["record"]}
 
     # --- formats ---
     def list_formats(self) -> list[dict[str, Any]]:

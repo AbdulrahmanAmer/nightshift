@@ -23,7 +23,13 @@ which works under WDDM too), or the lower bound a failed load left (`min_mb`), e
 `model file MiB + ctx / 1024 x KV_MB_PER_1K_CTX + LOAD_OVERHEAD_MB`, which ignores what `-ngl` and
 `--n-cpu-moe` keep off the card and so NEVER refuses a load: a never-measured model is tried, and measured.
 
-The rule (`judge`): a load is refused (or a nightly waits) ONLY when a MEASURED need does not fit a SETTLED
+The rule since card vram-spill (plan 2026-11-12, `judge`, `choose`, `spilled`): others are everything in use
+that is not ours (free + others = total). A load that is not fitted is refused (or a nightly waits) when a
+MEASURED need does not fit a SETTLED reading: NS-E203 when not even an idle card would hold it, else
+NS-E208. A llama load that llama.cpp's own fit places (`services.fitted`) steps down the ladder (as tuned, MTP
+off, experts in RAM) and is refused only when card + RAM cannot hold it; after `ready` a card with less than
+`SPILL_FREE_MB` free (or fit's "failed to fit") is a spill. The older wording, kept for its other parts:
+a load is refused ONLY when a MEASURED need does not fit a SETTLED
 reading because of memory OTHER programs hold, and would fit an idle card. Settled (`settled`, `check`): after
 one of our tenants stops, the card is read again (every 0.5 s, at most 10 s) until its memory came back;
 without one, until the reading stops falling; a reading still waiting for our own memory never refuses.
@@ -35,6 +41,7 @@ program".
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import re
@@ -47,11 +54,35 @@ from typing import Any
 
 from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.paths import Paths
+from ns_supervisor.fitlog import FitResult
 from ns_supervisor.gpu import SmiSource, labelled, simulated_mark
-from ns_supervisor.services import ServiceDef
+from ns_supervisor.ramroom import Room
+from ns_supervisor.services import FIT_TARGET_MB, ServiceDef, fitted, mtp_on
 
 #: Memory a load must leave free beyond its need (a window opening, the driver's own growth).
 MARGIN_MB = 512
+#: A load that leaves less than this free on the card after `ready` spilled into system memory through the
+#: driver (plan rule 4, revision 2; G-53 stopped at 460 with -ngl 99 and llama.cpp's fit off). "Shared GPU
+#: memory" is NEVER read: with `--load-mode none` it is llama.cpp's pinned host buffer (evidence 11, 14).
+SPILL_FREE_MB = 256
+#: What a load should leave free after `ready` (rule 4); between this and `SPILL_FREE_MB` it is said, not
+#: stopped.
+READY_FREE_MB = 512
+#: What the PC's memory must keep beyond what a fitted load puts in it (rule 3).
+RAM_SPARE_MB = 2048
+#: What llama-server's private bytes grow by after `ready` (GPU PC evidence 15: 15.8 GB at ready, 18.35 GB
+#: after twelve requests: the prompt cache and its checkpoints), added to the measured commit at ready.
+COMMIT_GROWTH_MB = 2560
+#: The MTP draft's card memory, measured on the story model (16k q8_0: +14136 with, +12956 without). Used only
+#: to estimate the MTP-off step from a MEASURED tuned need before the MTP-off step itself was measured.
+MTP_DRAFT_MB = 1180
+#: The ladder's step names (`choose`), as `/status` and the log say them.
+STEP_WORDS = {
+    "tuned": "as tuned, the whole model on the graphics card",
+    "mtp_off": "the MTP draft off, the whole model on the graphics card",
+    "experts_in_ram": "as tuned, llama.cpp keeping some expert layers in the PC's memory",
+    "experts_in_ram_mtp_off": "the MTP draft off, llama.cpp keeping some expert layers in the PC's memory",
+}
 #: How often a nightly acquire looks at the card again while it waits for memory.
 VRAM_POLL_S = 120.0
 #: The longest a nightly acquire waits for memory (inside the acquire's own `timeout_s`).
@@ -234,6 +265,11 @@ class Need:
     mb: int
     measured: bool  # a measured load (or a failed load's lower bound); False: the estimate (never refuses)
     lower: bool = False  # "more than `mb`": the model did not start with `mb` + margin free
+    # a fitted load (llama.cpp's fit): `mb` is the WHOLE model on the card; these come from its fit lines
+    floor_mb: int | None = None  # the card memory with every expert in RAM (rule 3's floor)
+    commit_mb: int | None = None  # the process's private bytes after `ready` (Windows commit it takes)
+    offset_mb: int | None = None  # measured card delta minus fit's projection, on a load that moved nothing
+    tok_s: float | None = None  # the last speed measured for this exact setting (`record_speed`), if any
 
 
 def _need_file(paths: Paths) -> Path:
@@ -275,10 +311,18 @@ def need(paths: Paths, d: ServiceDef, model_dir: str | None = None, mark: str | 
         if _same(e, key, mark):
             mbs = [int(m) for m in e.get("mb") or [] if isinstance(m, int) and m > 0][-KEEP:]
             low = e.get("min_mb") if isinstance(e.get("min_mb"), int) and e["min_mb"] > 0 else None
+            extra: dict[str, Any] = {k: _whole(e.get(k)) for k in ("floor_mb", "commit_mb", "offset_mb")}
+            speed = e.get("tok_s")
+            extra["tok_s"] = float(speed) if isinstance(speed, int | float) and speed > 0 else None
             if mbs or low:
                 top = max([*mbs, low or 0])
-                return Need(top, True, lower=low is not None and low >= max(mbs, default=0))
+                return Need(top, True, lower=low is not None and low >= max(mbs, default=0), **extra)
+            return Need(estimate_mb(d, model_dir), False, **extra)
     return Need(estimate_mb(d, model_dir), False)
+
+
+def _whole(v: Any) -> int | None:
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
 
 
 def _mine(data: dict[str, Any], d: ServiceDef, mark: str | None) -> dict[str, Any]:
@@ -309,6 +353,67 @@ def record(paths: Paths, d: ServiceDef, mb: int, mark: str | None, now: datetime
     mine = _mine(data, d, mark)
     mine["mb"] = [*[m for m in mine.get("mb") or [] if isinstance(m, int)], int(mb)][-KEEP:]
     mine.pop("min_mb", None)
+    _stamp(mine, mark, now)
+    _save(paths, data)
+
+
+def fit_need(
+    delta_mb: int, fit: FitResult, offset_mb: int | None, free_after_mb: int | None = None
+) -> tuple[int, bool, int | None]:
+    """What a fitted load's measurement says the WHOLE model needs on the card: `(mb, lower, offset)`.
+    No fit lines printed (build 12032 below `-lv 4`): the delta; a lower bound when the card was left with
+    less than fit's target + `SETTLE_SLACK_MB` free (fit may have moved experts: then the delta is only what
+    fitted). Nothing moved: the delta itself (and the offset delta - projected, kept for the loads that
+    move). Experts moved: fit's projection of the whole model + the offset learned on a load that moved
+    nothing (0 before one). Moved with no projection printed: the delta, as a lower bound."""
+    if not fit.seen:
+        maybe_moved = free_after_mb is not None and free_after_mb < FIT_TARGET_MB + SETTLE_SLACK_MB
+        return delta_mb, maybe_moved, None
+    if not fit.moved:
+        off = delta_mb - fit.projected_mb if fit.projected_mb is not None else None
+        return delta_mb, False, off
+    if fit.projected_mb is not None:
+        return fit.projected_mb + max(0, offset_mb or 0), False, None
+    return delta_mb, True, None
+
+
+def record_fit(paths: Paths, d: ServiceDef, delta_mb: int, fit: FitResult, commit_mb: int | None,
+               mark: str | None, now: datetime, free_after_mb: int | None = None) -> int:  # fmt: skip
+    """Keep a fitted load: the whole model's need (`fit_need`), fit's floor (rule 3), the private bytes it
+    took, and what fit chose (`fit`). Returns the need kept. Raises OSError (the caller logs it)."""
+    data = _load(paths)
+    mine = _mine(data, d, mark)
+    mb, lower, off = fit_need(delta_mb, fit, _whole(mine.get("offset_mb")), free_after_mb)
+    if mb <= 0:
+        return 0
+    if lower:
+        old = _whole(mine.get("min_mb")) or 0
+        mine["min_mb"] = max(old, mb)
+    else:
+        mine["mb"] = [*[m for m in mine.get("mb") or [] if isinstance(m, int)], int(mb)][-KEEP:]
+        mine.pop("min_mb", None)
+    if off is not None:
+        mine["offset_mb"] = max(0, off)
+    floor = fit.floor_mb()
+    if floor is not None:
+        mine["floor_mb"] = floor
+    if commit_mb is not None and commit_mb > 0:
+        mine["commit_mb"] = int(commit_mb)
+    mine["fit"] = fit.as_dict()
+    mine["card_mb"] = int(delta_mb)
+    _stamp(mine, mark, now)
+    _save(paths, data)
+    return mb
+
+
+def record_speed(paths: Paths, d: ServiceDef, tok_s: float, mark: str | None, now: datetime) -> None:
+    """Keep the speed measured for this exact setting (`ns tune`, `ns verify`): `/status` says it beside the
+    setting. Raises OSError."""
+    if tok_s <= 0:
+        return
+    data = _load(paths)
+    mine = _mine(data, d, mark)
+    mine["tok_s"] = round(float(tok_s), 1)
     _stamp(mine, mark, now)
     _save(paths, data)
 
@@ -411,6 +516,11 @@ class Verdict:
     named: tuple[Program, ...] = ()  # other programs, not system ones, not ours
     mark: str | None = None
     what: str = "the model"
+    # a fitted load (llama.cpp's own fit, rule 3): the card AND the PC's memory hold it
+    fit: bool = False
+    room: Room | None = None  # the PC's memory when the check was made
+    ram_part_mb: int = 0  # what fit must keep in the PC's memory at this reading (0: all on the card)
+    short: str = ""  # why it was refused: "card" (below the floor), "ram", "commit"; "" when not
 
     @property
     def ok(self) -> bool:
@@ -440,43 +550,79 @@ class Verdict:
             return f"{self.what} needs more than {gb(self.need.mb)} (it did not start with that much free)"
         return f"{self.what} needs {gb(self.need.mb)} (measured on its last load)"
 
+    def pc_words(self) -> str:
+        """The PC's side of a fitted load that was refused for it (rule 3), "" otherwise."""
+        r = self.room
+        if self.short == "ram" and r is not None and r.avail_mb is not None:
+            return (f"llama.cpp would keep {gb(self.ram_part_mb)} of it in the PC's memory, which had "
+                    f"{gb(r.avail_mb)} available ({gb(RAM_SPARE_MB)} must stay for Windows and your "
+                    "programs)")  # fmt: skip
+        if self.short == "commit" and r is not None and r.commit_room_mb is not None:
+            need = (self.need.commit_mb or 0) + COMMIT_GROWTH_MB
+            return (f"it takes {gb(need)} of Windows' memory commitment and only {gb(r.commit_room_mb)} "
+                    f"were left even after the page file grows ({gb(RAM_SPARE_MB)} must stay)")  # fmt: skip
+        return ""
+
     def detail(self, waited_s: float | None = None) -> str:
-        """NS-E208's detail (the caller's error, the morning note): what held the memory, what was needed."""
-        text = (f"{self.others(now=False)}, so {gb(self.free_mb)} were free and {self.needs()} with "
-                f"{gb(MARGIN_MB)} to spare")  # fmt: skip
+        """NS-E208's detail (the caller's error, the morning note): what held the memory, what was needed.
+        Free and the others' memory add up to the card's total (G-53's "0 GB" with 1.35 GB in use)."""
+        pc = self.pc_words()
+        if pc:
+            text = f"{self.needs()}: {pc}; close programs you do not need and start again"
+        else:
+            spare = FIT_TARGET_MB if self.fit else MARGIN_MB
+            text = (f"{self.others(now=False)}, so {gb(self.free_mb)} were free and {self.needs()} with "
+                    f"{gb(spare)} to spare")  # fmt: skip
+            if self.fit and self.need.floor_mb is not None:
+                text += f" (at least {gb(self.need.floor_mb)} on the card with its experts in the PC's RAM)"
+            if self.named:
+                text += f"; close {', '.join(p.name for p in self.named[:NAMES_MAX])} and start again"
         if waited_s:
             text += f"; Nightshift waited {_minutes(waited_s)} for it"
         return labelled(self.mark, text) or text
 
     def too_big(self) -> str:
         """NS-E203's detail when even an idle card cannot hold the need: tuning, no program blamed."""
-        text = (f"{self.needs()} with {gb(MARGIN_MB)} to spare, more than the graphics card's "
-                f"{gb(self.reading.total_mb)} holds beside what Windows keeps "
-                f"({gb(self.allowance_mb)})")  # fmt: skip
+        if self.fit and self.need.floor_mb is not None:
+            text = (f"{self.what} needs at least {gb(self.need.floor_mb)} on the graphics card even with "
+                    f"every expert layer in the PC's memory, with {gb(FIT_TARGET_MB)} to spare: more than "
+                    f"the card's {gb(self.reading.total_mb)} holds beside what Windows keeps "
+                    f"({gb(self.allowance_mb)})")  # fmt: skip
+        else:
+            text = (f"{self.needs()} with {gb(MARGIN_MB)} to spare, more than the graphics card's "
+                    f"{gb(self.reading.total_mb)} holds beside what Windows keeps "
+                    f"({gb(self.allowance_mb)})")  # fmt: skip
         return labelled(self.mark, text) or text
 
     def waiting(self) -> str:
         """The Queue's sentence while a nightly acquire waits (`/status` `gpu_wait.said`)."""
-        text = (f"Waiting for the graphics card's memory: {self.others(now=True)}, and {self.needs()}. "
-                "Close them and the run goes on.")  # fmt: skip
+        pc = self.pc_words()
+        if pc:
+            text = f"Waiting for the PC's memory: {self.needs()}: {pc}. Close programs and the run goes on."
+        else:
+            text = (f"Waiting for the graphics card's memory: {self.others(now=True)}, and {self.needs()}. "
+                    "Close them and the run goes on.")  # fmt: skip
         return labelled(self.mark, text) or text
 
     def why_tried(self) -> str | None:
-        """Why a load that does not fit the reading goes ahead anyway (None when it fits or is refused)."""
-        if self.fits or self.refuse:
+        """Why a load that does not fit the reading goes ahead anyway (None when it fits, is refused, or is
+        fitted: llama.cpp keeps what the card cannot hold in the PC's memory, said as the ladder step)."""
+        if self.fits or self.refuse or self.fit:
             return None
         if not self.need.measured:
-            return "the need is only estimated (a model is tried and measured before a check can refuse it)"
-        if self.oversize:
-            return "the measured need does not fit even an idle card (a tuning matter: NS-E203 if it fails)"
-        if not self.settled:
-            return "the memory Nightshift gave back had not come free within the settle time"
-        return "no memory beyond what an idle card keeps is held by other programs"
+            return ("the need is only estimated (a model is tried and measured before a check can refuse it; "
+                    "a load that spills is stopped)")  # fmt: skip
+        return "the memory Nightshift gave back had not come free within the settle time"
 
     def numbers(self) -> dict[str, Any]:
-        return {"need_mb": self.need.mb, "need_measured": self.need.measured, "free_mb": self.free_mb,
-                "others_mb": self.others_mb, "total_mb": self.reading.total_mb,
-                "names": [p.name for p in self.named]}  # fmt: skip
+        out = {"need_mb": self.need.mb, "need_measured": self.need.measured, "free_mb": self.free_mb,
+               "others_mb": self.others_mb, "total_mb": self.reading.total_mb,
+               "names": [p.name for p in self.named]}  # fmt: skip
+        if self.fit:
+            out.update({"ram_part_mb": self.ram_part_mb, "floor_mb": self.need.floor_mb,
+                        "short": self.short or None})  # fmt: skip
+            out.update(self.room.as_dict() if self.room else {})
+        return out
 
 
 def judge(
@@ -488,17 +634,49 @@ def judge(
     settled: bool,
     mark: str | None,
     what: str,
+    fit: bool = False,
+    room: Room | None = None,
 ) -> Verdict:
     """THE rule. Free = total - used (+ our own MiB where the driver gives it). Others = used - our own known
-    MiB - `allowance_mb` (what an idle card of this PC keeps, and the studio holder's own context). It fits
-    at free >= need + margin. It is refused only when it does not fit AND the need is measured AND the reading
-    is settled AND others hold memory AND it would fit an idle card (not `oversize`)."""
+    MiB (card vram-spill cause 1: no idle allowance taken off, so free + others = total in every sentence).
+
+    A load that is not fitted (the voice service; llama on an older build or with a layer count set on
+    purpose) fits at free >= need + margin and is refused when it does not fit AND the need is measured AND
+    the reading is settled (cause 2: never "load and hope"); `oversize` (it would not fit even beside only
+    `allowance_mb`, an idle card and the studio holder's context) makes that NS-E203 instead of NS-E208.
+
+    A fitted load (`fit`, llama.cpp's own fit, plan rule 3): it "fits" (the whole model on the card) at free
+    >= need + `FIT_TARGET_MB`; otherwise llama.cpp keeps `need + target - free` in the PC's memory. It is
+    refused ONLY when card + RAM cannot hold it, by MEASURED numbers on a SETTLED reading: free below the
+    model's floor (every expert in RAM) + target; available RAM below that part + `RAM_SPARE_MB`; or commit
+    headroom (against the limit the page file can grow to) below the process's private bytes + spare. A
+    number not read never refuses."""
     own = sum(p.mb or 0 for p in reading.programs if p.pid in ours)
     free = reading.total_mb - reading.used_mb + own
-    others = max(0, reading.used_mb - own - allowance_mb)
-    fits = free >= want.mb + MARGIN_MB
-    oversize = want.mb + MARGIN_MB > reading.total_mb - allowance_mb
-    refuse = not fits and want.measured and settled and others > 0 and not oversize
+    others = max(0, reading.used_mb - own)
+    short = ""
+    ram_part = 0
+    if not fit:
+        fits = free >= want.mb + MARGIN_MB
+        oversize = want.mb + MARGIN_MB > reading.total_mb - allowance_mb
+        refuse = not fits and want.measured and settled
+    else:
+        fits = free >= want.mb + FIT_TARGET_MB
+        ram_part = max(0, want.mb + FIT_TARGET_MB - free)
+        floor = want.floor_mb
+        commit_room = room.commit_room_mb if room is not None else None
+        if floor is not None and free < floor + FIT_TARGET_MB:
+            short = "card"
+        elif ram_part and room is not None and room.avail_mb is not None \
+                and room.avail_mb < ram_part + RAM_SPARE_MB:  # fmt: skip
+            short = "ram"
+        elif want.commit_mb is not None and commit_room is not None \
+                and commit_room < want.commit_mb + COMMIT_GROWTH_MB + RAM_SPARE_MB:  # fmt: skip
+            short = "commit"
+        oversize = floor is not None and floor + FIT_TARGET_MB > reading.total_mb - allowance_mb
+        refuse = bool(short) and want.measured and settled
+        if not refuse:
+            short = ""
     named = [p for p in reading.programs if p.pid not in ours and p.name.lower() not in SYSTEM]
     named.sort(key=lambda p: -(p.mb or 0))
     unique: dict[str, Program] = {}
@@ -510,7 +688,69 @@ def judge(
         else:
             unique[p.name.lower()] = p
     return Verdict(want, reading, free, others, allowance_mb, fits, settled, oversize, refuse,
-                   tuple(unique.values()), mark, what)  # fmt: skip
+                   tuple(unique.values()), mark, what, fit, room, ram_part, short)  # fmt: skip
+
+
+# ------------------------------------------------------------------------------------------ the ladder
+def ctx_of(d: ServiceDef) -> int | None:
+    """The `-c` a command starts with (None: no context flag, as a stub or the voice service)."""
+    ctx = _arg(d.cmd, "-c")
+    return int(ctx) if ctx and ctx.isdigit() else None
+
+
+def choose(
+    paths: Paths, options: Sequence[ServiceDef], v: Verdict, ours: Collection[int] = (), *,
+    model_dir: str | None = None, room: Room | None = None,
+) -> tuple[Verdict, ServiceDef, str]:  # fmt: skip
+    """Rule 2's ladder on the settled reading `v` (taken for `options[0]`): the verdict, the setting to load
+    and its step (`STEP_WORDS`). `options` is `services.llama_ladder`: [as tuned, MTP off] (one entry for
+    anything not fitted, which has no ladder: `v` decides, re-judged here).
+
+    (a) as tuned, when its need is not measured yet (tried, measured; fit keeps it safe) or it fits the card
+        with the fit target free;
+    (b) the MTP draft off, when that fits (its own measured need, else the tuned need less `MTP_DRAFT_MB`);
+    (c) as tuned with llama.cpp keeping experts in RAM, unless card + RAM cannot hold it (rule 3); then (c)
+        with the MTP draft off when that is held; else the refusal (the tuned setting's verdict)."""
+
+    def verdict(d: ServiceDef, want: Need, what: str) -> Verdict:
+        return judge(v.reading, want, ours, allowance_mb=v.allowance_mb, settled=v.settled, mark=v.mark,
+                     what=what, fit=fitted(d), room=room)  # fmt: skip
+
+    first = options[0]
+    va = verdict(first, need(paths, first, model_dir, v.mark), v.what)
+    if not fitted(first):
+        return va, first, ""
+    if not va.need.measured or va.fits:
+        return va, first, step_of(first)
+    if len(options) < 2:  # (after a spill the retry's one option may be the MTP-off step: said as such)
+        return va, first, "experts_in_ram_mtp_off" if step_of(first) == "mtp_off" else "experts_in_ram"
+    second = options[1]
+    nb = need(paths, second, model_dir, v.mark)
+    if not nb.measured and mtp_on(first) and not mtp_on(second):
+        nb = dataclasses.replace(nb, mb=max(1, va.need.mb - MTP_DRAFT_MB), measured=False,
+                                 floor_mb=nb.floor_mb or va.need.floor_mb,
+                                 commit_mb=nb.commit_mb or va.need.commit_mb)  # fmt: skip
+    vb = verdict(second, nb, f"{v.what} (with the MTP draft off)")
+    if vb.fits:
+        return vb, second, "mtp_off"
+    if not va.refuse:
+        return va, first, "experts_in_ram"
+    if not vb.refuse:
+        return vb, second, "experts_in_ram_mtp_off"
+    return va, first, "experts_in_ram"
+
+
+def step_of(d: ServiceDef) -> str:
+    """The ladder step a fitted llama definition IS (`ServiceDef.step`: "tuned" or "mtp_off"), "" for anything
+    not fitted. Never a literal "tuned": the retry after a spill loads the MTP-off definition alone."""
+    return (d.step or "tuned") if fitted(d) else ""
+
+
+def spilled(total_mb: int, used_mb: int, fit: FitResult | None = None) -> bool:
+    """Rule 4 after `ready`: the driver put part of the load in system memory. Less than `SPILL_FREE_MB` free
+    on the card, or llama.cpp said its fit failed (it then loads as if fit were off). Shared memory is never
+    looked at."""
+    return total_mb - used_mb < SPILL_FREE_MB or (fit is not None and fit.failed)
 
 
 #: What the memory of our own process that was just stopped is: (total used just before the stop, the MiB
@@ -544,8 +784,10 @@ def check(
     programs: bool = False,
     sleep: Callable[[float], None] = time.sleep,
     poll_s: float = SETTLE_POLL_S,
+    room: Room | None = None,
 ) -> Verdict | None:
-    """Is there room for `d`'s model now? None: no reading (the caller loads as before and says once that
+    """Is there room for `d`'s model now? `room`: the PC's memory, for a fitted load (`judge`).
+    None: no reading (the caller loads as before and says once that
     the memory was not checked). Blocking (nvidia-smi, the settle reads): call it off the event loop.
 
     Settling: while a release of ours is pending, or the load does not fit, the card is read again every
@@ -567,7 +809,7 @@ def check(
         used, total = mem
         calm = settled(used, prev, release)
         verdict = judge(Reading(total, used), want, ours, allowance_mb=allowance, settled=calm, mark=mark,
-                        what=model_words(d))  # fmt: skip
+                        what=model_words(d), fit=fitted(d), room=room)  # fmt: skip
         if calm or (verdict.fits and release is None) or n >= SETTLE_READS or time.monotonic() >= deadline:
             break
         sleep(poll_s)
@@ -579,7 +821,7 @@ def check(
         return verdict
     full = Reading(verdict.reading.total_mb, verdict.reading.used_mb, read_programs(smi), True)
     return judge(full, want, ours, allowance_mb=allowance, settled=verdict.settled, mark=mark,
-                 what=model_words(d))  # fmt: skip
+                 what=model_words(d), fit=fitted(d), room=room)  # fmt: skip
 
 
 def test_wait_s(environ: Mapping[str, str], test_install: Callable[[], bool]) -> tuple[float, str | None]:

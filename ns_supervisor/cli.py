@@ -212,12 +212,12 @@ def cmd_tune(
     if not rt.llama.model_path:
         raise _die("runtime.json has no llama model_path; run the installer first.")
     with tune.gpu_reservation(_client(paths)):
-        outcome = tune.tune(paths, rt, tune.ProcessRunner(paths))
+        outcome = tune.tune(paths, rt, tune.ProcessRunner(paths), settle=tune.card_settler(paths, rt))
     for w in outcome.warnings:
         echo(f"warning: {w}")
     if not outcome.ok or outcome.flags is None:
         raise _die("tune: no configuration loaded; runtime.json was left unchanged. See logs\\tune-*.json.")
-    echo(f"Best: {outcome.tok_s:.1f} tok/s with {outcome.flags.model_dump_json()}")
+    echo(outcome.words)
     if outcome.context_note:
         echo(outcome.context_note)
     echo("Saved to runtime.json.")
@@ -469,6 +469,9 @@ def cmd_backup(
     except OSError as e:  # a full disk, a folder that refuses files: a sentence, not a traceback
         raise _die(f"The backup could not be written: {e}") from e
     echo(f"Backup written to {f}")
+    from ns_common import dbrestore
+
+    dbrestore.daily_backup(Paths.from_env())  # the day's copy in data\backup too: the doctor looks there
     for line in notes:
         echo(line)
 

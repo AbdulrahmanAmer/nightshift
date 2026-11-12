@@ -42,6 +42,7 @@ PACKS: dict[str, tuple[str, ...]] = {
     "diagnostics": ("tail_logs", "make_diagnostics", "start_verify", "list_jobs", "get_job", "cancel_job"),
     "orientation": ("system_map", "describe_tool"),
     "series": ("workshop_list", "workshop_status", "workshop_start", "workshop_concepts", "workshop_regenerate", "workshop_choose", "workshop_map", "workshop_write_part", "workshop_revise_part", "workshop_approve", "workshop_design", "workshop_produce"),
+    "drafts": ("draft_create", "draft_append_part", "draft_read", "start_job_from_draft", "list_drafts", "start_script_job"),
 }
 
 #: Words in a question that pull a tool to the front of its pack (packs longer than the slots they get).
@@ -72,6 +73,11 @@ HINTS: dict[str, tuple[str, ...]] = {
     "workshop_choose": ("choose", "pick concept"),
     "workshop_regenerate": ("regenerate", "other concept"),
     "start_script_job": ("script", "this text", "my text", "my story", "this story", "narrate"),
+    "draft_create": ("new draft", "write the story", "write a story", "full story", "whole story"),
+    "draft_append_part": ("next part", "rest of the story", "keep writing", "add a part", "continue"),
+    "draft_read": ("read the draft", "show the draft", "where is the draft"),
+    "start_job_from_draft": ("start", "make the video", "from the draft", "produce"),
+    "list_drafts": ("my drafts", "which drafts", "list"),
     "start_clip_job": ("clip", "cut", "my video"),
     "rerun_clips": ("again", "another layout"),
     "list_templates": ("layout", "template"),
@@ -119,6 +125,11 @@ LEXICON: dict[str, tuple[str, ...]] = {
         "problem", "not working", "doesn't work", "went wrong", "diagnose", "verify", "self-check",
     ),
     "series": ("series", "episode", "season", "workshop", "reveal", "continuity", "part 1", "part 2", "part 3", "next part"),
+    # G-43 b, G-47: a story the Assistant writes is a draft file, filled one part per call
+    "drafts": (
+        "draft", "drafts", "full story", "whole story", "write the story", "write a story", "story file", "md file",
+        "next part", "rest of the story", "keep writing",
+    ),
 }
 
 _NS_CODE = re.compile(r"\bNS-[EW]\d{3}\b", re.IGNORECASE)

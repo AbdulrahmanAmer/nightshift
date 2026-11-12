@@ -119,7 +119,8 @@ STDLIB_ONLY_NS_COMMON = {
     "ns_common.testguard",    # the refusals of a test run: every runner and ns_common.paths import it
     "ns_common.uv", "ns_common.vcruntime", "ns_common.secret_file", "ns_common.secrets_names",
     "ns_common.singleton",
-    "ns_common.diskneed",     # H-6: the space an install needs (diskneed raises NsError)
+    "ns_common.sizes",        # WP8: the one size formatter (Windows units), standard library only
+    "ns_common.diskneed",    # H-6: the space an install needs (diskneed raises NsError)
     # F-10a/F-10c: the settings copy `ns update` keeps, also made by the setup server when INSTALL.cmd updates
     # an install (appcopy.install_app), and the first-start guard every settings writer calls (the setup
     # window's own writers too); the guard logs through ns_common.logging (standard library plus paths).

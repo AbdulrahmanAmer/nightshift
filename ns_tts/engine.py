@@ -764,7 +764,9 @@ class QwenttsEngine:
         return self.bin_dir / f"{tool}{EXE_SUFFIX}"
 
     def _argv(self, tool: str) -> list[str]:
-        return list(self.launcher.get(tool) or [str(self.exe(tool))])
+        # the program by its full path (G-34): a shell with NoDefaultCurrentDirectoryInExePath=1 does not look
+        # in the current folder, so a relative name would be "not recognized"
+        return list(self.launcher.get(tool) or [os.path.abspath(self.exe(tool))])
 
     def talker_path(self, op: Mode) -> Path:
         """GGUF of the talker used for `op` (design -> VoiceDesign, clone -> Base, preset -> CustomVoice)."""

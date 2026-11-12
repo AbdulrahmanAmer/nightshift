@@ -322,11 +322,8 @@ class FakeTtsAdapter:
         self.previews: list[tuple[str, str, float]] = []
 
     def voices(self) -> tuple[list[dict[str, Any]], bool]:
-        """Library scan plus a design voice."""
-        voices = scan_voice_library(self.paths)
-        if self.live:
-            voices.append({"name": "Narrator", "mode": "design", "source": "library"})
-        return voices, self.live
+        """The presets and the stored voices, the same whether the service is `live` or not (G-39)."""
+        return scan_voice_library(self.paths), self.live
 
     def preview(self, voice: str, text: str, speed: float) -> bytes:
         """WAV bytes from `FakeTts`."""

@@ -20,6 +20,7 @@ from ns_common.models import VOICE_NAME_PATTERN, VoiceMakeResponse
 from ns_dashboard.adapters import MadeVoice
 from ns_dashboard.errors import ApiError
 from ns_dashboard.state import AppState
+from ns_studio import removal
 
 NAME_RE = re.compile(VOICE_NAME_PATTERN)
 MAX_DESCRIPTION = 500
@@ -75,6 +76,19 @@ class VoicesService:
         return VoiceMakeResponse(
             voice_id=made.voice_id, preview_wav_path=made.preview_wav_path
         ).model_dump(mode="json")
+
+    def remove(self, name: str) -> dict[str, Any]:
+        """Remove a voice the owner made (G-38): moved to `removed\\voices` with a record. A built-in voice is
+        refused (422) and so is a voice a channel still speaks with (409, the channels are named)."""
+        from ns_dashboard.svc_library import removal_error
+
+        self._accepting()
+        try:
+            out = removal.remove_voice(self.s.paths, name)
+        except removal.RemovalError as e:
+            raise removal_error(e) from e
+        self.s.log.info("voice_removed", voice=out["id"], record=out["record"])
+        return {"ok": True, "voice": out["id"], "record": out["record"]}
 
     def pending(self) -> dict[str, Any]:
         """`{pending}`: the voice that setup asked for and that does not exist yet, or null."""

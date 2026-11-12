@@ -255,15 +255,28 @@ class _HttpSource:
         """Stream `url` to `dest` through a `.part` file, with the search's retry rules (footage-robust F1).
 
         A timeout, a refused or reset connection and a 5xx are tried again after `OUTAGE_BACKOFF_S` (2, 5,
-        15 s), the part file removed before every new try; a 429 is waited out (four times), as a search is.
+        15 s); a try cut mid-way is continued from the bytes already on disk with a `Range` request when the
+        server said `Accept-Ranges: bytes` (the owner's data is paid: a retry fetches no byte twice), else it
+        starts again from byte 0; a 429 is waited out (four times), as a search is.
         Anything else (a 4xx, an answer that cannot be read) stops at once: asking again gets the same answer.
         Every retry and the giving up are logged. A file link carries no key, so no status of it says the key
         is wrong (`key_sent=False`).
         """
+        part = dest.with_name(dest.name + ".part")
+        with contextlib.suppress(OSError):
+            part.unlink(missing_ok=True)  # a part of a stopped process: its validator is lost
+        try:
+            return self._fetch_loop(url, dest, _Resume())
+        finally:
+            with contextlib.suppress(OSError):
+                part.unlink(missing_ok=True)  # whatever went wrong, no half file stays in the cache
+
+    def _fetch_loop(self, url: str, dest: Path, state: _Resume) -> Path:
+        """The tries of `_fetch_file`; `state` carries what the first answer said about resuming."""
         outage_retries = 0
         rate_limited = 0
         while True:
-            answer = self._fetch_once(url, dest)
+            answer = self._fetch_once(url, dest, state)
             if answer.ok:
                 return dest
             if answer.kind == sa.RATE_LIMITED:
@@ -295,34 +308,105 @@ class _HttpSource:
                               wait_s=wait, retry=outage_retries)
             self._sleep(wait)
 
-    def _fetch_once(self, url: str, dest: Path) -> sa.Answer:
-        """One try of a file download: the answer's kind (ok when `dest` is complete); leaves no part file.
+    def _fetch_once(self, url: str, dest: Path, state: _Resume | None = None) -> sa.Answer:
+        """One try of a file download: the answer's kind (ok when `dest` is complete).
 
-        A full disk raises NS-E104 at once; any other local error is raised as it is.
+        A part file left by an earlier try of the same download (`state` says the server takes ranges) is
+        continued: `Range: bytes=<size>-` (with `If-Range` when the server gave a validator). A server that
+        answers 200 anyway, a 416 or a `Content-Range` that does not start where the part ends makes this try
+        start from byte 0 (the part is dropped). A body shorter than the size the server announced is a cut
+        connection, not a clip (kept as a part, the next try continues it). The part file is the caller's
+        (`_fetch_file` removes it at the end); a full disk raises NS-E104 at once, any other local error is
+        raised as it is.
         """
+        state = state if state is not None else _Resume()
         part = dest.with_name(dest.name + ".part")
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            with self.client.stream("GET", url, follow_redirects=True) as r:
-                if r.status_code >= 300:
-                    r.read()
-                    return self._classify(r, key_sent=False)
-                with part.open("wb") as fh:
-                    for chunk in r.iter_bytes(1 << 16):
-                        fh.write(chunk)
-                        if self.progress is not None:
-                            self.progress(len(chunk))
-            part.replace(dest)
-            return sa.Answer(self.name, sa.OK)
+            for _pass in range(2):  # the second pass is the restart from byte 0 after a refused resume
+                have = part.stat().st_size if part.exists() else 0
+                if have and not state.ranges:
+                    part.unlink(missing_ok=True)
+                    have = 0
+                headers: dict[str, str] = {}
+                if have:
+                    headers["Range"] = f"bytes={have}-"
+                    if state.validator:
+                        headers["If-Range"] = state.validator
+                with self.client.stream("GET", url, headers=headers, follow_redirects=True) as r:
+                    if have and r.status_code == 416:
+                        r.read()
+                        part.unlink(missing_ok=True)
+                        continue
+                    if r.status_code >= 300:
+                        r.read()
+                        return self._classify(r, key_sent=False)
+                    total: int | None = None
+                    if have and r.status_code == 206:
+                        start, total = _content_range(r.headers.get("content-range"))
+                        if start != have:
+                            part.unlink(missing_ok=True)
+                            continue
+                        mode = "ab"
+                        if self.log:
+                            self.log.info("footage_download_resume", source=self.name, file=dest.name,
+                                          from_byte=have)
+                    else:
+                        mode, have = "wb", 0  # the whole body: a first try, or a server that ignored Range
+                        state.learn(r.headers)
+                        if r.status_code == 206:
+                            _start, total = _content_range(r.headers.get("content-range"))
+                        elif not r.headers.get("content-encoding"):
+                            total = _int_or_none(r.headers.get("content-length"))
+                    with part.open(mode) as fh:
+                        for chunk in r.iter_bytes(1 << 16):
+                            fh.write(chunk)
+                            if self.progress is not None:
+                                self.progress(len(chunk))
+                if total is not None and part.stat().st_size != total:
+                    return self._classify(failed=httpx.ReadError("IncompleteBody"))
+                part.replace(dest)
+                return sa.Answer(self.name, sa.OK)
+            return self._classify(failed=httpx.ReadError("ResumeRefused"))
         except httpx.HTTPError as e:
-            return self._classify(failed=e)
+            return self._classify(failed=e)  # the part stays: the next try continues it
         except OSError as e:
             if is_disk_full(e):
                 raise disk_full_error(dest.parent, self.log) from e
             raise
-        finally:
-            with contextlib.suppress(OSError):
-                part.unlink(missing_ok=True)  # whatever went wrong, no half file stays in the cache
+
+
+class _Resume:
+    """What the first answer of one download said about continuing it (`Accept-Ranges`, `ETag`)."""
+
+    def __init__(self) -> None:
+        self.ranges = False
+        self.validator: str | None = None
+
+    def learn(self, headers: Mapping[str, str]) -> None:
+        """Read the headers of a full (200) answer."""
+        self.ranges = str(headers.get("accept-ranges", "")).strip().lower() == "bytes"
+        etag = str(headers.get("etag", "")).strip()
+        modified = headers.get("last-modified") or None
+        self.validator = etag if etag and not etag.startswith("W/") else modified
+
+
+def _int_or_none(value: str | None) -> int | None:
+    try:
+        return int(str(value)) if value is not None else None
+    except ValueError:
+        return None
+
+
+_CONTENT_RANGE = re.compile(r"^\s*bytes\s+(\d+)-(\d+)/(\d+|\*)\s*$", re.IGNORECASE)
+
+
+def _content_range(value: str | None) -> tuple[int | None, int | None]:
+    """`(first byte, total size)` of a `Content-Range: bytes 100-999/1000` header, None where not given."""
+    m = _CONTENT_RANGE.match(value or "")
+    if not m:
+        return None, None
+    return int(m.group(1)), (int(m.group(3)) if m.group(3) != "*" else None)
 
 
 def _slug_words(page_url: str) -> tuple[str, ...]:

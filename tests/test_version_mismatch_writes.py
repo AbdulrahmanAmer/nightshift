@@ -304,7 +304,7 @@ def test_every_registered_command_is_in_a_row_of_the_table() -> None:
     assert not missing, f"{missing}: add each to homeguard.COMMANDS (reads or writes) and to rework-table.md"
     stale = sorted(set(homeguard.COMMANDS) - have)
     assert not stale, f"{stale} are rows of homeguard.COMMANDS but no command"
-    assert len(have) == 47
+    assert len(have) == 51
 
 
 def test_the_table_agrees_with_the_command_list_of_the_mentions() -> None:
@@ -347,7 +347,7 @@ def test_every_writing_route_of_the_dashboard_is_in_the_table() -> None:
     assert have == set(homeguard.DASHBOARD_WRITES), (
         sorted(have - homeguard.DASHBOARD_WRITES), sorted(homeguard.DASHBOARD_WRITES - have)
     )
-    assert len(have) == 48
+    assert len(have) == 52  # block G: three removal routes (WP6) and the draft's Open (WP7b)
 
 
 @pytest.mark.parametrize(

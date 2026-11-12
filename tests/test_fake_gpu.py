@@ -797,6 +797,10 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("installer/stage2/web/fakes.py", "card"): "the setup window's sample hand-over (stage 1, as above)",
     ("ns_dashboard/ui/src/lib/demo.ts", "card"): "the dashboard's demo mode (no engine at all), screenshots",
     ("ns_supervisor/gpu.py", "dep"): "the simulated card itself",
+    ("tests/test_vram_fit.py", "dep"):
+        "wraps FakeSmi itself (PcCard subclasses it, answering its own Card from the running llama's command)",
+    ("tests/test_ns_tune.py", "dep"):
+        "feeds scripted nvidia-smi output lines through the real SmiSource parser (a runner, as a recording does)",
     ("tests/test_vram_busy.py", "dep"):
         "wraps FakeSmi itself (a subclass that answers a scripted list of its own Cards): no second fake",
 }

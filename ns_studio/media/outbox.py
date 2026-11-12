@@ -35,6 +35,17 @@ from ns_studio.text.story_profile import job_mark
 JITTER_MIN = 45
 _JOB_DATE = re.compile(r"-(\d{8})-[0-9a-f]{4}$")
 MARKER = ".nightshift-job"
+#: The Outbox layout in words, as `outbox_target` and the clip outbox write it (spec 15.2a). The Assistant's
+#: folder map (`ns_dashboard.assistant.orientation`) shows this text, so it cannot drift from the code (G-40).
+OUTBOX_LAYOUT = (
+    "<channel>/stories/<story title>/full/ (the full video) and shorts/ (the Shorts), each with its upload "
+    "sheet (.json and .txt); a series part: <channel>/series/<series>/part-NN/; clips from your own video: "
+    "<channel>/clips/<source name>/"
+)
+#: What `rejected` holds: a rejected video's files at the same path as in the Outbox.
+REJECTED_LAYOUT = "videos you rejected, at the same path as in the Outbox (rejected/<channel>/stories/...)"
+#: What `removed` holds: what you removed, with a record of each.
+REMOVED_LAYOUT = "what you removed (voices, ideas, stories, footage), each with a record.json"
 _RESERVED = frozenset({"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
                        *(f"lpt{i}" for i in range(1, 10))})
 _BAD_CHARS = re.compile(r'[<>:"/\|?*\x00-\x1f]')

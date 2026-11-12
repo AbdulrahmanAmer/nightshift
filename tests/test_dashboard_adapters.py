@@ -184,7 +184,8 @@ def test_fake_learn_and_tts_and_seed(tmp_home: Path):
     assert rec is not None and rec.result is not None and rec.result["rows"] == 2
     tts = FakeTtsAdapter(paths)
     voices, live = tts.voices()
-    assert live and any(v["name"] == "Narrator" for v in voices)
+    assert live and any(v["name"] == "Ryan" for v in voices)
+    assert FakeTtsAdapter(paths, live=False).voices()[0] == voices  # G-39: the service does not change it
     assert tts.preview("Ryan", "hello there", 1.0)[:4] == b"RIFF"
     oid = seed_output(db, paths, kind="long", status="approved")
     assert oid.endswith("/long")

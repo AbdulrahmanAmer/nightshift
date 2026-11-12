@@ -16,7 +16,14 @@ from typing import Any
 
 import pytest
 
-from ns_dashboard.assistant.llm import ScriptedToolLlm, StaticProvider, call, say
+from ns_dashboard.assistant.llm import (
+    ReplyCutInToolCall,
+    ScriptedToolLlm,
+    StaticProvider,
+    call,
+    is_cut_tool_call,
+    say,
+)
 from ns_dashboard.assistant.loop import refusal_text, run_tool
 from ns_dashboard.assistant.registry import ToolContext
 from ns_dashboard.assistant.tools import SCHEMA_ONLY, build_registry
@@ -48,6 +55,7 @@ INVALID: dict[str, tuple[dict[str, Any], str]] = {
         "'schedule_at' must be a date and time",
     ),
     "start_script_job": ({"channel": "no-such-channel", "script": SCRIPT}, "no-such-channel"),
+    "start_job_from_draft": ({"draft": "no-such-draft", "channel": "after-dark"}, "no-such-draft"),
     "start_clip_job": ({"channel": "after-dark", "path": "D:/no/such/video.mp4"}, "is not a video file"),
     "rerun_clips": ({"job_id": "no-such-job", "template": "auto"}, "clip job was not found"),
     "resume_job": ({"job_id": "no-such-job"}, "story job was not found"),
@@ -409,13 +417,53 @@ def test_a_model_that_answers_nothing_after_a_refusal_still_tells_the_owner_why(
 
 
 def test_an_answer_the_model_wrote_is_not_replaced_by_the_refusal(home: fixture_home.FixtureHome):
+    """The model's own words stay; an answer that does not name the refusal gets the tool's words after it (G-44)."""
     events = turn_with(
         home,
         call("cancel_job", {"job_id": "no-such-job"}),
         say("That job does not exist; which one do you mean?"),
     )
     messages = [e["payload"]["text"] for e in events if e["kind"] == "message"]
-    assert messages == ["That job does not exist; which one do you mean?"]
+    assert len(messages) == 1
+    assert messages[0].startswith("That job does not exist; which one do you mean?")
+    assert "job was not found" in messages[0]
+
+
+def test_let_me_start_it_after_one_refusal_tells_the_owner_what_the_tool_refused(home: fixture_home.FixtureHome):
+    """G-44: "Let me start the job now" with no card used to be the whole answer after a refused try."""
+    events = turn_with(
+        home,
+        call("cancel_job", {"job_id": "no-such-job"}),
+        say("Let me start the job now."),
+    )
+    text = [e["payload"]["text"] for e in events if e["kind"] == "message"][-1]
+    assert text.startswith("Let me start the job now.") and "job was not found" in text, text
+    assert cards(home) == 0
+
+
+class CutLlm:
+    """A model whose reply is cut inside a tool call: llama-server's 500 as the client turns it."""
+
+    def chat_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, max_tokens: int | None = None):
+        raise ReplyCutInToolCall("HTTP 500: Failed to parse tool call arguments as JSON: missing closing quote")
+
+
+def test_a_reply_cut_inside_a_tool_call_is_said_in_plain_words_and_logged(home: fixture_home.FixtureHome):
+    """G-43 c, G-44: no NS-E301, no `ns doctor`; the owner is sent to the Create page and the log has the cause."""
+    home.dash.assistant.provider = StaticProvider(CutLlm())
+    events = list(home.dash.assistant.chat("write the full story now", None, {}))
+    assert not [e for e in events if e["kind"] == "error"], events
+    text = [e["payload"]["text"] for e in events if e["kind"] == "message"][-1]
+    assert "too long for one reply" in text and "Create page" in text and "NS-E301" not in text
+    logged = "".join(p.read_text(encoding="utf-8") for p in home.dash.state.paths.logs.glob("dashboard*"))
+    assert "assistant_reply_cut" in logged and "missing closing quote" in logged
+    assert events[-1]["kind"] == "done"
+
+
+def test_llama_servers_cut_tool_call_answer_is_recognised_and_other_errors_are_not():
+    assert is_cut_tool_call(500, '{"error":{"message":"Failed to parse tool call arguments as JSON: missing closing quote"}}')
+    assert not is_cut_tool_call(500, "out of memory")
+    assert not is_cut_tool_call(400, "Failed to parse tool call arguments")
 
 
 def test_a_refusal_before_a_card_is_not_repeated_at_the_end_of_the_turn(home: fixture_home.FixtureHome):

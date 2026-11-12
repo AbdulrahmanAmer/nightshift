@@ -47,16 +47,25 @@ class StageWatchLogger(NsLogger):
     orchestrator. An exception raised by `on_stage` stops the job before that stage runs.
     """
 
-    def __init__(self, base: NsLogger, on_stage: Callable[[str], None]) -> None:
+    def __init__(
+        self, base: NsLogger, on_stage: Callable[[str], None], on_note: Callable[[str], object] | None = None
+    ) -> None:
         super().__init__(base.component, base.logs_dir, echo=base.echo, clock=base.clock)
         self._on_stage = on_stage
+        self._on_note = on_note
 
     def log(self, level: Level, event: str, msg: str = "", **data: Any) -> None:
-        """Write the record, then report the stage when it is a stage-start event."""
+        """Write the record, then report the stage when it is a stage-start event, and the footage step's
+        progress line (`clips_progress`: "12 of 85 clips, 40 MB downloaded") to `on_note` (FR F5)."""
         super().log(level, event, msg, **data)
         stage = data.get("stage")
         if event in ("stage_start", "stage_skip") and isinstance(stage, str):
             self._on_stage(stage)
+        elif event == "clips_progress" and msg and self._on_note is not None:
+            try:
+                self._on_note(msg)
+            except Exception:  # noqa: BLE001 - a note that cannot be shown never stops the footage step
+                pass
 
 
 def open_env(
@@ -81,7 +90,8 @@ def watched(ctx: JobContext, names: list[str], job_index: int, job_total: int, r
         idx = names.index(stage) if stage in names else 0
         report(stage, idx, len(names), job_index, job_total)
 
-    return replace(ctx, log=StageWatchLogger(ctx.log, on_stage))
+    note = getattr(report, "note", None)  # the child's reporter can carry a progress note (`studio_job.note`)
+    return replace(ctx, log=StageWatchLogger(ctx.log, on_stage, note if callable(note) else None))
 
 
 def output_ids(db: Db, job_id: str) -> list[str]:

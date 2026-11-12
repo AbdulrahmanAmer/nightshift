@@ -253,14 +253,19 @@ class FileCheck:
         return row
 
 
-def precheck(paths: Paths, app: Path | None = None, *, others: list[str] | None = None) -> list[str]:
+def precheck(
+    paths: Paths, app: Path | None = None, *, others: list[str] | None = None, intact: list[str] | None = None
+) -> list[str]:
     """A night's start: one sentence per model file a night's job loads (``night_files``) that cannot load
     (missing, the wrong size, or recorded damaged for its present size and date); the morning note adds the
     way out (Repair), a stopped download says that it continues. The same sentence about a file no night job
     loads (the design talker, the face finder, the voice files of ``models\\tts`` while the voice runs on
-    another engine) goes to ``others``: it stops no night and is said beside it. No hash. Nothing when setup
+    another engine) goes to ``others``: it stops no night and is said beside it. A file that setup verified
+    (its marker still matches) but whose size differs from this version's list (a home made by an older
+    release) goes to ``intact``: it stops no night either. No hash. Nothing when setup
     never verified the models (its models step is not done: a test home, an unfinished install)."""
     from installer.stage2 import verify_downloads as vd
+    from installer.stage2.downloader import hashed_at, marker_digest
     from installer.stage2.web import modelmarks
     from ns_common.config import load_install_state
 
@@ -279,10 +284,24 @@ def precheck(paths: Paths, app: Path | None = None, *, others: list[str] | None 
     tonight = {str(i.dest) for i in night_files(paths, items)}
     out: list[str] = []
     aside: list[str] = [] if others is None else others
+    kept: list[str] = [] if intact is None else intact
     for item in items:
         row = vd.check_item(item, quick=True)
         found = damaged.get(modelmarks.key_of(paths.home, Path(item.dest)))
         said = out if str(item.dest) in tonight else aside
+        size_only = row.status == vd.BAD and row.detail.startswith("size ") and "expected" in row.detail
+        setup_hashed = hashed_at(Path(item.dest)) is not None or marker_digest(Path(item.dest)) is not None
+        if size_only and found is None and setup_hashed:
+            # A home made by an older release (rc5): setup hashed this very file (its marker still matches
+            # its size and date; rc5's marker holds the digest but no `hashed_at`), so it is the file that
+            # was downloaded, not a damaged one. This version's
+            # list gives another size for it: the night runs, and the note says so (Repair brings it to the
+            # file of this version). A load that fails is still checked by hash by the engine.
+            kept.append(f"The {vd.role(item, paths)} file {item.dest} is intact (Nightshift's setup verified "
+                         f"it) but this version lists another size for it ({row.detail}). The nightly "
+                         "videos use it as it is. Run INSTALL.cmd again and choose Repair to bring it to "
+                         "this version's file.")
+            continue
         if row.status == vd.BAD or (found is not None and row.status == vd.OK):
             recorded = found is not None and row.status == vd.OK
             when = f" (found at {found.get('checked_at')})" if found is not None and recorded else ""

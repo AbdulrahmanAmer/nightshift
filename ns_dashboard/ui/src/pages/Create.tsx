@@ -13,7 +13,7 @@ import { cx } from "../ui/kit";
 import { LayoutDiagram } from "../visuals/charts";
 import {
   AppGrid, Badge, Button, Card, CardHeader, Checkbox, ChoiceChip, DashGrid, DayChips, DropTile, EmptyState, Field, Icon, Input, IntakeStepper,
-  LinkButton, MetaItem, NotificationItem, ProgressBar, SegmentedControl, Select, SPAN, StatusDot, StepRail, TimeChip, type SegmentOption,
+  LinkButton, MetaItem, NotificationItem, ProgressBar, SegmentedControl, Select, SPAN, StatusDot, StepRail, TextArea, TimeChip, type SegmentOption,
 } from "../components/ref12";
 import { Poster, jobTitle } from "./Queue";
 
@@ -46,6 +46,9 @@ export default function Create() {
   const [storyChannel, setStoryChannel] = useState(route.query.get("channel") || chans.find((c) => c.status === "active")?.slug || chans[0]?.slug || "");
   const [format, setFormat] = useState<"master_first" | "shorts_only">(route.query.get("format") === "shorts_only" ? "shorts_only" : "master_first");
   const [busy, setBusy] = useState(false);
+  // "Use my own story text": when the box holds text, the job is made from it (POST /jobs/run script, script_title) and the model writes nothing.
+  const [ownTitle, setOwnTitle] = useState(""); const [ownText, setOwnText] = useState("");
+  const ownWords = ownText.trim() ? ownText.trim().split(/\s+/).length : 0;
   const templates = useLoad<Template[]>(() => api.get("/templates"), [], []);
   const [file, setFile] = useState<File | null>(null);
   const [url, setUrl] = useState("");
@@ -69,7 +72,7 @@ export default function Create() {
   const canNext = step === 2 ? (kind === "story" ? !!storyChannel : hasSource && !!clipChannel) : step === 4 ? !pastPick : true;
   const started = () => { toast(scheduleIso ? `Scheduled for ${fmtWhen(scheduleIso)}. You can leave this page` : "Started. You can leave this page", "ok"); setWhenMode("now"); jobs.reload(); refresh(); go(0); setReached(0); };
 
-  const startStory = async () => { setBusy(true); try { await api.post("/jobs/run", { channel: storyChannel, format, schedule_at: scheduleIso }); started(); } catch (e: any) { toast(e.message, "bad"); } setBusy(false); };
+  const startStory = async () => { setBusy(true); try { await api.post("/jobs/run", { channel: storyChannel, format, schedule_at: scheduleIso, ...(ownText.trim() ? { script: ownText.trim(), script_title: ownTitle.trim() || null } : {}) }); setOwnText(""); setOwnTitle(""); started(); } catch (e: any) { toast(e.message, "bad"); } setBusy(false); };
   const startClips = async () => {
     try {
       if (file) {
@@ -99,7 +102,7 @@ export default function Create() {
           { id: "shorts_only", icon: "phone", label: "One Short", caption: "A single short story as a vertical video. A few minutes", selected: format === "shorts_only", onClick: () => setFormat("shorts_only") },
         ]} />
       );
-      if (step === 2) return <div className="flex flex-col gap-5"><ChannelPick value={storyChannel} onChange={setStoryChannel} /><IdeasFor channel={storyChannel} /></div>;
+      if (step === 2) return <div className="flex flex-col gap-5"><ChannelPick value={storyChannel} onChange={setStoryChannel} /><IdeasFor channel={storyChannel} /><OwnText title={ownTitle} onTitle={setOwnTitle} text={ownText} onText={setOwnText} words={ownWords} /></div>;
       if (step === 3) return <VoiceStep channel={chans.find((c) => c.slug === storyChannel)} />;
     } else {
       if (step === 1) return (
@@ -141,7 +144,7 @@ export default function Create() {
     // review
     const ch = channelName(channel);
     const rows: [string, ReactNode][] = kind === "story"
-      ? [["Make", format === "master_first" ? "Full video + Shorts" : "One Short"], ["Channel", ch || "None picked"], ["Voice", voiceOf(chans.find((c) => c.slug === storyChannel))], ["Starts", scheduleIso ? fmtWhen(scheduleIso) : "Now, after the model loads"]]
+      ? [["Make", format === "master_first" ? "Full video + Shorts" : "One Short"], ["Channel", ch || "None picked"], ["Story", ownWords ? `Your own text, ${ownWords.toLocaleString("en-US")} words${ownTitle.trim() ? `: ${ownTitle.trim()}` : ""}` : "Written by Nightshift"], ["Voice", voiceOf(chans.find((c) => c.slug === storyChannel))], ["Starts", scheduleIso ? fmtWhen(scheduleIso) : "Now, after the model loads"]]
       : [["Video", file ? file.name : url.trim() || "None yet"], ["Channel", ch || "None picked"], ["Layout", templates.data.find((t) => t.id === template)?.label || template], ["Clips", `Up to ${maxClips}, ${minS} to ${maxS} s`], ["Captions", caption ? POOL_LABELS.caption_styles.opts[caption] || caption : "Automatic"], ["Starts", scheduleIso ? fmtWhen(scheduleIso) : "After the upload"]];
     return (
       <div className="flex flex-col gap-5">
@@ -240,6 +243,18 @@ function IdeasFor({ channel }: { channel: string }) {
   );
 }
 
+/** The owner's own story text: narrated as written. A title is optional. The server checks the length and the writing rules and says what is wrong in its own words. */
+function OwnText({ title, onTitle, text, onText, words }: { title: string; onTitle: (s: string) => void; text: string; onText: (s: string) => void; words: number }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-ds-lg bg-ds-sunken p-4 shadow-ds-inset-sm">
+      <p className="text-ds-sm font-semibold">Use my own story text</p>
+      <p className="text-ds-xs text-ds-text-2">Leave this empty and Nightshift writes the story. Paste your text and the video is made from it, narrated as you wrote it. Nothing is rewritten</p>
+      <Field label="Title" htmlFor="own-title"><Input id="own-title" placeholder="The title of your story" value={title} onChange={(e) => onTitle(e.target.value)} /></Field>
+      <Field label="Story text" htmlFor="own-text" hint={words ? `${words.toLocaleString("en-US")} words` : "Paste or type the whole story"}><TextArea id="own-text" rows={8} placeholder="Paste your story here" value={text} onChange={(e) => onText(e.target.value)} /></Field>
+    </div>
+  );
+}
+
 function VoiceStep({ channel }: { channel?: ChannelSummary }) {
   return (
     <div className="flex flex-col gap-4">
@@ -312,7 +327,7 @@ function JobRow({ j, channelName, onCancel }: { j: Job; channelName: (s?: string
   return (
     <li>
       <NotificationItem state="raised" title={jobTitle(j, channelName)}
-        subtitle={<span className="text-ds-accent-ink">{j.status === "queued" && j.schedule_at && new Date(j.schedule_at).getTime() > Date.now() ? `Scheduled for ${fmtWhen(j.schedule_at)}` : j.status === "queued" ? "Waiting for the engine" : stageWords(j.stage)}<span className="text-ds-muted">{j.step && j.steps ? `, step ${j.step} of ${j.steps}` : ""}</span></span>}>
+        subtitle={<span className="text-ds-accent-ink">{j.status === "queued" && j.schedule_at && new Date(j.schedule_at).getTime() > Date.now() ? `Scheduled for ${fmtWhen(j.schedule_at)}` : j.status === "queued" ? "Waiting for the engine" : stageWords(j.stage)}<span className="text-ds-muted">{j.step && j.steps ? `, step ${j.step} of ${j.steps}` : ""}</span>{j.detail ? <span className="text-ds-text-2">: {j.detail}</span> : null}</span>}>
         {!held && <ProgressBar value={j.progress ?? 0} label="Job progress" />}
         {!held && <ol className="mt-3 flex flex-wrap gap-x-3 gap-y-1">
           {stages.map((s, i) => <li key={s} className={cx("flex items-center gap-1 text-ds-2xs", i < cur ? "text-ds-text-2" : i === cur ? "font-semibold text-ds-text" : "text-ds-muted")}>{i < cur ? <Icon name="check" size={12} className="text-ds-success-ink" /> : <span aria-hidden className={cx("size-1.5 rounded-full", i === cur ? "bg-ds-accent" : "bg-ds-border")} />}{stageWords(s)}</li>)}

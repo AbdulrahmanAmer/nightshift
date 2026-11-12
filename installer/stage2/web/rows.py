@@ -9,6 +9,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from ns_common.sizes import size_text
+
 SPEED_WINDOW_S = 5.0        # speed is measured over windows this long (the first one is shorter)
 FIRST_WINDOW_S = 2.0
 EMA_ALPHA = 0.3
@@ -143,7 +145,7 @@ def make_row(item: dict[str, Any]) -> dict[str, Any]:
 
 def format_gb(n: float) -> str:
     """Size for notes: 2.1 GB."""
-    return f"{n / 1024 ** 3:.1f} GB"
+    return size_text(n)
 
 
 def marker_matches(dest: Path) -> bool:

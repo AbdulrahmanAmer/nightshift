@@ -11,7 +11,7 @@ from ns_common.acquire import Endpoint, Service
 from ns_common.errors import NsError
 from ns_common.models import GateReport, Runtime
 from ns_common.paths import Paths, contracts_dir
-from ns_supervisor import verify
+from ns_supervisor import verify, vram
 from ns_supervisor.testing import StubTable, SyncSupervisor
 
 
@@ -106,17 +106,73 @@ def test_quick_skips_benchmarks_and_the_job(engine: tuple[Paths, Runtime, SyncSu
     assert set(report.benchmarks) == {"idle_vram_mb"}
 
 
-def test_slow_llm_fails_the_benchmark_row(tmp_path: Path) -> None:
+class Setting:
+    """A controller that is `inner` except that llama's status carries the setting the engine loaded it with
+    (`core.py` `rt.setting`, plan rule 4): what a fitted load on the GPU PC shows."""
+
+    def __init__(self, inner: SyncSupervisor, setting: dict[str, Any] | None) -> None:
+        self.inner, self.setting = inner, setting
+
+    def acquire(
+        self, service: Service, owner: str, *, model_alias: str | None = None, timeout_s: int = 7200
+    ) -> Endpoint:
+        return self.inner.acquire(service, owner, model_alias=model_alias, timeout_s=timeout_s)
+
+    def release(self, service: Service, owner: str) -> None:
+        self.inner.release(service, owner)
+
+    def status(self) -> dict[str, Any]:
+        st = self.inner.status()
+        st["services"]["llama"]["setting"] = self.setting
+        return st
+
+    def stop_all(self) -> None:
+        self.inner.stop_all()
+
+
+def run_with(tmp_path: Path, setting: dict[str, Any] | None, tok_s: str, quick: bool = False) -> GateReport:
     paths = Paths(tmp_path / "ns")
     rt = Runtime.default("gpu")
-    sync = SyncSupervisor(paths, rt, resolver=StubTable(extra={"llama": ["--tok-s", "10"]}))
+    sync = SyncSupervisor(paths, rt, resolver=StubTable(extra={"llama": ["--tok-s", tok_s]}))
     try:
-        report = verify.run_verify(paths, rt, sync, deps=good_deps())
+        return verify.run_verify(paths, rt, Setting(sync, setting), quick=quick, deps=good_deps())
     finally:
         sync.close()
+
+
+def test_slow_llm_is_a_soft_row_that_names_the_ladder_step(tmp_path: Path) -> None:
+    """Plan rule 6: the speed depends on the step the engine loaded llama at and on what the desktop
+    holds, so a miss is logged with that step and never fails the report (and so never an update)."""
+    setting = {"step": "mtp_off", "ram_mib": 0, "ctx": 16384}
+    report = run_with(tmp_path, setting, "10")
     row = next(c for c in report.checks if c.name == "bench.code_tok_s")
-    assert row.passed is False and row.value == 10.0 and row.limit == ">= 40 tok/s"
-    assert report.passed is False
+    assert row.passed is True and row.value == 10.0 and row.limit == ">= 40 tok/s"
+    assert row.log is not None and "over the soft limit; logged only" in row.log
+    assert vram.STEP_WORDS["mtp_off"] in row.log
+    assert report.passed, [c for c in report.checks if not c.passed]
+
+
+def test_the_llama_row_passes_a_load_with_experts_in_ram_and_says_so(tmp_path: Path) -> None:
+    """Rule 5: a load that put some expert layers in the PC's memory is a good load. The quick run (what an
+    update gates on) says the step too."""
+    setting = {"step": "experts_in_ram", "ram_mib": 3200.0, "ctx": 16384}
+    said = f"loaded {vram.STEP_WORDS['experts_in_ram']}, 3200 MiB of it in the PC's memory, context 16384"
+    for quick in (False, True):
+        report = run_with(tmp_path / str(quick), setting, "60", quick=quick)
+        start = next(c for c in report.checks if c.name == "llama.start")
+        assert start.passed is True and start.log is not None and start.log.endswith(f"; {said}")
+        assert report.passed, [c for c in report.checks if not c.passed]
+        assert (any(c.name == "bench.code_tok_s" for c in report.checks)) is (not quick)
+        if not quick:
+            row = next(c for c in report.checks if c.name == "bench.code_tok_s")
+            assert row.passed is True and row.log == said          # the speed row names the step too
+
+
+def test_a_status_without_a_setting_gives_no_words_and_no_failure(tmp_path: Path) -> None:
+    report = run_with(tmp_path, None, "60")
+    start = next(c for c in report.checks if c.name == "llama.start")
+    assert start.passed is True and start.log is not None and "loaded" not in start.log
+    assert report.passed
 
 
 class DeadSupervisor:

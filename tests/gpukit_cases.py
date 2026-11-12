@@ -1212,7 +1212,8 @@ def test_the_collected_folder_and_zip_hold_every_part(world: World) -> None:
     assert world.run() == 0
     z_path = world.zips()[0]
     assert z_path.name == "nightshift-gpu-kit-20261112.zip" and z_path.parent == world.ev
-    size = f"{z_path.stat().st_size / 1e6:.1f} MB"
+    n = z_path.stat().st_size  # Windows units (binary), a file under 1 MB in KB: never "(0.0 MB)" (G-33)
+    size = f"{n / 1024:.1f} KB" if n < 1024**2 else f"{n / 1024**2:.1f} MB"
     assert world.out[-1] == f"Send this one file: {z_path} ({size}). The kit sent nothing anywhere."
     with zipfile.ZipFile(z_path) as z:
         names = set(z.namelist())
@@ -1318,7 +1319,7 @@ def test_no_secret_leaves_in_the_zip(world: World, monkeypatch: pytest.MonkeyPat
         f'{{"path": "{profile}\\\\Desktop", "home": {json.dumps(home)}, "pc": "{SECRET_PC}"}}',
         json.dumps({"profile": profile, "user": SECRET_USER, "home": home}),  # \\u escapes
         f"GET https://pixabay.com/api/?key=1234567-0123456789abcdef0123456789abcdef&q=rain {PEXELS} {HF}",
-        f"url file:///{profile.replace(chr(92), '/')}/x and %2F{SECRET_USER} {SECRET_USER.upper()}",
+        f"url file:///{profile.replace(chr(92), '/')}/x and %2F{SECRET_USER} /{SECRET_USER.upper()}",
     ])  # fmt: skip
     (world.home / "logs" / "studio-20261113.jsonl").write_text(planted + "\n", encoding="utf-8")
     (world.home / "answers.json").write_text(json.dumps({"pexels_api_key": PEXELS, "hf_token": HF}), "utf-8")
@@ -1527,14 +1528,15 @@ def test_the_scrubber_masks_every_form_of_keys_tokens_the_user_the_home_and_the_
         "GET https://example.invalid/api?key=abcdef&q=rain Authorization: Bearer abcdefghijklmnop",
         "token ghp_" + "x" * 36 + " sid S-1-5-21-111-222-333-1001",
         r"home D:\Nightshift\logs and D:\\Nightshift\\data and d:/nightshift/run and D%3A%5CNightshift",
-        r"profile C:\Users\Ahmed\Desktop, C:\USERS\AHMED~1\x, user Ahmed on AHMED-PC (ahmed)",
+        r"profile C:\Users\Ahmed\Desktop, C:\USERS\AHMED~1\x, USERNAME=Ahmed on AHMED-PC\ahmed owner: Ahmed",
         "sha256 " + "f" * 64,
     ])  # fmt: skip
     out = gpukit.scrub_text(text, masks)
     for gone in (PEXELS, HF, "12345678-0123", "secret-value", "abc123", "abcdef&", "abcdefghijklmnop", "ghp_",
                  "S-1-5-21", "Nightshift", "nightshift", "Users", "Ahmed", "ahmed", "AHMED"):  # fmt: skip
         assert gone not in out, gone
-    assert out.count("<home>") == 4 and out.count("<profile>") == 2 and "user <user> on <pc> (<user>)" in out
+    assert out.count("<home>") == 4 and out.count("<profile>") == 2
+    assert "USERNAME=<user> on <pc>\\<user> owner: <user>" in out
     assert '"keys": {"pexels": true}' in out and "f" * 64 in out  # not a secret: kept
     assert len(gpukit.MASKED) == 5
 
@@ -1708,7 +1710,7 @@ def test_the_one_reader_of_the_nights_record(world: World, kind: str, reader: st
 def test_each_stored_stock_key_is_tried_through_the_products_route_before_the_video(world: World) -> None:
     assert world.run() == 0, world.out
     line = world.state()["steps"]["KS"]["line"]
-    assert line.startswith("Pixabay: searched and downloaded one clip (0.0 MB, pixabay 701, 1920x1080)"), line
+    assert line.startswith("Pixabay: searched and downloaded one clip (5.3 KB, pixabay 701, 1920x1080)"), line
     assert "Pexels: NOT RUN (no Pexels key is stored)" in line
     stock = json.loads((world.ev / "stock.json").read_text(encoding="utf-8"))
     assert stock["pixabay"]["size_bytes"] == 5382 and stock["pixabay"]["source"] == "pixabay"

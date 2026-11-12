@@ -14,7 +14,7 @@ from installer.stage2.steps.s06_tune import S06Tune
 from installer.stage2.steps.s07_configs import OPENCODE_CONFIG, S07Configs, opencode_config
 from installer.stage2.steps.s08_smoke import S08Smoke, parse_report
 from installer.stage2.steps.s09_shortcuts_scheduler import S09ShortcutsScheduler
-from installer.stage2.steps.s10_summary import S10Summary
+from installer.stage2.steps.s10_summary import S10Summary, summary_rows
 from installer.stage2.sysinfo import sample_preflight
 from installer.stage2.testing import example_answers, make_test_context
 from ns_common.config import load_channel, load_runtime, save_runtime
@@ -87,6 +87,23 @@ def test_s06_writes_baseline_then_tunes(tmp_path: Path):
     assert call.cwd == ctx.app_path
     assert "51.2 tokens/s" in ctx.ui.text and ctx.flag("tuned") == "tuned"
     assert step.check(ctx) is True
+
+
+def test_s06_shows_the_winner_in_words_and_never_raw_settings(tmp_path: Path):
+    """G-26: setup printed `Best: 51.2 tok/s with {"n_gpu_layers": 99, ...}`. The new `ns tune` says it
+    in words; an older one's JSON tail is cut off the line."""
+    words = ("Best for this PC: a 16384-token context, cache type q8_0 and the MTP draft (3 tokens at a "
+             "time), 145.8 tokens a second (the middle of 3 runs). llama.cpp decides how much of the "
+             "model sits on the graphics card and how much in the PC's memory.")  # fmt: skip
+    old = 'Best: 51.2 tok/s with {"n_gpu_layers":99,"ctx":16384,"kv_type":"q8_0"}'
+    for i, out in enumerate((f"{words}\nSaved to runtime.json.\n", f"{old}\nSaved to runtime.json.\n")):
+        (tmp_path / f"c{i}").mkdir()
+        runner = FakeRunner(tmp_path / f"d{i}", results={"ns tune": RunResult(0, out, "")})
+        ctx = resolved(tmp_path / f"c{i}", runner=runner)
+        S06Tune().run(ctx)
+        assert '{"' not in ctx.ui.text and "n_gpu_layers" not in ctx.ui.text
+        assert ctx.flag("tuned") == "tuned"
+        assert (words in ctx.ui.text) if i == 0 else ("Best: 51.2 tok/s" in ctx.ui.text)
 
 
 def test_s06_failed_tune_keeps_defaults_and_continues(tmp_path: Path):
@@ -618,6 +635,8 @@ def test_s10_summary_names_the_file_to_upload(tmp_path: Path):
     assert "NS-W401" in ctx.ui.text and "Run now" in ctx.ui.text
     assert "Automatic runs: on at 03:00" in ctx.ui.text
     assert ctx.ui.tables[0][0] == "Setup result" and len(ctx.ui.tables[0][1]) == 11
+    rows = {r[0]: r[1] for r in ctx.ui.tables[0][1]}
+    assert rows["s10_summary"] == "done" and set(rows.values()) == {"done"}      # G-26: it said "pending"
     assert any(str(ctx.paths.outbox) in r[1] for r in ctx.ui.tables[1][1])
     stops = runner.called("ns stop")
     assert len(stops) == 1 and stops[0].argv[-1] == "stop"        # no headless verify engine is left behind
@@ -634,6 +653,17 @@ def test_s10_without_a_bundle_command_says_so(tmp_path: Path):
     S10Summary().run(ctx)
     S10Summary().verify(ctx)
     assert "not available in this version" in ctx.ui.text and ctx.flag("bundle") is None
+
+
+def test_s10_row_is_pending_while_an_earlier_step_is_not_finished(tmp_path: Path):
+    """The summary's own row says "done" only when `verify` would pass; a failed step before it stops that."""
+    ctx = resolved(tmp_path)
+    for s in default_steps():
+        ctx.state.mark(s.id, "done")
+    ctx.state.mark("s05_opencode_prewarm", "failed")
+    ctx.state.mark("s10_summary", "pending")
+    rows = {r[0]: r[1] for r in summary_rows(ctx)}
+    assert rows["s10_summary"] == "pending" and rows["s05_opencode_prewarm"] == "failed"
 
 
 def test_s10_verify_names_unfinished_steps(tmp_path: Path):
