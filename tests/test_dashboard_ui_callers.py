@@ -23,6 +23,11 @@ CALLS = [
     ("Library.tsx", "/library/formats/${encodeURIComponent(f.id)}"),  # 23
     ("Library.tsx", '"/library/series"'),  # 8
     ("Create.tsx", '"/jobs/clip/rerun"'),  # 18
+    ("Create.tsx", "script: ownText.trim(), script_title:"),  # G-43 a: the owner's own story text
+    ("Library.tsx", "api.del(`/voices/${encodeURIComponent(v.name)}`)"),  # G-38 remove a voice
+    ("Library.tsx", "api.del(`/library/ideas/${encodeURIComponent(String(i.idea_id))}`)"),  # G-40
+    ("Library.tsx", "api.del(`/library/stories/${encodeURIComponent(s.job_id)}`)"),  # G-39
+    ("Library.tsx", "api.del(`/library/footage/${encodeURIComponent(c.source)}"),  # G-42 (moves aside)
     ("Settings.tsx", '"/engine/warmup"'),  # 27
     ("Settings.tsx", '"/engine/stop_all"'),  # 27
     ("Settings.tsx", '"/jobs/verify"'),  # 27

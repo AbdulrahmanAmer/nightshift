@@ -34,6 +34,7 @@ const SUBS: Record<Tab, string> = {
   footage: "Stock clips kept on this PC for 90 days after a video uses them",
   series: "Stories developed with the Assistant part by part, then made automatically",
 };
+const MOVED = "It is moved to the removed folder in your Nightshift home, and can be put back by hand.";
 const SAMPLE_LINE = "The doorbell camera pings at three twelve every night. I stopped checking the clips a week ago.";
 
 export default function Library() {
@@ -59,7 +60,7 @@ const IDEA_LABEL: Record<string, string> = { new: "New", approved: "Approved for
 const IDEA_TONE: Record<string, Tone> = { new: "neutral", approved: "accent", used: "success", rejected: "danger", dropped: "danger" };
 
 function Ideas() {
-  const { status, toast, ask, channelName } = useApp(); const chans = status?.channels || [];
+  const { status, toast, ask, channelName, confirm } = useApp(); const chans = status?.channels || [];
   const ideas = useLoad<Idea[]>(() => api.get("/library/ideas"), [], []);
   const [title, setTitle] = useState(""); const [premise, setPremise] = useState(""); const [chan, setChan] = useState(chans[0]?.slug || "");
   const [filter, setFilter] = useState<string>("all");
@@ -72,6 +73,10 @@ function Ideas() {
   };
   const setStatus = async (i: Idea, s: string) => {
     try { await api.put(`/library/ideas/${encodeURIComponent(String(i.idea_id))}`, { status: s }); toast(s === "approved" ? "Approved. It will be used on the next run" : s === "rejected" ? "Dropped" : "Back to new", "ok"); ideas.reload(); } catch (e: any) { toast(e.message, "bad"); }
+  };
+  const remove = async (i: Idea) => {
+    if (!(await confirm({ title: "Remove this idea?", body: `${i.title || "Untitled idea"}. ${MOVED}`, ok: "Remove", danger: true }))) return;
+    try { await api.del(`/library/ideas/${encodeURIComponent(String(i.idea_id))}`); toast("Idea removed", "ok"); ideas.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
   return (
     <DashGrid label="Ideas">
@@ -97,6 +102,7 @@ function Ideas() {
               {(s === "new" || s === "approved") && <Button size="sm" variant="ghost" onClick={() => setStatus(i, "rejected")}>Drop</Button>}
               {s === "rejected" && <Button size="sm" variant="soft" leadingIcon="restore" onClick={() => setStatus(i, "new")}>Restore</Button>}
               <Button size="sm" variant="ghost" leadingIcon="chat" onClick={() => ask({ page: "library", idea_id: i.idea_id }, `Develop this idea into a story for ${channelName(i.channel)}: ${i.title}. ${i.premise}`)}>Develop with Assistant</Button>
+              <Button size="sm" variant="ghost" leadingIcon="trash" onClick={() => remove(i)}>Remove</Button>
             </div>
           </Card>
         );
@@ -113,9 +119,13 @@ function Search({ value, onChange, placeholder }: { value: string; onChange: (s:
 }
 
 function Stories() {
-  const { channelName, ask } = useApp(); const [q, setQ] = useState("");
+  const { channelName, ask, confirm, toast } = useApp(); const [q, setQ] = useState("");
   const stories = useLoad<Story[]>(() => api.get(`/library/stories?q=${encodeURIComponent(q)}`), [q], []);
   const st: Record<string, [string, Tone]> = { none: ["No video yet", "neutral"], pending: ["Waiting for review", "accent"], posted: ["Posted", "success"], approved: ["Approved", "success"], rejected: ["Rejected", "danger"] };
+  const remove = async (s: Story) => {
+    if (!(await confirm({ title: "Remove this story?", body: `${s.title}. Its videos and files go with it. ${MOVED}`, ok: "Remove", danger: true }))) return;
+    try { await api.del(`/library/stories/${encodeURIComponent(s.job_id)}`); toast("Story removed", "ok"); stories.reload(); } catch (e: any) { toast(e.message, "bad"); }
+  };
   return (
     <DashGrid label="Stories">
       <div className={cx("flex flex-wrap items-center justify-between gap-3", SPAN["6/4"])}><Search value={q} onChange={setQ} placeholder="Search stories" /><span className="text-ds-2xs text-ds-muted ds-num">{stories.data.length} stories</span></div>
@@ -135,6 +145,7 @@ function Stories() {
               <Button size="sm" variant="ghost" leadingIcon="restore" onClick={() => ask({ page: "library", story_id: s.job_id }, `Reuse the story "${s.title}" as the start of a new video`)}>Reuse</Button>
               <Button size="sm" variant="ghost" leadingIcon="phone" onClick={() => { location.hash = `#/create?kind=story&format=shorts_only&channel=${encodeURIComponent(s.channel)}`; }}>Make a Short</Button>
               <Button size="sm" variant="ghost" leadingIcon="integrations" onClick={() => ask({ page: "library", story_id: s.job_id }, `Turn the story "${s.title}" into a series of parts for ${channelName(s.channel)}`)}>Reuse as series</Button>
+              <Button size="sm" variant="ghost" leadingIcon="trash" onClick={() => remove(s)}>Remove</Button>
             </div>
           </Card>
         );
@@ -147,7 +158,7 @@ function Stories() {
 
 const modeLabel = (m: string) => (m === "preset" ? "Built-in" : m === "design" ? "Designed" : "Cloned");
 
-function VoiceCard({ v, active, onPlay, line = SAMPLE_LINE }: { v: Voice; active: boolean; onPlay: (name: string | null) => void; line?: string }) {
+function VoiceCard({ v, active, onPlay, line = SAMPLE_LINE, onRemove }: { v: Voice; active: boolean; onPlay: (name: string | null) => void; line?: string; onRemove?: (v: Voice) => void }) {
   const { toast } = useApp();
   const audio = useRef<HTMLAudioElement | null>(null);
   const [progress, setProgress] = useState(0);
@@ -175,6 +186,7 @@ function VoiceCard({ v, active, onPlay, line = SAMPLE_LINE }: { v: Voice; active
       </header>
       <Waveform bars={bars} progress={active ? progress : 0} />
       <TransportControls label={`Sample of ${v.name}`} playing={active && !loading} onToggle={toggle} playLabel={`Play a sample of ${v.name}`} pauseLabel={`Stop ${v.name}`} />
+      {onRemove && v.mode !== "preset" && <div><Button size="sm" variant="ghost" leadingIcon="trash" onClick={() => onRemove(v)}>Remove</Button></div>}
     </Card>
   );
 }
@@ -281,7 +293,7 @@ function PendingVoiceCard({ onMade }: { onMade: () => void }) {
 }
 
 function Voices() {
-  const { ask, toast } = useApp(); const voices = useLoad<Voice[]>(() => api.get("/voices"), [], []);
+  const { ask, toast, confirm } = useApp(); const voices = useLoad<Voice[]>(() => api.get("/voices"), [], []);
   const [playing, setPlaying] = useState<string | null>(null);
   const [clone, setClone] = useState(false);
   const [desc, setDesc] = useState(""); const [designName, setDesignName] = useState("");
@@ -308,11 +320,16 @@ function Voices() {
   const design = () => make("design", () => api.voiceDesign(designName.trim(), desc.trim(), line.trim()), { name: designName.trim(), mode: "design", description: desc.trim() }, line.trim(), () => { setDesc(""); setDesignName(""); });
   const save = () => make("clone", () => api.voiceClone(sample!, name.trim(), line.trim(), setUpload), { name: name.trim(), mode: "clone", description: "Cloned from your recording" }, line.trim(), () => { setSample(null); setName(""); setConsent(false); setStep(1); });
 
+  /** A built-in voice is refused (422) and a voice a channel still uses is refused (409, naming the channels): the toast says what the route said. */
+  const removeVoice = async (v: Voice) => {
+    if (!(await confirm({ title: `Remove the voice ${v.name}?`, body: MOVED, ok: "Remove", danger: true }))) return;
+    try { await api.del(`/voices/${encodeURIComponent(v.name)}`); toast(`Voice ${v.name} removed`, "ok"); if (playing === v.name) setPlaying(null); setMade(null); voices.reload(); } catch (e: any) { toast(e.message, "bad"); }
+  };
   return (
     <DashGrid label="Voices">
       <div className={cx("grid grid-cols-1 content-start gap-5 @min-[600px]:grid-cols-2", SPAN["4/4"])}>
         <PendingVoiceCard onMade={voices.reload} />
-        {voices.data.map((v) => <VoiceCard key={v.name} v={v} active={playing === v.name} onPlay={setPlaying} />)}
+        {voices.data.map((v) => <VoiceCard key={v.name} v={v} active={playing === v.name} onPlay={setPlaying} onRemove={removeVoice} />)}
         {!voices.data.length && !voices.loading && <EmptyState icon="voice" className="@min-[600px]:col-span-2" title="No voices yet" />}
       </div>
       <Card as="section" aria-labelledby="v-new" className={cx("flex flex-col gap-5", SPAN["2/4"])}>
@@ -456,8 +473,8 @@ function FootageTab() {
   const [q, setQ] = useState(""); const clips = useLoad<Footage[]>(() => api.get(`/library/footage?q=${encodeURIComponent(q)}`), [q], []);
   const [fetching, setFetching] = useState(false);
   const remove = async (c: Footage) => {
-    if (!(await confirm({ title: "Delete this clip?", body: "The file is removed from this PC. A video that already used it is not changed; the clip is fetched again if a story needs it", ok: "Delete", danger: true }))) return;
-    try { await api.del(`/library/footage/${encodeURIComponent(c.source)}/${encodeURIComponent(c.clip_id)}`); toast("Clip deleted", "ok"); clips.reload(); } catch (e: any) { toast(e.message, "bad"); }
+    if (!(await confirm({ title: "Remove this clip?", body: `A video that already used it is not changed; the clip is fetched again if a story needs it. ${MOVED}`, ok: "Remove", danger: true }))) return;
+    try { await api.del(`/library/footage/${encodeURIComponent(c.source)}/${encodeURIComponent(c.clip_id)}`); toast("Clip removed", "ok"); clips.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
   const fetchNew = async () => {
     setFetching(true);
@@ -483,7 +500,7 @@ function FootageTab() {
             <p className="flex flex-wrap gap-x-4 gap-y-1"><MetaItem icon="external"><span className="capitalize">{c.source}</span>&nbsp;#{c.clip_id}</MetaItem><MetaItem icon="refresh">{plural(c.uses, "use")}</MetaItem><MetaItem icon="calendarDays">{fmtDay(c.last_used)}</MetaItem></p>
             <p className="text-ds-2xs text-ds-muted">{c.license}</p>
             {c.local_path && <p className="text-ds-2xs text-ds-muted font-mono break-all">{c.local_path}</p>}
-            <div><Button size="sm" variant="ghost" leadingIcon="trash" onClick={() => remove(c)}>Delete</Button></div>
+            <div><Button size="sm" variant="ghost" leadingIcon="trash" onClick={() => remove(c)}>Remove</Button></div>
           </div>
         </Card>
       )) : <EmptyState icon="film" className={SPAN["6/4"]} title="No footage cached yet">Clips are kept for 90 days after a video uses them</EmptyState>}

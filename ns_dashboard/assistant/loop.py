@@ -15,8 +15,9 @@ import yaml
 
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
+from ns_common.logging import NsLogger
 from ns_dashboard.assistant import prompt, router
-from ns_dashboard.assistant.llm import EngineBusy, EngineOffline, LlmProvider
+from ns_dashboard.assistant.llm import EngineBusy, EngineOffline, LlmProvider, ReplyCutInToolCall
 from ns_dashboard.assistant.orientation import static_map
 from ns_dashboard.assistant.redact import redact_obj, redact_text
 from ns_dashboard.assistant.registry import Registry, ToolContext, ToolDef, render_confirm
@@ -89,6 +90,10 @@ def refusal_text(e: ApiError) -> str:
     if e.hint:
         parts.append(e.hint.strip())
     return " ".join(p if p.endswith((".", "!", "?")) else f"{p}." for p in parts if p)
+
+
+CUT_NOTE = ("My reply was cut off in the middle of starting that, because the story was too long for one reply. "
+            "Nothing was started. Paste your story on the Create page (Use my own story text) and start it there.")
 
 
 def unanswered_note(problem: str) -> str:
@@ -225,10 +230,19 @@ class Assistant:
         try:
             yield from self._turn(llm, cid, context)
         except NsError as e:
+            self._log_failure("assistant_turn_failed", cid, f"{e.code}: {e}")
             yield {"kind": "error", "payload": {"code": e.code, "message": str(e), "hint": hint_of(e)}}
         finally:
             self.provider.release()
         yield {"kind": "done", "payload": {"conversation_id": cid}}
+
+    def _log_failure(self, event: str, cid: str, cause: str) -> None:
+        """Write a failed turn to the dashboard log with its cause. Never raises."""
+        try:
+            NsLogger("dashboard", self.dash.state.paths.logs, echo=False).warn(
+                event, "the Assistant's reply failed", conversation_id=cid, cause=cause[:500])
+        except Exception:  # noqa: BLE001 - a log that cannot be written must not break the turn
+            pass
 
     @staticmethod
     def _previous_topics(registry: Registry, stored: list[dict[str, Any]]) -> list[str]:
@@ -255,12 +269,21 @@ class Assistant:
             messages, stats = prompt.assemble(system, self.store.messages(cid), block, tools, budget, self.summary_fields)
             self.stats.append(stats)
             self.offered.append([t["function"]["name"] for t in tools])
-            reply = llm.chat_tools(messages, tools, max_tokens=budget.output_reserve)
+            try:
+                reply = llm.chat_tools(messages, tools, max_tokens=budget.output_reserve)
+            except ReplyCutInToolCall as cut:
+                self._log_failure("assistant_reply_cut", cid, cut.cause)
+                self.store.add_message(cid, "assistant", CUT_NOTE)
+                yield {"kind": "message", "payload": {"text": CUT_NOTE}}
+                return
             calls = reply.get("tool_calls") or []
             content = (reply.get("content") or "").strip()
             if not calls and not content and refused:
                 # The model gave up after a refusal and said nothing: the owner still hears why (D-27).
                 content = unanswered_note(refused[-1])
+            if not calls and refused and unanswered_note(refused[-1]) not in content and refused[-1] not in content:
+                # One refused try: the owner hears what the tool refused, in its words, not only "starting now" (G-44).
+                content = f"{content}\n\n{unanswered_note(refused[-1])}".strip()
             self.store.add_message(cid, "assistant", content, tool_calls=calls or None)
             if not calls:
                 yield {"kind": "message", "payload": {"text": content or "I have nothing to add."}}
