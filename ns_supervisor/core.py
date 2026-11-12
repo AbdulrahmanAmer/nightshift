@@ -89,6 +89,13 @@ LEASED_PREFIXES: tuple[str, ...] = ("studio:", "dashboard:assistant")
 #: moment: a nightly run or a dashboard job spends most of its time in clips, render and QC with no service
 #: held, and the engine must not leave under it (gap L1).
 ACTIVITY_PREFIXES: tuple[str, ...] = ("studio:", "dashboard:job")
+#: WP3 (F70, G-51): the owner Nightshift Code's launcher acquires llama as, and the alias it asks for. When
+#: its lease ends (its `/release`, its console gone, Release on the Queue page) the model it held is unloaded
+#: at the next monitor pass unless another owner has taken it: the card and 13+ GB of the PC's memory matter
+#: more than a reload. A crash of the model under its lease is logged with the PC's memory and the model is
+#: loaded again for it (OpenCode talks to llama-server directly, so the engine never sees its next request).
+CODE_OWNER = "opencode"
+CODE_ALIAS = "code"
 #: `/status` says `busy` for this long after the last acquire, release or warmup (a run between two stages).
 BUSY_RECENT_S = 120.0
 #: How long `write_state` waits for a program that holds `run\supervisor.json` open before it gives up
@@ -203,6 +210,17 @@ class ServiceRuntime:
     setting: dict[str, Any] | None = None  # llama's running setting (rule 4): step, fit's choice, tok/s
 
 
+def _last_write(path: object) -> str | None:
+    """Local time a service's log file was last written (its last line: a llama request writes lines), None
+    when there is no such file."""
+    if not isinstance(path, Path):
+        return None
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+    except OSError:
+        return None
+
+
 def _private_mb(pid: int) -> int | None:
     """A process's private bytes (Windows: the commit it holds) in MiB; None when not read."""
     try:
@@ -292,6 +310,12 @@ class Supervisor:
         # The holder's own process (F-H47): pid -> creation time of the running process, None when none runs.
         self.process_probe: Callable[[int], float | None] = process_probe or process_started
         self._holder: _Holder | None = None
+        # WP3: the load a Code lease left behind (service -> (pid of that load, why the lease ended)),
+        # unloaded by the next monitor pass unless another owner takes it; the monitor's first sight of each
+        # load as ready (service -> (pid, clock)); the follow-ups of a crash it saw (memory, Code's reload).
+        self._unload_due: dict[str, tuple[int, str]] = {}
+        self._ready_seen: dict[str, tuple[int, float]] = {}
+        self._crash_tasks: set[asyncio.Task[None]] = set()
         # GPU lease: who held the lock at the last look, when it last showed a sign of life, and when the
         # monitor last ran (a long gap means the PC slept, which must not expire a live lease).
         self._lease_owner: str | None = None
@@ -424,12 +448,93 @@ class Supervisor:
         self.write_state()
         self._emit(rt, "crash", error=why)
 
-    def _reap(self, rt: ServiceRuntime) -> None:
-        """Notice a child that exited on its own (not through `_stop_locked`)."""
+    def _reap(self, rt: ServiceRuntime, monitor: bool = False) -> None:
+        """Notice a child that exited on its own (not through `_stop_locked`).
+
+        `monitor` (the monitor pass, not an acquire about to start the service anyway): the crash is followed
+        up off the pass (`_crash_seen`): the PC's memory read now, and a model that crashed under Nightshift
+        Code's lease loaded again for it.
+        """
         p = rt.proc
         if p is not None and not p.alive() and rt.state == "ready":
             code = p.returncode()
             self._record_crash(rt, f"{rt.name} exited with code {code}")
+            if monitor:
+                seen = self._ready_seen.pop(rt.name, None)
+                since = round(self.clock() - seen[1], 1) if seen is not None and seen[0] == p.pid else None
+                lease = self._code_holds(rt)
+                task = asyncio.create_task(self._crash_seen(rt, p, code, since, lease))
+                self._crash_tasks.add(task)
+                task.add_done_callback(self._crash_tasks.discard)
+
+    def _code_holds(self, rt: ServiceRuntime) -> bool:
+        """Nightshift Code's owner holds `rt` now (the GPU lock for it, or a lease of a non-GPU service)."""
+        if rt.definition.gpu:
+            return self.lock.state.owner == CODE_OWNER and self.lock.state.service == rt.name
+        return CODE_OWNER in rt.owners
+
+    async def _crash_seen(
+        self, rt: ServiceRuntime, p: procs.Proc, code: int | None, since_ready: float | None, lease: bool
+    ) -> None:
+        """G-51: say what the PC looked like when the crash was seen, then (under Code's lease) reload.
+
+        The figures are read when the monitor sees the exit (within `monitor_interval_s`), so the model's own
+        memory is already given back. Never raises: a figure that does not read is left out.
+        """
+        try:
+            room = await asyncio.to_thread(ramroom.read)
+            last = await asyncio.to_thread(_last_write, getattr(p, "log_path", None))
+            started = getattr(p, "started_at", None)
+            up_s = round(time.monotonic() - started, 1) if isinstance(started, float) else None
+            words = f"{rt.name} (pid {p.pid}) exited with code {code}"
+            if since_ready is not None:
+                words += f" {since_ready:.0f} s after it was ready"
+            words += f"; its log was last written {last or 'never'}"
+            if room.avail_mb is not None:
+                words += (f"; the PC had {room.avail_mb} MiB of memory free and {room.commit_mb} of "
+                          f"{room.limit_mb} MiB committed")  # fmt: skip
+            if lease:
+                words += f"; it was held by Nightshift Code ({CODE_OWNER})"
+            self.log.warn("crash_context", words, service=rt.name, pid=p.pid, exit_code=code,
+                          since_ready_s=since_ready, up_s=up_s, log_last_write=last,
+                          owner=CODE_OWNER if lease else self.lock.state.owner, **room.as_dict())  # fmt: skip
+        except Exception as e:  # the follow-up must never hurt the monitor
+            self.log.warn("crash_context_failed", str(e), service=rt.name)
+        if lease:
+            await self._reload_for_code(rt)
+
+    async def _reload_for_code(self, rt: ServiceRuntime) -> None:
+        """The model crashed while Nightshift Code held it: load it again, as Code's own acquire would.
+
+        OpenCode sends its requests to llama-server, never to the engine, so nothing else would bring the
+        model back while the Code window stays open. The acquire's guard runs at every step: a console closed,
+        a Release or Stop All meanwhile ends the load. Bounded by the crash rule (`crash_max` in
+        `crash_window_s`: then `_ensure` refuses with NS-E202, logged here) and by the memory check (NS-E208).
+        """
+        if self.shutting_down or not self._code_holds(rt):
+            self.log.info("code_reload_skipped", f"{rt.name} not loaded again: Nightshift Code no longer "
+                                                 "holds it", service=rt.name)  # fmt: skip
+            return
+        crashes = len(rt.crashes)
+        self.log.info("code_reload", f"loading {rt.name} again for Nightshift Code ({crashes} crash(es) in "
+                                     f"{self.cfg.crash_window_s:.0f} s; {self.cfg.crash_max} stop it)",
+                      service=rt.name, owner=CODE_OWNER, crashes=crashes)  # fmt: skip
+        try:
+            d = self.resolver(rt.name, CODE_ALIAS)
+            if d.gpu:
+                await self._swap_to(rt.name, d, CODE_OWNER)
+            else:
+                await self._ensure(rt, d)
+        except NsError as e:
+            self.log.warn("code_reload_failed", str(e), code=e.code, service=rt.name, owner=CODE_OWNER)
+            return
+        except Exception as e:
+            self.log.error("code_reload_failed", str(e), service=rt.name, owner=CODE_OWNER)
+            return
+        pid = rt.proc.pid if rt.proc is not None else None
+        self.log.info("code_reloaded", f"{rt.name} is loaded again for Nightshift Code", service=rt.name,
+                      pid=pid)  # fmt: skip
+        self.publish("service", {"service": rt.name, "event": "reloaded", "owner": CODE_OWNER})
 
     def _owners_of(self, rt: ServiceRuntime) -> list[str]:
         st = self.lock.state
@@ -974,8 +1079,11 @@ class Supervisor:
         """Called right after the GPU lock was granted to `owner`, before a model loads (F-H47).
 
         With a pid: the holder is that process, as it runs now (pid and creation time). Without one: a fresh
-        grant has no holder process (never probed); a re-acquire by the holder keeps the record it has.
+        grant has no holder process (never probed); a re-acquire by the holder keeps the record it has. A
+        fresh grant also cancels the unload a Code lease left due (WP3): the model is the new owner's now.
         """
+        if fresh:
+            self._unload_due.clear()
         if pid is None:
             if fresh:
                 self._holder = None
@@ -1064,7 +1172,10 @@ class Supervisor:
         return self._endpoint(service, d, alias)
 
     async def release(self, service: str, owner: str) -> bool:
-        """Give the service back; the idle timer starts when nobody holds it. False if not held."""
+        """Give the service back; the idle timer starts when nobody holds it. False if not held.
+
+        Nightshift Code's release (WP3): its model is unloaded at the next monitor pass instead
+        (`_unload_when_free`)."""
         self._touch()
         st = self.lock.state
         if st.owner == owner and st.service == service:
@@ -1072,6 +1183,7 @@ class Supervisor:
             rt = self.services.get(service)
             if rt is not None:
                 rt.idle_since = self.clock()
+            self._unload_when_free(owner, service, "released")
             self.publish("service", {"service": service, "event": "released", "owner": owner})
             return True
         rt = self.services.get(service)
@@ -1079,6 +1191,7 @@ class Supervisor:
             rt.owners.discard(owner)
             if not rt.owners:
                 rt.idle_since = self.clock()
+                self._unload_when_free(owner, service, "released")
             self.publish("service", {"service": service, "event": "released", "owner": owner})
             return True
         return False
@@ -1099,6 +1212,7 @@ class Supervisor:
             rt = self.services.get(service or "")
             if rt is not None:
                 rt.idle_since = self.clock()
+            self._unload_when_free(owner, service, reason or "released")
             freed = True
         if self.lock.drop_waiters(owner):
             freed = True
@@ -1107,6 +1221,7 @@ class Supervisor:
                 rt.owners.discard(owner)
                 if not rt.owners:
                     rt.idle_since = self.clock()
+                    self._unload_when_free(owner, rt.name, reason or "released")
                 freed = True
         if freed:
             self._wake_vram()  # a load waiting for memory for `owner` stops at its guard now
@@ -1115,6 +1230,34 @@ class Supervisor:
             self.log.warn("owner_released", msg, owner=owner, **why)
             self.publish("service", {"event": "owner_released", "owner": owner, **why})
         return freed
+
+    def _unload_when_free(self, owner: str, service: str | None, reason: str) -> None:
+        """Nightshift Code's lease of `service` ended (WP3, F70): its model is unloaded by the next monitor
+        pass (`_unload_released`) unless another owner takes it first, instead of after `idle_unload_s`.
+
+        The load is named by its pid: a later load (a reload, another owner's) is never unloaded by this.
+        Any other owner: nothing changes (the studio releases between stages and reuses the model).
+        """
+        if owner != CODE_OWNER or service is None:
+            return
+        rt = self.services.get(service)
+        if rt is None or rt.proc is None or rt.definition.persistent:
+            return
+        self._unload_due[service] = (rt.proc.pid, reason)
+        self.log.info("code_lease_ended", f"Nightshift Code gave {service} back ({reason}); it is unloaded "
+                                          "at the next monitor pass unless another owner takes it",
+                      owner=owner, service=service, reason=reason, pid=rt.proc.pid)  # fmt: skip
+
+    async def _unload_released(self, rt: ServiceRuntime) -> bool:
+        """Monitor pass: stop the load a Code lease left due, when nobody holds it now. True when stopped."""
+        due = self._unload_due.pop(rt.name, None)
+        if due is None or rt.proc is None or rt.proc.pid != due[0]:
+            return False
+        self.log.info("code_unload", f"{rt.name} unloaded: Nightshift Code's lease ended ({due[1]}) and no "
+                                     "other owner holds it",
+                      service=rt.name, pid=due[0], reason=due[1])  # fmt: skip
+        await self._stop(rt)
+        return True
 
     def beat_age(self, owner: str) -> float | None:
         """Seconds since `owner` last sent a heartbeat while holding the GPU.
@@ -1188,7 +1331,8 @@ class Supervisor:
         Gone: no running process has the pid, or one runs with another creation time (pid reuse). This is how
         a Nightshift Code console closed with X (its `finally` never runs) gives the card back, while a live
         but idle console keeps it for as long as it runs. An acquire still running for it (stopping a tenant,
-        loading its model) stops at its next `_guard`, because the lock is no longer its own.
+        loading its model) stops at its next `_guard`, because the lock is no longer its own. Code's model is
+        then unloaded by the same monitor pass (`_unload_when_free`, WP3), not 10 minutes later.
         """
         h = self._holder
         if h is None:
@@ -1374,15 +1518,22 @@ class Supervisor:
         for rt in self.services.values():
             if rt.op_lock.locked():
                 continue
-            self._reap(rt)
+            self._reap(rt, monitor=True)
             if rt.state == "error":
                 self._prune(rt)
                 if len(rt.crashes) < self.cfg.crash_max:
                     rt.state = "stopped"
+            if rt.proc is None:
+                self._unload_due.pop(rt.name, None)  # the load a Code lease left is gone already
             if rt.proc is None or rt.state != "ready" or rt.definition.persistent:
                 continue
+            if self._ready_seen.get(rt.name, (None, 0.0))[0] != rt.proc.pid:
+                self._ready_seen[rt.name] = (rt.proc.pid, now)  # for a crash's "seconds after ready"
             if self._has_owner(rt):
                 rt.idle_since = None
+                self._unload_due.pop(rt.name, None)  # another owner took the model Code left
+                continue
+            if await self._unload_released(rt):
                 continue
             if rt.idle_since is None:
                 rt.idle_since = now
