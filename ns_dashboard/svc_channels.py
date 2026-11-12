@@ -83,7 +83,10 @@ class ChannelsService:
         }
         last = {
             r["channel"]: r["last"]
-            for r in self.s.db.query("SELECT channel, MAX(created_at) AS last FROM outputs GROUP BY channel")
+            for r in self.s.db.query(  # a rejected video is not the channel's latest output (G-42)
+                "SELECT channel, MAX(created_at) AS last FROM outputs"
+                " WHERE status != 'rejected' GROUP BY channel"
+            )
         }
         loaded = self.load_all()
         stats = channel_stats(self.s.paths, self.s.db, loaded)

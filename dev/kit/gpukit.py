@@ -1098,17 +1098,21 @@ class Kit:
         return out
 
     def remove_voice(self, name: str) -> bool:
-        """The kit's own test voice folder removed (only a `gpukit-` name inside the voice library, and only
-        while no channel's profile names it as its voice); True when it is gone."""
+        """The kit's own test voice removed through the product's removal (G-38: moved to `removed\\voices`
+        with a record; only a `gpukit-` name, and only while no channel's profile names it as its voice);
+        True when it is gone from the voice library."""
         from ns_common.paths import Paths
+        from ns_studio import removal
 
-        root = Paths(self.home).models_tts_voices
-        folder = root / name
-        if not name.startswith("gpukit-") or folder.parent != root:
+        paths = Paths(self.home)
+        folder = paths.models_tts_voices / name
+        if not name.startswith("gpukit-") or folder.parent != paths.models_tts_voices:
             return False
-        if folder.exists() and self.voice_users(name):
-            return False
-        shutil.rmtree(folder, ignore_errors=True)
+        try:
+            removal.remove_voice(paths, name)
+        except removal.RemovalError as e:
+            if e.reason != "not_found":
+                return False
         return not folder.exists()
 
     def marked(self, text: str) -> str:
