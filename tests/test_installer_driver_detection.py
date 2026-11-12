@@ -28,7 +28,7 @@ $errs = $null; $tokens = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:NS_STAGE1, [ref]$tokens, [ref]$errs)
 $kind = [System.Management.Automation.Language.FunctionDefinitionAst]
 $wanted = @('Get-CudaVersion', 'Get-CudaFromDriver', 'Resolve-CudaVersion', 'ConvertTo-NvidiaDriverVersion',
-            'Find-NvidiaSmi')
+            'Find-NvidiaSmi', 'Get-ProbeHosts')
 $defs = @($ast.FindAll({ param($n) $n -is $kind -and $n.Name -in $wanted }, $true))
 if ($defs.Count -ne $wanted.Count) { Write-Output 'MISSING FUNCTIONS'; exit 9 }
 foreach ($d in $defs) { . ([scriptblock]::Create($d.Extent.Text)) }
@@ -50,7 +50,8 @@ def ps(body: str, **env: str) -> list[str]:
 # ---- the driver number as a CUDA source ---------------------------------------------------------------
 @pytest.mark.parametrize(
     ("driver", "cuda"),
-    [("581.57", "13.0"), ("580.65", "13.0"), ("572.16", "12.8"), ("570.00", "12.8"), ("566.14", "12.6"),
+    [("621.01", "13.0"),                    # newer than the table's newest row: that row answers
+     ("581.57", "13.0"), ("580.65", "13.0"), ("572.16", "12.8"), ("570.00", "12.8"), ("566.14", "12.6"),
      ("560.94", "12.6"), ("551.23", "12.4"), ("550.00", "12.4"), ("546.01", "12.3"), ("545.84", "12.3"),
      ("536.99", "12.2"), ("531.18", "12.1"), ("527.56", "12.0"), ("472.12", "11.8"), ("", ""), ("n/a", "")],
 )
@@ -83,6 +84,11 @@ def test_windows_driver_versions_become_nvidia_numbers(windows: str, nvidia: str
     ("smi", "driver", "source", "cuda"),
     [("NVIDIA-SMI 572.16   Driver Version: 572.16   CUDA Version: 12.8", "572.16", "nvidia-smi", "12.8"),
      ("CUDA  Version : 12.4", "", "nvidia-smi", "12.4"),
+     # the banner of driver 621.01, word for word from the first real install (2026-11-12): rc5 read nothing
+     # from it and answered "CUDA 13.0 (from driver 621.01)" out of the table
+     ("NVIDIA-SMI 621.01   KMD Version: 621.01   CUDA UMD Version: 13.5", "621.01", "nvidia-smi", "13.5"),
+     ("NVIDIA-SMI 621.01   KMD Version: 621.01   CUDA UMD Version: 13.5", "", "nvidia-smi", "13.5"),
+     ("CUDA UMD KMD Version: 13.5", "621.01", "driver", "13.0"),                # two words: not this banner
      ("", "572.16", "driver", "12.8"),                                          # banner missing
      ("NVIDIA-SMI 572.16  Treiberversion: 572.16  CUDA-Version: 12.8", "572.16", "driver", "12.8"),
      ("garbage", "531.18", "driver", "12.1"),
@@ -95,6 +101,28 @@ $r = Resolve-CudaVersion -Probe ([pscustomobject]@{ smi_text = $env:NS_SMI; driv
 Write-Output ('S=' + $r.source); Write-Output ('V=' + $r.version)
 """
     assert ps(body, NS_SMI=smi, NS_D=driver) == [f"S={source}", f"V={cuda}"]
+
+
+# ---- which sites the PC check asks --------------------------------------------------------------------
+def test_a_pc_that_has_the_visual_c_runtime_is_not_asked_about_its_download_site() -> None:
+    """First real install, 2026-11-12: the row warned "unreachable: download.visualstudio.microsoft.com" (with
+    NS-E105) on a PC whose Visual C++ runtime was installed, about a site setup then took nothing from."""
+    body = r"""
+$vc = 'https://download.visualstudio.microsoft.com'
+$all = @('https://github.com', $vc, 'https://pypi.org')
+Write-Output ('HAS=' + (@(Get-ProbeHosts -Hosts $all -VcRuntimePresent $true) -join ','))
+Write-Output ('LACKS=' + (@(Get-ProbeHosts -Hosts $all -VcRuntimePresent $false) -join ','))
+Write-Output ('ONE=' + (@(Get-ProbeHosts -Hosts @($vc) -VcRuntimePresent $true)).Count)
+"""
+    assert ps(body) == [
+        "HAS=https://github.com,https://pypi.org",
+        "LACKS=https://github.com,https://download.visualstudio.microsoft.com,https://pypi.org",
+        "ONE=0",
+    ]
+    text = (ROOT / "installer" / "stage1.ps1").read_text(encoding="ascii")
+    # the real probe asks the list through it, and the site is still on the list for a PC without the runtime
+    assert "Get-ProbeHosts -Hosts $script:NetworkHosts -VcRuntimePresent (Test-VcRuntime)" in text
+    assert "'https://download.visualstudio.microsoft.com'" in text
 
 
 # ---- where nvidia-smi is looked for -------------------------------------------------------------------

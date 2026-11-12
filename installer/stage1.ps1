@@ -190,9 +190,12 @@ function Get-DataDir {
 # Parsing helpers (pure functions, covered by the fake-probe tests)
 # ---------------------------------------------------------------------------------------------------------
 function Get-CudaVersion {
-    # Source 1: the banner nvidia-smi prints ("CUDA Version: 12.8").
+    # Source 1: the banner nvidia-smi prints. Up to the 58x drivers it reads "Driver Version: 581.57   CUDA
+    # Version: 13.0"; driver 621.01 (first real install, 2026-11-12) prints "KMD Version: 621.01   CUDA UMD Version:
+    # 13.5", so one word may stand between "CUDA" and "Version". A translated banner ("CUDA-Version") is not read
+    # here: the driver number answers for it.
     param([string]$Text)
-    if ($Text -match 'CUDA\s+Version\s*:\s*(\d+)\.(\d+)') {
+    if ($Text -match 'CUDA(?:\s+[A-Za-z]+)?\s+Version\s*:\s*(\d+)\.(\d+)') {
         return (New-Object System.Version -ArgumentList ([int]$Matches[1]), ([int]$Matches[2]))
     }
     return $null
@@ -451,6 +454,15 @@ function Test-HostReachable {
     }
 }
 
+function Get-ProbeHosts {
+    # The sites the PC check asks. The Microsoft download site serves one thing, the Visual C++ runtime: a PC that
+    # has the runtime takes nothing from it, so it is not asked there. (First real install, 2026-11-12: that site
+    # gave no answer, the runtime was installed, and the row warned about a site setup never used.)
+    param([string[]]$Hosts, [bool]$VcRuntimePresent)
+    if (-not $VcRuntimePresent) { return $Hosts }
+    return @($Hosts | Where-Object { ([uri]$_).Host -ne 'download.visualstudio.microsoft.com' })
+}
+
 function Test-WingetWorks {
     if (-not (Test-Tool 'winget.exe')) { return $false }
     try {
@@ -543,7 +555,7 @@ function Get-RealProbe {
 
     $ram = [math]::Round(([double](Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory) / 1GB, 1)
     $unreachable = New-Object System.Collections.Generic.List[string]
-    foreach ($u in $script:NetworkHosts) {
+    foreach ($u in (Get-ProbeHosts -Hosts $script:NetworkHosts -VcRuntimePresent (Test-VcRuntime))) {
         if (-not (Test-HostReachable -Url $u)) { $unreachable.Add(([uri]$u).Host) }
     }
     return [pscustomobject]@{
