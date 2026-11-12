@@ -37,6 +37,16 @@ if ($null -eq $info -or -not $info.PSObject.Properties['status']) {
 }
 Write-Host 'The update runs in the background. This window shows its progress.'
 
+function Show-UpdateLine {
+    # One line of the worker's log. Its last line is the machine-readable result with the whole release notes in
+    # it (tens of KB): not shown, the "Result:" line below says it in a sentence. Every other line names
+    # commands by this install's full path (FN-3). The release notes themselves are never rewritten.
+    param([string]$Line)
+    $t = $Line.Trim()
+    if ($t.StartsWith('{"') -and $t.EndsWith('}')) { return }
+    Write-Host (Format-NsCommands $Line $nsHome)
+}
+
 $statusFile = [string]$info.status
 $logFile = [string]$info.log
 $seen = 0
@@ -45,8 +55,8 @@ $final = $null
 $waited = 0
 while ($null -eq $final -and $waited -lt 14400) {
     if (Test-Path -LiteralPath $logFile) {
-        $lines = @(Get-Content -LiteralPath $logFile -ErrorAction SilentlyContinue)
-        for ($i = $seen; $i -lt $lines.Count; $i++) { Write-Host (Format-NsCommands $lines[$i] $nsHome) }
+        $lines = @(Get-Content -LiteralPath $logFile -Encoding UTF8 -ErrorAction SilentlyContinue)
+        for ($i = $seen; $i -lt $lines.Count; $i++) { Show-UpdateLine ([string]$lines[$i]) }
         $seen = $lines.Count
     }
     $state = $null
@@ -92,8 +102,8 @@ if ($null -eq $final) {
 }
 # the last lines of the log can arrive just after the state changes
 if (Test-Path -LiteralPath $logFile) {
-    $lines = @(Get-Content -LiteralPath $logFile -ErrorAction SilentlyContinue)
-    for ($i = $seen; $i -lt $lines.Count; $i++) { Write-Host (Format-NsCommands $lines[$i] $nsHome) }
+    $lines = @(Get-Content -LiteralPath $logFile -Encoding UTF8 -ErrorAction SilentlyContinue)
+    for ($i = $seen; $i -lt $lines.Count; $i++) { Show-UpdateLine ([string]$lines[$i]) }
 }
 if ($final.state -eq 'failed') {
     # an update that was applied and only the restart failed did complete: said as that (D-39a review note)
@@ -101,4 +111,6 @@ if ($final.state -eq 'failed') {
     if ($final.PSObject.Properties['updated'] -and $final.updated -eq $true) { $lead = 'The update was applied, but Nightshift did not start again: ' }
     Exit-NsWithPause ($lead + (Format-NsCommands ([string]$final.message) $nsHome)) 1
 }
+Write-Host ''
+Write-Host ('Result: ' + (Format-NsCommands ([string]$final.message) $nsHome))
 Read-Host 'Update finished. Press Enter to close' | Out-Null
