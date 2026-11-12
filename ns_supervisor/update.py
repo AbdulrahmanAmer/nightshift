@@ -2258,10 +2258,13 @@ def verify_failed(paths: Paths, since: float) -> str:
         if not isinstance(c, dict) or c.get("passed") is not False:
             continue
         line = str(c.get("name") or "a check")
-        if c.get("value") is not None or c.get("limit"):
-            line += f" ({c.get('value')}, limit {c.get('limit')})"
+        measured = [f"{c['value']}"] if c.get("value") is not None else []
+        if c.get("limit"):
+            measured.append(f"limit {c['limit']}")
+        if measured:
+            line += f" ({', '.join(measured)})"
         if c.get("log"):
-            line += f": {c['log']}"
+            line += f": {str(c['log']).strip()[:400]}"      # (one check's own words, not a whole traceback)
         out.append(line)
     return "; ".join(out)
 
