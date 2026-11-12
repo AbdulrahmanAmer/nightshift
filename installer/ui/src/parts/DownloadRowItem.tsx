@@ -3,15 +3,15 @@ import { Button, ProgressBar, StatusDot } from "@ref12";
 import { cx } from "@dash/ui/kit";
 import type { DownloadRow } from "../api/types";
 import { download as t } from "../copy";
-import { gbNum, mbps, minutesLeft, pct } from "../format";
+import { MB, gbNum, mbps, minutesLeft, pct } from "../format";
 import { Ring } from "./RowItems";
 
 const LIVE = new Set<DownloadRow["status"]>(["active", "copying", "verifying", "extracting"]);
 
 function sizeText(r: DownloadRow): string {
   if (r.bytesTotal == null) return "";
-  if (r.status === "done") return r.bytesTotal < 1e8 ? `${Math.round(r.bytesTotal / 1e6)} MB` : `${gbNum(r.bytesTotal)} GB`;
-  return r.bytesTotal < 1e8 ? `${Math.round(r.bytesDone / 1e6)}/${Math.round(r.bytesTotal / 1e6)} MB` : `${gbNum(r.bytesDone)}/${gbNum(r.bytesTotal)} GB`;
+  if (r.status === "done") return r.bytesTotal < 100 * MB ? `${Math.round(r.bytesTotal / MB)} MB` : `${gbNum(r.bytesTotal)} GB`;
+  return r.bytesTotal < 100 * MB ? `${Math.round(r.bytesDone / MB)}/${Math.round(r.bytesTotal / MB)} MB` : `${gbNum(r.bytesDone)}/${gbNum(r.bytesTotal)} GB`;
 }
 
 export function DownloadRowItem({ row, onRetry }: { row: DownloadRow; onRetry: () => void }) {

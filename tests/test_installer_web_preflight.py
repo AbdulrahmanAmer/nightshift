@@ -187,7 +187,7 @@ def test_models_folder_scan_counts_loose_files_and_files_inside_zips(tmp_path: P
     found = preflight.scan_models_source(tmp_path, expected)
     assert found == {"files": 2, "of": len(expected), "bytes": 30}
     check = preflight.disk_check(str(tmp_path), "small", [], lambda _p: 1.0, models=found)
-    assert check["ok"] and check["message"] == f"Found 2 of {len(expected)} model files, 0.0 GB"
+    assert check["ok"] and check["message"] == f"Found 2 of {len(expected)} model files, 30 B"
     empty = preflight.scan_models_source(tmp_path / "missing", expected)
     assert empty["files"] == 0
     assert preflight.disk_check("E:\\none", "small", [], lambda _p: 1.0, models=empty)["message"] == (

@@ -1212,7 +1212,8 @@ def test_the_collected_folder_and_zip_hold_every_part(world: World) -> None:
     assert world.run() == 0
     z_path = world.zips()[0]
     assert z_path.name == "nightshift-gpu-kit-20261112.zip" and z_path.parent == world.ev
-    size = f"{z_path.stat().st_size / 1e6:.1f} MB"
+    n = z_path.stat().st_size  # Windows units (binary), a file under 1 MB in KB: never "(0.0 MB)" (G-33)
+    size = f"{n / 1024:.1f} KB" if n < 1024**2 else f"{n / 1024**2:.1f} MB"
     assert world.out[-1] == f"Send this one file: {z_path} ({size}). The kit sent nothing anywhere."
     with zipfile.ZipFile(z_path) as z:
         names = set(z.namelist())
@@ -1527,14 +1528,15 @@ def test_the_scrubber_masks_every_form_of_keys_tokens_the_user_the_home_and_the_
         "GET https://example.invalid/api?key=abcdef&q=rain Authorization: Bearer abcdefghijklmnop",
         "token ghp_" + "x" * 36 + " sid S-1-5-21-111-222-333-1001",
         r"home D:\Nightshift\logs and D:\\Nightshift\\data and d:/nightshift/run and D%3A%5CNightshift",
-        r"profile C:\Users\Ahmed\Desktop, C:\USERS\AHMED~1\x, user Ahmed on AHMED-PC (ahmed)",
+        r"profile C:\Users\Ahmed\Desktop, C:\USERS\AHMED~1\x, USERNAME=Ahmed on AHMED-PC\ahmed owner: Ahmed",
         "sha256 " + "f" * 64,
     ])  # fmt: skip
     out = gpukit.scrub_text(text, masks)
     for gone in (PEXELS, HF, "12345678-0123", "secret-value", "abc123", "abcdef&", "abcdefghijklmnop", "ghp_",
                  "S-1-5-21", "Nightshift", "nightshift", "Users", "Ahmed", "ahmed", "AHMED"):  # fmt: skip
         assert gone not in out, gone
-    assert out.count("<home>") == 4 and out.count("<profile>") == 2 and "user <user> on <pc> (<user>)" in out
+    assert out.count("<home>") == 4 and out.count("<profile>") == 2
+    assert "USERNAME=<user> on <pc>\\<user> owner: <user>" in out
     assert '"keys": {"pexels": true}' in out and "f" * 64 in out  # not a secret: kept
     assert len(gpukit.MASKED) == 5
 

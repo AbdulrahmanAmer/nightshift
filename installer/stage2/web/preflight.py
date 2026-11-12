@@ -25,6 +25,7 @@ from installer.stage2.web.pathcheck import (
     home_problem,
 )
 from installer.stage2.web.plan import home_need, pinned
+from ns_common.sizes import size_text
 
 COPY_FILE = Path(__file__).with_name("operator_copy.json")
 DRIVER_URL = "https://www.nvidia.com/Download/index.aspx"
@@ -505,8 +506,8 @@ def disk_check(
     if models is not None:
         result["ok"] = models["files"] > 0
         if result["exists"]:
-            size_gb = models["bytes"] / 1024 ** 3
-            result["message"] = f"Found {models['files']} of {models['of']} model files, {size_gb:.1f} GB"
+            found = f"Found {models['files']} of {models['of']} model files"
+            result["message"] = f"{found}, {size_text(models['bytes'])}"
         else:
             result["message"] = "That folder was not found"
         return result

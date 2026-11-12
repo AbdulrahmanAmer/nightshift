@@ -62,6 +62,7 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import HfFile, LlmCustom, Manifest
 from ns_common.paths import Paths
+from ns_common.sizes import size_text
 
 HF = "https://huggingface.co"
 CHUNK = 1 << 20                  # hashing and copying
@@ -353,12 +354,8 @@ def disk_full_error(dest: Path, cause: OSError | None = None) -> NsError:
 
 
 def human_bytes(n: float) -> str:
-    """Readable size such as ``9.0 GB``."""
-    for unit in ("B", "KB", "MB", "GB"):
-        if abs(n) < 1024 or unit == "GB":
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} GB"
+    """Readable size such as ``9.0 GB`` in Windows units: the one formatter, ``ns_common.sizes``."""
+    return size_text(n)
 
 
 def eta_text(total_bytes: int, mbit_per_s: float = 50.0) -> str:

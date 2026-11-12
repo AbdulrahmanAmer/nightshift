@@ -346,7 +346,7 @@ def test_t9_every_wait_is_logged_with_its_reason_and_reaches_the_rich_reporter(t
     out = buf.getvalue()
     assert "a.bin: No data came for a while. Trying again in 2 s" in out
     assert "a.bin: No internet right now. Checking again in 2 s" in out
-    assert "a.bin: starting, 0.0 GB" in out and "a.bin: downloaded, 0.0 GB" in out
+    assert "a.bin: starting, 256.0 KB" in out and "a.bin: downloaded, 256.0 KB" in out
     assert "\x1b" not in out, "no control sequences in a file"
 
 

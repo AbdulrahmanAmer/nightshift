@@ -17,29 +17,49 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
-    DownloadColumn,
     Progress,
+    ProgressColumn,
+    Task,
     TaskID,
     TextColumn,
     TimeRemainingColumn,
-    TransferSpeedColumn,
 )
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
+from rich.text import Text
+
+from ns_common.sizes import pair_text, size_text, speed_text
 
 STATUS_STYLE = {"ok": "green", "warn": "yellow", "fail": "red", "done": "green", "skipped": "dim",
                 "failed": "red", "pending": "yellow"}
 
 
 PLAIN_INTERVAL_S = 60.0     # without a terminal: one total line at most this often (card download-outage N5)
-GIB = 1024**3
 MIB = 1024**2
 PLAIN_OUTCOMES = {"downloaded": "downloaded", "copied": "copied from your folder", "skipped": "already here",
                   "missing_optional": "not available, setup goes on without it", "failed": "failed"}
 
 
 def _gb(n: float) -> str:
-    return f"{n / GIB:.1f} GB"
+    """One size in Windows units (the one formatter, ``ns_common.sizes``; the name is from when it was GB)."""
+    return size_text(n)
+
+
+class SizeColumn(ProgressColumn):
+    """``8.4/20.9 GB``: done and total in the formatter's binary units (rich's DownloadColumn is decimal)."""
+
+    def render(self, task: Task) -> Text:
+        total = int(task.total) if task.total else None
+        return Text(pair_text(task.completed, total), style="progress.download")
+
+
+class SpeedColumn(ProgressColumn):
+    """``11.4 MB/s`` in binary MB (rich's TransferSpeedColumn is decimal)."""
+
+    def render(self, task: Task) -> Text:
+        if task.speed is None:
+            return Text("?", style="progress.data.speed")
+        return Text(speed_text(task.speed), style="progress.data.speed")
 
 
 def _took(seconds: float) -> str:
@@ -84,8 +104,8 @@ class RichReporter:
             self._progress = Progress(
                 TextColumn("{task.description}", justify="left"),
                 BarColumn(bar_width=30),
-                DownloadColumn(),
-                TransferSpeedColumn(),
+                SizeColumn(),
+                SpeedColumn(),
                 TimeRemainingColumn(),
                 console=console,
             )

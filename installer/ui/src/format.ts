@@ -1,12 +1,12 @@
-// Number and time formats (docs/design/installer-ui.md section 3.4): sizes in GB with one decimal, speeds in MB/s with
+// Number and time formats (docs/design/installer-ui.md section 3.4): sizes in Windows units (binary steps of 1024, labelled GB and MB, as Explorer shows them; the same as ns_common/sizes.py) with one decimal, speeds in MB/s with
 // one decimal, time left as "10 min left", clock times as HH:MM on the 24 hour clock.
 
-const GB = 1e9;
-const MB = 1e6;
+const GB = 1024 ** 3;
+export const MB = 1024 ** 2;
 
-/** 9_000_000_000 -> "9.0". */
+/** 9_663_676_416 (9 GiB) -> "9.0". */
 export const gbNum = (bytes: number): string => (bytes / GB).toFixed(1);
-/** 9_000_000_000 -> "9.0 GB". */
+/** 9_663_676_416 -> "9.0 GB". */
 export const gb = (bytes: number): string => `${gbNum(bytes)} GB`;
 /** Disk space already in GB: 43 -> "43 GB". */
 export const gbFree = (n: number): string => `${Math.round(n)} GB`;
