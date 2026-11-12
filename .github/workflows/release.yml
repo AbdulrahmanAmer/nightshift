@@ -177,7 +177,14 @@ jobs:
           if (-not $m.Success) { throw "CHANGELOG.md has no '## [$base]' heading; move the Unreleased entries under it before tagging" }
           # the release body: the "which file do I download" template, then this version's changelog entries
           $template = (Get-Content dev/release_notes.md -Raw).Replace('<ver>', $version)
-          Set-Content -Path release-notes.md -Value ($template.TrimEnd() + "`n`n" + $m.Groups['body'].Value.Trim()) -Encoding utf8
+          $body = $template.TrimEnd() + "`n`n" + $m.Groups['body'].Value.Trim()
+          # GitHub refuses a release text over 125,000 characters (HTTP 422, the rc6 release run 43256493476), and
+          # --generate-notes adds its own list after it: over 100,000 the changelog entries are left out and named
+          if ($body.Length -gt 100000) {
+            $body = $template.TrimEnd() + "`n`n" + "The full notes of this version are in CHANGELOG.md under ``## [$base]`` " +
+              "(too long for a GitHub release text): https://github.com/$env:GITHUB_REPOSITORY/blob/$env:GITHUB_REF_NAME/CHANGELOG.md"
+          }
+          Set-Content -Path release-notes.md -Value $body -Encoding utf8
 
       - uses: actions/setup-node@v4
         with:

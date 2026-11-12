@@ -745,8 +745,12 @@ def test_a_stopped_request_keeps_what_it_owes_whatever_comes_next_and_the_texts_
     assert dashboard_jobs.PAUSE_REQUEUE_LIMIT == 3 and svc_jobs.RETRY_LOOKBACK == 200
     assert ownership.RESUME_WITHIN_DAYS == 3
     run_job = inspect.getsource(orchestrator.run_job)
-    assert run_job.index("not_paused(group_list[0].name)") < run_job.index("acquirer.acquire(tenant")
-    assert run_job.count("not_paused(st.name)") == 2, "before the embed service and before every stage"
+    # footage-robust F4: the tenant is acquired before the first stage of a group that really runs, so
+    # the pause check before the graphics card names that stage, no longer the group's first
+    acquire = run_job.index("acquirer.acquire(tenant")
+    gate = run_job.rfind("if tenant is not None and runs", 0, acquire)
+    assert run_job.rfind("not_paused(st.name)", 0, acquire) > gate > 0
+    assert run_job.count("not_paused(st.name)") == 3, "before the card, the embed service, every stage"
     d = _flat(decision("Incident procedure"))
     for words in (
         "`owed_after_stop`", "`PAUSE_REQUEUE_LIMIT` (3)", 'goes back as plain "Queued"', "it does not fail",

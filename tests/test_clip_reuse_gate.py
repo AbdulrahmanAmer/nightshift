@@ -237,8 +237,18 @@ def test_a_relaxed_clip_that_also_broke_a_window_unrelaxed_still_fails(tmp_home:
     assert ei.value.code == "NS-E613"
 
 
-def test_pipeline_clips_stage_then_final_gate(tmp_home: Path):
+def _no_black(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stub's files are a few bytes, not video: with FFmpeg present the clips stage's black probe
+    (card footage-robust F3) would call every one unreadable and replace it. These tests are about the
+    reuse gate, so the probe reads every clip as clear (the probe is tested in test_footage_robust.py)."""
+    import ns_studio.media.clips as clips_mod
+
+    monkeypatch.setattr(clips_mod, "treatment_probe", lambda treatment, size: (lambda path, ss, length: []))
+
+
+def test_pipeline_clips_stage_then_final_gate(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
     """The clips stage writes the picks, the gate reads them: fresh footage passes, a window breach fails."""
+    _no_black(monkeypatch)
     ctx = make_ctx(tmp_home)
     _prepare_job(ctx)
     ctx.services.clip_sources = [
@@ -262,7 +272,10 @@ def test_pipeline_clips_stage_then_final_gate(tmp_home: Path):
     assert ei.value.code == "NS-E613"
 
 
-def test_pipeline_a_dry_pool_relaxes_with_a_warning_the_gate_accepts(tmp_home: Path):
+def test_pipeline_a_dry_pool_relaxes_with_a_warning_the_gate_accepts(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_black(monkeypatch)
     ctx = make_ctx(tmp_home)
     _prepare_job(ctx)
     pool = {

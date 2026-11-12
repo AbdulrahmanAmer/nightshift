@@ -9,10 +9,13 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [0.1.15] - 2026-11-12
 
-This is release candidate 0.1.15-rc6, published for testing. It is a prerelease: it is not offered as an update to a
-PC on 0.1.14 or on an earlier candidate, and you install it by hand (`Nightshift-Setup-0.1.15-rc6.zip` for a first
-install, or `Nightshift-Update-0.1.15-rc6.zip` through Settings > Updates > From a file). It is the first candidate
-written from a real graphics card. 0.1.15-rc5 was installed on the GPU PC on 2026-11-12 (an RTX 5060 Ti with 16 GB):
+This is release candidate 0.1.15-rc7, published for testing. It is a prerelease: it is not offered as an update to a
+PC on 0.1.14 or on an earlier candidate, and you install it by hand (`Nightshift-Setup-0.1.15-rc7.zip` for a first
+install, or `Nightshift-Update-0.1.15-rc7.zip` through Settings > Updates > From a file). 0.1.15-rc7 adds what the first real Short on the GPU PC found (it was refused for black
+frames, its redo died on one slow answer of Pixabay, and it downloaded 1.15 GB of footage): footage downloads are
+tried again and a dead clip is replaced, a redo keeps the footage it has, the story model is no longer loaded for
+steps a redo skips, and an update no longer calls a program it ended "could not be ended". 0.1.15-rc6 was the
+first candidate written from a real graphics card. 0.1.15-rc5 was installed on the GPU PC on 2026-11-12 (an RTX 5060 Ti with 16 GB):
 setup ran through in one go, every model answered once, a voice was designed and one was cloned, and the Assistant
 answered; the GPU kit stopped at its third step and the first long video stopped at its fourth, both for faults of
 Nightshift and not of the PC. Compared with 0.1.15-rc5 this candidate fixes what that day found: the model test
@@ -388,6 +391,13 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
   changed in a model file of an engine-test install) has not run on a real install.
 
 ### Updates, files and safety
+
+- An update or setup no longer refuses with NS-E706 "could not be ended" for a Nightshift program it had ended
+  (rc6's last fix, found by CI under load): the stop sequence asks Windows whether the program still runs, not a
+  library that called an ended program running while another program still held it. Not covered: a real update
+  on a busy PC (shown by a test that holds the ended program open).
+- The release page of a version with long notes is published (rc7; the rc6 release run failed with "body is too
+  long (maximum is 125000 characters)"): over 100,000 characters the page names CHANGELOG.md instead of copying it.
 
 - After an update the dashboard window shows the new interface, not the old one kept in its cache. The page,
   `app.js` and `app.css` are sent with `Cache-Control: no-cache`; only content-hashed files under `/assets/` are
@@ -912,6 +922,21 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
   Shown by tests; never run with two real installs.
 
 ### Videos and stories
+
+- Footage no longer ends a video, and costs less data (footage-robust, rc7; found on the GPU PC, where the first
+  real Short was refused by QC for two black intervals, its redo downloaded a new set of clips and then ended with
+  NS-E503 on one slow answer of Pixabay, and the run used 1.15 GB of the owner's data). A clip download that times
+  out, is cut or gets a server error is tried again (after 2, 5 and 15 s, each try in the job's log); a clip that
+  still cannot be fetched is replaced by the next candidate, and the job stops only when three candidates in a row
+  fail or none is left. Each shot's clip is checked for black before the render, and a black stretch is moved or the
+  clip replaced. A redo after QC keeps the footage it has: a redo for black frames replaces only the clips under the
+  black, a redo for the hook keeps them all. A step that a redo skips no longer starts its service (the story model
+  was loaded for 21 s for nothing). The footage step logs its progress and the MB it downloaded
+  (`clips/footage.json`), and OPERATOR.md says what footage costs: about 0.4 GB a minute of Short, about 1.3 to 1.6
+  GB for an 11-minute video. Not covered: whether the black check before the render matches QC on real footage (it
+  looks at a small copy without the zoom), why the first Short's picture went black (very dark footage is the likely
+  cause, unconfirmed), the long video's footage gets the retries but not the black check, a retried clip starts again
+  from its first byte, and the Dashboard does not show the footage progress yet (the log does).
 
 - A story job no longer ends because a rewrite came back too short, and never replaces your idea in silence
   (story-robust; found on the GPU PC, where the owner's first long video ended after three minutes with NS-E303
