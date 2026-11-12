@@ -43,9 +43,10 @@ def test_release_workflow_builds_the_uis_before_the_bundle():
 
 
 def test_the_release_text_stays_under_githubs_limit():
-    """The rc6 release run (43256493476) failed: HTTP 422 "body is too long (maximum is 125000 characters)". The
-    body is the notes template plus this version's CHANGELOG section; over 100,000 characters (room for the list
-    --generate-notes adds) the section is replaced by a pointer to CHANGELOG.md."""
+    """The rc6 release run (43256493476) failed: HTTP 422 "body is too long (maximum is 125000
+    characters)". The body is the notes template plus this version's CHANGELOG section; over 100,000
+    characters (room for the list --generate-notes adds) the section is replaced by a pointer to
+    CHANGELOG.md."""
     wf = read(".github/workflows/release.yml")
     build = wf[wf.index("$template = (Get-Content dev/release_notes.md -Raw)"):]
     build = build[: build.index("Set-Content -Path release-notes.md")]
