@@ -39,6 +39,21 @@ GOOD_CRITIC = {"scores": {k: 9 for k in RUBRIC}, "fixes": []}
 TINY_MASTER_WORDS = words_for_seconds(4 * 60, 155, fixed_s=master_fixed_seconds(5))  # 4:00 in 5 chapters
 
 
+class SameLengthLlm(FakeLlm):
+    """A model that cannot change a text's length: a lengthening (`expand`) or a trim (`revise`) comes back as
+    the text it was given. Since card story-robust S2 the critic stages repair a text outside its window
+    before NS-E303; a model that writes too little is one whose repair does not hold either (the shipped
+    `expand.txt` and `revise.txt` are full-scale texts of another story and would be accepted)."""
+
+    def complete_text(self, *, prompt_name: str, system: str, user: str, thinking: bool = False,
+                      temperature: float = 0.8, max_tokens: int = 2048) -> str:
+        marker = {"expand": "Chapter text:\n", "revise": "Text:\n"}.get(prompt_name)
+        if marker is None or marker not in user:
+            return super().complete_text(prompt_name=prompt_name, system=system, user=user, thinking=thinking)
+        self._record(prompt_name=prompt_name, system=system, user=user, thinking=thinking, temperature=temperature)
+        return user.split(marker, 1)[1]
+
+
 def profiles() -> Any:
     """The profile module, imported when a test runs so each test fails by itself where it is missing."""
     from ns_studio.text import story_profile
@@ -315,6 +330,7 @@ def master_ctx(
     texts: dict[int, str] | None = None,
     picked: tuple[int, ...] = (1, 3, 5),
     sentences: int = 14,
+    same_length: bool = False,
 ):
     """A master job whose fake model writes 5 chapters of `sentences` sentences (14 are about 138 words)."""
     monkeypatch.setitem(FORMAT_STAGES, "master_first", list(M.MASTER_STAGES))
@@ -334,7 +350,7 @@ def master_ctx(
             "text": texts.get(n, chapter_text(n, sentences)),
             "summary": "Two plain facts.",
         }
-    ctx.services.llm = FakeLlm(FIXTURES_LLM, overrides=overrides)
+    ctx.services.llm = (SameLengthLlm if same_length else FakeLlm)(FIXTURES_LLM, overrides=overrides)
     return ctx
 
 
@@ -364,7 +380,7 @@ def test_a_model_that_writes_less_than_the_tiny_scale_still_fails_with_e303(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
     little = chapter_text(3, 3)  # about 30 words: under half of a 110-word chapter
-    ctx = master_ctx(monkeypatch, tmp_home, tiny=True, texts={3: little})
+    ctx = master_ctx(monkeypatch, tmp_home, tiny=True, texts={3: little}, same_length=True)
     with pytest.raises(NsError) as ei:
         run_job(ctx)
     assert ei.value.code == "NS-E303"
@@ -389,7 +405,7 @@ def test_a_reading_level_under_the_tiny_floor_still_fails_with_e303(
 def test_the_same_model_with_the_switch_off_fails_the_normal_thresholds(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    ctx = master_ctx(monkeypatch, tmp_home, tiny=False)
+    ctx = master_ctx(monkeypatch, tmp_home, tiny=False, same_length=True)
     with pytest.raises(NsError) as ei:
         run_job(ctx)
     assert ei.value.code == "NS-E303"
@@ -518,11 +534,11 @@ def test_expansion_accepts_a_smaller_addition_when_tiny(
 
 
 # --------------------------------------------------------------------------------- the Shorts text stages
-def short_ctx(tmp_home: Path, *, tiny: bool, sentences: int):
+def short_ctx(tmp_home: Path, *, tiny: bool, sentences: int, same_length: bool = False):
     ctx = make_ctx(tmp_home)
     if tiny:
         ctx.runtime = tiny_runtime(ctx.runtime)
-    ctx.services.llm = FakeLlm(FIXTURES_LLM, overrides={"critic": GOOD_CRITIC})
+    ctx.services.llm = (SameLengthLlm if same_length else FakeLlm)(FIXTURES_LLM, overrides={"critic": GOOD_CRITIC})
     text = story_text(sentences)
     ctx.write_json("story.json", {"text": text, "word_count": word_count(text), "revisions": 0})
     return ctx
@@ -542,7 +558,7 @@ def test_a_tiny_short_story_passes_critic_revise(tmp_home: Path):
 def test_critic_revise_keeps_failing_what_the_profile_says_is_too_little(
     tmp_home: Path, tiny: bool, sentences: int, rules: list[str]
 ):
-    ctx = short_ctx(tmp_home, tiny=tiny, sentences=sentences)
+    ctx = short_ctx(tmp_home, tiny=tiny, sentences=sentences, same_length=True)
     with pytest.raises(NsError) as ei:
         REGISTRY["critic_revise"].run(ctx)
     assert ei.value.code == "NS-E303"

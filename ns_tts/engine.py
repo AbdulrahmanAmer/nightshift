@@ -42,6 +42,23 @@ registry lives in RAM (re-registered after every restart), and a long-lived gran
 the TTS service when the supervisor stops it. Its `speed` field is parsed and ignored. A short-lived
 `qwen-tts` process per batch keeps the contract exact and leaves nothing behind.
 
+Arrival stamps (card verify-limits L2): while `_run_stream` reads the stream it notes the moment each
+utterance is complete, that is when its LAST BYTE was read (the byte before the next utterance's header; for
+the last one, the last byte of the stream). That is right whether the tool writes an utterance's header
+before it makes it or writes the whole utterance once it is made: the moment the next header arrives would be
+one utterance late in the second case (review of block E2, finding 1). `synth_batch` leaves them in
+`last_stamps` as (`time.perf_counter()` value, audio seconds) per utterance; the service hands them to its
+caller, and `ns verify` measures the speaking rate from them (the time from the first utterance to the last
+over the audio made in between), so a process's start and load are not counted as speaking. The file route
+(`synth`) and the other engines leave `last_stamps` None. Not yet seen on a GPU PC: whether
+`qwen-tts` flushes each utterance as it is made (if it held them to the end, the stamps would not arrive one
+after the other, and `ns verify` says so and times the whole call instead).
+
+What the tool said (L8): after every run of `qwen-tts` or `qwen-codec` the engine logs ONE event,
+`qwentts_said`: the outcome, the backend the tool chose (`[Load] Talker backend: CUDA0 ...`), the lines and
+audio seconds it made, the wall seconds, and each `[Perf] Total <ms> ms (... audio <s> s, RTF <r>)` figure.
+The parse never fails: a line it does not know is left out, and the event is logged with what was found.
+
 Speed: neither tool has a speed control, so `time_stretch` (FFmpeg `atempo`, pitch preserved) runs on each
 chunk. Voices: qwentts stores `speaker.spk` + `speaker.rvq` + `ref.txt`; the reference engine and the fake
 store one `speaker.bin` (`REFERENCE_MAGIC` marks the PyTorch format). Each engine refuses the other's voices
@@ -51,6 +68,7 @@ when a synthesis fails, `NS-E315` when a voice cannot be built, `NS-E311` for a 
 
 from __future__ import annotations
 
+import bisect
 import dataclasses
 import gc
 import hashlib
@@ -58,14 +76,16 @@ import importlib
 import io
 import math
 import os
+import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import threading
 import time
 import zlib
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -77,7 +97,7 @@ from ns_common.models import TtsCfg
 from ns_common.paths import TTS_HF_SUBDIR, Paths
 from ns_common.textstats import word_count
 from ns_common.tts_timeout import tts_timeout_s
-from ns_tts.audio import read_wav, split_wav_stream, time_stretch, trim_silence, write_wav
+from ns_tts.audio import _STREAM_HEAD, read_wav, split_wav_stream, time_stretch, trim_silence, write_wav
 from ns_tts.sapi import (
     CALIBRATION_TEXT,
     PROBE_SPEAK_TIMEOUT_S,
@@ -532,6 +552,109 @@ class FakeEngine:
 
 # ---------------------------------------------------------------- qwentts.cpp
 
+# What qwentts.cpp prints on stderr (seen on the studio PC, qwentts.cpp 5916bf7):
+#   [Load] Talker backend: CUDA0 (CPU threads: 6)
+#   [Perf] Total 1222.5 ms (50 frames, 13.68 ms/frame AR, audio 4.00 s, RTF 0.306)
+_LOAD_BACKEND = re.compile(r"\[Load\][^\n]*?Talker backend:\s*([^\s(,]+)")
+_PERF_TOTAL = re.compile(r"\[Perf\]\s*Total\s+(\d+(?:\.\d+)?)\s*ms([^\n]*)")
+_PERF_AUDIO = re.compile(r"\baudio\s+(\d+(?:\.\d+)?)\s*s\b")
+_PERF_RTF = re.compile(r"\bRTF\s+(\d+(?:\.\d+)?)")
+_STREAM_HEAD_LEN = 44  # RIFF(12) + "fmt " chunk(24) + "data" chunk head(8): `ns_tts.audio._STREAM_HEAD`
+_JOIN_S = 10.0  # how long the readers of a stopped process are waited for (a held pipe never hangs a batch)
+
+
+def _wav_seconds(path: Path) -> float | None:
+    """Seconds of the WAV a tool wrote, for the log; None when there is none or it cannot be read."""
+    try:
+        x, sr = read_wav(path)
+    except (OSError, ValueError):
+        return None
+    return round(len(x) / sr, 3) if sr > 0 else None
+
+
+def tool_words(stderr: bytes | str | None) -> dict[str, Any]:
+    """What a qwentts tool said about itself: the backend it chose and its per-line `[Perf] Total` figures.
+
+    `{"backend": "CUDA0" | None, "perf_total_ms": [...], "perf_audio_s": [...], "perf_rtf": [...]}`: one entry
+    per `[Perf] Total` line, in order; a line without an audio or RTF figure gives None there. Never raises: a
+    line it does not know is left out (the tool's words may change between versions).
+    """
+    out: dict[str, Any] = {"backend": None, "perf_total_ms": [], "perf_audio_s": [], "perf_rtf": []}
+    try:
+        text = stderr.decode("utf-8", errors="replace") if isinstance(stderr, bytes) else str(stderr or "")
+        found = _LOAD_BACKEND.search(text)
+        out["backend"] = found.group(1) if found else None
+        for m in _PERF_TOTAL.finditer(text):
+            rest = m.group(2)
+            audio, rtf = _PERF_AUDIO.search(rest), _PERF_RTF.search(rest)
+            out["perf_total_ms"].append(float(m.group(1)))
+            out["perf_audio_s"].append(float(audio.group(1)) if audio else None)
+            out["perf_rtf"].append(float(rtf.group(1)) if rtf else None)
+    except Exception:  # tolerant by design (L8): the words are a record, never a reason to fail a synthesis
+        pass
+    return out
+
+
+class StreamClock:
+    """Stamps the utterances of a `--stream-by-line` stdout while it is read (card verify-limits L2).
+
+    `feed` gets each piece of stdout with the moment it was read; `end` the moment the stream ended. An
+    utterance is complete when its LAST BYTE was read: the byte before the next one's header, and for the last
+    utterance the stream's last byte. So the stamp is when all of it was there whether the tool writes an
+    utterance's header before it makes it or writes the whole utterance once it is made (the moment the next
+    header arrives would be one utterance late then). The bytes are kept (`data`): they are the process's
+    stdout.
+    """
+
+    def __init__(self) -> None:
+        self.data = bytearray()
+        self.heads: list[int] = []
+        self.ended_at: float | None = None
+        self._ends: list[int] = []  # len(data) after each piece, ascending
+        self._at: list[float] = []  # the moment each piece was read
+
+    def feed(self, piece: bytes, now: float) -> None:
+        if not piece:
+            return
+        start = max(0, len(self.data) - (_STREAM_HEAD_LEN - 1))  # a header may straddle two pieces
+        if self.heads:
+            start = max(start, self.heads[-1] + 1)
+        self.data += piece
+        self._ends.append(len(self.data))
+        self._at.append(now)
+        for m in _STREAM_HEAD.finditer(self.data, start):
+            self.heads.append(m.start())
+
+    def end(self, now: float) -> None:
+        self.ended_at = now
+
+    def _read_at(self, offset: int) -> float:
+        """The moment the byte at `offset` was read (the first piece that ended past it)."""
+        return self._at[min(bisect.bisect_right(self._ends, offset), len(self._at) - 1)]
+
+    def arrivals(self, *, ended_whole: bool) -> list[float]:
+        """When each complete utterance was there. `ended_whole`: the process exited by itself with 0, so its
+        last utterance is complete; after a kill or a failure the last one is left out (it may be cut)."""
+        out = [self._read_at(h - 1) for h in self.heads[1:]]
+        if ended_whole and self.heads:
+            out.append(self._at[-1])
+        return out
+
+    def audio_seconds(self) -> float:
+        """Seconds of audio in the stream, from each header's format and its byte span (for the log only)."""
+        total = 0.0
+        for k, start in enumerate(self.heads):
+            end = self.heads[k + 1] if k + 1 < len(self.heads) else len(self.data)
+            try:
+                ch, rate = struct.unpack_from("<HI", self.data, start + 22)
+                bits = struct.unpack_from("<H", self.data, start + 34)[0]
+            except struct.error:
+                continue
+            frame = ch * (bits // 8)
+            if frame > 0 and rate > 0:
+                total += max(0, end - start - _STREAM_HEAD_LEN) / frame / rate
+        return round(total, 3)
+
 
 class QwenttsEngine:
     """Runs `qwen-tts.exe` once per batch of chunks and `qwen-codec.exe` once per new voice (module doc).
@@ -573,6 +696,9 @@ class QwenttsEngine:
         self._proc_lock = threading.Lock()
         self._proc: subprocess.Popen[bytes] | None = None
         self._cancelled = False
+        # (perf_counter moment, audio seconds) of each utterance of the last `synth_batch` that ran as one
+        # stream; None after any other call or a failure (module doc, "Arrival stamps")
+        self.last_stamps: list[tuple[float, float]] | None = None
 
     def cancel(self) -> bool:
         """Kill the batch process that is running, if any (the studio's client timed out and asked for it).
@@ -719,13 +845,16 @@ class QwenttsEngine:
         code: str,
         stdin_text: str | None = None,
         timeout_s: float | None = None,
+        wav: Path | None = None,
     ) -> bytes:
         """Run `tool` to completion and return its stdout; every failure becomes `NsError(code)` (NS-E310
-        synth, NS-E315 voice). `timeout_s` overrides the engine's per-process limit (batches take longer)."""
+        synth, NS-E315 voice). `timeout_s` overrides the engine's per-process limit (batches take longer).
+        `wav`: the file the tool writes its audio to, measured for the `qwentts_said` event (L8)."""
         if self.log:
             self.log.debug("qwentts_run", cmd=" ".join(cmd), stdin_chars=len(stdin_text or ""))
         data = stdin_text.encode("utf-8") if stdin_text is not None else b""
         limit = timeout_s if timeout_s is not None else self.timeout_s
+        t0 = time.perf_counter()
         try:
             proc = subprocess.run(
                 cmd,
@@ -736,58 +865,163 @@ class QwenttsEngine:
                 creationflags=_NO_WINDOW,
             )
         except subprocess.TimeoutExpired as e:
+            self._said(tool, "timed out", e.stderr, time.perf_counter() - t0, lines=0)
             raise NsError(code, f"{tool} timed out after {limit:.0f}s", cmd=cmd) from e
         except OSError as e:
+            self._said(tool, "did not start", None, time.perf_counter() - t0, lines=0)
             raise NsError(code, f"cannot start {tool}: {e}", cmd=cmd) from e
+        wall = time.perf_counter() - t0
         if proc.returncode != 0:
+            self._said(tool, f"exit {proc.returncode}", proc.stderr, wall, lines=0)
             raw = (proc.stderr or proc.stdout or b"").decode("utf-8", errors="replace")
             tail = "\n".join(raw.strip().splitlines()[-8:])
             raise NsError(code, f"{tool} exited {proc.returncode}: {tail}", cmd=cmd)
+        audio = _wav_seconds(wav) if wav is not None else None
+        lines = None if wav is None else (1 if audio else 0)  # qwen-codec makes no lines of speech
+        self._said(tool, "ok", proc.stderr, wall, lines=lines, audio_s=audio)
         return proc.stdout or b""
+
+    def _said(
+        self, tool: str, outcome: str, stderr: bytes | str | None, wall_s: float, *,
+        lines: int | None, audio_s: float | None = None,
+    ) -> None:
+        """The ONE `qwentts_said` event of a run of `tool` (L8). Never raises: it is a record."""
+        if self.log is None:
+            return
+        try:
+            words = tool_words(stderr)
+            self.log.info(
+                "qwentts_said",
+                f"{tool}: {outcome}, backend {words['backend'] or 'not said'}",
+                tool=tool, outcome=outcome, backend=words["backend"], lines=lines, audio_s=audio_s,
+                wall_s=round(wall_s, 3), perf_total_ms=words["perf_total_ms"],
+                perf_audio_s=words["perf_audio_s"], perf_rtf=words["perf_rtf"],
+            )  # fmt: skip
+        except Exception:  # a log that cannot be written never fails a synthesis
+            pass
 
     def _run_stream(
         self, cmd: list[str], *, tool: str, code: str, stdin_text: str, timeout_s: float
-    ) -> bytes:
+    ) -> tuple[bytes, list[float]]:
         """Like `_run` for a `--stream-by-line` batch, but `cancel()` can stop it and a stop keeps its output.
 
-        A timeout, a cancel or a non-zero exit raises `BatchInterrupted` (an `NsError` with `code`) whose
-        `partial` holds what the process had already written to stdout.
+        Returns (stdout, the moment each utterance was complete: `StreamClock.arrivals`). stdout and stderr
+        are read by two threads while the process runs (so the stamps are taken as the bytes come, and
+        neither pipe can fill up and stall the tool), stdin is written by a third. A timeout, a cancel, a
+        non-zero exit or a stdout that could not be read to its end raises `BatchInterrupted` (an `NsError`
+        with `code`) whose `partial` holds what the process had already written to stdout. Every way out logs
+        one `qwentts_said` event.
         """
         if self.log:
             self.log.debug("qwentts_run", cmd=" ".join(cmd), stdin_chars=len(stdin_text))
+        t0 = time.perf_counter()
         try:
             proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 creationflags=_NO_WINDOW,
             )  # fmt: skip
         except OSError as e:
+            self._said(tool, "did not start", None, time.perf_counter() - t0, lines=0)
             raise NsError(code, f"cannot start {tool}: {e}", cmd=cmd) from e
         with self._proc_lock:
             self._proc = proc
             self._cancelled = False
+        clock = StreamClock()
+        err = bytearray()
+        seen = threading.Lock()  # guards `clock`, `err` and `whole` between the readers and this thread
+        whole: list[bool] = []  # [True] once stdout was read to a clean end of file
+
+        def read_out() -> None:
+            stream = proc.stdout
+            try:
+                while stream is not None:
+                    piece = os.read(stream.fileno(), 65536)
+                    if not piece:
+                        with seen:
+                            whole.append(True)
+                        break
+                    now = time.perf_counter()
+                    with seen:
+                        clock.feed(piece, now)
+            except (OSError, ValueError):  # the pipe broke: `whole` stays empty and the batch fails
+                pass
+            finally:
+                with seen:
+                    clock.end(time.perf_counter())
+
+        def read_err() -> None:
+            stream = proc.stderr
+            try:
+                while stream is not None:
+                    piece = os.read(stream.fileno(), 65536)
+                    if not piece:
+                        break
+                    with seen:
+                        err.extend(piece)
+            except (OSError, ValueError):
+                pass
+
+        def write_in() -> None:
+            stream = proc.stdin
+            if stream is None:
+                return
+            try:
+                stream.write(stdin_text.encode("utf-8"))
+            except (OSError, ValueError):  # the tool ended before it read it all: its exit code says why
+                pass
+            finally:
+                with suppress(OSError, ValueError):
+                    stream.close()
+
+        threads = [threading.Thread(target=f, daemon=True) for f in (read_out, read_err, write_in)]
+        for t in threads:
+            t.start()
+        timed_out = False
         try:
             try:
-                out, err = proc.communicate(stdin_text.encode("utf-8"), timeout=timeout_s)
+                proc.wait(timeout=timeout_s)
             except subprocess.TimeoutExpired:
+                timed_out = True
                 proc.kill()
-                out, err = proc.communicate()
-                raise BatchInterrupted(
-                    code, f"{tool} timed out after {timeout_s:.0f}s", partial=out or b"", cmd=cmd
-                ) from None
+                with suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=_JOIN_S)
             with self._proc_lock:
                 cancelled = self._cancelled
         finally:
             with self._proc_lock:
                 self._proc = None
+            if proc.poll() is None:  # only on an unexpected error in this thread: never leave a tool running
+                proc.kill()
+        for t in threads:
+            t.join(_JOIN_S)
+        # a long-lived service frees each batch's handles now; never under a reader that is still in os.read
+        # (a held pipe): its file number could be given to another file and read from
+        for pipe, reader in ((proc.stdout, threads[0]), (proc.stderr, threads[1])):
+            if pipe is not None and not reader.is_alive():
+                with suppress(OSError, ValueError):
+                    pipe.close()
+        wall = time.perf_counter() - t0
+        with seen:
+            out, said, read_whole = bytes(clock.data), bytes(err), bool(whole)
+            lines, audio = len(clock.heads), clock.audio_seconds()
+            arrivals = clock.arrivals(ended_whole=True)
+        if timed_out:
+            self._said(tool, "timed out", said, wall, lines=lines, audio_s=audio)
+            raise BatchInterrupted(code, f"{tool} timed out after {timeout_s:.0f}s", partial=out, cmd=cmd)
         if cancelled:
-            raise BatchInterrupted(code, f"{tool} was cancelled", partial=out or b"", cancelled=True, cmd=cmd)
+            self._said(tool, "cancelled", said, wall, lines=lines, audio_s=audio)
+            raise BatchInterrupted(code, f"{tool} was cancelled", partial=out, cancelled=True, cmd=cmd)
         if proc.returncode != 0:
-            raw = (err or out or b"").decode("utf-8", errors="replace")
+            self._said(tool, f"exit {proc.returncode}", said, wall, lines=lines, audio_s=audio)
+            raw = (said or out or b"").decode("utf-8", errors="replace")
             tail = "\n".join(raw.strip().splitlines()[-8:])
-            raise BatchInterrupted(
-                code, f"{tool} exited {proc.returncode}: {tail}", partial=out or b"", cmd=cmd
-            )
-        return out or b""
+            raise BatchInterrupted(code, f"{tool} exited {proc.returncode}: {tail}", partial=out, cmd=cmd)
+        if not read_whole:
+            self._said(tool, "output not read to its end", said, wall, lines=lines, audio_s=audio)
+            raise BatchInterrupted(code, f"the output of {tool} could not be read to its end", partial=out,
+                                   cmd=cmd)  # fmt: skip
+        self._said(tool, "ok", said, wall, lines=lines, audio_s=audio)
+        return out, arrivals
 
     @staticmethod
     def _finished(partial: bytes, todo: list[int], speed: float) -> dict[int, np.ndarray]:
@@ -843,7 +1077,7 @@ class QwenttsEngine:
             args = self._ascii_refs(args, stack)
             out = scratch / "out.wav"
             cmd = self.tts_command(op, out=out, seed=seed, language=voice.language, **args)
-            self._run(cmd, tool=QWEN_TTS, code="NS-E310", stdin_text=text.strip())
+            self._run(cmd, tool=QWEN_TTS, code="NS-E310", stdin_text=text.strip(), wav=out)
             return time_stretch(self._read(out, "NS-E310"), self.sr, speed)
 
     def synth_batch(
@@ -856,7 +1090,11 @@ class QwenttsEngine:
         speaker resident, and writes the utterances to stdout one after another, each opened by its own WAV
         header; `split_wav_stream` cuts them apart. NS-E310 when the number of utterances differs from the
         number of lines sent.
+
+        On success `last_stamps` holds (the moment it was complete, its audio seconds before any speed change)
+        per utterance in order; it is None after a single chunk (the file route) and after any failure.
         """
+        self.last_stamps = None
         lines = [" ".join(t.split()) for t in texts]
         todo = [i for i, line in enumerate(lines) if line]
         if len(todo) <= 1:
@@ -868,7 +1106,7 @@ class QwenttsEngine:
                 args = self._ascii_refs(args, stack)
                 cmd = self.tts_command(op, out=Path("-"), seed=seed, language=voice.language, **args)
                 cmd.insert(-2, "--stream-by-line")  # before `-o -`
-                stdout = self._run_stream(
+                stdout, arrivals = self._run_stream(
                     cmd,
                     tool=QWEN_TTS,
                     code="NS-E310",
@@ -892,6 +1130,12 @@ class QwenttsEngine:
                 raise NsError("NS-E310", f"qwentts wrote an empty utterance for line {i + 1}")
             self.sr = sr
             out[i] = time_stretch(x, sr, speed)
+        if len(arrivals) == len(segments):  # (both cut on the same header; never a guessed pairing)
+            self.last_stamps = [
+                (at, round(len(x) / sr, 3)) for at, (x, sr) in zip(arrivals, segments, strict=True)
+            ]
+        elif self.log is not None:
+            self.log.warn("qwentts_stamps_unpaired", arrivals=len(arrivals), utterances=len(segments))
         return out
 
     def _encode(self, wav: Path) -> dict[str, bytes]:
@@ -933,7 +1177,7 @@ class QwenttsEngine:
         with self._scratch() as td:
             render = td / "render.wav"
             cmd = self.tts_command("design", out=render, instruct=description, language=language)
-            self._run(cmd, tool=QWEN_TTS, code="NS-E315", stdin_text=SAMPLE_TEXT)
+            self._run(cmd, tool=QWEN_TTS, code="NS-E315", stdin_text=SAMPLE_TEXT, wav=render)
             sample = self._read(render, "NS-E315")
             files = self._encode(render)
         files[VOICE_REF_TEXT] = (SAMPLE_TEXT + "\n").encode("utf-8")

@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import dataclasses
+import functools
 import json
 import math
 import os
+import sys
 import time
 from collections import deque
 from collections.abc import Callable
@@ -29,7 +32,7 @@ from ns_common.errors import NsError, describe
 from ns_common.logging import NsLogger
 from ns_common.models import Runtime
 from ns_common.paths import Paths
-from ns_supervisor import notify, presence, procs, vram
+from ns_supervisor import modelcheck, notify, presence, procs, vram
 from ns_supervisor.gpu import GpuProbe, NullGpuProbe, SmiSource, simulated_mark, smi_source, source_probe
 from ns_supervisor.lock import GpuLock
 from ns_supervisor.schedule_cfg import read_run_time, seconds_until_next_run
@@ -76,13 +79,74 @@ BUSY_RECENT_S = 120.0
 STATE_WAIT_S = 2.0
 
 
+#: Windows: `OpenProcess` access, its "no such process" error, the exit code of a process that runs, and
+#: 1970-01-01 as a FILETIME (100 ns ticks since 1601).
+_QUERY_LIMITED = 0x1000
+_ERROR_INVALID_PARAMETER = 87
+_STILL_ACTIVE = 259
+_EPOCH_AS_FILETIME = 116444736000000000
+
+
+@functools.cache
+def _kernel32() -> Any:
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # own object: no shared `argtypes`
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    k32.GetExitCodeProcess.restype = wintypes.BOOL
+    k32.GetProcessTimes.argtypes = [wintypes.HANDLE, *[ctypes.POINTER(wintypes.FILETIME)] * 4]
+    k32.GetProcessTimes.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+    return k32
+
+
+def _windows_started(pid: int) -> tuple[bool, float | None]:
+    """Windows' own answer for `pid`, from ONE handle: (True, creation time) while it runs; (True, None) when
+    no process has the pid or the one that has it has ended (its exit code is set); (False, None) when Windows
+    gives no answer (access denied, a failed call): the caller asks psutil, as before.
+
+    One handle: the exit code and the creation time are of the same process, and the pid cannot be reused
+    while the handle is open. The creation time is converted as psutil converts it: the two answers are equal.
+    """
+    from ctypes import wintypes
+
+    k32 = _kernel32()
+    handle = k32.OpenProcess(_QUERY_LIMITED, False, pid)
+    if not handle:
+        return (True, None) if ctypes.get_last_error() == _ERROR_INVALID_PARAMETER else (False, None)
+    try:
+        code = wintypes.DWORD()
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False, None
+        if code.value != _STILL_ACTIVE:
+            return True, None
+        created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+        if not k32.GetProcessTimes(handle, *(ctypes.byref(t) for t in (created, exited, kernel, user))):
+            return False, None
+        ticks = (created.dwHighDateTime << 32) | created.dwLowDateTime
+        return True, float(ticks - _EPOCH_AS_FILETIME) / 10_000_000
+    finally:
+        k32.CloseHandle(handle)
+
+
 def process_started(pid: int) -> float | None:
     """Creation time of the running process `pid`, None when no running process has that pid.
 
-    A process that has exited is None even while another program still holds a handle to it (Windows keeps
-    such a pid allocated; `psutil.pid_exists` asks for the exit code). Access denied and other psutil errors
-    raise: the caller cannot tell, so it must keep the holder.
+    A process that has ended is None at once, even while another program still holds a handle to it. On
+    Windows that answer is Windows' own (`_windows_started`): psutil 7.2.2 calls an ended process running,
+    with its old creation time, for as long as Windows still lists its pid (`psutil_check_phandle` overrules
+    the exit code with `EnumProcesses`; measured: a third of the rounds right after `Popen.wait` on a busy PC,
+    review block-e3-fullpass, failure 1). When Windows gives no answer, psutil does: access denied and other
+    psutil errors raise there, the caller cannot tell, so it must keep the holder. A process that ended with
+    exit code 259 (`STILL_ACTIVE`'s value) reads as running while its handle is held: kept, never taken.
     """
+    if sys.platform == "win32" and 0 < pid < 2**32:
+        answered, created = _windows_started(pid)
+        if answered:
+            return created
     try:
         if not psutil.pid_exists(pid):
             return None
@@ -138,8 +202,11 @@ class Supervisor:
         update_check: Callable[[], dict[str, Any] | None] | None = None,
         in_use: Callable[[], bool] | None = None,
         process_probe: Callable[[int], float | None] | None = None,
+        model_files: modelcheck.FileCheck | None = None,
     ) -> None:
         self.paths = paths
+        # model-file-damaged: the check of a failed load's model files, once per file in this engine
+        self.model_files = model_files or modelcheck.FileCheck(paths)
         self.runtime = runtime
         self.cfg = config or SupervisorConfig()
         self.resolver: Resolver = resolver or (lambda name, alias: build_service(runtime, paths, name, alias))
@@ -421,10 +488,22 @@ class Supervisor:
                 self.write_state()
                 self._emit(rt, "stopped")
             failed = isinstance(e, NsError) and e.code in ("NS-E202", "NS-E203")
+            note = ""
+            if isinstance(e, NsError) and failed and not rt.abort and not self.shutting_down:
+                # model-file-damaged M6: the file decides first (a hash that does not match is proof); a
+                # damaged file is never told as memory, and keeps no lower bound of memory (no vram record)
+                found = await asyncio.to_thread(self.model_files.after_failure, rt.name, d.cmd)
+                if found.damaged is not None:
+                    self.log.error("model_file_damaged", found.damaged.detail, code=found.damaged.code,
+                                   service=rt.name, original=e.code)  # fmt: skip
+                    raise found.damaged from e
+                note = found.note
             if isinstance(e, NsError) and failed and not rt.abort and before is not None:
                 said = await self._vram_after_failure(rt, d, e, before)  # V7: the failure says why, truly
                 if said is not None:
                     raise said from e
+            if isinstance(e, NsError) and note:
+                raise NsError(e.code, f"{e.detail}; model files: {note}") from e
             raise
         rt.state = "ready"
         rt.starting_since = None
@@ -453,6 +532,11 @@ class Supervisor:
             if len(rt.crashes) >= self.cfg.crash_max:
                 rt.state = "error"
                 self._emit(rt, "error")
+                # after failed starts the verdict is known and nothing is hashed; after crashes at work the
+                # files are hashed here once (bounded, `modelcheck.BOUND_S`)
+                found = await asyncio.to_thread(self.model_files.after_failure, rt.name, d.cmd)
+                if found.damaged is not None:
+                    raise found.damaged
                 raise NsError(
                     "NS-E202",
                     f"{rt.name} crashed {len(rt.crashes)}x in {self.cfg.crash_window_s:.0f}s: {rt.error}",

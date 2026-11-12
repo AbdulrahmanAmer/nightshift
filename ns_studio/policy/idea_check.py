@@ -47,7 +47,9 @@ def idea_problem(ctx: JobContext, idea: dict[str, Any], judge: JudgeFn | None = 
 
 
 def require_safe_idea(ctx: JobContext, idea: dict[str, Any], judge: JudgeFn | None = None) -> None:
-    """Raise NS-E601 when the classifier flags `idea`."""
+    """Raise NS-E601 when the classifier flags `idea` (marked as the idea stage's: `policy.regen` counts it
+    against the idea's own retry, never the text's; card story-robust S4)."""
     why = idea_problem(ctx, idea, judge)
     if why is not None:
-        raise NsError("NS-E601", f"idea {str(idea.get('premise', ''))[:80]!r}: {why}", check="unsafe_topics")
+        detail = f"idea {str(idea.get('premise', ''))[:80]!r}: {why}"
+        raise NsError("NS-E601", detail, check="unsafe_topics", stage="ideas")

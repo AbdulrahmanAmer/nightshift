@@ -38,6 +38,7 @@ from installer.stage2.web import (
     labels,
     machine,
     modelcheck,
+    modelmarks,
     nightly_view,
     pathcheck,
     plan,
@@ -71,6 +72,7 @@ from ns_common.uv import bootstrap_uv, find_uv
 from ns_common.vcruntime import missing as vcruntime_missing
 
 LOG_KEEP = 50
+MODELS_STEP = "s03_download_models"     # the step that checks and fetches the model files
 SAMPLE_TEXT = "This is how your channel will sound at night."
 DEFAULT_SPEAKER = "Ryan"
 EXIT_BLOCKED = 10
@@ -132,6 +134,8 @@ RETRY_NOTES = {
     "network": "The connection dropped, trying again",
     "offline": "No internet right now, waiting for it to come back",
     "hash": "The file failed its check, downloading it again",
+    # the network stopped the file for this pass (downloader ``run_plan``, card download-outage N3)
+    "later": "The internet stopped this file; it is tried again when the other files are done",
 }
 
 
@@ -479,6 +483,7 @@ class SetupController:
                             "run again.", "info")
         self._update_reset: list[str] = []
         self._reinstall = False
+        self._models_owed: list[str] = []
         self.store = SetupStore(self._initial_state(), self._finalize)
         self._settle_finished_install()
 
@@ -659,6 +664,23 @@ class SetupController:
             saved["completed_at"] = None
             reset_install_times(self.home)
         if others_done:
+            # a Repair (card model-file-damaged): a model file of the plan that setup's models step would not
+            # take as verified (gone, with or without its marker; never marked; changed; marked for another
+            # pin), one recorded damaged, or a damaged copy a Repair set aside, is setup's work. Done would
+            # leave it so: the models step runs again (Continue), and on a run over a finished install it
+            # checks every model by hash (`model_repair`). Decided from the plan, not from the markers alone:
+            # a file deleted together with its marker leaves no marker to say so. Only this window's view
+            # changes: opening it writes nothing (the wizard asks the step itself, and a window closed
+            # without Continue leaves the install as it was). A newer program (the update below) keeps its
+            # own path; the models step is shown pending there too
+            self._models_owed = modelmarks.repair_owed(self.home, self._planned_models(tier, view, raw))
+            if self._models_owed:
+                for st in steps:
+                    if st["id"] == MODELS_STEP:
+                        st["status"], st["finishedAt"] = "pending", None
+                if not self._program_differs():
+                    others_done = False
+        if others_done:
             for st in steps:                               # a console install made no samples: not unfinished
                 if st["id"] in WINDOW_ONLY_STEPS and st["status"] == "pending":
                     st["status"] = "skipped"
@@ -695,6 +717,23 @@ class SetupController:
             self._keys.update(answers_view.keys_in(prefill))
         return state
 
+    def _planned_models(
+        self, tier: str, view: dict[str, Any] | None, raw: dict[str, Any] | None
+    ) -> list[tuple[Path, str | None]]:
+        """The model files setup's models step plans for this install, with their pins
+        (``modelmarks.planned_files``), from the answers it will read: ``raw`` is the saved answers file once
+        the questions step is done. A dev install uses the Small model, no voice design and no own model
+        (``StepContext.constrain``); the engine test's ``fake_voice`` leaves out the voice models
+        (``StepContext.fake_voice``)."""
+        view = view or {}
+        custom = view.get("llmCustom") if isinstance(view.get("llmCustom"), dict) else None
+        return modelmarks.planned_files(
+            self.home, self.manifest, profile="cpu-dev" if self.dev else str(self.pf.get("profile") or "gpu"),
+            tier="small" if self.dev else tier, custom=None if self.dev else custom,
+            voicedesign=bool(view.get("includeVoicedesign")) and not self.dev,
+            voice=self.dev or (raw or {}).get("fake_voice") is not True, dev=self.dev,
+        )
+
     def _held_gb_fn(self, locked: bool) -> Callable[[], float] | None:
         """On a resume, how much of the install folder is setup's own work (the disk row then only warns)."""
         if not locked:
@@ -720,6 +759,12 @@ class SetupController:
         """
         if self._reinstall:
             self.log("info", f"No Nightshift program in {self.home}: setup installs again (answers kept)")
+        if self._models_owed:
+            more = len(self._models_owed) - 5
+            self.log("warn", "A model file needs to be checked or downloaded again: "
+                     + "; ".join(self._models_owed[:5]) + (f"; and {more} more" if more > 0 else "")
+                     + ". Continue checks every model file by hash and downloads a damaged or missing one "
+                     "again" + ("." if self._update_reset else "; nothing else is changed."))
         for sid in self._update_reset:
             self._persist_step(sid, "pending", None)
         if self._update_reset:
@@ -1344,7 +1389,7 @@ class SetupController:
 
     def _set_failure(
         self, step: str, code: str, message: str, hint: str, detail: str, optional: bool,
-        site: tuple[str, int] | None = None,
+        site: tuple[str, int] | None = None, network: bool = False,
     ) -> None:
         title, what = preflight.copy_for(code, message, hint)
         if site is not None:       # NS-E105 after the ten minutes: the Failed screen says whose side it is
@@ -1353,6 +1398,10 @@ class SetupController:
             what = ("This is the download site's side (their side); nothing on this PC is wrong. "
                     "Press Retry to wait for it again, or close setup and run INSTALL.cmd later: "
                     "it continues where it stopped")
+        elif network:              # the internet stopped the downloads (card download-outage, ruling 6a)
+            what = ("The internet connection dropped or carries no data; what is downloaded is kept. Press "
+                    "Retry when it is back, or close setup and run INSTALL.cmd again: it continues where it "
+                    "stopped")
         self._attempts[step] = self._attempts.get(step, 0) + 1
         # the Failed screen shows it now: the commands it names as this owner types them (FN-3); the log and
         # install-report.json keep the plain words
@@ -2060,7 +2109,8 @@ class SetupController:
         host, status = str(ev.get("host") or ""), int(ev.get("status") or 0)
         site = (host, status) if ev.get("side") == "site" and host and status else None
         self._set_failure(str(ev.get("step")), str(ev.get("code")), str(ev.get("message", "")),
-                          str(ev.get("hint", "")), str(ev.get("detail", "")), bool(ev.get("optional")), site)
+                          str(ev.get("hint", "")), str(ev.get("detail", "")), bool(ev.get("optional")), site,
+                          network=ev.get("side") == "network")
 
     def _verify_pending(self) -> None:
         rows = labels.VERIFY_PENDING_ROWS

@@ -534,11 +534,41 @@ Plan → draft → critique → revise; best-of-5 + judge for hooks and titles; 
 |---|---|
 | `code` generation, 16K ctx | ≥ 40 tok/s [≥ 30] |
 | Model load, warm page cache, NVMe | ≤ 30 s (soft; logged, HDD exempt) |
-| TTS real-time factor | ≤ 0.5 (2× faster than real time) [≤ 0.8] |
+| TTS real-time factor (`tts.rate`, `bench.tts_rtf`): speaking only, six sentences in one batch request | ≤ 0.5 (2× faster than real time) [≤ 0.8] |
+| TTS start (`tts.start_s`, `bench.tts_start_s`): request to the first sentence of that batch | ≤ 15 s (soft; logged) |
 | One 50-second Short, idea → MP4 (shorts-only) | ≤ 3 min [≤ 5] |
 | One master job: 12-min long-form + 5 Shorts + thumbnails | ≤ 60 min [≤ 90] |
 | Nightly run, 2 channels × 1 master job | ≤ 2 h [≤ 3] |
-| Idle VRAM after unload | ≤ 300 MB |
+| Idle VRAM after unload (`vram.idle`): what Nightshift left, other programs' share subtracted | ≤ 300 MB |
+
+What each number measures (card verify-limits, 2026-11-12):
+- **The voice speaks** (`tts.preset`, `tts.design`, `tts.clone`, quick and full): one sentence per installed
+  talker; the value is the whole call in seconds, which is one start of the voice program and its model; no
+  limit, the row passes when sound came back.
+- **TTS real-time factor** (`tts.rate`, full only): one batch of six sentences through
+  `/v1/audio/speech/batch`, the product's own route. The service stamps each sentence's arrival while it reads
+  the voice program's output; the rate is (last arrival − first arrival) / (audio seconds of the sentences after
+  the first), so the start and the model load are not counted. An engine without stamps (fake, Windows speech,
+  reference) gives the whole batch call over its audio, and the row's log says so. The voice stage's own time
+  limit is still sized from the single call's whole ratio (`save_rtf`), not from this rate.
+- **TTS start** (`tts.start_s`, full only): seconds from the service beginning that batch to its first sentence.
+- **Idle VRAM** (`vram.idle`, `bench.idle_vram_mb`): memory in use after unload minus memory in use before the
+  test loaded anything of Nightshift's, read only at a moment the supervisor's status shows none of its card
+  services (llama, tts, whisper) loaded; without such a moment the row is "n/a" with the reason and passes.
+- **The sample job** (`job.fake_services`, full only; card verify-job-isolated): the install's own `studio run
+  --fake-services --format shorts_only --count 1` in a home of its own, `<home>\run\verify-job`, made new for
+  each run (real files only: the install's `runtime.json` and formats copied in, no link) and handed over with
+  `NIGHTSHIFT_HOME` and `NS_HOME_EXPLICIT`. Its data, Outbox, ledger and logs are its own; it is removed when the
+  check ends, pass or fail, and at the next run's start after a kill, only when it is directly under `run`, no
+  link, and carries the marker the check wrote. A failed job's error lines go into the row and the verify log.
+  Known limit: the guard checks a folder for a link a moment before it enters it, so a program that swaps it
+  for a junction in those microseconds could have the junction's target emptied. Only a program of the same
+  user, which could delete the install's files directly anyway, can do that; closing it needs removal by handle.
+- **Missed target or a part that did not work**: a failed row that carries a limit is a missed target; one
+  without a limit is a part that did not work. `ns verify`'s last line says which; its exit code is non-zero
+  for either, as before. The GPU kit goes on after missed targets only (they stay a FAIL of its step 3).
+- The voice program's own words (`[Load] Talker backend`, `[Perf] Total`) are logged after every run as the
+  `qwentts_said` event of `logs\tts-*.jsonl`.
 
 ---
 
@@ -864,7 +894,7 @@ Horror and dark themes are allowed **as fiction** with implied, not graphic, vio
 | `audio_only_voice` | final | Any non-voice audio track present (no music by design); fails on the stream count and on a noise floor above -55 dBFS; spectral flatness of the quiet frames is measured and warned only (`qc/audio_flatness.json`, no code) until calibrated on real narration | E614 |
 | `disclosure_advice` | final | Always runs; writes the §18.7 answers | — |
 
-A failure moves the item to `rejected\` with the reason, regenerates once from the earliest affected stage, and logs the code. Second failure ends the job.
+A failure moves the item to `rejected\` with the reason, regenerates once from the earliest affected stage, and logs the code. Each cause has its own one regeneration: the idea (the idea check refused an idea), the text and the media; a second failure of the same cause ends the job. A text outside its length window is repaired in its own critic stage before it can fail with NS-E303. An idea the owner approved is never replaced: a refused or failed story of it is written again from the same idea, and a job he started by hand whose idea is refused ends with the reason.
 
 ### 18.9 Learning loop (local)
 1. Export analytics from YouTube Studio as CSV (Content → Shorts and Videos, with: views, viewed vs swiped away, average % viewed, average view duration, likes, comments, shares, subscribers).
@@ -1080,7 +1110,7 @@ Both stock-footage keys are optional and at least one is recommended; Pexels is 
 | YouTube | none needed in v1 (manual upload) | — |
 
 ### 21.7 Download behaviour
-Every download: HEAD for size → stream to `<file>.part` with `Range` resume → SHA256 verify (`NS-E109`) → atomic rename. Concurrency 2 files at a time; progress bar per file and overall; a failed file retries 3 times with backoff; Pause stops the stream within one 64 KiB chunk, closes the connection and resumes with `Range`; a transfer that receives no bytes for 60 s is aborted and retried with backoff; the step is re-runnable and skips verified files. `s03` prints the total to download and an ETA before starting and tells the operator they can close the window and re-run `INSTALL.cmd` to resume.
+Every download: HEAD for size → stream to `<file>.part` with `Range` resume → SHA256 verify (`NS-E109`) → atomic rename. Concurrency 2 files at a time; progress bar per file and overall (without a terminal, plain lines instead: a file starts, a file ends, and a total line at most once a minute in GB, percent and MB/s); a failed file retries with backoff, and network trouble gives a file up only when its 3 attempts are used AND the trouble has lasted 10 minutes without 1 MiB of progress (progress starts the window and the attempts anew); once one file used its window up, the files started later in that pass get one try, and after the pass the files the network stopped are tried again in another pass once the network answers (waited for up to 10 minutes), passes going on while the pass before got a file further; every wait, file given up for now and pass is said and logged (`download_retry`, `download_file_failed`, `download_pass`); Pause stops the stream within one 64 KiB chunk, closes the connection and resumes with `Range`; a transfer that receives no bytes for 60 s is aborted and retried with backoff; the step is re-runnable and skips verified files. `s03` prints the total to download and an ETA before starting and tells the operator they can close the window and re-run `INSTALL.cmd` to resume.
 
 ---
 
@@ -1105,7 +1135,7 @@ Each step names the component that serves it, so coverage can be checked against
 
 ### J3 — Nightly automation (every night, zero touch)
 1. 03:00: the scheduled task wakes the PC, starts the supervisor headless, runs the cadence governor's plan per active channel (§18.6). **C2 C7**
-2. Each job: text → policy gate → voice → captions → clips → render → QC → final gate → Outbox. Failures go to `rejected\` with a reason; one regeneration attempt. **C5 C6 C7**
+2. Each job: text → policy gate → voice → captions → clips → render → QC → final gate → Outbox. Failures go to `rejected\` with a reason; one regeneration attempt per cause (idea, text, media, §18.8). **C5 C6 C7**
 3. Supervisor exits when done; PC may sleep. **C2**
 4. Morning: owner opens the Dashboard; Overview shows "Last night: 1 master + 5 Shorts ready, 0 rejected" and the Review queue. Owner approves and uploads per the sheet's recommended order and dates (master first, Shorts spread over the next days). **C9**
 

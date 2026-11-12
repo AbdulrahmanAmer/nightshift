@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from installer.stage2 import model_repair as repair
 from installer.stage2.answers import wants_voicedesign
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
@@ -26,6 +27,7 @@ from installer.stage2.downloader import (
 from installer.stage2.errors import make_error
 from installer.stage2.fallback import fallback_items
 from installer.stage2.runtime_cfg import existing_runtime, update_runtime
+from installer.stage2.verify_downloads import story_item
 
 
 class S03DownloadModels(Step):
@@ -41,6 +43,9 @@ class S03DownloadModels(Step):
             include_voicedesign=wants_voicedesign(ctx.ensure_answers()), dev=ctx.dev_mode,
             include_voice=not ctx.fake_voice,
         )
+        story = None if ctx.dev_mode else story_item(ctx.manifest, ctx.profile, ctx.paths)
+        if story is not None:       # `ns models get story_llm` added it: a Repair checks and fetches it too
+            items.append(story)
         if with_fallback and ctx.flag("tts_fallback", False):
             items += fallback_items(ctx)
         return items
@@ -50,8 +55,11 @@ class S03DownloadModels(Step):
         return [i for i in pending(items) if not (i.optional and i.name in absent_ok)]
 
     def check(self, ctx: StepContext) -> bool:
-        """True when every file is already in place and verified."""
-        return not self._outstanding(ctx, self._items(ctx))
+        """True when every file is already in place and verified, and, on a Repair, every model was hashed in
+        this Repair and no damaged copy is left set aside."""
+        items = self._items(ctx)
+        return not self._outstanding(ctx, items) and not repair.unhashed(ctx, items) \
+            and not repair.set_aside(ctx, items)
 
     def run(self, ctx: StepContext) -> None:
         """Print the plan, then download or copy."""
@@ -60,6 +68,7 @@ class S03DownloadModels(Step):
             for gone in remove_stubs(ctx.paths.home / "models"):      # left by an earlier `--dev` install
                 ctx.log.info("dev_stub_removed", file=str(gone))
         items = self._items(ctx)
+        damaged = repair.check_models(ctx, items)     # a Repair: every model by hash, a damaged one set aside
         todo = self._outstanding(ctx, items)
         size = total_bytes(todo)
         source = answers.models_source
@@ -78,8 +87,12 @@ class S03DownloadModels(Step):
         custom = ctx.llm_custom
         if custom is not None:
             ctx.warn("NS-W113", f"{custom.repo}/{custom.file}")
+        # optional side files the site does not publish are not asked for again (`_outstanding`): a run that
+        # fetches only other files (a Repair) keeps them in the list, or `verify` would want them
+        absent_before = {i.name for i in items if i.optional and not Path(i.dest).is_file()} & set(
+            ctx.flag("missing_optional", []))
         result = ctx.download(todo, models_source=source)
-        ctx.set_flag("missing_optional", sorted(result.missing_optional))
+        ctx.set_flag("missing_optional", sorted(absent_before | set(result.missing_optional)))
         if custom is not None:
             self._point_runtime_at(ctx, custom.file)
         ctx.log.info(
@@ -90,6 +103,7 @@ class S03DownloadModels(Step):
             f"Done: {len(result.downloaded)} downloaded, {len(result.copied)} copied from your folder, "
             f"{len(result.skipped)} already present."
         )
+        repair.finish(ctx, items, damaged)
 
     @staticmethod
     def _point_runtime_at(ctx: StepContext, file: str) -> None:

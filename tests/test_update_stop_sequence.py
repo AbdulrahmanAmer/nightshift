@@ -39,12 +39,25 @@ SCRIPTS = "Scripts" if sys.platform == "win32" else "bin"
 windows = pytest.mark.skipif(sys.platform != "win32", reason="the engine's lock and launcher are Windows")
 
 #: The engine stand-in: takes the home's engine lock like `ns_supervisor.app.main`, says so, then either
-#: ends by itself after `late` seconds or never ends (`late` < 0). "ns_supervisor.app" is on its command line.
+#: ends by itself `late` seconds later or never ends (`late` < 0). With a fourth argument (a file) the `late`
+#: seconds count from the moment that file exists, not from the start: a test makes it when the product says
+#: it waits for Nightshift to stop, so "late" is late by the same amount however slow the machine was until
+#: then (counted from the start, a loaded machine found the engine already gone before the stop began;
+#: counted from the stop request, a loaded machine's process listing outlasted it: review block-e3-fullpass).
+#: "ns_supervisor.app" is on its command line, and the program is ONE line, as a real engine's command line
+#: is: setup and the updater read the process listing line by line and know their own engine by what follows
+#: the program on that line (a program written over several lines hid it: setup then called this engine a
+#: foreign program, NS-E706 "Close them"). So the wait for `after` is a comprehension, not a `while` block.
 ENGINE = (
     "import sys, time; from pathlib import Path; from ns_common.singleton import FileLock; "
     "lock = FileLock(Path(sys.argv[2])); lock.acquire(); print('held', flush=True); "
-    "late = float(sys.argv[3]); time.sleep(late if late >= 0 else 600)"
+    "late = float(sys.argv[3]); after = Path(sys.argv[4]) if len(sys.argv) > 4 else None; "
+    "give_up = time.monotonic() + 600; "
+    "ready = lambda: after is None or after.exists() or time.monotonic() > give_up; "
+    "[time.sleep(0.05) for _ in iter(ready, True)]; "
+    "time.sleep(late if late >= 0 else 600)"
 )
+assert "\n" not in ENGINE
 
 
 def venv_python(paths: Paths, name: str) -> Path:
@@ -79,12 +92,15 @@ class Started:
                 return
             time.sleep(0.05)
 
-    def engine(self, paths: Paths, late: float) -> subprocess.Popen[str]:
+    def engine(self, paths: Paths, late: float, after: Path | None = None) -> subprocess.Popen[str]:
+        """`after`: a file from whose appearance the `late` seconds count (see ENGINE)."""
         exe = venv_python(paths, "supervisor")
         lock = paths.home / "run" / "supervisor.lock"
         lock.parent.mkdir(parents=True, exist_ok=True)
+        counted_from = [str(after)] if after is not None else []
         proc = subprocess.Popen(
-            [str(exe), "-c", ENGINE, "ns_supervisor.app", str(lock), str(late)], cwd=str(ROOT),
+            [str(exe), "-c", ENGINE, "ns_supervisor.app", str(lock), str(late), *counted_from],
+            cwd=str(ROOT),
             env={**os.environ, "PYTHONPATH": str(ROOT)}, stdout=subprocess.PIPE, text=True,
         )
         self._note(proc)
@@ -163,15 +179,43 @@ def short_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ------------------------------------------------------------------------ 1: stops late, inside the bound
+class Heard(list[str]):
+    """What the product said; its first "Waiting for Nightshift to stop: " line makes `marker` (the moment the
+    product waits, from which the engine stand-in counts its `late` seconds)."""
+
+    def __init__(self, marker: Path) -> None:
+        super().__init__()
+        self.marker = marker
+
+    def append(self, line: str) -> None:
+        super().append(line)
+        if line.startswith("Waiting for Nightshift to stop: ") and not self.marker.exists():
+            self.marker.write_text(line, encoding="utf-8")
+
+
 @windows
 def test_an_engine_that_stops_late_is_waited_for_and_the_rollback_goes_on(
     tmp_path: Path, started: Any
 ) -> None:
     app, paths = updated(tmp_path)
-    engine = started.engine(paths, late=6.0)
-    said: list[str] = []
-    err = raised(lambda: update.rollback_app(app, real_stop(paths, said), paths=paths))
+    stop_began, waits = tmp_path / "stop-began", tmp_path / "product-waits"
+    # It ends by itself as soon as the product SAYS it waits for it (an event, not a time: 3 s counted from
+    # the stop request, a loaded PC's process listing outlasted and found it gone; review block-e3-fullpass,
+    # failure 2). Any wait added here would again race the product's listings against its 10 s bound. If the
+    # product never waits, the stand-in never ends by itself and is ended at that bound: the asserts fail.
+    engine = started.engine(paths, late=0.0, after=waits)
+    said = Heard(waits)
+    env = real_stop(paths, said)
+    product_stop = env.stop
+
+    def stop() -> None:
+        stop_began.write_text("the update asked Nightshift to stop", encoding="ascii")
+        product_stop()
+
+    env.stop = stop
+    err = raised(lambda: update.rollback_app(app, env, paths=paths))
     assert err is None, f"the rollback was refused: {err}"
+    assert stop_began.exists(), "the rollback never asked Nightshift to stop"
     assert gone(engine, 0) and engine.returncode == 0, "it was ended instead of waited for"
     waiting = [s for s in said if s.startswith("Waiting for Nightshift to stop: ")]
     assert waiting and f"(process {engine.pid}" in waiting[0], said      # the launcher, by name and pid
@@ -299,6 +343,43 @@ def test_a_recorded_pid_of_a_newer_or_unrelated_process_is_not_ours(tmp_path: Pa
 
 
 # ------------------------------------------------------------ the engine's own exit is bounded (the cause)
+@windows
+def test_a_noted_process_is_not_alive_the_moment_it_has_ended_while_its_parent_still_holds_it() -> None:
+    """CI of PR 216, shard 5: psutil 7.2.2 calls an ended process running for as long as Windows lists its pid
+    (here: this test's Popen keeps its handle), so the stop sequence said "could not be ended" (NS-E706) of a
+    process that had ended. `Own.alive` asks Windows itself: after kill and wait it is False at once, every
+    time, and it is True for the living process (same pid and creation time)."""
+    from ns_supervisor.stopping import Own
+
+    # psutil's answer as it was on the busy PC (an ended process "running"): Windows' answer must decide.
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        own = Own(psutil.Process(proc.pid), "a stand-in", "python.exe")
+        proc.kill()
+        proc.wait(timeout=30)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(psutil.Process, "is_running", lambda self: True)
+            mp.setattr(psutil.Process, "status", lambda self: psutil.STATUS_RUNNING)
+            assert not own.alive(), "psutil's stale 'running' decided over Windows' exit code"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=30)
+
+    for _ in range(20):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            own = Own(psutil.Process(proc.pid), "a stand-in", "python.exe")
+            assert own.alive()
+            proc.kill()
+            proc.wait(timeout=30)
+            assert not own.alive(), "an ended process (its handle still held by its parent) read as alive"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=30)
+
+
 def test_the_engine_ends_within_its_bound_even_with_a_thread_that_never_returns() -> None:
     code = (
         "import threading, time\n"
@@ -492,6 +573,30 @@ def test_setup_with_an_own_process_it_cannot_end_says_restart_and_not_that_night
     assert not detail.endswith(controller.ENGINE_BACK.strip()), "it says Nightshift runs; nothing answers"
     assert "Nightshift's own processes did not stop" in detail and "restart the PC" in detail, detail
     assert f"(process {engine.pid}" in detail and "Close them" not in detail, detail
+
+
+@windows
+def test_a_line_break_in_a_command_line_does_not_cut_the_process_listing(started: Any) -> None:
+    """Setup's listing is one process per line. A program started with line breaks on its command line used to
+    be cut at the first one: what follows (here the marker) was unseen for that process, and the rest of its
+    command line was read as lines of other processes (the second line here would have been a process 4)."""
+    from installer.stage2.web import venvrepair
+
+    marker = "nightshift-listing-marker"
+    # valid Python whose third line, alone, reads like the listing's line of a process 4
+    program = "import time\nx = '''\n4|C:/forged.exe|x\n'''\ntime.sleep(120)"
+    child = subprocess.Popen([sys.executable, "-c", program, marker])
+    started._note(child)
+    listing = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", venvrepair.PROCESS_LIST],
+        capture_output=True, text=True, timeout=120, check=False)   # read only
+    assert listing.returncode == 0, listing.stderr
+    assert child.poll() is None, "the stand-in ended before it was listed"
+    procs = venvrepair.parse_listing(listing.stdout)
+    (mine,) = [p for p in procs if p.pid == child.pid]
+    assert marker in mine.cmdline, f"the command line was cut at its line break: {mine.cmdline!r}"
+    assert mine.ppid == os.getpid() and mine.created is not None, "the fields after it were lost"
+    assert not [p for p in procs if "forged.exe" in p.exe], "a line of a command line was read as a process"
 
 
 # ---------------------------------------------------------------------------------- review notes

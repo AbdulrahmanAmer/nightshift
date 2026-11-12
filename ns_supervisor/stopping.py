@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -68,7 +69,27 @@ class Own:
         return int(self.proc.pid)
 
     def alive(self) -> bool:
-        """True while THIS process (same pid and creation time) runs."""
+        """True while THIS process (same pid and creation time) runs.
+
+        On Windows the answer is Windows' own (`core._windows_started`: the exit code and the creation time
+        from one handle). psutil 7.2.2 calls an ended process running for as long as Windows still lists its
+        pid (another program holds a handle to it), so right after a kill this said "alive" for seconds on a
+        busy PC and the stop sequence reported "could not be ended" (NS-E706) for a process that HAD ended (CI
+        of PR 216, shard 5; the same fault as the GPU holder probe, refs/reviews/block-e3-fullpass.md
+        failure 1).
+        When Windows gives no answer (access denied, a failed call), psutil decides, as before."""
+        if sys.platform == "win32" and 0 < self.pid < 2**32:
+            from ns_supervisor.core import _windows_started
+
+            answered, created = _windows_started(self.pid)
+            if answered:
+                if created is None:
+                    return False                # no process has the pid, or the one that has it ended
+                try:
+                    noted = self.proc.create_time()     # as noted when it was listed (psutil keeps it)
+                except psutil.Error:
+                    return False
+                return abs(created - noted) < 0.01      # another creation time: the pid was reused
         try:
             return self.proc.is_running() and self.proc.status() != psutil.STATUS_ZOMBIE
         except psutil.Error:

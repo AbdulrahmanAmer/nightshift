@@ -130,10 +130,24 @@ def test_verify_probes_child_env(
         f.write_text("", encoding="ascii")
     with pytest.raises(NsError):
         verify.whisper_probe(paths, Runtime.default("gpu"))
+    assert len(seen) == 1
+    check(seen, tmp_path)
+
+    # The sample job (stale since card verify-job-isolated J1, which hands the job a home of its own on
+    # purpose): its NIGHTSHIFT_HOME and the marker that vouches for it are the scratch home, and the switch
+    # still reaches it not. The stand-in refuses to start the program, as a program that is not there would.
+    def refused(argv: Any, **kw: Any) -> None:
+        seen.append(kw)
+        raise OSError("stand-in: the program did not start")
+
+    monkeypatch.setattr(subprocess, "Popen", refused)
     with pytest.raises(NsError):
         verify.fake_job(paths)
     assert len(seen) == 2
-    check(seen, tmp_path)
+    job = seen[-1]["env"]
+    scratch = str(verify.scratch_home(paths))
+    assert SWITCH not in job and job["NIGHTSHIFT_HOME"] == scratch and job["NS_HOME_EXPLICIT"] == scratch
+    assert not verify.scratch_home(paths).exists()  # and its folder went again
 
 
 def test_update_children_child_env(
@@ -228,7 +242,8 @@ def test_every_place_that_starts_a_program_passes_window_flags_or_says_why_not()
     assert bare == set(SHARES_A_CONSOLE), sorted(bare ^ set(SHARES_A_CONSOLE))
     # the two lowest shared points and the update worker's own starts use the one rule
     for file, count in (("ns_supervisor/pwsh.py", 1), ("installer/stage2/runner.py", 1), ("ns_supervisor/update.py", 4),
-                        ("ns_supervisor/verify.py", 2), ("ns_supervisor/doctor.py", 1), ("ns_supervisor/control.py", 1)):  # fmt: skip
+                        # verify.py: the whisper probe, the sample job, and its `tasklist` (pid_alive, review E2 finding 6)
+                        ("ns_supervisor/verify.py", 3), ("ns_supervisor/doctor.py", 1), ("ns_supervisor/control.py", 1)):  # fmt: skip
         assert (ROOT / file).read_text(encoding="utf-8").count("creationflags=window_flags()") == count, file
 
 

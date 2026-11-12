@@ -1,0 +1,12 @@
+# Findings of gitleaks that are not secrets. Each line is one finding's fingerprint; say why above it.
+# tests/fixtures/rfc8032_vectors.json: the PUBLISHED Ed25519 test vectors of RFC 8032 section 7.1 (TEST 1, 2, 3 and
+# 1024, https://www.rfc-editor.org/rfc/rfc8032.txt). Every "secret" in it is printed in the RFC itself; the
+# verifier's test checks the product's signature code against them. No key of Nightshift's is in this file.
+bfa333cd9aa6a4194b17c608b9fed7aad72bf443:tests/fixtures/rfc8032_vectors.json:generic-api-key:6
+bfa333cd9aa6a4194b17c608b9fed7aad72bf443:tests/fixtures/rfc8032_vectors.json:generic-api-key:13
+bfa333cd9aa6a4194b17c608b9fed7aad72bf443:tests/fixtures/rfc8032_vectors.json:generic-api-key:20
+bfa333cd9aa6a4194b17c608b9fed7aad72bf443:tests/fixtures/rfc8032_vectors.json:generic-api-key:27
+tests/fixtures/rfc8032_vectors.json:generic-api-key:6
+tests/fixtures/rfc8032_vectors.json:generic-api-key:13
+tests/fixtures/rfc8032_vectors.json:generic-api-key:20
+tests/fixtures/rfc8032_vectors.json:generic-api-key:27

@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from installer.stage2.web import uvpin
 from ns_common import __version__
 from ns_common.config import save_runtime
 from ns_common.models import Runtime
@@ -370,3 +371,73 @@ def test_the_nvidia_smi_row_is_true_in_every_cell(
         assert rows["fake_gpu"][1].startswith(want), rows["fake_gpu"]
     if profile in ("notjson", "invalid"):
         assert rows["runtime.json"][0] is False and "NS-E125" in rows["runtime.json"][1], rows["runtime.json"]
+
+
+def test_doctor_compares_uv_with_the_pin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Item uv-pin-on-update (written, NOT RUN): the row "uv" names a uv that is not the one the program
+    pins, with the way out; a home with no uv of its own (this test home at first) is not a difference."""
+    paths = seed(tmp_path)
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "manifest.json").write_text('{"bins": {"uv": {"version": "0.13.6"}}}', encoding="utf-8")
+    name, ok, text = doctor.uv_row(paths, app)
+    assert (name, ok) == ("uv", True) and text.startswith("none at ") and "pins 0.13.6" in text
+    exe = paths.home / "bin" / "uv" / "uv.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(uvpin, "run_version", lambda path: (0, path.read_text(encoding="utf-8")))
+    exe.write_text("uv 0.14.0 (stand-in)\n", encoding="utf-8")
+    assert doctor.uv_row(paths, app) == (
+        "uv",
+        True,
+        doctor.WARN + "uv 0.14.0, but this program pins 0.13.6. "
+        "Run INSTALL.cmd again and choose Repair to put the pinned uv back.",
+    )
+    exe.write_text("uv 0.13.6 (stand-in)\n", encoding="utf-8")
+    assert doctor.uv_row(paths, app) == ("uv", True, "uv 0.13.6, the version this program pins")
+
+
+# ---------------------------------------------------------------------------------------------- db-integrity
+def test_doctor_shows_the_database_check(tmp_path: Path) -> None:
+    """Row "database": what the last check at a start found, with its time, and "restored from the backup of
+    <date> on <date>" while that restore is younger than 7 days. `ns doctor` never checks nor restores."""
+    import sqlite3
+    from datetime import UTC, timedelta
+
+    from ns_common import db as dbmod
+    from ns_common.db import Db
+
+    paths = seed(tmp_path)
+
+    def row() -> tuple[bool, str] | None:
+        rows = {name: (ok, detail) for name, ok, detail in doctor.diagnose(paths, Down())}  # type: ignore[arg-type]
+        return rows.get("database")
+
+    assert row() == (True, "not checked yet (it is checked when Nightshift starts)")
+    paths.backup_dir.mkdir(parents=True, exist_ok=True)
+    for target in (paths.db_path, paths.backup_dir / "studio-20261101.db"):
+        db = Db(target)
+        db.migrate()
+        db.close()
+    copy_made = datetime(2026, 11, 1, 4, 0).timestamp()
+    os.utime(paths.backup_dir / "studio-20261101.db", (copy_made, copy_made))
+    with paths.db_path.open("r+b") as fh:  # 4 KiB of 0xFF over page 3: SQLite's quick check fails
+        fh.seek(2 * 4096)
+        fh.write(b"\xff" * 4096)
+    opener = getattr(dbmod, "open_studio_db", None)
+    assert opener is not None, "the one opener of studio.db"
+    opener(paths, None, note=lambda message: None).close()
+
+    ok, said = row() or (False, "")
+    today = datetime.now().strftime("%Y-%m-%d")
+    assert ok and said.startswith(f"ok (checked {today} ") and said.endswith(
+        f"; restored from the backup of 2026-11-01 on {today}"
+    ), said
+    restored = paths.home / "run" / "db-restored.json"
+    info = json.loads(restored.read_text(encoding="utf-8"))
+    info["restored_at"] = (datetime.now(UTC) - timedelta(days=8)).isoformat(timespec="seconds")
+    restored.write_text(json.dumps(info), encoding="utf-8")
+    ok, said = row() or (False, "")
+    assert ok and "restored" not in said, "a restore older than 7 days is no longer shown"
+    conn = sqlite3.connect(paths.db_path)
+    assert conn.execute("PRAGMA quick_check").fetchall() == [("ok",)]
+    conn.close()

@@ -37,22 +37,34 @@ its own:
   Vite dev server needs no switch: its proxy keeps the `Host` the page addressed (`changeOrigin` is off), so
   the page's `Origin` equals it; were the `Host` rewritten, the page would be refused (fails closed).
 
-One more rule covers the browsers that say nothing at all (Internet Explorer and Edge's IE mode, old Firefox:
-no `Origin` on a form POST, no `Sec-Fetch-*`, and no `Referer` from an HTTPS page). All a page can make such a
-browser send to another origin without a preflight is a plain HTML form, and a form has one of three content
-types. So a request that is not a GET or HEAD and whose body is a form's (`FORM_TYPES`, or a body with no
-content type at all) is refused unless it carries the server's own `Origin` (the dashboard's own page
-uploading a file; the engine and the voice service have no own origin, so never). Our programs send JSON, or
-no body.
+Two more rules cover the browsers that say nothing at all (Internet Explorer and Edge's IE mode, a Firefox
+older than 90: no `Sec-Fetch-*`, no `Origin` on a form POST, and no `Referer` from an HTTPS page or when the
+page asks for none). Such a request looks like a program's, so it is told apart by what a page cannot change:
+
+- The old browser itself (`old-browser`): its `User-Agent`. A request that is not a GET or HEAD, carries no
+  `Sec-Fetch-*`, names no page (no `Origin`, no `Referer`; one that is present was just found to be the
+  server's own, which a page cannot forge) and whose `User-Agent` names `Trident/` (every Internet Explorer
+  and IE-mode request) or `Firefox/` (a Firefox that sends no `Sec-Fetch-*` is older than 90) is refused,
+  whatever its body: also with none, which is all it takes to reach `/stop_all`. `Mozilla` is NOT the mark:
+  Windows PowerShell 5.1 and PowerShell 7 begin their User-Agent with `Mozilla/5.0`. No program of ours
+  sends either token (`python-httpx/`, `Python-urllib/`, `... WindowsPowerShell/5.1`, `... PowerShell/7`,
+  `curl/`; the window host is Chromium and sends `Sec-Fetch-*`), and a page's script cannot set its
+  browser's `User-Agent` on such a request. A GET or HEAD is answered as before: our GET routes only read,
+  and a page of another origin cannot read the answer (no `Access-Control-*` header is ever sent). The
+  dashboard's own page in such a browser still works: its requests carry its own `Origin` or `Referer`.
+- A form's body (`form`): all a page can make any browser send to another origin without a preflight is a
+  plain HTML form, and a form has one of three content types. So a request that is not a GET or HEAD and
+  whose body is a form's (`FORM_TYPES`, or a body with no content type at all) is refused unless it carries
+  the server's own `Origin` (the dashboard's own page uploading a file; the engine and the voice service
+  have no own origin, so never). Our programs send JSON, or no body.
 
 D-50: a request with NO browser header and NO body (`Content-Length: 0` or none, no `Transfer-Encoding`; the
 HTTP parser in front of us holds the request to that framing) is a program's whatever content type it
 states: an empty body carries no form. Windows PowerShell 5.1's `Invoke-RestMethod -Method Post` without
-`-Body` states `application/x-www-form-urlencoded` with `Content-Length: 0`. A page in a browser that says
-nothing could post an empty form the same way; what that reaches is what a body-less POST reaches, which
-such a browser could send already (`sendBeacon(url)`, `fetch` no-cors with no referrer, in Firefox before
-70; the D-45 review, point 2): a body-less POST cannot be refused without refusing our own programs'. With
-any browser header the rule above is unchanged.
+`-Body` states `application/x-www-form-urlencoded` with `Content-Length: 0`. A body-less POST cannot be
+refused by its body without refusing our own programs'; the browsers that could send one unseen are the
+ones the `old-browser` rule names, and it refuses theirs. With any browser header the rule above is
+unchanged.
 
 A refused request gets 403 with `NS-E207` and no route runs. The first refusal of a page is one WARN; a page
 that keeps trying (3 refusals within 10 minutes) is told to the owner once per local day through `tell`
@@ -101,6 +113,12 @@ FORM_SENDER = "a web form without a sender"
 #: D-50: a browser's request (Sec-Fetch-*) with neither Origin nor Referer names no page; the name it called
 #: is ours, never the page's.
 UNKNOWN_PAGE = "a web page whose address the browser did not give"
+#: What a `User-Agent` names when the browser is one that sends no `Sec-Fetch-*` (case as browsers send it):
+#: every Internet Explorer and IE-mode request, and Firefox (one that sends no `Sec-Fetch-*` is older than
+#: version 90).
+OLD_BROWSER_TOKENS = ("Trident/", "Firefox/")
+#: Who an `old-browser` refusal is counted and told under: one name for the day, whatever page it was.
+OLD_BROWSER = "an old web browser (Internet Explorer mode in Edge, or a Firefox older than version 90)"
 
 
 @dataclass(frozen=True)
@@ -122,13 +140,15 @@ WEB_SCHEMES = {"http": "http", "https": "https", "ws": "http", "wss": "https"}
 
 @dataclass(frozen=True)
 class Refusal:
-    """Why a request is refused (`why`: host, origin, fetch-mark, referer or form) and who sent it."""
+    """Why a request is refused (`why`: host, origin, fetch-mark, referer, old-browser or form) and who sent
+    it."""
 
     why: str
     host: str
     origin: str | None
     page: str     # what the owner is told: the page's origin (or Referer site) when the browser gave one;
-    #               a browser's request without either: `UNKNOWN_PAGE` (D-50); a program's: the name it called
+    #               a browser's request without either: `UNKNOWN_PAGE` (D-50); a browser that says nothing at
+    #               all: `OLD_BROWSER`; a program's: the name it called
     browser: bool  # a browser mark was on the request (a page), not only a foreign name
 
 
@@ -269,6 +289,12 @@ def is_form_like(seen: dict[str, list[str]], method: str) -> bool:
     return not any(types) and _has_body(seen)
 
 
+def names_old_browser(seen: Mapping[str, Sequence[str]]) -> bool:
+    """A `User-Agent` of the request names a browser that sends no `Sec-Fetch-*` (`OLD_BROWSER_TOKENS`). Any
+    of several values counts (whichever a parser in front of us kept); none, or a program's, is False."""
+    return any(token in value for value in seen.get("user-agent", ()) for token in OLD_BROWSER_TOKENS)
+
+
 def _page_of(
     origins: Sequence[str] | None, referers: Sequence[str] | None, marks: Mapping[str, str],
     hosts: Sequence[str], scheme: str,
@@ -330,6 +356,13 @@ def decide(
         why = _foreign_mark(origins, referers, marks, own, _opens_page(rule, method, path, marks))
         if why is not None:
             return no(why)
+    # a browser that says nothing at all (no Sec-Fetch-*) and named no page: nothing of it may change
+    # anything, whatever its body. An Origin or Referer that IS here passed the check above (a request that
+    # is not a GET or HEAD is never a navigation), so it is the server's own: the dashboard's page in such a
+    # browser; the engine and the voice service have no page and refused it there.
+    names_no_page = not marks and not origins and not referers
+    if method.upper() not in SAFE_METHODS and names_no_page and names_old_browser(seen):
+        return Refusal("old-browser", host, origin, OLD_BROWSER, True)
     # a form's body: only the server's own page may send one (it states its Origin: a file upload)
     if form and not origins:
         return no("form")
@@ -353,9 +386,10 @@ def refusal_body(refusal: Refusal, rule: Rule) -> bytes:
 MORE_PAGES = "Still more web pages or names tried to control Nightshift"
 #: What a refusal note says of the requests it counts: Nightshift refused every one of them, so none ran.
 #: True by construction of every request the note speaks of, whenever it is read: a request from that page
-#: (its Origin, its Referer, or no address: `UNKNOWN_PAGE`), to that name, or a form with a body and no
-#: sender, is refused by `decide` before any route, every time, counted or not (a page's top-level navigation
-#: that opens a page is not an attempt to control and is not counted).
+#: (its Origin, its Referer, or no address: `UNKNOWN_PAGE`), to that name, a form with a body and no sender,
+#: or a request of an old browser that is not a GET or HEAD and names no page (`OLD_BROWSER`), is refused by
+#: `decide` before any route, every time, counted or not (a page's top-level navigation that opens a page,
+#: and an old browser's GET, are not attempts to control and are not counted).
 REFUSED_WORDS = "Nightshift refused every one of those requests, so none of them ran."
 
 
@@ -378,6 +412,15 @@ def note_text(refusal: Refusal, count: int, at: datetime, *, more: bool = False)
             "what sent them, close the web pages you have open."
         )
         return text, MORE_PAGES
+    if refusal.why == "old-browser":
+        # one note a day for every such request, whatever page it was: the browser gave no address
+        mark = f"{CODE}: An old web browser "
+        text = (
+            f"{mark}(Internet Explorer mode in Edge, or a Firefox older than version 90) tried at least "
+            f"{count} times to control Nightshift ({by}). {end} Close the pages open in that browser; open "
+            "Nightshift in Edge or Chrome."
+        )
+        return text, mark
     if refusal.why == "form" and not refusal.browser:
         mark = "sent Nightshift a web form "
         text = (

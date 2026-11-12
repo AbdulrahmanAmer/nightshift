@@ -22,6 +22,18 @@ from ns_common.models import WhisperCfg
 from ns_common.paths import Paths
 from ns_common.textstats import CJK_RANGES, WORD_PATTERN, split_sentences
 
+_CHECKS: dict[str, Any] = {}
+
+
+def whisper_files_check(paths: Paths) -> Any:
+    """The check of whisper's model files after a failed load (`ns_supervisor.modelcheck`, one per install
+    folder in this process, so each file is hashed at most once)."""
+    from ns_supervisor import modelcheck
+
+    check = _CHECKS.setdefault(str(paths.home), modelcheck.FileCheck(paths))
+    return check.after_failure("whisper", [])
+
+
 _TOKEN = re.compile(WORD_PATTERN)  # the same words word_count() counts, in any script
 _CJK_CHAR = re.compile(rf"[{CJK_RANGES}]")
 #: faster-whisper returns Japanese and Chinese as BPE pieces of one to three characters, not per character.
@@ -233,7 +245,13 @@ class WhisperTranscriber:
                     str(model_dir), device=self.cfg.device, compute_type=self.cfg.compute_type
                 )
             except Exception as e:
-                raise NsError("NS-E411", f"whisper failed to load: {e}") from e
+                # model-file-damaged M6: the model file decides whether this is damage (NS-E127), checked
+                # by hash once per file in this process; else NS-E411 as before, with what the check found
+                found = whisper_files_check(self.paths)
+                if found.damaged is not None:
+                    raise found.damaged from e
+                more = f"; model files: {found.note}" if found.note else ""
+                raise NsError("NS-E411", f"whisper failed to load: {e}{more}") from e
         return self._model
 
     def _run(self, wav: Path, language: str) -> list[Segment]:

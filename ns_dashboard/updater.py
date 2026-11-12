@@ -24,6 +24,7 @@ from ns_common.paths import Paths
 Runner = Callable[[list[str], int], tuple[int, str, str]]
 NOW_ON_RE = re.compile(r"Now on (\S+) \(was (\S+?)\)")
 VERSION_RE = re.compile(r"\b(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?)\b")
+CODED_RE = re.compile(r"NS-[EW]\d{3}: ")  # how `ns` starts the line of a coded error
 TAIL = 2000
 
 
@@ -116,8 +117,9 @@ class RealUpdateAdapter:
         return classify_update(parse_update_output(*self.runner(self._command("update", "--github"), 3600)))
 
     def apply_file(self, zip_path: Path) -> dict[str, Any]:
-        """Install an update zip from disk (`ns update <zip>`). The command checks the zip and its `.sha256`
-        before it starts the detached worker, so a bad package is answered here and nothing is stopped."""
+        """Install an update zip from disk (`ns update <zip>`). The command checks the zip, its `.sha256` and
+        (once this version trusts a release key) its `.sig` before it starts the detached worker, so a bad
+        package is answered here and nothing is stopped."""
         return classify_update(parse_update_output(*self.runner(self._command("update", str(zip_path)), 3600)))
 
     def models_available(self) -> bool:
@@ -166,15 +168,19 @@ UNAVAILABLE_NOTE = (
 
 
 def error_line(stderr: str) -> str:
-    """The line of `ns` stderr that says what went wrong: `error NS-E118: ...`, not the `hint:` line after it.
+    """The line of `ns` stderr that says what went wrong: `NS-E118: ...`, not the `Hint:` line after it.
 
-    The CLI prints `error <code>: <message> (<detail>)` and then `hint: <generic advice>`; the last line used
-    to be shown, so a GitHub rate limit read "Check the internet connection".
+    The CLI prints `<code>: <message> (<detail>)` and then `Hint: <the code's generic advice>` (`cli._die`;
+    an older form put `error ` in front). The last line used to be shown, so a GitHub rate limit read "Check
+    the internet connection" and a refused package (`NS-E701`, `NS-E707`) only its hint, without which of
+    its reasons it was (card update-signing).
     """
     lines = [x.strip() for x in stderr.strip().splitlines() if x.strip()]
     for line in lines:
         if line.lower().startswith("error "):
             return line[6:].strip()
+        if CODED_RE.match(line):
+            return line
     return lines[-1] if lines else "The update check failed."
 
 

@@ -121,9 +121,14 @@ def test_a_retry_is_reported_as_a_file_event():
     out = io.StringIO()
     rep = BridgeReporter(BridgeUi(out=out, inp=io.StringIO("")), 10)
     rep.retrying("a.bin", 1, "stall", 2.0)
+    rep.retrying("b.bin", 2, "hash", 1.0)
+    # download-outage N1: network trouble is ended by its ten-minute window, not by a count, so only a wrong
+    # hash carries "try N of M" (`of`); a stall says no count (0).
     assert lines(out) == [
         {"type": "file", "key": "a.bin", "event": "retry", "attempt": 1, "reason": "stall", "waitS": 2.0,
-         "of": 3}
+         "of": 0},
+        {"type": "file", "key": "b.bin", "event": "retry", "attempt": 2, "reason": "hash", "waitS": 1.0,
+         "of": rep.tries},
     ]
 
 

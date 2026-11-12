@@ -91,10 +91,17 @@ or **Pause**, or you close the Nightshift setup window.
   marker, the size and the date must still match). A finished file is left alone. A half file continues from
   the byte where it stopped, not from zero. A file that is missing, changed or has a marker that no longer matches
   is fetched again. Nothing that is fine is downloaded twice.
-- **When the internet is slow or drops.** A file that gets no data for 60 seconds is dropped and tried again
-  after 2, then 4 seconds (never more than 30), at most three tries; the row says *The connection dropped, trying
-  again in 2 s (try 2 of 3)*. After the third try the row turns red with `NS-E105`: check the internet and press
-  **Retry**, the file continues.
+- **When the internet is slow or drops.** A file that gets no data for 60 seconds is tried again after 2, then
+  4 seconds (never more than 30), and the row says why: *No data for 60 s, trying again*, *The connection
+  dropped, trying again* or *No internet right now, waiting for it to come back*. Setup keeps trying that file
+  for ten minutes without progress, and every megabyte that arrives starts the ten minutes again, so a slow line
+  never uses the tries up. A file the internet stopped for longer is not lost: its row says *The internet stopped
+  this file; it is tried again when the other files are done*, setup goes on with the other files and comes back
+  to it when the internet answers. Only when the internet stays away does the step stop with `NS-E105`: check the
+  internet and press **Retry** (or run INSTALL.cmd again); the file continues from the byte where it stopped.
+  Without a window (`INSTALL.cmd -Answers`) setup prints the same sentences, a line when each file starts and
+  ends, and a total line each minute (GB done, percent, MB/s); left alone there, it repeats a download step
+  that failed up to three more times and ends by itself, after about 80 to 100 minutes on a dead line.
 - **When the download site is down.** The files that setup itself downloads in step 2 (the models and the model
   programs: llama, cudart, qwentts and the rest of the download plan) wait out a site that answers 5xx, 408, 425
   or 429 (GitHub's 504 incident) for up to ten minutes of continuous trouble. Between tries it waits 2, 4, 8 ... 60
@@ -109,9 +116,49 @@ or **Pause**, or you close the Nightshift setup window.
 - **The disk is full.** Setup stops with `NS-E104` and names the free space at the install folder. Free some space
   and press **Retry** (or run INSTALL.cmd again); the half file is still there and continues.
 - **Check everything later.** Open a terminal in the install folder and run `ns verify --downloads`. It re-reads
-  every model and program, compares it with `manifest.json` and prints one line per file: `ok`, `missing` or
-  `bad hash`, with what to do for each (almost always: run INSTALL.cmd again). It changes nothing and needs no
-  internet. It takes a few minutes because it reads about 20 GB.
+  every model and program, compares it with `manifest.json` and prints one line per file: `ok`, `missing`,
+  `bad hash` or `unreadable`, with what to do for each. It changes nothing and needs no internet. It says up front
+  how long it takes (it reads about 20 GB) and shows each file's progress, speed and time left.
+
+## If a model file is damaged
+
+A model file can be damaged after it was downloaded (a disk error, a copy that stopped half way) while its size and
+date stay the same, so the quick check of a rerun cannot see it. Nightshift finds it by its SHA256:
+
+- **When a model does not load.** The engine checks that model's files by hash (once per file while it runs, at
+  most 4 minutes). A file that does not match is named with `NS-E127`: in the error, in the Queue's failure card and
+  in the morning note. The night starts nothing more that would load it: the other videos wait for the next nightly
+  run (while Automatic runs are on). A file that matches is not damaged: the error says what else stopped the model
+  (too little graphics memory, `NS-E208` or `NS-E203`, else `NS-E202`). The next nights check the files quickly
+  before they start (size and the last check's result) and wait the same way until the file is repaired.
+- **`ns doctor`** shows one row per kind of model (language, story, embed, voice, whisper, face finder) with its
+  size, and the row *model files last checked by hash* with the date and how long a full check takes here.
+- **`ns verify --downloads`** reads every model by hash (see above) and writes `logs/model-check.json`. A file
+  another program holds open is `unreadable`, not damaged: Stop All, then run it again. Ctrl+C stops it at once and
+  changes nothing.
+- **The way out: Repair.** Run INSTALL.cmd again from the Nightshift zip and choose this install's folder. The
+  setup window opens on the models step instead of Done when a model file of this install is missing (also when
+  its `.ok` file went with it), was changed since setup checked it, is pinned differently by this version, was
+  recorded damaged (by `ns verify --downloads` or by a model that failed to load) or was set aside by a Repair
+  that did not finish; the log names each file. Press Continue: that run checks every model file by hash (about a
+  minute for 20 GB on an SSD, three on a hard disk, with each file's progress). A damaged file is renamed
+  `<name>.bad`, downloaded again (continuing a `.part` that is there), and the `.bad` is deleted once the new file
+  passed its check: until then you always have one of the two. Setup first checks that the drive has room for the
+  new file beside the old one (`NS-E104` says how much is needed). Offline or the site down: `NS-E105`, press
+  Retry later. With none of those, the window shows Done and checks nothing: a file damaged with its size and
+  date kept is known only once something has read it by hash. When you suspect one, run `ns verify --downloads`
+  first (it names the file), then INSTALL.cmd. (An unattended INSTALL.cmd run, with an answers file, checks every
+  model file by hash in any case.)
+- **With the PyTorch voice engine** (`NS-W301`, see "If the voice engine fell back") the voice does not load the
+  voice files of `models\tts` but the PyTorch weights in `models\tts\hf`. Those weights are in no list Nightshift
+  ships: `ns doctor`, `ns verify --downloads`, the check after a failed voice start (its error says so) and the
+  night's quick check do not read them, and a damaged voice file of `models\tts` stops no night while that engine
+  speaks (the morning note names it). A Repair does check the large weight files by hash and downloads a damaged
+  one again (it needs the internet to list them), but the setup window opens on the models step for them only when
+  one of them changed size or date or is gone while its `.ok` file is still there. When that voice fails and
+  nothing above names a file, run INSTALL.cmd without a window (an answers file beside it): that run checks them
+  in any case.
+- A story model you named yourself has no published SHA256: only its size can be checked, and the rows say so.
 
 ## If GitHub is down on install day
 
@@ -180,9 +227,9 @@ after 10 seconds).
 - If a site that was only a warning is needed after all (a file is missing from the folder although the check
   passed, or you took the folder away), that step tries for a bounded time and then stops with `NS-E105`, naming
   the file and the kit steps: stage 1 (uv, the Visual C++ runtime) waits at most 100 seconds for the site to
-  start answering; the tools step tries three times with 120 seconds each; a program download makes three
-  tries and waits up to two minutes for the network before each counts, about eight minutes for one file. It
-  never waits forever. Add the file and run INSTALL.cmd again.
+  start answering; the tools step tries three times with 120 seconds each; a program download keeps trying for
+  ten minutes without progress, then waits up to ten more for the network and tries once again, about 20 to 25
+  minutes for a site that stays away. It never waits forever. Add the file and run INSTALL.cmd again.
 
 ## If a row is red or a message shows an error code
 
@@ -412,6 +459,24 @@ recording of one speaker and type exactly the words that are said in it. With th
 as one `speaker.bin`; with `qwentts` as `speaker.spk`, `speaker.rvq` and `ref.txt` in the voice folder. If you switch
 engine, make the voices again (`NS-E311`). The speed setting of a channel (0.7 to 1.3) changes how fast the narrator
 talks, not how high the voice is.
+
+## Read `ns verify`
+
+`ns verify` tests each model and prints one row per check; its last line says the result in words.
+
+- `tts.preset` (and `tts.design`, `tts.clone`): the voice speaks. The number is the seconds one sentence took,
+  start of the voice program included. No limit.
+- `tts.rate`: how fast the voice speaks, timed on six sentences in one request with the start left out.
+  Target 0.5 or lower (0.8 on a 16 GB PC). `tts.start_s` is the start of that request, about 15 s or less
+  (logged only).
+- `vram.idle`: video memory Nightshift left after it unloaded everything, other programs' share taken off.
+  Target 300 MB or lower. It says "n/a" when the other programs' share could not be read.
+- `job.fake_services` (full `ns verify` only): one sample Short made with stand-in models, in a folder of its own
+  (`run\verify-job` in the install), which is removed when the check ends. Nothing of it lands in your Queue,
+  Outbox, ledger or history. If that folder could not be removed (a program held a file in it), the row says so
+  and the next `ns verify` removes it.
+- "1 target missed": everything works, one number is off its target. Send the diagnostics zip when you can.
+- "1 part did not work": a model or a program failed. The row's next line says why and what to do.
 
 ## If the voice engine fell back
 
@@ -681,6 +746,19 @@ it makes the full diagnostics zip with `ns doctor --bundle`, and when that fails
 the half-filled one) a smaller zip made without Python (the logs folder, `config/install_state.json`, `VERSION`,
 `run/venv-repair.json`, `run/update_state.json`; no settings and no keys), and says which one it made, or that none
 was made and which folder to send instead.
+An update first puts in place the version of uv (the tool that installs the Python packages) that the new program
+names in its `manifest.json`, when the install has another one: it takes the uv zip from a folder named `files`
+next to the update zip, then from `cache\uv-<version>.zip` in the install folder, then from GitHub, and uses it
+only when its SHA256 is the one the program names. For an update on a PC without internet, put that zip (the
+message names it, for example `uv-x86_64-pc-windows-msvc.zip` from that version's page of uv's releases on GitHub)
+into `files` next to the update zip. That is the folder beside the zip as the updater has it: for `ns update <zip>`
+the folder of that zip; for the Dashboard's "From a file" and for an update from GitHub (Update now, `--github`)
+the zip is kept in `data\updates` of the install folder, so the folder is `data\updates\files` there, not a folder
+beside the file you picked. `NS-E708` names the folder by its full path. When no copy can be had or the uv in it does not run, the update stops with
+`NS-E708` before it stops or changes anything: Nightshift keeps running as it was. The uv it replaces stays in
+`bin\uv.prev`, and `ns update --rollback` puts it back; when a rollback cannot get the older program's uv, it still
+goes back and its result line says that uv stays at the newer version. `ns doctor` (row "uv") names a uv that is
+not the one the program names, with Repair as the way out.
 From 0.1.14 and the 0.1.15 candidates up to rc3, update or go back with Settings > Updates, the Update shortcut or
 `ns update ... --detach`: their own `ns update` typed in a terminal without `--detach` fails on its own `ns.exe`
 (0.1.14's `ns update <zip>` then puts 0.1.14 back; rc3's `ns update --rollback` leaves one environment on the newer
@@ -743,6 +821,86 @@ says whose copy it is and where; move `<folder>.prev-config.zip` out of the fold
 update if you want a copy kept again. A damaged copy is replaced and the result says so. A copy that cannot be read
 at all (a program holds it open) stops the update before anything changes (`NS-E702`, or `NS-E115` from
 `INSTALL.cmd`); close the program and run the update again.
+
+### Who made an update: the three files of a release
+
+A release has three files for an update: `Nightshift-Update-<version>.zip`, its `.sha256` (the zip arrived
+whole) and its `.sig` (the release key signed it). Keep the three in one folder and do not rename them; in
+**Settings > Updates > From a file** choose all three at once (hold Ctrl). `ns update --github` and **Update now**
+fetch all three by themselves.
+
+A Nightshift that knows the release key installs an update only when the `.sig` was made with that key for
+exactly this file name, version and content. This is checked first, on every route (the Update shortcut,
+Settings, `ns update <zip>`, `ns update --github`), before anything is stopped or changed. A refusal is
+`NS-E707`, Nightshift keeps running as it was, and the sentence says which case it is:
+
+- **the `.sig` is missing** (or cannot be read, or is not a signature file): download the `.zip`, `.sha256` and
+  `.sig` of the same release again, all three, into one folder.
+- **signed with a key this version does not know**: do not install it. Download the package from the release
+  page again. If that one is refused too and the release notes say the release key was replaced, update with
+  the Setup zip of that release instead: extract it, run its `INSTALL.cmd` and choose this folder (it keeps your
+  settings, models and videos).
+- **the signature does not match the file**: the file was renamed or changed after it was signed, or it is not
+  a Nightshift release. Do not install it; download it again from the release page.
+
+A version from before the release key existed (0.1.14, and the candidates made until the key was created) says
+"This version of Nightshift does not check who made an update yet" in Settings > Updates and once in the update
+log: it accepts a package on its `.sha256` alone, as before, and ignores the `.sig`. That is how the first signed
+version gets installed. `ns update --rollback` goes back to the program kept on this PC and checks no package.
+`ns update --git` takes the program from the git remote of its checkout and checks no `.sig` either.
+The keys a Nightshift trusts are the ones its own program lists (`ns_common\release_keys.py`); no setting,
+environment variable or dev mode adds one.
+Setup's `INSTALL.cmd` (a first install, **Continue** over an install, Repair) runs from the Setup zip you chose to
+run and checks no `.sig`: verify that zip with its `.sha256` from the release page.
+
+### The release key
+
+This is done ONCE, by the owner of the repository, before the first final release that signs. Nobody else does
+it and no program does it for you: the private key never passes through an assistant, a chat or a log.
+
+On the laptop with the repository, signed in to GitHub (`gh auth login`), with a USB stick plugged in, in
+Windows PowerShell in the repository folder:
+
+    powershell -ExecutionPolicy Bypass -File dev\release_keys.ps1 -Create -BackupFolder <a folder on the USB stick, for example E:\nightshift-keys>
+
+Your one step, in short: make the folder on the stick first, run this command once, then commit
+`ns_common\release_keys.py`. The folder must be one only you can read, because the script gives the backup file no
+access rule of its own: it gets the folder's. Name a folder ON the drive (`E:\nightshift-keys`), not the drive root
+(`E:\`): the root is unproven (the script was read, never run on one). The folder must exist, must not be inside
+the repository, and must hold no backup file yet (the script never overwrites one).
+
+It makes two key pairs. The **primary** private key goes straight into the repository's GitHub secret
+`NS_RELEASE_SIGNING_KEY` (it is never written to this PC and never shown); the release run signs with it. The
+**backup** private key is written to `<BackupFolder>\nightshift-release-backup-key.txt` and nowhere else. The two
+PUBLIC keys are written into `ns_common\release_keys.py`; commit that file before the next tag (a release run
+with the secret set fails in its step "Sign" for a commit that does not carry them). The script prints the two key ids and
+"Keep the backup file safe and off this PC; it is the only way to sign a release if the GitHub secret is lost."
+Run a second time it refuses: the keys already exist. If it stops halfway it says what is in place; running it
+again is always safe while `ns_common\release_keys.py` pins no key (it makes new keys and replaces the secret).
+
+What changes afterwards: every release cut from a commit that carries those public keys must be signed (the
+release run fails without the secret, also for a candidate), and every Nightshift of such a release refuses an
+update without a valid `.sig`. Until the step is done, a candidate is published unsigned with a warning in the
+run's summary, and a final tag fails with "The release key is not set up".
+
+### Lost key
+
+- **The GitHub secret is lost or was replaced by mistake** (the backup file exists): sign the release by hand
+  with the backup key, on the PC with the repository and the USB stick:
+  `pip install --require-hashes -r dev\sign-requirements.txt`, then
+  `python dev\sign_release.py --key-file <stick>\nightshift-release-backup-key.txt dist\Nightshift-Update-<version>.zip dist\Nightshift-Setup-<version>.zip`,
+  check with `python dev\sign_release.py --check <the two zips>` and upload the two `.sig` files to the release.
+  For the release after it, make a new primary key: add its public key to `ns_common\release_keys.py` beside
+  the backup key (a version trusts the keys ITS OWN list names, so the new key counts from the version that
+  lists it, and that version must itself be signed with a key the installed versions already know: the backup).
+- **The backup file is lost** (the secret still works): releases keep working. Add a new backup key the same
+  way in the next release, and remove the lost one from the list.
+- **Both are lost**: no installed Nightshift can take an update package any more. The way out is the Setup zip:
+  the release notes must say "update with the Setup zip: run INSTALL.cmd and choose your install folder", which
+  keeps settings, models and videos and trusts the download as a first install does. That release carries a new
+  pair of keys.
+- A key that may have been copied by someone else is handled like a lost one, and its line is removed from
+  `ns_common\release_keys.py` in the next release.
 
 ## If Nightshift did not run because its program folder is missing
 

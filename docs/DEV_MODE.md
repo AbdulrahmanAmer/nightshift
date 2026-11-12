@@ -284,7 +284,8 @@ puts the text stages on the thresholds such a model can meet:
   names the floor in effect (`floor 120 s, 2:00`; a normal install's text is unchanged).
 - **What does not move.** Every validator still runs and can still fail: a chapter under 0.5 times its budget, a
   grade under -2, a banned phrase, a sentence over 35 words, a repeated opening and repeated cliffs all stop the
-  job with `NS-E303`, as before. The reading-grade ceiling (8) is unchanged. The policy and safety gates (the
+  job with `NS-E303`, as before; a chapter or Short outside its length window first gets two length repairs in
+  its critic stage, and NS-E303 comes when they do not hold. The reading-grade ceiling (8) is unchanged. The policy and safety gates (the
   banned phrases, clip reuse, render uniqueness, the audio check, the mid-roll margin) do not read the profile,
   and neither do QC's loudness and true peak, resolution, caption drift, black frames, hook and file checks:
   each still fails the video that breaks it, with the profile on or off. The one gate number that moves is the
@@ -305,7 +306,8 @@ puts the text stages on the thresholds such a model can meet:
   an engine flag, and a settings call that names `tiny_story`, `fake_footage` or `dev_mode` is refused with
   `test_switch` (HTTP 422) however it is sent, so a normal install cannot turn it on from the dashboard.
 - **Tests.** `tests/test_tiny_story.py` (a fake model that writes at the tiny scale passes all nine master text
-  stages, one that writes less still fails with `NS-E303`, the same model fails on a normal install, and every
+  stages, one that writes less and whose length repairs do not hold still fails with `NS-E303`, the same model
+  fails on a normal install, and every
   normal-profile number is asserted as it was), `tests/test_tiny_story_switch.py` (refused without `allow_cpu`,
   setup to `runtime.json`, the dashboard cannot set it), one reinstall test in
   `tests/test_installer_reinstall.py` and, for the lengths and the marker, `tests/test_tiny_story_length.py` (every
@@ -476,6 +478,17 @@ test install before a release exists, a test install can be aimed at a fake GitH
   with the `.sha256` beside it when there is one and a digest it computes otherwise. It listens on 127.0.0.1,
   writes `ready.json` (`port`, `pid`, `url`: the value for the variable) and `requests.jsonl` into the folder,
   and is stopped by that pid. `--prerelease` marks the release a prerelease, to see the refusal.
+- **Signatures.** A test source decides only where a release is downloaded from, never who may have made it:
+  the keys an install trusts are those its own program pins (`ns_common/release_keys.py` `TRUSTED`), on every
+  install, and neither `NS_RELEASE_SOURCE`, dev mode nor any file of the home adds one. There is no test key
+  in the program or in the repository. While `TRUSTED` is empty (before the owner's key step) the install
+  accepts the fake's packages on their SHA256, as it accepts any. To see the signature check on a test
+  install, the proof makes a throwaway key (a file outside the repository), installs a program built with
+  that key's public half pinned between the markers of `release_keys.py`, and starts the fake with
+  `--key-file <that file>`: before it answers, the fake signs each package of the folder that has no `.sig`,
+  once per file name for as long as it runs. A zip changed afterwards keeps the old signature (refused with
+  `NS-E707`, "does not match"); a `.sig` deleted afterwards is not made again (refused, "is missing").
+  Without `--key-file`, or with `--unsigned`, it makes no `.sig` at all (a release from before the key).
 - **Tests.** `tests/test_release_source.py`.
 
 ## Where the code is

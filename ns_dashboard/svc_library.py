@@ -13,7 +13,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO
 
-from ns_common.atomic import write_chunks_atomic, write_text_atomic
+from ns_common.atomic import write_bytes_atomic, write_chunks_atomic, write_text_atomic
 from ns_common.devmode import fake_footage
 from ns_common.errors import NsError, describe
 from ns_common.secrets_names import SHORT_NAMES
@@ -519,8 +519,22 @@ class LibraryService:
         return {k: dict(v) for k, v in self.s.model_downloads.items()}
 
     def update_state(self) -> dict[str, Any]:
-        """Progress of the detached updater (`run/update_state.json`): idle, running, done or failed."""
-        return updater.read_update_state(self.s.paths)
+        """Progress of the detached updater (`run/update_state.json`): idle, running, done or failed.
+
+        `unsigned_note` is added for as long as the running version trusts no release key (card
+        update-signing): the sentence Settings > Updates shows, read from this program's own key list now."""
+        state = updater.read_update_state(self.s.paths)
+        if not self._checks_signatures():
+            from ns_supervisor.update import NO_KEY_SHORT
+
+            state["unsigned_note"] = NO_KEY_SHORT
+        return state
+
+    def _checks_signatures(self) -> bool:
+        """True when this install trusts a release key, so `ns update` refuses a package without `.sig`."""
+        from ns_supervisor import releases
+
+        return bool(releases.trusted_keys())
 
     def update_apply(self) -> dict[str, Any]:
         """Install the newest version (`ns update --github`, rolls back on failure)."""
@@ -532,14 +546,18 @@ class LibraryService:
             raise ApiError(501, "update_unavailable", str(res.get("message") or "Updating from GitHub is not available yet."))
         return res
 
-    def update_apply_file(self, zip_name: str, zip_fh: BinaryIO, sha_fh: BinaryIO | None) -> dict[str, Any]:
-        """Install an update from files the owner picked: the zip and its `.sha256`.
+    def update_apply_file(
+        self, zip_name: str, zip_fh: BinaryIO, sha_fh: BinaryIO | None, sig_fh: BinaryIO | None = None
+    ) -> dict[str, Any]:
+        """Install an update from files the owner picked: the zip, its `.sha256` and its `.sig`.
 
-        Both are saved under `data/updates/` (the sidecar as `<zip name>.sha256`, where `ns update` looks for
-        it) and `ns update <zip>` does the rest: it refuses a zip without a matching digest (`NS-E701`) before
-        anything is stopped, then installs with a rollback. The digest is checked here too, on the finished
-        temporary file, so a zip that does not match its checksum file is never put under its name in
-        `data/updates` (409, nothing saved); `ns update` checks it again.
+        They are saved under `data/updates/` (as `<zip name>.sha256` and `<zip name>.sig`, where `ns update`
+        looks for them) and `ns update <zip>` does the rest: it refuses a zip without a matching digest
+        (`NS-E701`) or without the signature of a release key this version trusts (`NS-E707`) before anything
+        is stopped, then installs with a rollback. The digest is checked here too, on the finished temporary
+        file, so a zip that does not match its checksum file is never put under its name in `data/updates`
+        (409, nothing saved); `ns update` checks it again. The `.sig` is asked for only when this version
+        trusts a key (400 `no_signature`, nothing saved): before the release key exists a candidate has none.
         """
         if self.s.draining:
             raise ApiError(503, "shutting_down", "Nightshift is shutting down.")
@@ -568,6 +586,15 @@ class LibraryService:
                 400, "bad_checksum", f"{name}.sha256 does not hold a SHA256 digest.",
                 hint="Choose the .sha256 file that belongs to this release, as it was downloaded.",
             )
+        signature = sig_fh.read(4096) if sig_fh is not None else None
+        if signature is None and self._checks_signatures():
+            raise ApiError(
+                400, "no_signature", f"Also choose {name}.sig",
+                hint="Pick the three files of the release at once (hold Ctrl): the .zip, its .sha256 and its .sig. "
+                "Nightshift installs an update only when the release key signed it. Nothing was changed",
+            )
+        if signature is not None and not signature.strip():
+            raise ApiError(400, "empty_file", f"{name}.sig is empty.")
         folder = self.s.paths.data / "updates"
         folder.mkdir(parents=True, exist_ok=True)
         dest = folder / name
@@ -589,6 +616,11 @@ class LibraryService:
 
         _save_upload(zip_fh, dest, MAX_UPDATE_BYTES, "That file is larger than 200 MB, so it is not an update.", verify=check)
         write_text_atomic(side, f"{want}  {name}\n", newline=None)  # `ns update` reads it next
+        sig = folder / f"{name}.sig"
+        if signature is None:  # (one left by an earlier upload or download belongs to another file)
+            sig.unlink(missing_ok=True)
+        else:
+            write_bytes_atomic(sig, signature)  # as it was chosen: `ns update` judges it, the one place
         self.s.log.warn("update_apply_file", "update started from an uploaded file", file=name)
         res = self.s.adapters.update.apply_file(dest)
         if res.get("state") == "error":

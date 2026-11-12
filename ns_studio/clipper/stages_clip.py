@@ -17,10 +17,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ns_common import ffmpeg
+from ns_common import ffmpeg, homeguard
 from ns_common.atomic import write_text_atomic
 from ns_common.config import load_runtime
-from ns_common.db import Db, claim_dir, claim_job_id
+from ns_common.db import claim_dir, claim_job_id, open_studio_db
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import (
@@ -58,6 +58,7 @@ from ns_studio.media.caption_plan import (
 from ns_studio.media.formats import ensure_allowed, formats_allowed
 from ns_studio.media.job_formats import warn_broken_overrides
 from ns_studio.media.youtube_rules import Notes
+from ns_studio.notifications import db_note
 from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.stages import Stage, Tenant, register
 from ns_studio.text.prompts import call_json
@@ -125,11 +126,16 @@ def create_clip_job(
     job_id: str | None = None,
     keys: dict[str, str] | None = None,
 ) -> JobContext:
-    """Create the job directory, write `clip_params.json` and return a ready `JobContext` (format "clip")."""
-    paths.ensure()
+    """Create the job directory, write `clip_params.json` and return a ready `JobContext` (format "clip").
+
+    Card version-mismatch-writes: asked first, as `jobs.open_env` asks (`homeguard.may_write`): NS-E128 before
+    a folder is made when the window's NIGHTSHIFT_HOME names an install of another version (`studio clip` was
+    refused at its root before; `python -m ns_studio.clipper.cli` has no root of its own)."""
+    if homeguard.may_write(paths.home):
+        paths.ensure()
     rt = runtime or (Runtime.default("cpu-dev") if set(fake) >= FAKEABLE else load_runtime(paths))
     services = build_services(rt, fake=set(fake), paths=paths, keys=keys, llm_fixtures=llm_fixtures)
-    db = Db(paths.db_path)
+    db = open_studio_db(paths, NsLogger("studio", paths.logs), note=db_note(paths))  # checked once a process
     db.migrate()
     sync_channel_row(db, channel)
     # A given id is the caller's own job (a rerun, a test): its folder may exist. A new job takes its id by

@@ -85,8 +85,9 @@ def test_verify_stores_the_slowest_voice_mode(tmp_home: Path):
     from ns_supervisor import verify
 
     src = Path(verify.__file__).read_text(encoding="utf-8")
-    assert "save_rtf(paths, worst, quick=quick)" in src
-    assert src.index("worst = max(rtfs)") < src.index("save_rtf(paths, worst")
+    # verify-limits L4: the stored figure is still the single calls' whole ratio, the worst of them; the new
+    # speaking rate (`tts.rate`) is never stored, it would shrink a real job's time limit.
+    assert "save_rtf(paths, max(rtfs), quick=quick)" in src
 
 
 # ---------------------------------------------------------------- the voice stage

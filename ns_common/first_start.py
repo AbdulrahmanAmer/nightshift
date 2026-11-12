@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any
 
 import ns_common.config_snapshot as config_snapshot
+import ns_common.homeguard as homeguard
 import ns_common.rollback_intent as rollback_intent
 from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.logging import NsLogger
@@ -117,9 +118,14 @@ def config_of(path: Path) -> Path | None:
 
 def guard(path: Path) -> None:
     """Call before writing, replacing or deleting `path`. When it is a settings file and this is the first
-    start after an update an older updater made, the settings copy is taken first. Never raises."""
+    start after an update an older updater made, the settings copy is taken first.
+
+    Raises only NS-E128 (`homeguard`, card version-mismatch-writes), and before anything is looked at or
+    copied: this program is another version than the install the window's NIGHTSHIFT_HOME names, so it must
+    not change that install's settings. Nothing else is ever raised."""
     config = config_of(path)
     if config is not None:
+        homeguard.refuse_write(config)
         ensure(config)
 
 

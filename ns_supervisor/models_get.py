@@ -156,6 +156,12 @@ class EchoReporter:
 
         self._echo(f"{name}: {site_wait_text(host, status, wait_s, left_s)}")
 
+    def retrying(self, name: str, attempt: int, reason: str, wait_s: float) -> None:
+        """A transfer waits to be tried again, or the internet stopped it until the other files are done."""
+        from installer.stage2.downloader import retry_text
+
+        self._echo(f"{name}: {retry_text(reason, wait_s)}")
+
     def finish(self, name: str, outcome: str) -> None:
         """A file ended."""
         self._echo(f"{name}: {outcome}")
@@ -182,7 +188,8 @@ def get_model(
     todo = [i for i in items if not downloader.is_done(i)]
     if todo:
         log = NsLogger("models", paths.logs, echo=False)
-        (run_plan or downloader.run_plan)(todo, reporter=EchoReporter(echo), log=log)
+        # say=echo: the lines about the whole plan ("Trying again: N file(s) ...") reach the screen too
+        (run_plan or downloader.run_plan)(todo, reporter=EchoReporter(echo), log=log, say=echo)
     else:
         echo("Already downloaded and verified.")
     if kind == "story_llm":

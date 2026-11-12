@@ -105,7 +105,10 @@ def stub_resolver(
 
 def engine(paths: Paths, *, extra: dict[str, list[str]] | None = None, **kw: Any) -> Supervisor:
     rt = load_runtime(paths)
-    cfg = kw.pop("config", None) or fast_config(lease_expiry_s=600, idle_unload_s=60)
+    # health_timeout_s: the product's own 120 s, not fast_config's 20. The stand-ins are real processes, and on
+    # a PC busy with other work one took over 20 s to answer /health, so a step's SET-UP ended with NS-E203
+    # (review block-e3-fullpass, failure 3). No test here waits for that bound to expire: it only limits a hang.
+    cfg = kw.pop("config", None) or fast_config(lease_expiry_s=600, idle_unload_s=60, health_timeout_s=120.0)
     return Supervisor(paths, rt, config=cfg, resolver=stub_resolver(rt, paths, extra), **kw)
 
 
@@ -784,6 +787,7 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("tests/test_ns_doctor.py", "seam"):
         "the PC's own tool with or without a driver (D-44's rows; the row table asserts only REAL_SMI is asked)",
     ("tests/test_damaged_inputs.py", "seam"): "the tool-missing answer while the commands meet a damaged file",
+    ("tests/test_model_files.py", "seam"): "the tool-missing answer while ns doctor reads the model-file rows",
     ("tests/test_night_ledger.py", "dep"): "the zip's nvidia-smi.txt seam while the ledger goes into the zip",
     ("tests/test_ns_verify.py", "dep"): "ns verify's own probes of a real-card install (the gate's numbers)",
     ("tests/test_atomic_writes.py", "dep"): "the tool-missing answer while the zip is written atomically",

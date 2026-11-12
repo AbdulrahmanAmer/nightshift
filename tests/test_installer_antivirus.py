@@ -71,9 +71,13 @@ def test_any_other_os_error_is_still_a_download_problem_after_three_tries(
         raise OSError("connection reset")
 
     monkeypatch.setattr(dl, "_fetch_once", flaky)
+    # card download-outage N1: a reset is network trouble, given up when the attempts AND its window are used
+    # up; a window of 1 s is used up after the first wait, so the three attempts are what this test sees
     with pytest.raises(NsError) as ei:
-        dl.download("https://x.test/a.bin", tmp_path / "a.bin", SHA, client=make_client(), sleep=no_sleep)
+        dl.download("https://x.test/a.bin", tmp_path / "a.bin", SHA, client=make_client(), sleep=no_sleep,
+                    network_window_s=1.0)
     assert ei.value.code == "NS-E105" and len(calls) == 3
+    assert ei.value.data["side"] == "network"
 
 
 def test_a_download_that_vanishes_between_write_and_verify_is_ns_e113(

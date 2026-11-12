@@ -24,7 +24,7 @@ jobs:
   test-shard:
     name: test-shard (${{ matrix.shard }}/12)
     runs-on: windows-latest
-    # About 8.5 minutes of tests plus about 3 of setup per shard (dev/ci_shards.py plan); the same timeout as ci.yml,
+    # About 9 minutes of tests plus about 3 of setup per shard (dev/ci_shards.py plan); the same timeout as ci.yml,
     # which tests/test_ci_workflow.py keeps at least twice the prediction of every shard. SHARDS in dev/ci_shards.py
     # is the count; tests/test_ci_workflow.py fails when this file and ci.yml disagree on it or on the proof.
     timeout-minutes: 30
@@ -236,6 +236,29 @@ jobs:
         shell: pwsh
         run: ./dev/make_bundle.ps1 -Version $env:TAG -WebView2Dir $env:WEBVIEW2_DIR
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Who made the package (card update-signing): the release key signs both zips, and an installed Nightshift
+      # installs an update only when its .sig verifies with a key it pins (ns_common/release_keys.py). The key is
+      # given to this one step and to nothing else in this workflow. dev/sign_release.py --release decides what a
+      # run without the key does (a candidate of a commit that pins no key is published unsigned, with a warning in
+      # the run summary; a final tag, or any commit that pins keys, fails here), never prints the key, and runs the
+      # shipped verifier on what it signed: a signature no installed Nightshift could check fails the run.
+      - name: Sign
+        shell: pwsh
+        env:
+          NS_RELEASE_SIGNING_KEY: ${{ secrets.NS_RELEASE_SIGNING_KEY }}
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          if ($env:NS_RELEASE_SIGNING_KEY) {
+            python -m pip install --require-hashes -r dev/sign-requirements.txt
+            if ($LASTEXITCODE -ne 0) { throw 'could not install the pinned signing library (dev/sign-requirements.txt)' }
+          }
+          python dev/sign_release.py --release $env:TAG "dist/Nightshift-Update-$version.zip" "dist/Nightshift-Setup-$version.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'the release was not signed: the lines above say why' }
+
       - name: Publish GitHub Release
         shell: pwsh
         run: |
@@ -246,6 +269,10 @@ jobs:
             "dist/Nightshift-Update-$version.zip",
             "dist/Nightshift-Update-$version.zip.sha256"
           )
+          # the signatures, when the Sign step made them (it leaves none behind for an unsigned candidate)
+          foreach ($zip in @("dist/Nightshift-Setup-$version.zip", "dist/Nightshift-Update-$version.zip")) {
+            if (Test-Path -LiteralPath "$zip.sig") { $assets += "$zip.sig" }
+          }
           # A tag with a prerelease part (v0.1.15-rc1) is a release candidate: a GitHub prerelease, never "latest", so the
           # updater (it reads /releases/latest) never offers it (H-12). A plain vX.Y.Z is published as before.
           $candidate = $version.Contains('-')

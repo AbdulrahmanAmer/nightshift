@@ -899,7 +899,7 @@ def test_a_form_reaches_the_dashboard_only_from_its_own_page(tmp_home: Path, mon
 
     installed: list[str] = []
     monkeypatch.setattr(
-        LibraryService, "update_apply_file", lambda self, name, zip_fh, sha_fh: installed.append(name) or {"ok": True}
+        LibraryService, "update_apply_file", lambda self, name, *files: installed.append(name) or {"ok": True}
     )
     app = dashboard(tmp_home)
     tc = TestClient(app, base_url=BASE, raise_server_exceptions=False)
@@ -1351,3 +1351,192 @@ def test_d50_powershell_5_1_posts_without_a_body_and_is_answered(live_engine: tu
     assert spy.calls == ["stop_all"]
     posts = [h for h in live.seen if h.get("content-length") == "0"]
     assert posts and "form-urlencoded" in posts[0].get("content-type", ""), live.seen   # what 5.1 really sends
+
+
+# ============================ old-browser-bodyless: a browser that says nothing at all cannot change anything
+IE_MODE = "Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko"
+FIREFOX_68 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:68.0) Gecko/20100101 Firefox/68.0"
+FIREFOX_89 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
+OLD_BROWSERS = (IE_MODE, FIREFOX_68, FIREFOX_89)
+#: What our own callers and an owner's scripts send (the first two begin with "Mozilla/5.0" as browsers do).
+PROGRAM_AGENTS = (
+    "Mozilla/5.0 (Windows NT; Windows NT 10.0; en-US) WindowsPowerShell/5.1.26100.1",
+    "Mozilla/5.0 (Windows NT 10.0; Microsoft Windows 10.0.26100; en-US) PowerShell/7.4.6",
+    "curl/8.9.1",
+    "python-httpx/0.28.1",
+    "Python-urllib/3.12",
+    None,
+)
+EMPTY_FORM = {"content-type": "application/x-www-form-urlencoded", "content-length": "0"}
+OLD_BROWSER_NOTE = (
+    "NS-E207: An old web browser (Internet Explorer mode in Edge, or a Firefox older than version 90) tried at "
+    "least 3 times to control Nightshift (by 09:00). Nightshift refused every one of those requests, so none of "
+    "them ran. Close the pages open in that browser; open Nightshift in Edge or Chrome."
+)
+
+
+def as_agent(app: Any, agent: str | None) -> TestClient:
+    """A client that sends exactly this User-Agent (None: no User-Agent header at all) and no browser header."""
+    tc = client(app)
+    if agent is None:
+        tc.headers.pop("user-agent", None)
+    else:
+        tc.headers["user-agent"] = agent
+    return tc
+
+
+def three_servers(
+    tmp_path: Path, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[tuple[tuple[Any, str], ...], Spy, list[str]]:
+    """The engine, the voice service and the dashboard with one route each that acts on an empty body, and
+    what a request reached: the engine's spied calls and the dashboard's `stop_all`."""
+    from ns_dashboard.svc_engine import EngineService
+
+    _sup, eng, spy = engine(tmp_path, monkeypatch)
+    assert spy is not None
+    stopped: list[str] = []
+    monkeypatch.setattr(EngineService, "stop_all", lambda _self: stopped.append("stop_all") or {"ok": True})
+    servers = (
+        (eng, "/stop_all"),
+        (voice(tmp_path), "/v1/audio/speech/cancel"),
+        (dashboard(tmp_home), "/api/engine/stop_all"),
+    )
+    return servers, spy, stopped
+
+
+def old_browser_bodies() -> tuple[tuple[str, dict[str, str], bytes | None], ...]:
+    """(name, headers, body): no body at all; IE mode's empty HTML form from an HTTPS page (a urlencoded
+    content type with Content-Length 0, no Origin, no Referer); a form with a body; a JSON body."""
+    return (
+        ("none", {}, None),
+        ("empty form", dict(EMPTY_FORM), b""),
+        ("form", {"content-type": "application/x-www-form-urlencoded"}, b"a=1"),
+        ("json", {"content-type": "application/json"}, b"{}"),
+    )
+
+
+@pytest.mark.parametrize("agent", OLD_BROWSERS)
+def test_an_old_browser_cannot_post_without_sec_fetch_on_any_server(
+    tmp_path: Path, tmp_home: Path, monkeypatch: pytest.MonkeyPatch, agent: str
+):
+    """Edge's Internet Explorer mode and a Firefox older than 90 send no Sec-Fetch-*; from an HTTPS page, or
+    with no-referrer, they name no page either. Such a POST, PUT or DELETE reaches no route of any server,
+    whatever its body: also with none, which is all `/stop_all` needs."""
+    servers, spy, stopped = three_servers(tmp_path, tmp_home, monkeypatch)
+    for app, path in servers:
+        tc = as_agent(app, agent)
+        for method in ("POST", "PUT", "DELETE"):
+            for name, headers, body in old_browser_bodies():
+                r = tc.request(method, path, headers=headers, content=body)
+                where = (path, method, name, r.status_code, r.text[:200])
+                assert r.status_code == 403 and CODE in r.text, where
+                if path.startswith("/api/"):
+                    assert r.json()["error"]["code"] == CODE, where
+                else:  # the engine's and the voice service's flat body says why
+                    assert refused(r, "old-browser") is None, where
+    assert spy.calls == [] and stopped == [], (spy.calls, stopped)
+
+
+@pytest.mark.parametrize("agent", PROGRAM_AGENTS)
+def test_programs_with_mozilla_in_their_user_agent_are_still_answered(
+    tmp_path: Path, tmp_home: Path, monkeypatch: pytest.MonkeyPatch, agent: str | None
+):
+    """Windows PowerShell 5.1 and PowerShell 7 begin their User-Agent with "Mozilla/5.0": the mark of an old
+    browser is `Trident/` or `Firefox/`, never that. Every program's request without a body is answered by
+    every server, and one with a JSON body is not refused by the check."""
+    servers, spy, stopped = three_servers(tmp_path, tmp_home, monkeypatch)
+    for app, path in servers:
+        tc = as_agent(app, agent)
+        r = tc.post(path)
+        assert r.status_code == 200, (path, agent, r.status_code, r.text[:200])
+        r = tc.post(path, content=b"", headers=dict(EMPTY_FORM))
+        assert r.status_code == 200, (path, agent, "empty form", r.status_code, r.text[:200])
+        r = tc.post(path, json={})
+        assert r.status_code != 403, (path, agent, "json", r.status_code, r.text[:200])
+    assert len(spy.calls) >= 2 and set(spy.calls) == {"stop_all"}, spy.calls
+    assert len(stopped) >= 2 and set(stopped) == {"stop_all"}, stopped
+
+
+@pytest.mark.parametrize("agent", OLD_BROWSERS)
+def test_an_old_browser_may_still_read(tmp_path: Path, tmp_home: Path, agent: str):
+    """A GET or HEAD from such a browser is answered as before: the GET routes only read, another origin's
+    page cannot read the answer, and the owner's own page opened in that browser still loads."""
+    _sup, eng, _spy = engine(tmp_path)
+    assert as_agent(eng, agent).get("/status").status_code == 200
+    assert as_agent(eng, agent).head("/status").status_code != 403
+    dash = as_agent(dashboard(tmp_home), agent)
+    assert dash.get("/api/status").status_code == 200
+    assert dash.get("/").status_code == 200
+
+
+def test_the_dashboards_own_page_in_an_old_firefox_is_answered(tmp_path: Path, tmp_home: Path):
+    """The dashboard's own page in a Firefox that sends no Sec-Fetch-*: its requests name the page (its own
+    Origin, or its own Referer where that Firefox sends no Origin on a same-origin POST), and a page cannot
+    forge either. A foreign Origin or Referer is refused as ever; the engine has no page of its own."""
+    firefox_85 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:85.0) Gecko/20100101 Firefox/85.0"
+    dash = as_agent(dashboard(tmp_home), firefox_85)
+    assert dash.post("/api/jobs/verify", json={}, headers={"origin": BASE}).status_code == 201
+    assert dash.post("/api/jobs/verify", json={}, headers={"referer": f"{BASE}/queue"}).status_code == 201
+    for foreign in ({"origin": EVIL}, {"origin": "http://127.0.0.1:51731"}, {"referer": f"{EVIL}/a"}):
+        r = dash.post("/api/jobs/verify", json={}, headers=foreign)
+        assert r.status_code == 403 and r.json()["error"]["code"] == CODE, (foreign, r.status_code, r.text[:200])
+    r = dash.post("/api/jobs/verify", json={})  # the same browser naming no page at all
+    assert r.status_code == 403 and r.json()["error"]["code"] == CODE, (r.status_code, r.text[:200])
+    _sup, eng, _spy = engine(tmp_path)
+    assert refused(as_agent(eng, firefox_85).post("/stop_all", headers={"origin": BASE}), "origin") is None
+    assert refused(as_agent(eng, firefox_85).post("/stop_all", headers={"referer": f"{BASE}/"}), "referer") is None
+
+
+def test_three_old_browser_posts_are_told_in_words_that_are_true(tmp_path: Path, clock: Clock):
+    """One note a day for every such request, whichever old browser and page it was (it named none): the
+    count is "at least", the words say what the browser is and what to do."""
+    sup, app, _ = engine(tmp_path)
+    for _ in range(3):
+        r = as_agent(app, IE_MODE).post("/stop_all", content=b"", headers=dict(EMPTY_FORM))
+        assert refused(r, "old-browser") is None
+    settle()
+    assert notes_of(sup) == [OLD_BROWSER_NOTE], notes_of(sup)
+    assert claim_is_true(OLD_BROWSER_NOTE, 3) is None
+    for _ in range(4):  # another old browser, the same day: the same note stands
+        clock.step(seconds=30)
+        assert refused(as_agent(app, FIREFOX_68).post("/stop_all"), "old-browser") is None
+    settle()
+    assert notes_of(sup) == [OLD_BROWSER_NOTE], notes_of(sup)
+    rows = log_rows(sup.paths.logs, "request_refused")
+    assert len(rows) == 1 and rows[0]["data"]["why"] == "old-browser" and rows[0]["data"]["origin"] is None, rows
+
+
+def test_the_old_browser_rule_reads_only_what_a_page_cannot_change():
+    """`decide` alone, header by header: the rule needs an unsafe method, no Sec-Fetch-*, no Origin, no Referer
+    and a User-Agent naming Trident/ or Firefox/ (case as browsers send it; any of several values)."""
+    assert loopback is not None
+    host = (b"host", f"127.0.0.1:{PORT}".encode())
+
+    def judged(method: str, *headers: tuple[bytes, bytes], rule: Any = None) -> str | None:
+        r = loopback.decide([host, *headers], rule or loopback.NO_BROWSER, method, "/stop_all", "http")
+        return None if r is None else r.why
+
+    ie, fx = (b"user-agent", IE_MODE.encode()), (b"user-agent", FIREFOX_89.encode())
+    ps = (b"user-agent", b"Mozilla/5.0 (Windows NT; Windows NT 10.0; en-US) WindowsPowerShell/5.1.26100.1")
+    for old in (ie, fx):
+        for method in ("POST", "PUT", "PATCH", "DELETE", "post"):
+            assert judged(method, old) == "old-browser", (method, old)
+        assert judged("GET", old) is None and judged("HEAD", old) is None
+        assert judged("POST", ps, old) == "old-browser" and judged("POST", old, ps) == "old-browser"
+        # a browser that DOES say which page is judged by that, as before
+        assert judged("POST", old, (b"sec-fetch-site", b"cross-site")) == "fetch-mark"
+        assert judged("POST", old, (b"origin", EVIL.encode())) == "origin"
+        assert judged("POST", old, (b"referer", f"{EVIL}/a".encode())) == "referer"
+        own = (b"origin", BASE.encode())
+        assert judged("POST", old, own, (b"content-type", b"application/json"), rule=loopback.OWN_PAGE) is None
+    assert judged("POST", ps) is None and judged("POST") is None
+    assert judged("POST", (b"user-agent", b"my-tool trident/7.0 firefox/1")) is None  # not the browsers' case
+    refusal = loopback.decide([host, ie], loopback.NO_BROWSER, "POST", "/stop_all", "http")
+    assert refusal is not None and refusal.browser and refusal.origin is None
+    assert refusal.page == loopback.OLD_BROWSER
+
+
+def test_the_hint_names_the_user_agent_rule():
+    """A script of the owner that fakes a browser's User-Agent is refused too: the hint says what to change."""
+    hint = describe(CODE).hint or ""
+    assert "Trident or Firefox" in hint and "User-Agent" in hint, hint

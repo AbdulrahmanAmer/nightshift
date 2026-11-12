@@ -71,6 +71,9 @@ def _root(ctx: typer.Context) -> None:
         return
     try:    # D-35: no install named or found: NS-E123 before any command opens or writes a home
         homecheck.check_root(ctx)
+        # version-mismatch-writes: NS-E128 for a command that writes (the one table, `homeguard.COMMANDS`)
+        # when this window's NIGHTSHIFT_HOME names an install of another version; reading goes on
+        homecheck.check_home(ctx, "ns")
     except NsError as e:
         raise _die(e) from e
 
@@ -396,7 +399,8 @@ def cmd_update(
     what = "The update"
     if zip_path is not None:
         try:
-            new_version, _prefix = update.verify_package(zip_path.resolve())    # a bad zip: nothing started
+            # F1: a zip that is damaged or not signed by a key this version trusts: nothing is started
+            new_version, _prefix = update.verify_package(zip_path.resolve())
         except NsError as e:
             raise _die(e) from e
         what = f"The update to {new_version}"

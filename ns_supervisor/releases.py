@@ -14,6 +14,9 @@ and port only. `release_source` is the only reader of the variable and the only 
 other install refuses the variable with `NS-E704` before any request is made, and never falls back to GitHub.
 A refusal says which of its reasons it is (`REFUSALS`): the message and hint of `NS-E704` are true of all of
 them, and the detail carries the reason's own sentence and way out.
+
+Who made the package (card update-signing): a release also carries `<zip>.sig`, which `download` writes beside
+the zip and `ns_supervisor.update.verify_package` checks against `trusted_keys` before anything changes.
 """
 
 from __future__ import annotations
@@ -30,8 +33,8 @@ from urllib.parse import urlparse
 
 import httpx
 
-from ns_common import devmode
-from ns_common.atomic import FileInUseError, write_chunks_atomic, write_text_atomic
+from ns_common import devmode, release_keys, sigcheck
+from ns_common.atomic import FileInUseError, write_bytes_atomic, write_chunks_atomic, write_text_atomic
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
@@ -157,6 +160,15 @@ def release_source(env: Mapping[str, str] | None = None, paths: Paths | None = N
     return Source(raw, origin)
 
 
+def trusted_keys() -> dict[str, str]:
+    """The release keys this program trusts, `{key id: public key}`: `release_keys.TRUSTED` and nothing
+    else. It takes no argument on purpose: no environment variable (`NS_RELEASE_SOURCE` included), flag,
+    dev or engine-test mode and no file of the home adds or swaps a key; a test source decides only where
+    a release is DOWNLOADED from, never who may have made it. Read at every check, never cached. Empty:
+    this version checks no signature yet (before the owner's key step)."""
+    return dict(release_keys.TRUSTED)
+
+
 @dataclass(frozen=True)
 class Release:
     """What `ns update` needs to know about one GitHub release."""
@@ -168,6 +180,7 @@ class Release:
     zip_url: str | None
     digest: str | None  # sha256 hex from the API, when GitHub provides it
     sidecar_url: str | None  # the attached .sha256 file, when there is one
+    sig_url: str | None = None  # the attached <zip>.sig (who made it), when there is one
 
 
 def parse_version(text: str) -> tuple[int, int, int, int, str]:
@@ -275,6 +288,7 @@ def parse_release(data: dict[str, Any], source: Source | None = None) -> Release
     zip_name = zip_url = digest = sidecar = None
     best = len(zip_names)
     sidecars: dict[str, str] = {}
+    sigs: dict[str, str] = {}
     for asset in data.get("assets") or []:
         name = str(asset.get("name") or "")
         url = str(asset.get("browser_download_url") or "")
@@ -287,9 +301,13 @@ def parse_release(data: dict[str, Any], source: Source | None = None) -> Release
                 digest = raw[7:].lower()
         elif low in want_sums and trusted(url, src):
             sidecars[low] = url
+        elif low.endswith(sigcheck.SIG_SUFFIX) and trusted(url, src):
+            sigs[low] = url
+    sig = None
     if zip_name is not None:
         sidecar = sidecars.get(f"{zip_name.lower()}.sha256") or next(iter(sidecars.values()), None)
-    return Release(version, tag, str(data.get("html_url") or ""), zip_name, zip_url, digest, sidecar)
+        sig = sigs.get(zip_name.lower() + sigcheck.SIG_SUFFIX)  # the picked zip's own, never another file's
+    return Release(version, tag, str(data.get("html_url") or ""), zip_name, zip_url, digest, sidecar, sig)
 
 
 def fetch_latest(client: httpx.Client | None = None) -> Release:
@@ -351,16 +369,48 @@ def expected_digest(rel: Release, client: httpx.Client, source: Source | None = 
     raise NsError("NS-E701", f"release {rel.tag} publishes no SHA256 for its update package")
 
 
+def _signature(rel: Release, client: httpx.Client, source: Source) -> bytes | None:
+    """The content of the release's `.sig` (None: it lists none). One that is listed and cannot be fetched is
+    `NS-E105`/`NS-E118`, like the zip: "is missing" would be untrue of a release that has one."""
+    if rel.sig_url is None:
+        return None
+    try:
+        r = client.get(rel.sig_url)
+        if source.test:
+            _stayed(r, source)
+        r.raise_for_status()
+        return r.content[: sigcheck.SIG_MAX_BYTES + 1]  # (a longer file is refused by the check, by name)
+    except httpx.HTTPError as e:
+        raise _unreachable(e, source) from e
+
+
+def fetch_uv(url: str, dest: Path) -> None:
+    """The uv pin's URL into `dest` (trusted host only: GitHub, or the test source in force): the `fetch` the
+    updater gives `installer.stage2.web.uvpin.prepare`. It lives here, not in uvpin: the web package is
+    imported by setup's server on the bare Python, which has no httpx (item uv-pin-on-update)."""
+    if not trusted(url):
+        raise OSError(f"{urlparse(url).netloc or url} is not an address Nightshift downloads from")
+    with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(60, read=300)) as http:
+        with http.stream("GET", url) as resp:
+            resp.raise_for_status()
+            with dest.open("wb") as out:
+                for block in resp.iter_bytes(1 << 20):
+                    out.write(block)
+
+
 def _forget(target: Path) -> None:
-    """Delete an older zip of the name and its `.sha256`; one that cannot be deleted (open elsewhere) hides no
-    error. The sidecar goes too: it vouches for the zip that was just refused, not for whatever comes next."""
-    for f in (target, target.with_name(target.name + ".sha256")):
+    """Delete an older zip of the name with its `.sha256` and `.sig`; one that cannot be deleted (open
+    elsewhere) hides no error. The two go too: they vouch for the zip that was just refused, not for
+    whatever comes next."""
+    for f in (target, target.with_name(target.name + ".sha256"), sigcheck.sig_path(target)):
         with contextlib.suppress(OSError):
             f.unlink(missing_ok=True)
 
 
 def download(rel: Release, dest_dir: Path, client: httpx.Client | None = None) -> Path:
-    """Download the update zip into `dest_dir`, verify its SHA256 and write `<zip>.sha256` next to it.
+    """Download the update zip into `dest_dir`, verify its SHA256 and write `<zip>.sha256` next to it, and
+    `<zip>.sig` when the release has one (fetched before the zip; a `.sig` an earlier download left is removed
+    when it has none). Who signed it is not decided here: `update.verify_package` does that, the one place.
 
     The result is what `ns_supervisor.update.update_app` takes. The download goes to a temporary file beside
     the final name; its SHA256 is checked on that file and only a match is moved under the final name. A
@@ -377,7 +427,7 @@ def download(rel: Release, dest_dir: Path, client: httpx.Client | None = None) -
     src = release_source()
     if rel.zip_url is None or rel.zip_name is None:
         raise NsError("NS-E701", f"release {rel.tag} has no Nightshift-Update-{rel.version}.zip")
-    for url in (rel.zip_url, rel.sidecar_url):
+    for url in (rel.zip_url, rel.sidecar_url, rel.sig_url):
         if url is not None and not trusted(url, src):
             raise NsError(
                 "NS-E701",
@@ -387,6 +437,7 @@ def download(rel: Release, dest_dir: Path, client: httpx.Client | None = None) -
     http = client or _client(src, httpx.Timeout(60, read=300))
     try:
         want = expected_digest(rel, http, src)
+        signature = _signature(rel, http, src)
         dest_dir.mkdir(parents=True, exist_ok=True)
         target = dest_dir / rel.zip_name
 
@@ -418,6 +469,11 @@ def download(rel: Release, dest_dir: Path, client: httpx.Client | None = None) -
             raise
         sidecar = target.with_name(target.name + ".sha256")
         write_text_atomic(sidecar, f"{want}  {rel.zip_name}\n", newline=None)
+        if signature is None:
+            with contextlib.suppress(OSError):
+                sigcheck.sig_path(target).unlink(missing_ok=True)
+        else:
+            write_bytes_atomic(sigcheck.sig_path(target), signature)
         return target
     finally:
         if client is None:

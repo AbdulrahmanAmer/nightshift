@@ -178,6 +178,8 @@ def _home_as_0_1_14_left_it(paths: Paths, db: Db, env: jobs.Env) -> dict[str, st
         else:
             _stage(ctx.job_dir, ctx, "d31_a")
     shutil.rmtree(ownership.owners_dir(paths))  # `make_job` announces the job; 0.1.14 knew no such folder
+    # `jobs.open_env` checked studio.db (db-integrity) and wrote run/db-check.json; 0.1.14 made no run/ folder
+    shutil.rmtree(paths.home / "run")
     assert not (paths.data / "owners").exists() and not (paths.home / "run").exists()
     return made
 

@@ -12,8 +12,9 @@ from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 import ns_common.testguard as testguard
+from ns_common import homeguard
 from ns_common.config import load_runtime
-from ns_common.db import Db, claim_dir, claim_job_id
+from ns_common.db import Db, claim_dir, claim_job_id, open_studio_db
 from ns_common.logging import NsLogger
 from ns_common.models import Channel, Combo, Runtime
 from ns_common.paths import Paths
@@ -29,6 +30,7 @@ from ns_studio.channels.crud import (
 )
 from ns_studio.context import FAKEABLE, JobContext, Services, build_services
 from ns_studio.errors import StudioError
+from ns_studio.notifications import db_note
 from ns_studio.variation.draw import draw_combo, record_combo
 
 # Imported lazily by `load_stage_modules`; each registers its stages (the order of a plan is FORMAT_STAGES).
@@ -171,11 +173,16 @@ NEW_DB_NOTE = (
 
 
 def db_is_new(paths: Paths) -> bool:
-    """True when the database file is not there or holds zero bytes (opening it makes a new, empty one)."""
+    """True when the database file is not there or holds zero bytes (opening it makes a new, empty one), in
+    a home with no history. With one (a nightly copy, a finished video) such a file is a lost database: the
+    opener puts back the newest good copy and says so itself (NS-W213, card db-integrity)."""
+    from ns_common.dbrestore import has_history
+
     try:
-        return not paths.db_path.is_file() or paths.db_path.stat().st_size == 0
+        empty = not paths.db_path.is_file() or paths.db_path.stat().st_size == 0
     except OSError:
         return False
+    return empty and not has_history(paths)
 
 
 def open_env(fake: frozenset[str] = frozenset(), *, light: bool = False) -> Env:
@@ -186,10 +193,19 @@ def open_env(fake: frozenset[str] = frozenset(), *, light: bool = False) -> Env:
     `dev_mode`, docs/DEV_MODE.md). A runtime.json that is there but cannot be used is NS-E125 naming it
     (`ns_common.runtime_read`, the reading setup and `ns doctor` share), and a database that cannot be opened
     is NS-E327 naming it: a line and exit 1 through the CLI's `guarded`, never a traceback.
+
+    Card version-mismatch-writes: asked first, before a folder is made or the database opened
+    (`homeguard.may_write`). In an install of another version a reading command (`studio status`, the lists)
+    opens it without writing (no folders made, the database read-only and not migrated); anything else is
+    refused there with NS-E128 (the CLI's table refused the writing commands before this).
     """
     paths = Paths.from_env()
-    paths.ensure()
-    db = Db(paths.db_path)
+    if homeguard.may_write(paths.home):
+        paths.ensure()
+    log = NsLogger("studio", paths.logs)
+    # db-integrity: checked once per process; a damaged file is replaced by the newest good copy (NS-W213),
+    # or NS-E209 when it cannot be (the CLI's `guarded` prints it; the owner also finds it in the bell)
+    db = open_studio_db(paths, log, note=db_note(paths))
     try:
         db.migrate()
     except (sqlite3.Error, OSError) as e:   # a folder of that name, a file another program holds, a bad file
@@ -210,7 +226,7 @@ def open_env(fake: frozenset[str] = frozenset(), *, light: bool = False) -> Env:
         fake = FAKEABLE
     keys = {} if "clips" in fake else load_keys()
     services = build_services(runtime, fake=fake, paths=paths, keys=keys)
-    return Env(paths, db, runtime, services, NsLogger("studio", paths.logs), fake)
+    return Env(paths, db, runtime, services, log, fake)
 
 
 def ensure_demo_channel(env: Env) -> Channel:

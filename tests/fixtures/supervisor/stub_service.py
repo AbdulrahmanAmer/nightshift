@@ -100,6 +100,21 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/v1/audio/speech":
             words = len(str(body.get("input", "")).split())
             self._send(200, _wav_bytes(max(0.5, words / 2.5)), "audio/wav")
+        elif self.path == "/v1/audio/speech/batch":
+            # the voice service's batch route: one file per item and, as the qwentts engine gives them, the
+            # arrival stamps (the first after 1 s, each next one 0.2 s per second of its audio: rate 0.2)
+            out_dir = str(body.get("out_dir") or ".")
+            os.makedirs(out_dir, exist_ok=True)
+            files, stamps, at = [], [], 1.0
+            for k, item in enumerate(body.get("items") or []):
+                seconds = max(0.5, len(str(item.get("input", "")).split()) / 2.5)
+                path = os.path.join(out_dir, f"{item.get('id')}.wav")
+                with open(path, "wb") as fh:
+                    fh.write(_wav_bytes(seconds))
+                at = at if k == 0 else at + 0.2 * seconds
+                files.append({"id": item.get("id"), "path": path, "seconds": round(seconds, 3)})
+                stamps.append({"at_s": round(at, 3), "audio_s": round(seconds, 3)})
+            self._json(200, {"files": files, "engine": "stub", "rtf": 0.2, "stamps": stamps})
         else:
             self._json(404, {"error": "not found"})
 
