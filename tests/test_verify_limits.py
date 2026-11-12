@@ -492,6 +492,34 @@ def test_t6_the_stamps_travel_through_the_service_and_the_client(
     assert [f.id for f in client.speak_batch(items, tmp_path / "out2")] == ["a", "b", "c"]
 
 
+def test_t6_each_utterance_is_stamped_when_its_last_byte_came_whatever_the_way_it_is_written() -> None:
+    """Review of block E2, finding 1: three utterances made at 1, 2 and 3 s. Written whole once made, or
+    header first and samples when made: both give the stamps 1, 2, 3 (the next header's arrival gave 2, 3 and
+    the exit for the first way: one utterance late, a rate half the truth with three)."""
+    import struct
+
+    from ns_tts.engine import StreamClock
+
+    head = struct.pack("<4sI4s4sIHHIIHH4sI", b"RIFF", 0x7FFFFFFF, b"WAVE", b"fmt ", 16, 1, 1, 24000, 48000, 2,
+                       16, b"data", 0x7FFFFFFF)  # fmt: skip
+    body = b"\x00\x40" * 24000
+    whole = StreamClock()
+    for k in range(3):
+        whole.feed(head + body, k + 1.0)
+    whole.end(3.05)
+    first = StreamClock()
+    for k in range(3):
+        first.feed(head, float(k))
+        first.feed(body[:1000], k + 0.5)
+        first.feed(body[1000:], k + 1.0)
+    first.end(3.05)
+    for clock in (whole, first):
+        assert len(clock.heads) == 3 and clock.arrivals(ended_whole=True) == [1.0, 2.0, 3.0]
+        assert clock.arrivals(ended_whole=False) == [1.0, 2.0]  # after a kill the last may be cut
+    stamps = tuple(TtsStamp(at, 1.0) for at in whole.arrivals(ended_whole=True))
+    assert verify.speaking_rate(stamps) == (1.0, 1.0, 2.0)
+
+
 def test_t6_box_3s_lines_give_the_backend_and_the_totals() -> None:
     a = tool_words(BOX3_A)
     assert a == {"backend": "CUDA0", "perf_total_ms": [1222.5], "perf_audio_s": [4.0], "perf_rtf": [0.306]}

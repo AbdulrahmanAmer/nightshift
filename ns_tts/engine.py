@@ -43,12 +43,14 @@ the TTS service when the supervisor stops it. Its `speed` field is parsed and ig
 `qwen-tts` process per batch keeps the contract exact and leaves nothing behind.
 
 Arrival stamps (card verify-limits L2): while `_run_stream` reads the stream it notes the moment each
-utterance is complete, that is when the NEXT utterance's header arrives, and for the last one when the stream
-ends. `synth_batch` leaves them in `last_stamps` as (`time.perf_counter()` value, audio seconds) per
-utterance; the service hands them to its caller, and `ns verify` measures the speaking rate from them (the
-time from the first utterance to the last over the audio made in between), so a process's start and load
-are not counted as speaking. The last stamp includes the process's own exit, a fraction of a second. The
-file route (`synth`) and the other engines leave `last_stamps` None. Not yet seen on a GPU PC: whether
+utterance is complete, that is when its LAST BYTE was read (the byte before the next utterance's header; for
+the last one, the last byte of the stream). That is right whether the tool writes an utterance's header
+before it makes it or writes the whole utterance once it is made: the moment the next header arrives would be
+one utterance late in the second case (review of block E2, finding 1). `synth_batch` leaves them in
+`last_stamps` as (`time.perf_counter()` value, audio seconds) per utterance; the service hands them to its
+caller, and `ns verify` measures the speaking rate from them (the time from the first utterance to the last
+over the audio made in between), so a process's start and load are not counted as speaking. The file route
+(`synth`) and the other engines leave `last_stamps` None. Not yet seen on a GPU PC: whether
 `qwen-tts` flushes each utterance as it is made (if it held them to the end, the stamps would not arrive one
 after the other, and `ns verify` says so and times the whole call instead).
 
@@ -66,6 +68,7 @@ when a synthesis fails, `NS-E315` when a voice cannot be built, `NS-E311` for a 
 
 from __future__ import annotations
 
+import bisect
 import dataclasses
 import gc
 import hashlib
@@ -596,35 +599,45 @@ class StreamClock:
     """Stamps the utterances of a `--stream-by-line` stdout while it is read (card verify-limits L2).
 
     `feed` gets each piece of stdout with the moment it was read; `end` the moment the stream ended. An
-    utterance is complete when the next one's header arrives, the last one when the stream ended: whether the
-    tool writes an utterance at once or in pieces, the stamp is when all of it was there. The bytes are kept
-    (`data`): they are the process's stdout.
+    utterance is complete when its LAST BYTE was read: the byte before the next one's header, and for the last
+    utterance the stream's last byte. So the stamp is when all of it was there whether the tool writes an
+    utterance's header before it makes it or writes the whole utterance once it is made (the moment the next
+    header arrives would be one utterance late then). The bytes are kept (`data`): they are the process's
+    stdout.
     """
 
     def __init__(self) -> None:
         self.data = bytearray()
         self.heads: list[int] = []
-        self.head_at: list[float] = []
         self.ended_at: float | None = None
+        self._ends: list[int] = []  # len(data) after each piece, ascending
+        self._at: list[float] = []  # the moment each piece was read
 
     def feed(self, piece: bytes, now: float) -> None:
+        if not piece:
+            return
         start = max(0, len(self.data) - (_STREAM_HEAD_LEN - 1))  # a header may straddle two pieces
         if self.heads:
             start = max(start, self.heads[-1] + 1)
         self.data += piece
+        self._ends.append(len(self.data))
+        self._at.append(now)
         for m in _STREAM_HEAD.finditer(self.data, start):
             self.heads.append(m.start())
-            self.head_at.append(now)
 
     def end(self, now: float) -> None:
         self.ended_at = now
 
+    def _read_at(self, offset: int) -> float:
+        """The moment the byte at `offset` was read (the first piece that ended past it)."""
+        return self._at[min(bisect.bisect_right(self._ends, offset), len(self._at) - 1)]
+
     def arrivals(self, *, ended_whole: bool) -> list[float]:
         """When each complete utterance was there. `ended_whole`: the process exited by itself with 0, so its
         last utterance is complete; after a kill or a failure the last one is left out (it may be cut)."""
-        out = list(self.head_at[1:])
-        if ended_whole and self.heads and self.ended_at is not None:
-            out.append(self.ended_at)
+        out = [self._read_at(h - 1) for h in self.heads[1:]]
+        if ended_whole and self.heads:
+            out.append(self._at[-1])
         return out
 
     def audio_seconds(self) -> float:
