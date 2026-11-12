@@ -481,6 +481,8 @@ class Supervisor:
         retried = False
         while True:
             before, chosen, step = await self._vram_room(rt, options, owner)
+            if retried:  # the stop and the settle took seconds: the retry spawns only while this acquire
+                await self._guard(owner, rt.name, "start after a spill")  # still holds the card (NS-E202)
             try:
                 await self._start_one(rt, chosen, owner, before, step)
                 return
