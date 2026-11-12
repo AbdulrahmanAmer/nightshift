@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from ns_common.models import SCRIPT_MAX_CHARS, SCRIPT_MIN_CHARS
-from ns_dashboard.assistant import composite, dryrun, orientation
+from ns_dashboard.assistant import composite, drafts, dryrun, orientation
 from ns_dashboard.assistant.registry import TOPICS, Registry, ToolCall, ToolContext, ToolDef, ToolSpec, obj
 from ns_dashboard.common import offered_formats
 from ns_dashboard.errors import ApiError
@@ -76,6 +76,7 @@ NO_TOOL: dict[Route, str] = {
     ("DELETE", "/api/library/ideas/{idea_id}"): "never: removing an idea is the owner's decision (Library page)",
     ("DELETE", "/api/library/stories/{job_id}"): "never: removing a story and its videos is the owner's decision (Library page)",
     ("DELETE", "/api/voices/{name}"): "never: removing a voice is the owner's decision (Library page)",
+    ("POST", "/api/drafts/{draft_id}/open"): "the Open button of a draft card: the owner opens his file; the Assistant names its path",
 }
 
 
@@ -157,6 +158,43 @@ def _script_ok(args: dict[str, Any]) -> str | None:
 
 def _start_script(c: ToolContext, a: dict[str, Any]) -> Any:
     return c.dash.jobs.create_run(dryrun.script_body(a))
+
+
+#: What `start_script_job` says to a long video: its story never fits one reply (G-43 b).
+USE_A_DRAFT = ("A long video's story is too long for one reply: write it as a draft file instead, one part per call "
+               "(draft_create, then draft_append_part for each part, then start_job_from_draft). If the owner pasted "
+               "the story himself, he can start it on the Create page (Use my own story text).")
+
+
+def _script_format(c: ToolContext, a: dict[str, Any]) -> str | None:
+    """The type a `start_script_job` call would make: its own `format`, else the channel's (None if unknown)."""
+    if a.get("format"):
+        return str(a["format"])
+    try:
+        return str(c.dash.channels.load(str(a.get("channel") or "")).format)
+    except ApiError:
+        return None
+
+
+def _check_script_kept(c: ToolContext, a: dict[str, Any]) -> None:
+    """start_script_job's check before the card: a long video is refused with "use a draft", and a text that is
+    refused for any reason is kept as a draft file and named, so a story the Assistant wrote is never lost (G-47)."""
+    fmt = _script_format(c, a)
+    try:
+        if fmt == "master_first":
+            raise ApiError(422, "use_a_draft", USE_A_DRAFT)
+        dryrun.check_script(c, a)
+    except ApiError as e:
+        try:
+            kept = drafts.keep_text(
+                c.dash.state.paths, text=str(a.get("script") or ""), title=str(a.get("title") or ""),
+                channel=str(a.get("channel") or ""), fmt=fmt if fmt in drafts.FORMATS else "master_first",
+                conversation_id=c.conversation_id,
+            )
+        except (ApiError, OSError):  # the text could not be kept: the refusal itself still goes out
+            raise e from None
+        raise ApiError(e.status, e.code, f"{e.message.rstrip()} The text is kept as a draft: {kept.path} (draft id "
+                       f"{kept.draft_id}).", hint=e.hint, details=e.details) from e
 
 
 def _formats_brief(c: ToolContext, _a: dict[str, Any]) -> Any:
@@ -247,14 +285,41 @@ def _tools() -> list[ToolDef]:
                   "schedule_at": _s("start later: local date and time such as 2026-11-03T02:00; leave out to start now")},
            required=["channel"], side=True, dry_run=dryrun.check_story,
            confirm="Make a new {format} for {channel}, start: {schedule_at}. This uses the GPU for a while."),
-        _t("start_script_job", "create", "Make one video from story text the owner wrote or pasted, narrated as written. For a story the model writes itself, use start_story_job.",
+        _t("start_script_job", "create", "Make one Short from story text the owner wrote or pasted, narrated as written. Long video: use draft_create. New story by the model: start_story_job.",
            _start_script,
            props={"channel": _s("channel slug"),
                   "format": _s("what to make: a Short or a long video; leave out for the channel's own type", enum=["shorts_only", "master_first"]),
                   "script": _s("the full story text to narrate, 200 to 30000 characters", maxLength=SCRIPT_MAX_CHARS),
                   "title": _s("working title; leave out to use the first words")},
-           required=["channel", "script"], side=True, precheck=_script_ok, dry_run=dryrun.check_script,
+           required=["channel", "script"], side=True, precheck=_script_ok, dry_run=_check_script_kept,
            confirm="Make a {format} for {channel} from the script you gave ({words} words). This uses the GPU for a while."),
+        # ------------------------------------------------ drafts (G-43 b, G-47): a story is a file, one part per call
+        _t("draft_create", "drafts", "Start a story draft file in the drafts folder for a channel. Write the story into it one part per call, never all at once.",
+           drafts.tool_create,
+           props={"title": _s("the story's working title"), "channel": _s("channel slug"),
+                  "format": _s("what it becomes: a Short or a long video", enum=list(drafts.FORMATS)),
+                  "text": _s(f"optional: the first part only, at most about {drafts.PART_WORDS_HINT} words", maxLength=drafts.PART_MAX_CHARS),
+                  "part_title": _s("optional: the first part's heading")},
+           required=["title", "channel"]),
+        _t("draft_append_part", "drafts", f"Add ONE part of the story at the end of a draft file (at most about {drafts.PART_WORDS_HINT} words per call).",
+           drafts.tool_append,
+           props={"draft": _s("the draft id or its path"),
+                  "text": _s(f"this part's story text only, at most about {drafts.PART_WORDS_HINT} words", maxLength=drafts.PART_MAX_CHARS),
+                  "part_title": _s("this part's heading")},
+           required=["draft", "text"]),
+        _t("draft_read", "drafts", "Read a draft file: its parts, word count and how it ends, or one part's text. The owner may have edited it.",
+           drafts.tool_read, route=("GET", "/api/drafts/{draft_id}"),
+           props={"draft": _s("the draft id or its path"), "part": _i("one part's number, to read its text", minimum=1, maximum=drafts.MAX_PARTS)},
+           required=["draft"]),
+        _t("list_drafts", "drafts", "The newest story drafts with their paths, word counts and status.",
+           drafts.tool_list, props={"limit": _i("how many", minimum=1, maximum=50)}),
+        _t("start_job_from_draft", "drafts", "Make the video from a draft file. Nightshift reads the file itself when the owner says Yes; never repeat the story here.",
+           drafts.tool_start,
+           props={"draft": _s("the draft id or its path"), "channel": _s("channel slug"),
+                  "format": _s("a Short or a long video; leave out for the draft's own type", enum=list(drafts.FORMATS)),
+                  "title": _s("working title; leave out for the draft's title")},
+           required=["draft", "channel"], side=True, dry_run=drafts.check_start,
+           confirm="Make a {format} for {channel} from the draft {draft}, as the file reads when you press Yes. This uses the GPU for a while."),
         _t("start_clip_job", "create", "Cut clips from one of the owner's own videos: a file on this PC or a web link.",
            _start_clip, route=("POST", "/api/jobs/clip"),
            props={"path": _s("full path of the video file on this PC"), "url": _s("http or https link to the video"),

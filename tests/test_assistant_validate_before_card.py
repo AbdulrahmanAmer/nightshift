@@ -55,6 +55,7 @@ INVALID: dict[str, tuple[dict[str, Any], str]] = {
         "'schedule_at' must be a date and time",
     ),
     "start_script_job": ({"channel": "no-such-channel", "script": SCRIPT}, "no-such-channel"),
+    "start_job_from_draft": ({"draft": "no-such-draft", "channel": "after-dark"}, "no-such-draft"),
     "start_clip_job": ({"channel": "after-dark", "path": "D:/no/such/video.mp4"}, "is not a video file"),
     "rerun_clips": ({"job_id": "no-such-job", "template": "auto"}, "clip job was not found"),
     "resume_job": ({"job_id": "no-such-job"}, "story job was not found"),

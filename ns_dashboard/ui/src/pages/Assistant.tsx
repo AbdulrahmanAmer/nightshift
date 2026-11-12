@@ -14,7 +14,14 @@ import { SuggestMenu } from "./SuggestMenu";
 import { jobTitle } from "./Queue";
 
 type Confirm = { action_id: string; text: string; tool: string; state: "pending" | "done" | "dismissed" | "failed"; result?: string };
-type Msg = { id: number; role: "user" | "assistant" | "note" | "error"; text: string; confirm?: Confirm };
+/** A story draft file the Assistant writes part by part (WP7b, G-47): GET /drafts/{id} answers the same shape. */
+type DraftInfo = { draft_id: string; path: string; title: string; words: number; status: string; parts: { n: number; title: string; words: number }[] | number; job_id?: string; warning?: string };
+type Msg = { id: number; role: "user" | "assistant" | "note" | "error"; text: string; confirm?: Confirm; draft?: DraftInfo };
+/** The tools whose result carries a `draft`: their result shows as the draft's card (one card per draft, the newest state). */
+const DRAFT_TOOLS = ["draft_create", "draft_append_part", "draft_read"];
+const draftOf = (tool: string, ok: boolean, result: any): DraftInfo | null => (ok && DRAFT_TOOLS.includes(tool) && result?.draft?.path ? (result.draft as DraftInfo) : null);
+/** One card per draft: a newer state of the same draft replaces the old card and moves to the end. */
+const withDraft = (msgs: Msg[], d: DraftInfo): Msg[] => [...msgs.filter((m) => m.draft?.draft_id !== d.draft_id), { id: ++mid, role: "assistant", text: "", draft: d }];
 type Saved = { cid: string | null; msgs: Msg[] };
 
 /** Registry entry of one tool (GET /assistant/tools). The page words its busy line and Yes/No cards from these, never from a list of its own. */
@@ -24,9 +31,15 @@ const WELCOME: Msg = { id: 0, role: "assistant", text: "I run on this PC with th
 let mid = Date.now();
 
 /** Messages of a stored conversation (GET /assistant/history) as chat messages; actions still waiting come back as cards. */
-const fromHistory = (h: { messages?: { role: string; content?: string }[]; pending_actions?: { action_id: string; tool: string; confirm_text: string }[] }): Msg[] => {
-  const out: Msg[] = [];
-  for (const m of h.messages || []) if ((m.role === "user" || m.role === "assistant") && m.content?.trim()) out.push({ id: ++mid, role: m.role, text: m.content });
+const fromHistory = (h: { messages?: { role: string; content?: string; name?: string }[]; pending_actions?: { action_id: string; tool: string; confirm_text: string }[] }): Msg[] => {
+  let out: Msg[] = [];
+  for (const m of h.messages || []) {
+    if ((m.role === "user" || m.role === "assistant") && m.content?.trim()) out.push({ id: ++mid, role: m.role, text: m.content });
+    else if (m.role === "tool" && m.name && DRAFT_TOOLS.includes(m.name)) {
+      let d: DraftInfo | null = null; try { d = draftOf(m.name, true, JSON.parse(m.content || "null")); } catch { /* a result too long to store whole: no card */ }
+      if (d) out = withDraft(out, d);
+    }
+  }
   for (const a of h.pending_actions || []) out.push({ id: ++mid, role: "assistant", text: "", confirm: { action_id: a.action_id, text: a.confirm_text, tool: a.tool, state: "pending" } });
   return out.length ? out : [WELCOME];
 };
@@ -62,6 +75,7 @@ export function Chat({ compact, initialText, openCid, openTick }: { compact?: bo
         else if (ev.kind === "message") { setToolNote(null); push({ role: "assistant", text: ev.payload.text }); }
         else if (ev.kind === "confirm") push({ role: "assistant", text: "", confirm: { action_id: ev.payload.action_id, text: ev.payload.text, tool: ev.payload.tool, state: "pending" } });
         else if (ev.kind === "tool_call") setToolNote(toolWords(tools.data, ev.payload.tool));
+        else if (ev.kind === "tool_result") { const d = draftOf(ev.payload.tool, ev.payload.ok, ev.payload.result); if (d) update((s) => ({ ...s, msgs: withDraft(s.msgs, d) })); }
         else if (ev.kind === "busy") { push({ role: "note", text: ev.payload.message }); setWaiting(true); }
         else if (ev.kind === "error") push({ role: "error", text: ev.payload.message + (ev.payload.hint ? `. ${ev.payload.hint}` : "") });
       }
@@ -106,7 +120,7 @@ export function Chat({ compact, initialText, openCid, openTick }: { compact?: bo
     <div className={cx("flex min-h-0 flex-1 flex-col", !compact && "h-full")}>
       <div ref={logRef} aria-live="polite" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4 scroll-thin">
         {!compact && saved.msgs.length <= 1 && !busy && <div className="flex justify-center pt-4 pb-2"><Lockup width={220} /></div>}
-        {saved.msgs.map((m) => m.confirm ? <ConfirmCard key={m.id} c={m.confirm} what={toolWords(tools.data, m.confirm.tool)} onYes={() => decide(m, true)} onNo={() => decide(m, false)} /> : (
+        {saved.msgs.map((m) => m.draft ? <DraftCard key={m.id} d={m.draft} /> : m.confirm ? <ConfirmCard key={m.id} c={m.confirm} what={toolWords(tools.data, m.confirm.tool)} onYes={() => decide(m, true)} onNo={() => decide(m, false)} /> : (
           <div key={m.id} className={cx("flex gap-3", m.role === "user" && "justify-end")}>
             {m.role !== "user" && m.role !== "note" && <span className="mt-0.5 shrink-0"><Mark size={28} /></span>}
             <div className={cx("max-w-[78%] rounded-ds-lg px-3 py-2 text-ds-md leading-ds-normal whitespace-pre-wrap",
@@ -150,6 +164,37 @@ function ConfirmCard({ c, what, onYes, onNo }: { c: Confirm; what: string; onYes
         subtitle={<span className={cx("inline-flex items-start gap-1.5 whitespace-pre-wrap break-all", c.state === "done" ? "text-ds-success-ink" : c.state === "failed" ? "text-ds-danger" : "text-ds-muted")}>
           <Icon name={c.state === "done" ? "check" : "x"} size={14} className="mt-0.5 shrink-0" />{c.state === "dismissed" ? "Not done" : c.result || (c.state === "done" ? "Done" : "That did not work")}
         </span>} />
+    </div>
+  );
+}
+
+/** A story draft (WP7b, G-47): the file's path, its length and an Open button. The file is the story: the owner can edit it,
+    Refresh reads it again, and the video is made from the file as it reads when he presses Yes. */
+function DraftCard({ d }: { d: DraftInfo }) {
+  const { toast } = useApp();
+  const [info, setInfo] = useState(d);
+  useEffect(() => setInfo(d), [d]);
+  const at = `/drafts/${encodeURIComponent(info.draft_id)}`;
+  const open = async () => { try { await api.post(`${at}/open`); } catch (e: any) { toast(e.message, "bad"); } };
+  const reread = async () => { try { setInfo(await api.get<DraftInfo>(at)); } catch (e: any) { toast(e.message, "bad"); } };
+  const parts = Array.isArray(info.parts) ? info.parts.length : info.parts;
+  const copy = async () => { try { await navigator.clipboard.writeText(info.path); toast("Path copied", "ok"); } catch { toast("Copy was blocked", "warn"); } };
+  return (
+    <div className="ml-10 max-w-[min(78%,440px)] rounded-ds-lg border border-ds-border-subtle bg-ds-surface p-3 shadow-ds-inset-sm">
+      <div className="flex items-start gap-2.5">
+        <span aria-hidden className="grid size-8 shrink-0 place-items-center rounded-ds-md bg-ds-accent-soft text-ds-accent-ink"><Icon name="book" size={16} /></span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-ds-sm font-semibold" title={info.title}>{info.title}</p>
+          <p className="text-ds-2xs text-ds-muted">Story draft, {parts} part{parts === 1 ? "" : "s"}, {info.words.toLocaleString()} words{info.status === "started" ? ", video started" : ""}</p>
+        </div>
+      </div>
+      <p className="mt-2 font-mono text-ds-2xs break-all text-ds-text-2" title={info.path}>{info.path}</p>
+      {info.warning && <p className="mt-1 text-ds-2xs text-ds-danger">{info.warning}</p>}
+      <div className="mt-2.5 flex flex-wrap gap-2">
+        <Button size="sm" variant="soft" leadingIcon="external" onClick={open}>Open</Button>
+        <Button size="sm" variant="ghost" leadingIcon="refresh" onClick={reread}>Refresh</Button>
+        <Button size="sm" variant="ghost" leadingIcon="copy" onClick={copy}>Copy path</Button>
+      </div>
     </div>
   );
 }

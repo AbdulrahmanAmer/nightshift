@@ -16,7 +16,7 @@ import yaml
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
-from ns_dashboard.assistant import prompt, router
+from ns_dashboard.assistant import drafts, prompt, router
 from ns_dashboard.assistant.llm import EngineBusy, EngineOffline, LlmProvider, ReplyCutInToolCall
 from ns_dashboard.assistant.orientation import static_map
 from ns_dashboard.assistant.redact import redact_obj, redact_text
@@ -254,7 +254,7 @@ class Assistant:
         return router.topics_of_calls(registry, names)
 
     def _turn(self, llm: Any, cid: str, context: dict[str, Any]) -> Iterator[Event]:
-        ctx = ToolContext(self.dash, context)
+        ctx = ToolContext(self.dash, context, conversation_id=cid)  # WP7b: a draft remembers its chat
         stored = self.store.messages(cid)
         question = next((str(m["content"]) for m in reversed(stored) if m["role"] == "user"), "")
         slugs = [c.slug for c in self.dash.channels.load_all()]
@@ -273,8 +273,9 @@ class Assistant:
                 reply = llm.chat_tools(messages, tools, max_tokens=budget.output_reserve)
             except ReplyCutInToolCall as cut:
                 self._log_failure("assistant_reply_cut", cid, cut.cause)
-                self.store.add_message(cid, "assistant", CUT_NOTE)
-                yield {"kind": "message", "payload": {"text": CUT_NOTE}}
+                note = drafts.cut_note(self.dash.state.paths, cid) or CUT_NOTE  # WP7b: the chat's draft, named
+                self.store.add_message(cid, "assistant", note)
+                yield {"kind": "message", "payload": {"text": note}}
                 return
             calls = reply.get("tool_calls") or []
             content = (reply.get("content") or "").strip()
