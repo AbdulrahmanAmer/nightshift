@@ -13,6 +13,7 @@ from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_common.models import VideoCfg
 from ns_studio import orchestrator as orch
+from ns_studio.media import clips as clips_mod
 from ns_studio.media.clip_sources import ClipCandidate, Orientation, PixabaySource
 from ns_studio.media.clips import (
     MAX_GIVE_UPS_IN_A_ROW,
@@ -262,6 +263,53 @@ def test_f2_a_redo_after_the_policy_rejected_the_footage_still_blocks_it(tmp_hom
     ClipsStage().run(ctx)
     after = {s["clip_id"] for s in ctx.read_json("clips/shots.json")["s1"]["shots"]}
     assert not before & after
+
+
+@needs_ffmpeg
+def test_f2_a_redo_for_black_frames_replaces_only_the_clip_under_the_black(tmp_home: Path, monkeypatch):
+    ctx = make_ctx(tmp_home)
+    _prepare_job(ctx)
+    src = ctx.services.clip_sources[0]
+    ClipsStage().run(ctx)
+    before = ctx.read_json("clips/shots.json")["s1"]["shots"]
+    first = list(src.downloads)
+    dark = before[1]
+    seen: list[Path] = []
+
+    def spans(video: Path):  # QC's intervals in the rejected render: inside shot 2 only
+        seen.append(video)
+        return [(dark["start"] + 0.1, dark["start"] + 0.5)]
+
+    monkeypatch.setattr(clips_mod, "_black_spans", spans)
+    rejected = tmp_home / "rejected" / "attempt1"
+    ctx.write_json("policy_attempts.json", {"regenerations": 1, "history": [
+        {"code": "NS-E404", "detail": "s1: black_frames", "rejected_to": str(rejected), "cause": "media"}]})
+    ClipsStage().run(ctx)
+    after = ctx.read_json("clips/shots.json")["s1"]["shots"]
+    assert seen == [rejected / "shorts" / "s1" / "short.mp4"]
+    assert dark["clip_id"] not in {s["clip_id"] for s in after}  # the black clip is not put back
+    assert len(src.downloads) == len(first) + 1  # one new file, every other clip from the cache
+
+
+@needs_ffmpeg
+def test_f2_a_redo_for_black_frames_blocks_the_item_when_its_render_is_gone(tmp_home: Path):
+    ctx = make_ctx(tmp_home)
+    _prepare_job(ctx)
+    ClipsStage().run(ctx)
+    before = {s["clip_id"] for s in ctx.read_json("clips/shots.json")["s1"]["shots"]}
+    ctx.write_json("policy_attempts.json", {"regenerations": 1, "history": [
+        {"code": "NS-E404", "detail": "s1: black_frames", "rejected_to": str(tmp_home / "gone"),
+         "cause": "media"}]})
+    ClipsStage().run(ctx)
+    after = {s["clip_id"] for s in ctx.read_json("clips/shots.json")["s1"]["shots"]}
+    assert not before & after
+
+
+@needs_ffmpeg
+def test_qc_black_spans_of_a_black_video(tmp_path: Path):
+    black = ff.make_test_clip(tmp_path / "b.mp4", width=64, height=64, seconds=1.0, kind="color",
+                              color="0x000000")
+    assert clips_mod._black_spans(black) and clips_mod._black_spans(tmp_path / "none.mp4") is None
 
 
 # ---- F3: black footage never reaches the render (QC's own blackdetect) -------------------------------------

@@ -274,25 +274,68 @@ def clip_seed(ctx: JobContext, label: str) -> int:
 FOOTAGE_REJECTED = frozenset({"NS-E611", "NS-E613"})
 
 
-def _last_regen_code(ctx: JobContext) -> str | None:
-    """The code that sent the job back the last time (`policy_attempts.json` history), None when unknown."""
+def _last_regen(ctx: JobContext) -> dict[str, Any] | None:
+    """The history entry of the last time the job was sent back (`policy_attempts.json`), None if unknown."""
     try:
         data = json.loads(ctx.file("policy_attempts.json").read_text(encoding="utf-8"))
         last = data["history"][-1]
-        return str(last["code"]) if isinstance(last, dict) and last.get("code") else None
+        return last if isinstance(last, dict) and last.get("code") else None
     except (OSError, ValueError, KeyError, IndexError, TypeError):
         return None
 
 
+def _black_spans(video: Path) -> list[tuple[float, float]] | None:
+    """QC's own black check (`qc.black_check`, same filter) on a rendered video: its black intervals, None
+    when the video is missing or cannot be read."""
+    from ns_studio.media.qc import parse_blackdetect
+
+    if not video.is_file() or not ff.available():
+        return None
+    qc_filter = "blackdetect=d=0.3:pic_th=0.98:pix_th=0.10"
+    try:
+        proc = ff.run(["-i", str(video), "-an", "-vf", qc_filter, "-f", "null", "-"])
+    except Exception:  # noqa: BLE001 - FFmpeg's error, a timeout: the render counts as unreadable
+        return None
+    return [(a, b) for a, b, _d in parse_blackdetect(proc.stderr)]
+
+
+def black_shot_clips(ctx: JobContext, previous: Sequence[str], last: dict[str, Any]) -> set[tuple[str, str]]:
+    """On a QC redo for black frames (NS-E404 naming `black_frames`): the clips of the earlier attempt's
+    shots under the black intervals of its rejected render, so the redo never puts the black clip back in its
+    shot (every clip of that item when the render cannot be read). Every other clip stays usable (cache)."""
+    detail = str(last.get("detail") or "")
+    if last.get("code") != "NS-E404" or "black_frames" not in detail:
+        return set()
+    items = {part.split(":", 1)[0].strip() for part in detail.split(";") if "black_frames" in part}
+    rejected = last.get("rejected_to")
+    out: set[tuple[str, str]] = set()
+    for name in previous:
+        if not ctx.file(name).exists():
+            continue
+        for item, entry in ctx.read_json(name).items():
+            if item not in items:
+                continue
+            render = ("long/master.mp4" if item == "long" else f"shorts/{item}/short.mp4")
+            spans = _black_spans(Path(rejected) / render) if rejected else None
+            for shot in entry.get("shots", []):
+                start, end = float(shot["start"]), float(shot["end"])
+                if spans is None or any(start < b + 0.05 and a - 0.05 < end for a, b in spans):
+                    out.add((str(shot["source"]), str(shot["clip_id"])))
+    if out:
+        ctx.log.info("clips_blocked_black", job_id=ctx.job_id, clips=len(out))
+    return out
+
+
 def blocked_for_job(ctx: JobContext, previous: Sequence[str]) -> set[tuple[str, str]]:
     """`blocked_clips` plus, on a regeneration whose cause was the footage (`FOOTAGE_REJECTED`) or is not
-    known, the clips listed in the earlier attempt's `previous` files."""
+    known, the clips listed in the earlier attempt's `previous` files; on a QC redo for black frames, the
+    clips under the black (`black_shot_clips`)."""
     blocked = blocked_clips(ctx.db, ctx.channel.slug, ctx.job_id, utcnow())
     if not ctx.attempt:
         return blocked
-    code = _last_regen_code(ctx)
-    if code is not None and code not in FOOTAGE_REJECTED:
-        return blocked
+    last = _last_regen(ctx)
+    if last is not None and str(last["code"]) not in FOOTAGE_REJECTED:
+        return blocked | black_shot_clips(ctx, previous, last)
     for name in previous:
         if not ctx.file(name).exists():
             continue

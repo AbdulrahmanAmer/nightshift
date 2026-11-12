@@ -506,8 +506,8 @@ the whole clip, about 15 MB on average (the first real Short: 77 files, 1.15 GB)
   Short cut from it adds its own upright clips at the Short rate above.
 - A clip already in `cache\clips` costs nothing (kept 90 days). A clip that turns out black after its download is
   replaced, at most 2 more files plus 1 per 10 shots.
-- A video sent back by Checking quality (black frames, loudness) is redone with the clips it already has: no new
-  download. Only a video whose footage the policy check refused (`NS-E611`, `NS-E613`) downloads a new set.
+- A video sent back by Checking quality (black frames, loudness) is redone with the clips it already has; for black
+  frames only the clips under the black are replaced, one new file each. Only a video whose footage the policy check refused (`NS-E611`, `NS-E613`) downloads a new set.
 - While it finds footage the log says every 30 s how many clips are done of all and how many MB came in
   (`clips_progress`), and `clips\footage.json` in the job folder keeps what the footage of that job cost.
 - One slow answer of Pixabay does not end the video: a download is tried 4 times (after 2, 5 and 15 s), and a clip
