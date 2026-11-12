@@ -226,6 +226,44 @@ def test_a_crash_with_nobody_holding_is_logged_not_reloaded_and_the_next_acquire
     asyncio.run(main())
 
 
+def test_reloads_for_code_stop_after_crash_max_per_lease_even_when_crashes_are_far_apart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B1 (review 3): G-51's gap (806 s) is outside the crash rule's window (3 in 600 s), so the window never
+    stops it; the reloads for one Code lease are bounded by `crash_max` themselves, and a new lease (Code
+    closed and opened again) starts the count again."""
+    sup, clock = make(tmp_path, {4242: ALIVE, 4343: ALIVE})
+    monkeypatch.setattr(core_mod.ramroom, "read", lambda: Room())
+    limit = sup.cfg.crash_max
+
+    async def crash_once() -> None:
+        await sup.tick()                                     # the monitor sees the load ready
+        clock["t"] += 806.0                                  # every crash outside the 600 s window
+        crash_llama(sup)
+        await sup.tick()
+        await settle(sup)
+
+    async def main() -> None:
+        try:
+            await sup.acquire("llama", "opencode", "code", pid=4242)
+            for _ in range(limit):
+                await crash_once()
+            assert len(records(sup, "code_reloaded")) == limit
+            assert llama_pid(sup) is not None
+            await crash_once()                               # one more: no further reload for this lease
+            assert len(records(sup, "code_reloaded")) == limit
+            assert records(sup, "code_reload_gave_up")
+            assert llama_pid(sup) is None and sup.lock.state.owner == "opencode"
+            await sup.release("llama", "opencode")           # Code closed ...
+            await sup.acquire("llama", "opencode", "code", pid=4343)  # ... and opened again: a new count
+            await crash_once()
+            assert len(records(sup, "code_reloaded")) == limit + 1
+        finally:
+            await close(sup)
+
+    asyncio.run(main())
+
+
 def test_a_code_console_closed_after_a_crash_gets_no_reload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

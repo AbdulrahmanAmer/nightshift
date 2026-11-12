@@ -316,6 +316,8 @@ class Supervisor:
         self._unload_due: dict[str, tuple[int, str]] = {}
         self._ready_seen: dict[str, tuple[int, float]] = {}
         self._crash_tasks: set[asyncio.Task[None]] = set()
+        # Reloads made for the current Code lease (B1, review 3): at most `crash_max`; a fresh grant resets.
+        self._code_reloads = 0
         # GPU lease: who held the lock at the last look, when it last showed a sign of life, and when the
         # monitor last ran (a long gap means the PC slept, which must not expire a live lease).
         self._lease_owner: str | None = None
@@ -509,12 +511,24 @@ class Supervisor:
         OpenCode sends its requests to llama-server, never to the engine, so nothing else would bring the
         model back while the Code window stays open. The acquire's guard runs at every step: a console closed,
         a Release or Stop All meanwhile ends the load. Bounded by the crash rule (`crash_max` in
-        `crash_window_s`: then `_ensure` refuses with NS-E202, logged here) and by the memory check (NS-E208).
+        `crash_window_s`: then `_ensure` refuses with NS-E202, logged here), by the memory check (NS-E208)
+        and by `crash_max` reloads per Code lease (crashes further apart than the window never reach the
+        crash rule).
         """
         if self.shutting_down or not self._code_holds(rt):
             self.log.info("code_reload_skipped", f"{rt.name} not loaded again: Nightshift Code no longer "
                                                  "holds it", service=rt.name)  # fmt: skip
             return
+        if self._code_reloads >= self.cfg.crash_max:
+            words = (f"{rt.name} crashed again and is not loaded again: it was already loaded "
+                     f"{self._code_reloads} times for this Nightshift Code window. Close Nightshift Code and "
+                     "open it again to load the model; if it keeps stopping, run ns doctor.")
+            self.log.warn("code_reload_gave_up", words, service=rt.name, owner=CODE_OWNER,
+                          reloads=self._code_reloads)  # fmt: skip
+            self.publish("service", {"service": rt.name, "event": "reload_gave_up", "owner": CODE_OWNER,
+                                     "reloads": self._code_reloads, "message": words})  # fmt: skip
+            return
+        self._code_reloads += 1
         crashes = len(rt.crashes)
         self.log.info("code_reload", f"loading {rt.name} again for Nightshift Code ({crashes} crash(es) in "
                                      f"{self.cfg.crash_window_s:.0f} s; {self.cfg.crash_max} stop it)",
@@ -1086,6 +1100,7 @@ class Supervisor:
         """
         if fresh:
             self._unload_due.clear()
+            self._code_reloads = 0  # a new lease (Code opened again): its own reloads (B1, review 3)
         if pid is None:
             if fresh:
                 self._holder = None
