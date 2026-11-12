@@ -231,7 +231,12 @@ function Write-NsLaunchLog {
         $line = $now.ToString('yyyy-MM-dd HH:mm:ss.fff', $inv) + ' pid=' + $PID + ' ' + $Level + ' ' + $who + ' ' + $text + "`r`n"
         $logs = Join-Path (Get-NsHome) 'logs'
         [void][System.IO.Directory]::CreateDirectory($logs)
-        $file = Join-Path $logs ('launch-' + $now.ToString('yyyyMMdd', $inv) + '.log')
+        # WP3: a launcher may name its own log (Nightshift Code: $script:NsLaunchLogName = 'code', so
+        # logs\code-<date>.log); its helpers' lines (engine start, the stop message) go to the same file.
+        $base = 'launch'
+        $named = Get-Variable -Name 'NsLaunchLogName' -Scope Script -ErrorAction SilentlyContinue
+        if ($null -ne $named -and ([string]$named.Value) -match '^[a-z]+$') { $base = [string]$named.Value }
+        $file = Join-Path $logs ($base + '-' + $now.ToString('yyyyMMdd', $inv) + '.log')
         $bytes = (New-Object System.Text.UTF8Encoding $false).GetBytes($line)
         $fs = New-Object System.IO.FileStream($file, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
         try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush($true) }
