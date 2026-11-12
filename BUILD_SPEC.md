@@ -561,6 +561,9 @@ What each number measures (card verify-limits, 2026-11-12):
   `NIGHTSHIFT_HOME` and `NS_HOME_EXPLICIT`. Its data, Outbox, ledger and logs are its own; it is removed when the
   check ends, pass or fail, and at the next run's start after a kill, only when it is directly under `run`, no
   link, and carries the marker the check wrote. A failed job's error lines go into the row and the verify log.
+  Known limit: the guard checks a folder for a link a moment before it enters it, so a program that swaps it
+  for a junction in those microseconds could have the junction's target emptied. Only a program of the same
+  user, which could delete the install's files directly anyway, can do that; closing it needs removal by handle.
 - **Missed target or a part that did not work**: a failed row that carries a limit is a missed target; one
   without a limit is a part that did not work. `ns verify`'s last line says which; its exit code is non-zero
   for either, as before. The GPU kit goes on after missed targets only (they stay a FAIL of its step 3).
