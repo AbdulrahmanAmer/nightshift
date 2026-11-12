@@ -426,6 +426,52 @@ def test_s3b_a_refused_story_of_the_models_own_idea_still_restarts_at_ideas(tmp_
     assert ctx.read_json("idea.json")["premise"] == "A premise of the model's own, pass 1"
 
 
+def _critic_plan(monkeypatch, critic_fails: list[NsError]) -> list[tuple[str, int]]:
+    """The real ideas stage, `draft`, a `critic_revise` that raises `critic_fails` in turn, then `voice`."""
+    seen: list[tuple[str, int]] = []
+    for n in ("draft", "voice"):
+        monkeypatch.setitem(REGISTRY, n, Stub(n, [], seen))
+    monkeypatch.setitem(REGISTRY, "critic_revise", Stub("critic_revise", critic_fails, seen))
+    monkeypatch.setitem(orch.FORMAT_STAGES, "robust", ["ideas", "draft", "critic_revise", "voice"])
+    return seen
+
+
+def _missed_bar(n: int) -> NsError:
+    return NsError("NS-E304", f"critic avg 6.{n} low 5 after 2 revisions")
+
+
+def test_s3b_a_story_of_the_owners_idea_that_misses_the_critic_is_rewritten_from_it_never_redrawn(
+    tmp_home: Path, monkeypatch
+):
+    seen = _critic_plan(monkeypatch, [_missed_bar(1), _missed_bar(2)])
+    ctx = make_ctx(tmp_home, fmt="robust")
+    mine = _bank(ctx, "A night janitor finds footage of students", "Hidden Camera", "2026-11-01")
+    other = _bank(ctx, "A ferry that docks one stop too many", "Last Ferry", "2026-11-02")
+    with pytest.raises(NsError) as ei:
+        regen.run_job_guarded(ctx)
+    # Before the Head's ruling the first NS-E304 redrew the idea: "Last Ferry" was written in place of his.
+    assert ei.value.code == "NS-E304" and ei.value.detail == "critic avg 6.2 low 5 after 2 revisions"
+    assert [n for n, _a in seen] == ["draft", "critic_revise", "draft", "critic_revise"]
+    assert ctx.read_json("idea.json")["premise"] == "A night janitor finds footage of students"
+    assert tuple(_row(ctx, mine)) == ("used", 1, ctx.job_id) and tuple(_row(ctx, other)) == ("approved", 0, None)
+    att = ctx.read_json(regen.ATTEMPTS_FILE)
+    assert att["causes"]["text"] == 1 and not any("idea" in h for h in att["history"])
+    assert not ctx.file("ideas_failed.json").exists()
+
+
+def test_s3b_a_story_of_the_models_own_idea_that_misses_the_critic_is_redrawn_as_before(
+    tmp_home: Path, monkeypatch
+):
+    seen = _critic_plan(monkeypatch, [_missed_bar(1)])
+    monkeypatch.setitem(REGISTRY, "ideas", ModelIdea("ideas", [], seen))
+    ctx = make_ctx(tmp_home, fmt="robust")
+    assert regen.run_job_guarded(ctx) == ["ideas", "draft", "critic_revise", "voice"]
+    assert [n for n, _a in seen] == ["ideas", "draft", "critic_revise", "ideas", "draft", "critic_revise", "voice"]
+    att = ctx.read_json(regen.ATTEMPTS_FILE)
+    assert [("idea" in h) for h in att["history"]] == [True]  # a redraw (spec 16.2), not a regeneration
+    assert att["regenerations"] == 0
+
+
 @pytest.mark.parametrize(
     ("stage", "error"),
     [

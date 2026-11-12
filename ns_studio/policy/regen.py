@@ -17,7 +17,9 @@ ends the job at once and spends nothing.
 
 The owner's idea is never redrawn by a refusal of its story (S3b, `same_idea_start`): when the job's idea is
 banked, a story-level failure that would restart at `ideas` restarts at the stage after it, so the one text
-retry writes the story again from the same idea; when that retry is spent the job ends with the reason.
+retry writes the story again from the same idea; when that retry is spent the job ends with the reason. A
+story of his idea that misses the critic's bar (NS-E304 of a critic stage) is not redrawn either: the same
+text retry, then NS-E304 with its detail.
 """
 
 from __future__ import annotations
@@ -378,7 +380,9 @@ def _run_job_guarded(ctx: JobContext, *, resume: bool) -> list[str]:
                 ctx.write_json(ATTEMPTS_FILE, att)
                 ctx.log.error("policy_fail_final", code=e.code, job_id=ctx.job_id, detail=e.detail)
                 raise
-            if e.code == "NS-E304" and _critic_failed(ctx, names):
+            # A story that missed the critic's bar draws the next idea (spec 16.2), unless the idea is the
+            # owner's: then it takes the one text retry from the SAME idea below (`same_idea_start`, S3b).
+            if e.code == "NS-E304" and _critic_failed(ctx, names) and not idea_is_banked(ctx):
                 _redraw_idea(ctx, e, att, names)
                 first = False
                 continue
