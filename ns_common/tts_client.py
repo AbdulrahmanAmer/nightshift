@@ -40,6 +40,42 @@ class TtsFile:
     seconds: float
 
 
+@dataclass(frozen=True)
+class TtsStamp:
+    """One utterance of a batch: when it was complete (seconds since the service began the request) and how
+    many seconds of audio it is. The service stamps them while it reads the voice program's output."""
+
+    at_s: float
+    audio_s: float
+
+
+@dataclass(frozen=True)
+class TtsBatch:
+    """A batch answer: the files, and the stamps of its utterances in order (None when the service's engine
+    gives none: fake, Windows speech, the reference engine, or a service older than the stamps)."""
+
+    files: list[TtsFile]
+    stamps: tuple[TtsStamp, ...] | None = None
+
+
+def read_stamps(raw: Any) -> tuple[TtsStamp, ...] | None:
+    """The `stamps` of a batch answer; None when absent or not well formed (never a partial list)."""
+    if not isinstance(raw, list) or not raw:
+        return None
+    out: list[TtsStamp] = []
+    for s in raw:
+        if not isinstance(s, dict):
+            return None
+        try:
+            at, audio = float(s["at_s"]), float(s["audio_s"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not (at >= 0 and audio >= 0):  # also refuses NaN
+            return None
+        out.append(TtsStamp(at, audio))
+    return tuple(out)
+
+
 class Tts(Protocol):
     def speak(
         self, text: str, voice: str, speed: float, out_path: Path, *, seed: int | None = None,
@@ -124,6 +160,13 @@ class TtsClient:
         (that frees the GPU before a retry) and NS-E310 is raised; a retry resumes from the items the service
         had already written to `out_dir` (`resume`).
         """
+        return self.speak_batch_stamped(items, out_dir, seed=seed, timeout_s=timeout_s).files
+
+    def speak_batch_stamped(
+        self, items: list[TtsItem], out_dir: Path, *, seed: int | None = None,
+        timeout_s: float | None = None,
+    ) -> TtsBatch:
+        """`speak_batch`, with the arrival stamps of the utterances the service sent with its answer."""
         limit = timeout_s if timeout_s is not None else batch_timeout_s(i.text for i in items)
         body: dict[str, Any] = {
             "items": [_item_body(i) for i in items],
@@ -145,7 +188,9 @@ class TtsClient:
             ) from e
         except httpx.HTTPError as e:
             raise NsError("NS-E310", f"tts batch: {e}") from e
-        return [TtsFile(f["id"], Path(f["path"]), float(f["seconds"])) for f in r.json()["files"]]
+        body = r.json()
+        files = [TtsFile(f["id"], Path(f["path"]), float(f["seconds"])) for f in body["files"]]
+        return TtsBatch(files, read_stamps(body.get("stamps")))
 
     def cancel_batch(self) -> bool:
         """Ask the service to stop the batch it is running (kills its `qwen-tts` process); True if it did."""

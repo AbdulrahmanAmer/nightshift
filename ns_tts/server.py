@@ -159,12 +159,14 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
         *,
         min_timeout_s: float = 0.0,
         salvage: dict[int, np.ndarray] | None = None,
+        stamps: list[tuple[float, float] | None] | None = None,
     ) -> list[np.ndarray]:
         """Narration for each (text, voice, speed, cliff lines), in order.
 
         Every sentence chunk of the request that shares a voice, language and speed goes to the engine in ONE
         `synth_batch` call, so qwentts starts one `qwen-tts` process for a whole job instead of one per
-        sentence (each start loads the 1.7B talker and the codec).
+        sentence (each start loads the 1.7B talker and the codec). `stamps` gets the engine's arrival stamp
+        of every chunk (`engine.last_stamps`), or one None for a call that came without them.
         """
         plans = [chunk_text(text, cliff_lines=cliffs) for text, _v, _s, cliffs in entries]
         if any(not chunks for chunks in plans):
@@ -201,6 +203,12 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
                     raise
                 for ref, a in zip(refs, made, strict=True):
                     audio[ref] = a
+                if stamps is not None:
+                    got = getattr(engine, "last_stamps", None)  # only qwentts streams; the others have none
+                    if isinstance(got, list) and len(got) == len(refs):
+                        stamps.extend(got)
+                    else:
+                        stamps.append(None)
         finally:
             engine.batch_timeout_floor_s = 0.0
         return [stitched(i) for i in range(len(plans))]
@@ -277,7 +285,9 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
         found: dict[str, dict[str, Any]] = {}
         total = 0.0
         t0 = time.perf_counter()
+        stamps: list[tuple[float, float] | None] = []
         with lock, watching(request):
+            began = time.perf_counter()  # the stamps count from here: a request ahead of this one is not ours
             entries = [
                 (it.input, with_language(voices_by_name[it.voice], it.language), it.speed, it.cliff_lines)
                 for it in req.items
@@ -306,7 +316,7 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
             try:
                 made = render_many(
                     [entries[k] for k in todo], req.seed,
-                    min_timeout_s=req.timeout_s or 0.0, salvage=salvage,
+                    min_timeout_s=req.timeout_s or 0.0, salvage=salvage, stamps=stamps,
                 ) if todo else []  # fmt: skip
             except BatchInterrupted as e:
                 for pos, x in salvage.items():  # whole items finished before the stop stay on disk
@@ -324,9 +334,19 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
             files = [found[it.id] for it in req.items]
             total = sum(float(f["seconds"]) for f in files)
         rtf = (time.perf_counter() - t0) / total if total > 0 else 0.0
+        # Each chunk's arrival (seconds since the service began this request) and its audio seconds, as the
+        # engine stamped them while it read the voice program's output (`ns verify`'s speaking rate). None
+        # when any part of the request came without stamps (fake, Windows speech, reference engine, a single
+        # chunk, chunks reused from an earlier attempt): never a figure for part of the request.
+        timed = [s for s in stamps if s is not None]
+        said = (
+            [{"at_s": round(at - began, 3), "audio_s": a} for at, a in timed]
+            if todo and stamps and len(timed) == len(stamps) and len(todo) == len(req.items) else None
+        )
         if log:
-            log.info("tts_batch", items=len(files), audio_s=round(total, 2), rtf=round(rtf, 3))
-        return {"files": files, "engine": engine.name, "rtf": round(rtf, 3)}
+            log.info("tts_batch", items=len(files), audio_s=round(total, 2), rtf=round(rtf, 3),
+                     stamped=said is not None)  # fmt: skip
+        return {"files": files, "engine": engine.name, "rtf": round(rtf, 3), "stamps": said}
 
     @app.post("/v1/audio/speech/cancel")
     def speech_cancel() -> dict[str, bool]:
