@@ -721,9 +721,9 @@ def choose(
     if not fitted(first):
         return va, first, ""
     if not va.need.measured or va.fits:
-        return va, first, "tuned"
-    if len(options) < 2:
-        return va, first, "experts_in_ram"
+        return va, first, step_of(first)
+    if len(options) < 2:  # (after a spill the retry's one option may be the MTP-off step: said as such)
+        return va, first, "experts_in_ram_mtp_off" if step_of(first) == "mtp_off" else "experts_in_ram"
     second = options[1]
     nb = need(paths, second, model_dir, v.mark)
     if not nb.measured and mtp_on(first) and not mtp_on(second):
@@ -738,6 +738,12 @@ def choose(
     if not vb.refuse:
         return vb, second, "experts_in_ram_mtp_off"
     return va, first, "experts_in_ram"
+
+
+def step_of(d: ServiceDef) -> str:
+    """The ladder step a fitted llama definition IS (`ServiceDef.step`: "tuned" or "mtp_off"), "" for anything
+    not fitted. Never a literal "tuned": the retry after a spill loads the MTP-off definition alone."""
+    return (d.step or "tuned") if fitted(d) else ""
 
 
 def spilled(total_mb: int, used_mb: int, fit: FitResult | None = None) -> bool:

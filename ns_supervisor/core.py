@@ -586,6 +586,8 @@ class Supervisor:
         retried = False
         while True:
             before, chosen, step = await self._vram_room(rt, options, owner)
+            if retried:  # the stop and the settle took seconds: the retry spawns only while this acquire
+                await self._guard(owner, rt.name, "start after a spill")  # still holds the card (NS-E202)
             try:
                 await self._start_one(rt, chosen, owner, before, step)
                 return
@@ -746,7 +748,7 @@ class Supervisor:
         room = await asyncio.to_thread(ramroom.read) if fitted(d) else None
         v = await self._vram_check(d, release=release, room=room)
         if v is None:
-            return None, d, ("tuned" if fitted(d) else "")
+            return None, d, vram.step_of(d)
         model_dir = self.runtime.tts.model_dir if d.name == "tts" else None
         return await asyncio.to_thread(vram.choose, self.paths, options, v, self._ours(), model_dir=model_dir,
                                        room=room)  # fmt: skip
@@ -820,7 +822,7 @@ class Supervisor:
             release = None  # (an idle unload long ago: its memory had its time; what is held now is not ours)
         if not self._vram_on():
             self._vram_not_checked("the cpu-dev profile has no graphics card to read (fake_gpu is off)")
-            return None, options[0], ("tuned" if fitted(options[0]) else "")
+            return None, options[0], vram.step_of(options[0])
         v, d, step = await self._vram_choose(options, release)
         if v is None:
             self._vram_not_checked(

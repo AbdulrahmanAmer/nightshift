@@ -12,13 +12,18 @@ winner of the newest `ns tune` log (`logs/tune-*.json`, tune's stage 1 stepping 
 `-ngl`, so fit stays off for that install as its owner chose.
 
 Once: the marker `run/migrated-<MIGRATION>` is written after the file was saved (or found already right), and
-the move is never made again, so a context the owner sets later is his. Only on the GPU profile, not on a dev
-install, and only when the installed llama-server has `--fit` (an older build keeps its settings and the old
-command). Never raises: a failure is logged and the engine starts on the file as it was.
+the move is never made again, so a context the owner sets later is his. The marker keeps the sha256 of the
+runtime.json it moved FROM: `ns update --rollback` and a failed update put that very file back from the
+settings copy (`config/` only; `run/` keeps the marker), so a runtime.json byte-equal to it again is moved
+again (the plan's release path is update, rollback, update). An owner's own edit has another hash and stays.
+Only on the GPU profile, not on a dev install, and only when the installed llama-server has `--fit` (an
+older build keeps its settings and the old command). Never raises: a failure is logged and the engine starts
+on the file as it was.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -73,11 +78,33 @@ def moved(paths: Paths, rt: Runtime) -> tuple[Runtime, list[str]]:
     return new, said
 
 
+def _file_hash(paths: Paths) -> str:
+    """sha256 of runtime.json's bytes ("" when it does not read)."""
+    try:
+        return hashlib.sha256(paths.runtime_file.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _moved_from(paths: Paths) -> str | None:
+    """The hash the marker kept (None: no marker; "" for a marker without one)."""
+    try:
+        text = marker(paths).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    first = text.splitlines()[0].strip() if text.strip() else ""
+    return first.removeprefix("from sha256 ") if first.startswith("from sha256 ") else ""
+
+
 def migrate(paths: Paths, rt: Runtime, log: NsLogger | None = None) -> Runtime:
     """Apply the move once (see the module). Returns the settings the engine runs with."""
     lg = log or NsLogger("supervisor", paths.logs)
     try:
-        if rt.profile != "gpu" or rt.dev_mode or marker(paths).exists():
+        if rt.profile != "gpu" or rt.dev_mode:
+            return rt
+        before = _file_hash(paths)
+        done = _moved_from(paths)
+        if done is not None and not (done and done == before):  # moved, and not put back since
             return rt
         caps = services.llama_caps(paths, paths.bin_llama / "llama-server.exe")
         if "--fit" not in caps:
@@ -87,7 +114,8 @@ def migrate(paths: Paths, rt: Runtime, log: NsLogger | None = None) -> Runtime:
             save_runtime(paths, new)
             lg.info("llama_fit_migrated", "runtime.json: " + "; ".join(said), changes=said)
         marker(paths).parent.mkdir(parents=True, exist_ok=True)
-        marker(paths).write_text("; ".join(said) or "nothing to change", encoding="utf-8")
+        marker(paths).write_text(f"from sha256 {before}\n" + ("; ".join(said) or "nothing to change") + "\n",
+                                 encoding="utf-8")  # fmt: skip
         return new
     except (OSError, ValueError, NsError) as e:  # the file as it was; the next start tries again
         lg.warn("llama_fit_migrate_failed", str(e))
