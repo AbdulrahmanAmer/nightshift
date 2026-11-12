@@ -265,7 +265,7 @@ def precheck(
     release) goes to ``intact``: it stops no night either. No hash. Nothing when setup
     never verified the models (its models step is not done: a test home, an unfinished install)."""
     from installer.stage2 import verify_downloads as vd
-    from installer.stage2.downloader import hashed_at
+    from installer.stage2.downloader import hashed_at, marker_digest
     from installer.stage2.web import modelmarks
     from ns_common.config import load_install_state
 
@@ -290,9 +290,11 @@ def precheck(
         found = damaged.get(modelmarks.key_of(paths.home, Path(item.dest)))
         said = out if str(item.dest) in tonight else aside
         size_only = row.status == vd.BAD and row.detail.startswith("size ") and "expected" in row.detail
-        if size_only and found is None and hashed_at(Path(item.dest)) is not None:
+        setup_hashed = hashed_at(Path(item.dest)) is not None or marker_digest(Path(item.dest)) is not None
+        if size_only and found is None and setup_hashed:
             # A home made by an older release (rc5): setup hashed this very file (its marker still matches
-            # its size and date), so it is the file that was downloaded, not a damaged one. This version's
+            # its size and date; rc5's marker holds the digest but no `hashed_at`), so it is the file that
+            # was downloaded, not a damaged one. This version's
             # list gives another size for it: the night runs, and the note says so (Repair brings it to the
             # file of this version). A load that fails is still checked by hash by the engine.
             kept.append(f"The {vd.role(item, paths)} file {item.dest} is intact (Nightshift's setup verified "

@@ -140,3 +140,32 @@ def test_an_rc5_home_with_a_verified_file_of_another_listed_size_is_not_stopped(
     target.write_bytes(target.read_bytes()[:-1])
     stops = modelcheck.precheck(inst.paths, inst.app, intact=[])
     assert len(stops) == 1 and target.name in stops[0], stops
+
+
+@pytest.mark.parametrize(("markers", "stopped"), [("old", False), ("none", True)])
+def test_an_rc5_marker_without_hashed_at_counts_as_setup_verified(
+    tmp_path: Path, markers: str, stopped: bool
+) -> None:
+    """rc5's setup wrote markers of {size, mtime_ns, sha256} and no `hashed_at` (v0.1.15-rc5's
+    `downloader.write_marker`): the owner's real home has only such markers. A file of another listed size
+    with one is intact; the same file with no marker at all is still a stop (the control)."""
+    from ns_supervisor import modelcheck
+    from tests.test_model_files import SIZE, make_install
+
+    inst = make_install(tmp_path, markers=markers)
+    manifest = inst.app / "manifest.json"
+    man = json.loads(manifest.read_text(encoding="utf-8"))
+    llm = man["profiles"]["gpu"]["llm"]
+    llm["bytes"] = SIZE + 1
+    manifest.write_text(json.dumps(man), encoding="utf-8")
+    target = next(Path(i.dest) for i in inst.items if Path(i.dest).name == Path(llm["file"]).name)
+    if markers == "old":
+        marker = json.loads(target.with_name(target.name + ".ok").read_text(encoding="utf-8"))
+        assert "hashed_at" not in marker and marker["sha256"], marker  # the shape rc5 wrote
+    intact: list[str] = []
+    stops = modelcheck.precheck(inst.paths, inst.app, intact=intact)
+    if stopped:
+        assert any(target.name in s for s in stops) and not intact, (stops, intact)
+    else:
+        assert stops == [], "a file rc5's setup verified stopped the night"
+        assert len(intact) == 1 and str(target) in intact[0], intact
