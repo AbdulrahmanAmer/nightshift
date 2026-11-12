@@ -49,7 +49,7 @@ class S10Summary(Step):
     def run(self, ctx: StepContext) -> None:
         """Print results, locations and next steps; write the diagnostics zip."""
         ui = ctx.ui
-        rows = [[s.id, ctx.state.status(s.id)] for s in _all_steps(ctx)]
+        rows = summary_rows(ctx)
         ui.table("Setup result", ["Step", "Result"], rows, status_col=1)
         if ctx.warnings:
             ui.say("Warnings (setup works, but read these):", "yellow")
@@ -116,6 +116,18 @@ class S10Summary(Step):
         bad = [i for i in earlier if ctx.state.status(i) not in ("done", "skipped")]
         if bad:
             raise make_error("NS-E202", f"steps not finished: {', '.join(bad)}")
+
+
+def summary_rows(ctx: StepContext) -> list[list[str]]:
+    """The "Setup result" rows. This step is running while it prints them, so the record still calls it
+    "pending" (the wizard marks a step done after `verify`): the table said "pending" for a step that had run
+    (G-26). Its own row is "done" when every earlier step is done or skipped, which is what `verify` checks
+    next, and "pending" otherwise."""
+    steps = _all_steps(ctx)
+    earlier_ok = all(ctx.state.status(s.id) in ("done", "skipped") for s in steps if s.id != S10Summary.id)
+    return [
+        [s.id, "done" if s.id == S10Summary.id and earlier_ok else ctx.state.status(s.id)] for s in steps
+    ]
 
 
 def _all_steps(ctx: StepContext) -> list[Step]:

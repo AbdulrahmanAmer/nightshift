@@ -6,12 +6,17 @@ A failed tune is not fatal: the safe defaults in the baseline stay and the opera
 
 from __future__ import annotations
 
+import re
+
 from installer.stage2 import reinstall
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.runtime_cfg import runtime_settled
 from ns_common.commandline import typed
 from ns_common.config import load_runtime
+
+#: ` with {"n_gpu_layers": ...}`: the settings an older `ns tune` printed after its speed.
+_JSON_TAIL = re.compile(r"\s+with\s+\{.*\}\s*$")
 
 
 class S06Tune(Step):
@@ -39,9 +44,15 @@ class S06Tune(Step):
             ctx.ui.say("Dev mode: the language model is a fake, so there is nothing to tune.")
             ctx.set_flag("tuned", "defaults")
             return
-        ctx.ui.say("Tuning the language model for your graphics card (1 to 3 minutes) ...")
+        ctx.ui.say(
+            "Tuning the language model for your graphics card (a few minutes: it waits for the card to "
+            "settle between tries and times each one three times) ..."
+        )
         res = ctx.run_tool("ns", ["tune"], timeout=3600)
-        for line in res.stdout.strip().splitlines()[-8:]:
+        # the result in words (what `ns tune` prints); the settings as raw JSON (an older `ns tune`'s "Best:"
+        # line, G-26) are never shown
+        shown = [_JSON_TAIL.sub("", ln) for ln in res.stdout.strip().splitlines() if ln.strip()]
+        for line in shown[-8:]:
             ctx.ui.say(f"  {line}")
         if res.ok:
             ctx.set_flag("tuned", "tuned")

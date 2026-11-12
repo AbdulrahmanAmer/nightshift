@@ -1,10 +1,17 @@
 """C2 `ns tune`: staged llama-server sweep (spec 3) that writes the winning flags to runtime.json.
 
-Stages, each starting from the previous winner: (1) `-ngl` 99 stepping down only when the model does
-not load, (2) ctx x KV type, (3) `--n-cpu-moe` for MoE files, (4) MTP `--spec-draft-n-max` 2/3/4, kept
-only if faster than plain decoding (`NS-W302` otherwise). Speed is tokens/s from llama-server
-`/completion` timings on a fixed 400-token prompt and 300-token generation. Every attempt is recorded in
-`logs\\tune-<date>.json`; if nothing loads, runtime.json is left untouched.
+The same rule as the engine (plan 2026-11-12, rule 6): llama.cpp places the model
+(`services.layers_automatic`: no `-ngl`, no `--n-cpu-moe`), so a layer or expert count is never a
+candidate and the winner is stored with `n_gpu_layers` 99 (automatic) and `n_cpu_moe` 0. Stages, each
+starting from the previous winner: (1) the first load with llama.cpp's own placement (cold, its speed is
+not counted), (2) ctx x KV type, (3) MTP `--spec-draft-n-max` 2/3/4, kept only if faster than plain
+decoding (`NS-W302` otherwise). Before EVERY
+candidate the card is allowed to settle (the memory of the load before it must be given back:
+`settle_card`); on the gpu profile a candidate is the median of three speed runs on one load, and a load
+that left the card nearly full (it spilled into system memory) is a failed candidate. Speed is tokens/s from
+llama-server `/completion` timings on a fixed 400-token prompt and 300-token generation. Every attempt is
+recorded in `logs\\tune-<date>.json` with the desktop's MiB and the card's reading after `ready`; if nothing
+loads, runtime.json is left untouched.
 
 On the gpu profile the roomiest context among equal results wins. On `cpu-dev` (a PC that runs on the
 processor) the SMALLEST that does the work wins, then q8_0 before f16: the probe runs on an empty prompt,
@@ -18,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import json
 import socket
+import statistics
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
@@ -32,15 +40,24 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import LlamaFlags, Runtime
 from ns_common.paths import Paths
-from ns_supervisor import procs
+from ns_supervisor import procs, vram
 from ns_supervisor.benchmark import measure_tok_s
-from ns_supervisor.services import ServiceDef, build_service
+from ns_supervisor.gpu import SmiSource, simulated_mark, smi_source
+from ns_supervisor.services import AUTO_LAYERS, ServiceDef, build_service
 
-NGL_STEPS = (99, 80, 60, 40, 20)
 CTX_OPTIONS = (8192, 16384, 32768)
 KV_OPTIONS = ("f16", "q8_0")
-MOE_OPTIONS = (0, 4, 8, 12, 16)
 MTP_OPTIONS = (2, 3, 4)
+#: Speed runs per loaded candidate on the gpu profile; the median counts (single samples spread 81 to 102
+#: tok/s on the GPU PC, evidence 5). The processor profile measures once per load: its repeats are loads
+#: (D-52).
+SPEED_RUNS = 3
+#: Before every candidate: the card is read until what is in use is within `SETTLE_SLACK_MB` of this PC's idle
+#: card (`vram.idle_mb`), at most `SETTLE_LIMIT_S`, every `SETTLE_POLL_S`. A load stopped 3 to 4 s before the
+#: next one still held its memory (evidence 5); what the desktop holds beyond idle is logged, not waited for.
+SETTLE_LIMIT_S = 20.0
+SETTLE_POLL_S = 0.5
+SETTLE_SLACK_MB = 256
 EQUIVALENT = 0.95  # within 5 % of the best counts as equal; then the profile's preference decides
 #: The context Nightshift Code needs (D-34): `launchers/nightshift-code.ps1` refuses below it and setup
 #: writes it as the model's limit (`installer/stage2/steps/s07_configs.py` MIN_CODE_CONTEXT);
@@ -172,26 +189,36 @@ def plan_matrix(rt: Runtime) -> dict[str, list[Any]]:
     """The candidates per stage (what `--dry-run` prints)."""
     floor = min_ctx_for(rt)
     return {
-        "ngl": [0] if rt.profile == "cpu-dev" else list(NGL_STEPS),
+        # one first load with the stored layer setting: llama.cpp's own placement on a gpu PC (never a count
+        # to step down), the processor on `cpu-dev`. Layer and expert counts are not candidates (rule 6).
+        "ngl": [0] if rt.profile == "cpu-dev" else [AUTO_LAYERS],
         "ctx_kv": [(c, kv) for c in CTX_OPTIONS if c >= floor for kv in KV_OPTIONS],
-        "n_cpu_moe": list(MOE_OPTIONS) if is_moe(rt.llama.model_path) else [],
         "mtp_draft_n_max": list(MTP_OPTIONS),
     }
+
+
+def speed_runs(rt: Runtime) -> int:
+    """Speed runs per loaded candidate: `SPEED_RUNS` on the gpu profile, one on the processor profile."""
+    return 1 if rt.profile == "cpu-dev" else SPEED_RUNS
 
 
 def matrix_lines(rt: Runtime) -> list[str]:
     """Human-readable matrix for `--dry-run`."""
     m = plan_matrix(rt)
     repeats = context_repeats(rt)
-    runs = 1 + len(m["ctx_kv"]) * repeats + max(0, len(m["n_cpu_moe"]) - 1) + len(m["mtp_draft_n_max"])
+    runs = 1 + len(m["ctx_kv"]) * repeats + len(m["mtp_draft_n_max"])
     often = f" (each measured {repeats} times)" if repeats > 1 else ""
+    placed = ("the processor" if rt.profile == "cpu-dev" else
+              "llama.cpp's own placement (no -ngl, no --n-cpu-moe)")  # fmt: skip
     return [
         f"model: {rt.llama.model_path or '(not configured)'}  profile: {rt.profile}",
-        f"1. -ngl (first that loads; that load is the cold one and its speed is not counted): {m['ngl']}",
+        f"1. first load with {placed} (that load is the cold one and its speed is not counted)",
         "2. ctx x KV: " + ", ".join(f"{c // 1024}K/{kv}" for c, kv in m["ctx_kv"]) + often,
-        "3. --n-cpu-moe: " + (str(m["n_cpu_moe"]) if m["n_cpu_moe"] else "skipped (not a MoE file)"),
-        f"4. MTP --spec-draft-n-max: {m['mtp_draft_n_max']} (kept only if 3 % faster than plain)",
-        "probe: 300 tokens generated after a ~400-token prompt, tok/s from /completion timings",
+        f"3. MTP --spec-draft-n-max: {m['mtp_draft_n_max']} (kept only if 3 % faster than plain)",
+        "layer and expert counts are not tried: llama.cpp decides what sits on the card and what in memory",
+        "before every load: wait for the graphics card to settle (up to 20 s)",
+        f"probe: 300 tokens generated after a ~400-token prompt, tok/s from /completion timings; "
+        f"{speed_runs(rt)} run{'s' if speed_runs(rt) > 1 else ''} per load, the middle one counts",
         f"about {runs}+ llama-server loads (minutes each on a cold cache)",
     ]
 
@@ -251,6 +278,80 @@ class Attempt:
     tok_s: float | None = None
     load_s: float | None = None
     error: str | None = None
+    speeds: list[float] | None = None  # every speed run of the load (`tok_s` is their median)
+    desktop_mb: int | None = None  # the card's memory in use just before the load: what the desktop holds
+    idle_mb: int | None = None  # this PC's idle card (`vram.idle_mb`), when known
+    settle_s: float | None = None  # how long the card was waited for
+    settled: bool | None = None  # False: still above idle + `SETTLE_SLACK_MB` when the wait ended
+    card_used_mb: int | None = None  # the card in use after `ready`
+    card_free_mb: int | None = None  # and what was left free
+    card_mark: str | None = None  # "simulated (fake_gpu)" when the readings are the simulated card's (H-10)
+
+
+@dataclass(frozen=True)
+class Settle:
+    """What the card showed when `settle_card` stopped waiting."""
+
+    used_mb: int | None  # None: nvidia-smi gave no reading
+    idle_mb: int | None
+    waited_s: float
+    calm: bool
+    mark: str | None = None
+
+
+Settler = Callable[[], Settle]
+"""Waits for the card to settle before a candidate (`card_settler`); tests give a fake one."""
+
+
+@dataclass
+class RunInfo:
+    """What a runner saw of its last load (`ProcessRunner.last`; a runner without it logs less)."""
+
+    speeds: list[float]
+    card_used_mb: int | None = None
+    card_total_mb: int | None = None
+
+
+def settle_card(
+    smi: SmiSource,
+    paths: Paths,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    limit_s: float = SETTLE_LIMIT_S,
+    poll_s: float = SETTLE_POLL_S,
+) -> Settle:
+    """Wait until the card's memory in use is within `SETTLE_SLACK_MB` of this PC's idle card (the memory of
+    the load before it given back), reading every `poll_s` for at most `limit_s`. Without a stored idle card
+    the wait is for it to stop falling (two readings within `vram.SETTLE_STEP_MB`). Never raises; no reading
+    from nvidia-smi ends it at once (the load goes on and says nothing was measured). Bounded twice: by the
+    reads and by the clock."""
+    mark = simulated_mark(smi)
+    idle = vram.idle_mb(paths, mark)
+    start = clock()
+    max_reads = int(limit_s / poll_s) + 1
+    prev: int | None = None
+    used: int | None = None
+    for n in range(1, max_reads + 1):
+        mem = vram.read_memory(smi)
+        if mem is None:
+            return Settle(None, idle, clock() - start, False, mark)
+        used = mem[0]
+        if idle is not None:
+            calm = used <= idle + SETTLE_SLACK_MB
+        else:
+            calm = prev is not None and prev - used <= vram.SETTLE_STEP_MB
+        if calm or n >= max_reads or clock() - start >= limit_s:
+            return Settle(used, idle, clock() - start, calm, mark)
+        prev = used
+        sleep(poll_s)
+    return Settle(used, idle, clock() - start, False, mark)  # (unreachable: the last read returns)
+
+
+def card_settler(paths: Paths, rt: Runtime) -> Settler:
+    """`settle_card` on this install's nvidia-smi (the simulated card under `fake_gpu`)."""
+    smi = smi_source(paths, rt)
+    return lambda: settle_card(smi, paths)
 
 
 @dataclass
@@ -263,10 +364,27 @@ class TuneOutcome:
     attempts: list[Attempt] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     context_note: str = ""
+    words: str = ""  # the winner in plain words (`winner_words`)
 
 
-def tune(paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = None) -> TuneOutcome:
-    """Run the staged sweep with `runner`; on success write the winner to runtime.json."""
+def winner_words(rt: Runtime, flags: LlamaFlags, tok_s: float) -> str:
+    """The sweep's result as a person reads it: the settings, the speed, and who decides the placement."""
+    draft = (f"the MTP draft ({flags.spec_draft_n_max or 3} tokens at a time)" if flags.spec_type
+             else "no MTP draft")  # fmt: skip
+    runs = speed_runs(rt)
+    middle = f" (the middle of {runs} runs)" if runs > 1 else ""
+    placed = ("It runs on the processor." if rt.profile == "cpu-dev" else
+              "llama.cpp decides how much of the model sits on the graphics card and how much in the PC's "
+              "memory.")  # fmt: skip
+    return (f"Best for this PC: a {flags.ctx}-token context, cache type {flags.kv_type} and {draft}, "
+            f"{tok_s:.1f} tokens a second{middle}. {placed}")  # fmt: skip
+
+
+def tune(
+    paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = None, settle: Settler | None = None
+) -> TuneOutcome:
+    """Run the staged sweep with `runner`; on success write the winner to runtime.json. `settle` runs before
+    every candidate (`card_settler`); what it saw goes into that candidate's row."""
     lg = log or NsLogger("tune", paths.logs)
     out = TuneOutcome(ok=False)
     matrix = plan_matrix(rt)
@@ -277,31 +395,46 @@ def tune(paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = No
     def attempt(stage: str, flags: LlamaFlags) -> float | None:
         cand = rt.model_copy(deep=True)
         cand.llama.flags = flags
+        seen = settle() if settle is not None else None
+        extra: dict[str, Any] = {}
+        if seen is not None:
+            extra = {"desktop_mb": seen.used_mb, "idle_mb": seen.idle_mb, "settle_s": round(seen.waited_s, 1),
+                     "settled": seen.calm, "card_mark": seen.mark}  # fmt: skip
+            if not seen.calm and seen.used_mb is not None:
+                lg.warn("tune_card_not_settled", stage=stage, used_mb=seen.used_mb, idle_mb=seen.idle_mb,
+                        waited_s=round(seen.waited_s, 1))  # fmt: skip
         try:
             tok_s, load_s = runner(cand)
         except NsError as e:
-            out.attempts.append(Attempt(stage, flags.model_dump(), False, error=str(e)))
+            out.attempts.append(Attempt(stage, flags.model_dump(), False, error=str(e), **extra))
             lg.warn("tune_attempt_failed", stage=stage, error=str(e))
             return None
-        out.attempts.append(Attempt(stage, flags.model_dump(), True, round(tok_s, 2), round(load_s, 1)))
-        lg.info("tune_attempt", stage=stage, tok_s=tok_s, flags=flags.model_dump())
+        info: RunInfo | None = getattr(runner, "last", None)
+        if info is not None:
+            extra["speeds"] = [round(s, 2) for s in info.speeds]
+            extra["card_used_mb"] = info.card_used_mb
+            if info.card_used_mb is not None and info.card_total_mb is not None:
+                extra["card_free_mb"] = info.card_total_mb - info.card_used_mb
+        row = Attempt(stage, flags.model_dump(), True, round(tok_s, 2), round(load_s, 1), **extra)
+        out.attempts.append(row)
+        lg.info("tune_attempt", stage=stage, tok_s=tok_s, flags=flags.model_dump(), **extra)
         return tok_s
 
     base = rt.llama.flags.model_copy(
         update={"ctx": floor, "kv_type": "f16", "n_cpu_moe": 0, "spec_type": None, "spec_draft_n_max": None}
     )
 
-    # 1. -ngl: first value that loads
+    # 1. the first load, with the stored layer setting (automatic on a gpu PC: llama.cpp's own placement)
     current: LlamaFlags | None = None
     current_tok = 0.0
     for ngl in matrix["ngl"]:
         flags = base.model_copy(update={"n_gpu_layers": ngl})
-        t = attempt("ngl", flags)
+        t = attempt("first", flags)
         if t is not None:
             current, current_tok = flags, t
             break
     if current is None:
-        out.warnings.append("no -ngl value loaded the model; runtime.json left unchanged")
+        out.warnings.append("the model did not load with the first setting; runtime.json left unchanged")
         _write_log(paths, rt, out)
         return out
 
@@ -324,19 +457,8 @@ def tune(paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = No
         current, current_tok = pick_context(rt, measured, floor)
     # (else: nothing loaded a second time; stage 1's flags did load once and are kept, with its cold speed)
 
-    # 3. --n-cpu-moe (MoE only)
-    if matrix["n_cpu_moe"]:
-        results = [(current, current_tok)]
-        for n in matrix["n_cpu_moe"]:
-            if n == current.n_cpu_moe:
-                continue
-            f = current.model_copy(update={"n_cpu_moe": n})
-            t = attempt("n_cpu_moe", f)
-            if t is not None:
-                results.append((f, t))
-        current, current_tok = pick_winner(results, lambda f: (f.n_cpu_moe,))
-
-    # 4. MTP: keep only if clearly faster than the plain baseline
+    # 3. MTP: keep only if clearly faster than the plain baseline. (No expert count is tried: with fit on,
+    # llama.cpp decides the experts, and a fixed `--n-cpu-moe` would turn its fit off.)
     mtp: list[tuple[LlamaFlags, float]] = []
     for k in matrix["mtp_draft_n_max"]:
         f = current.model_copy(update={"spec_type": "draft-mtp", "spec_draft_n_max": k})
@@ -352,6 +474,7 @@ def tune(paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = No
 
     out.ok, out.flags, out.tok_s = True, current, current_tok
     out.context_note = context_note(rt, current, floor)
+    out.words = winner_words(rt, current, current_tok)
     new_rt = rt.model_copy(deep=True)
     new_rt.llama.flags = current
     save_runtime(paths, new_rt)
@@ -367,6 +490,7 @@ def _write_log(paths: Paths, rt: Runtime, out: TuneOutcome) -> None:
         "model": rt.llama.model_path,
         "winner": out.flags.model_dump() if out.flags else None,
         "tok_s": out.tok_s,
+        "words": out.words,
         "warnings": out.warnings,
         "attempts": [asdict(a) for a in out.attempts],
     }
@@ -391,13 +515,25 @@ class ProcessRunner:
         *,
         load_timeout_s: float = 300,
         build_def: Callable[[Runtime], ServiceDef] | None = None,
+        card: Callable[[Runtime], tuple[int, int] | None] | None = None,
+        measure: Callable[[str], float] = measure_tok_s,
     ) -> None:
         self.paths = paths
         self.load_timeout_s = load_timeout_s
         self.build_def = build_def
+        self.card = card or self._read_card
+        self.measure = measure
         self.job = procs.JobObject()
+        self.last: RunInfo | None = None  # what the last load showed (`tune` logs it)
+
+    def _read_card(self, rt: Runtime) -> tuple[int, int] | None:
+        """(memory in use, total) of the card now, None without a reading."""
+        return vram.read_memory(smi_source(self.paths, rt))
 
     def __call__(self, rt: Runtime) -> tuple[float, float]:
+        """Load the candidate, read the card after `ready` (a load that left it nearly full spilled into
+        system memory: a failed candidate, rule 4), time `speed_runs(rt)` speed runs, return their median."""
+        self.last = None
         if self.build_def is not None:
             d = self.build_def(rt)
         else:
@@ -409,7 +545,17 @@ class ProcessRunner:
         try:
             self._wait_healthy(d, proc, t0)
             load_s = time.perf_counter() - t0
-            return measure_tok_s(d.base_url), load_s
+            mem = self.card(rt) if d.gpu else None
+            used, total = mem if mem is not None else (None, None)
+            if used is not None and total is not None and vram.spilled(total, used):
+                raise NsError(
+                    "NS-E203",
+                    f"the load left {total - used} MiB of the graphics card's {total} free (less than "
+                    f"{vram.SPILL_FREE_MB}): it spilled into system memory",
+                )
+            speeds = [self.measure(d.base_url) for _ in range(speed_runs(rt))]
+            self.last = RunInfo(speeds, used, total)
+            return statistics.median(speeds), load_s
         finally:
             procs.terminate(proc, 10)
 
