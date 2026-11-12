@@ -30,6 +30,8 @@ from ns_studio.media.clips import (
     clip_seed,
     fallback_beat,
     make_lemmatizer,
+    record_footage_cost,
+    treatment_probe,
 )
 from ns_studio.media.diskfull import run_ffmpeg
 from ns_studio.media.master import (
@@ -151,21 +153,29 @@ def run_clips_master(ctx: JobContext) -> None:
     cache.purge_expired()
     searcher = Searcher(ctx.services.clip_sources, log=ctx.log, lemma=make_lemmatizer(ctx.paths))
     blocked = blocked_for_job(ctx, ("clips/shots.json",))
+    # the Short path's black check and redo rules, on the master's own canvas (rc8 WP5, review f8)
+    probe = treatment_probe(treatment, LANDSCAPE) if ff.available() else None
     used: set[tuple[str, str]] = set()
     shots: list[Shot] = []
+    planned = []
     for ch, t in zip(chapters, timeline, strict=True):
         beats = [b for b in plan if b.get("chapter") == ch.n] or [fallback_beat(ctx)]
         words = load_words(ctx, f"c{ch.n}")
         spans = beat_spans(beats, words, t.end - t.audio_start)
-        slots = plan_slots(spans, treatment.long_cut_range_s)
-        seed = clip_seed(ctx, f"long|{ch.n}")
-        got = assign_clips(
-            beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked, seed=seed,
-            wanted="landscape", used=used, allow_other=False,
-            extra_keywords=ctx.channel.seed_keywords,
-        )
-        shots += [_shift(s, t.audio_start) for s in got]
-        ctx.log.info("clips_selected", job_id=ctx.job_id, item="long", chapter=ch.n, shots=len(got))
+        planned.append((ch, t, beats, plan_slots(spans, treatment.long_cut_range_s)))
+    cache.total = sum(len(slots) for _ch, _t, _b, slots in planned)
+    cache.report(force=True)  # "0 of N clips": the size of the job before the first file (FR F5)
+    try:
+        for ch, t, beats, slots in planned:
+            got = assign_clips(
+                beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked,
+                seed=clip_seed(ctx, f"long|{ch.n}"), wanted="landscape", used=used, allow_other=False,
+                extra_keywords=ctx.channel.seed_keywords, probe=probe, label=f"c{ch.n}",
+            )
+            shots += [_shift(s, t.audio_start) for s in got]
+            ctx.log.info("clips_selected", job_id=ctx.job_id, item="long", chapter=ch.n, shots=len(got))
+    finally:  # what the footage cost, also when the stage failed half way (F5)
+        record_footage_cost(ctx, cache)
     ctx.write_json("clips/shots.json", {"long": {
         "total_s": timeline[-1].end, "treatment": treatment.name, "shots": [s.to_json() for s in shots],
     }})

@@ -332,10 +332,17 @@ class StudioAdapter:
         """
         report = job_reporter(ctl)
         ended = False  # set once the run is over: an owner announced after that is released on arrival
+        at: list[str] = [""]  # the last stage line (`name (i/n)`): a progress note goes behind it
 
         def on_event(event: dict[str, Any]) -> None:
             name = event.get("ev")
-            if name == "stage":
+            if name == "note":
+                text = str(event.get("text") or "").strip()
+                if at[0] and text:  # same progress value, the stage line plus " - <note>" (`jobs._detail_of`)
+                    ctl.waiting(f"{at[0]} - {text}")
+            elif name == "stage":
+                step, steps = int(event.get("index", 0)) + 1, int(event.get("total", 1))
+                at[0] = f"{event.get('stage', '')} ({step}/{steps})"
                 report(
                     str(event.get("stage", "")),
                     int(event.get("index", 0)),

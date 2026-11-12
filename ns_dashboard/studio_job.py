@@ -10,6 +10,7 @@ cannot be mistaken for an event. The events are
 - `owner`: a GPU lease owner the child is about to use (`owner`), sent before the acquire so Cancel or a
   failure can free it even if the child is killed while it waits for the lease,
 - `stage`: a stage starts (`stage`, `index`, `total`, `job_index`, `job_total`),
+- `note`: a progress line of the running stage (`text`), shown beside the stage name,
 - `download`: link download progress (`percent`),
 - `result`: the work is done (the payload, for example `output_ids`),
 - `error`: the work failed (`code` of an `NS-E...` condition or None, `detail`, `message`).
@@ -74,6 +75,15 @@ def report(stage: str, index: int, total: int, job_index: int, job_total: int) -
     if cancel_requested():
         raise CancelRequested()
     emit("stage", stage=stage, index=index, total=total, job_index=job_index, job_total=job_total)
+
+
+def note(text: str) -> None:
+    """A progress line of the running stage (the footage step's "12 of 85 clips, 40 MB downloaded"): the
+    dashboard shows it beside the stage (FR F5). The bridge finds it as `report.note`."""
+    emit("note", text=str(text)[:200])
+
+
+report.note = note  # type: ignore[attr-defined]
 
 
 def _paths() -> Any:

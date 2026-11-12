@@ -152,6 +152,9 @@ class ClipCache:
         self.placed = 0
         self.total = 0
         self.give_ups_in_a_row = 0
+        #: Clips that could not be fetched or are black or unreadable in every window, over all parts of the
+        #: stage (f5): `assign_clips` never picks them again, so a dead link costs its waits once.
+        self.excluded: set[tuple[str, str]] = set()
         self._clock = clock
         self._said = clock()
         self._hooked: set[str] = set()
@@ -576,6 +579,17 @@ _SKIPPABLE = _OUTAGE_CODES | {"NS-E505"}
 PROBE_MIN_BLACK_S = 0.1
 PROBE_GUARD_S = 0.1
 _FRAMES_RE = re.compile(r"frame=\s*(\d+)")
+#: What FFmpeg says when the filter chain itself (not the clip) is wrong: the same on every clip.
+_FILTER_FAILED = (
+    "error initializing filter", "error parsing filter", "no such filter", "error reinitializing filters",
+    "unrecognized option", "failed to configure",
+)
+
+
+def _filter_failed(detail: str) -> bool:
+    """True when FFmpeg's error text says the black check's own filter chain failed."""
+    low = detail.lower()
+    return any(s in low for s in _FILTER_FAILED)
 
 
 def spare_bound(n_slots: int) -> int:
@@ -613,8 +627,14 @@ def treatment_probe(treatment: VisualTreatment, size: tuple[int, int]) -> BlackP
         window = ["-ss", f"{ss:.3f}", "-t", f"{length:.3f}"] if length is not None else []
         try:
             proc = ff.run([*window, "-i", str(path), "-an", "-vf", chain, "-f", "null", "-"], timeout_s=600)
-        except Exception:  # noqa: BLE001 - FFmpeg's error, a timeout: the clip counts as unreadable
+        except NsError as e:
+            # FFmpeg ran and refused the file: the clip is unreadable (replace it). FFmpeg that did not
+            # start, or a check of ours it cannot build, says nothing about the clip: stop (f4).
+            if "cmd" not in e.data or _filter_failed(e.detail):
+                raise NsError("NS-E401", f"The black check could not run: {e.detail}") from e
             return None
+        except Exception as e:  # noqa: BLE001 - FFmpeg would not start, or hung past the limit: not the clip
+            raise NsError("NS-E401", f"The black check could not run: {type(e).__name__} {e}"[:400]) from e
         counts = _FRAMES_RE.findall(proc.stderr)
         if not counts or int(counts[-1]) == 0:  # no frame decoded: the render would get an empty shot
             return None
@@ -639,7 +659,11 @@ def clear_in_point(
         return None
     try:
         end = ff.duration_s(path)
-    except (NsError, OSError, KeyError, ValueError):
+    except NsError as e:
+        if "path" not in e.data:  # ffprobe is not there: not a fact about this clip (f4)
+            raise
+        return None
+    except (OSError, KeyError, ValueError):
         return None
     fits: list[tuple[float, float]] = []
     cursor = 0.0
@@ -690,7 +714,7 @@ def assign_clips(
     used = used if used is not None else set()
     shots: list[Shot] = []
     spares_left = spare_bound(len(slots))
-    excluded: set[tuple[str, str]] = set()
+    excluded = cache.excluded  # the stage's: a dead or black clip is not tried again
     for bi, beat in enumerate(beats):
         pending = [s for s in slots if s.beat == bi]
         elsewhere = [k for j, b in enumerate(beats) if j != bi for k in b["keywords"]]
@@ -706,10 +730,13 @@ def assign_clips(
             except NsError as e:
                 if last_failure is None or e.code != "NS-E402":
                     raise
+                # a shortage (NS-E402), not a network error: the dead clips are why the pool ran out, and the
+                # owner's fix is the footage (keywords, keys), not the line (f5)
                 raise NsError(
-                    last_failure.code,
-                    f"{last_failure.detail} No other clip was left for "
-                    f"{_slot_name(label, slots, pending[0])}.",
+                    "NS-E402",
+                    f"{e.detail} Clips that could not be fetched ({last_failure.code}): "
+                    f"{last_failure.detail} "
+                    f"No other clip was left for {_slot_name(label, slots, pending[0])}.",
                 ) from e
             for slot, (cand, kw) in zip(list(pending), picks, strict=True):
                 key = (cand.source, cand.id)
