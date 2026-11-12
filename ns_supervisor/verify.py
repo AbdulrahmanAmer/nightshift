@@ -61,7 +61,7 @@ from ns_common.paths import Paths, home_env
 from ns_common.tts_client import TtsClient, TtsItem, TtsStamp
 from ns_common.tts_timeout import save_rtf
 from ns_supervisor import check_names as names
-from ns_supervisor import procs
+from ns_supervisor import procs, vram
 from ns_supervisor.benchmark import measure_tok_s
 from ns_supervisor.childenv import child_env, window_flags
 from ns_supervisor.gpu import SIMULATED_EVIDENCE, labelled, simulated_mark, smi_source
@@ -891,13 +891,38 @@ class _Recorder:
         self.log.info("check", name=name, passed=out.passed, value=out.value)
         return out
 
-    def bench(self, key: str, value: float, limit: str, ok: bool, soft: bool = False) -> None:
-        """Add a spec 14.6 row. `soft` rows are logged but never fail the report."""
+    def bench(
+        self, key: str, value: float, limit: str, ok: bool, soft: bool = False, note: str | None = None
+    ) -> None:
+        """Add a spec 14.6 row. `soft` rows are logged but never fail the report. `note`: a sentence that goes
+        with the row (the code model's speed names its ladder step)."""
         self.benchmarks[key] = value
         log = None if ok else ("over the soft limit; logged only" if soft else "target missed")
+        if note:
+            log = f"{log}; {note}" if log else note
         self.checks.append(
             GateCheck(name=f"bench.{key}", passed=ok or soft, value=value, limit=limit, log=log)
         )
+
+
+def ladder_words(ctl: Controller) -> str:
+    """The ladder step llama was just loaded with, in the engine's words (`vram.STEP_WORDS`), the PC memory
+    it holds experts in and the context; "" when the status does not say (an older engine, a stub). Never
+    raises: the words are no part of the check."""
+    try:
+        llama = ctl.status().get("services", {}).get("llama", {})
+        setting = llama.get("setting") if isinstance(llama, dict) else None
+        if not isinstance(setting, dict) or not setting.get("step"):
+            return ""
+        parts = [f"loaded {vram.STEP_WORDS.get(str(setting['step']), str(setting['step']))}"]
+        ram = setting.get("ram_mib")
+        if isinstance(ram, int | float) and ram > 0:
+            parts.append(f"{ram:.0f} MiB of it in the PC's memory")
+        if setting.get("ctx"):
+            parts.append(f"context {setting['ctx']}")
+        return ", ".join(parts)
+    except Exception:  # the words are not a check
+        return ""
 
 
 def _need(ep: Endpoint | None, service: str) -> Endpoint:
@@ -1006,10 +1031,19 @@ def run_verify(
     # -- llama -----------------------------------------------------------------------------
     llama: list[Endpoint] = []
 
+    ladder: list[str] = []  # the ladder step the engine loaded llama with, in words (`ladder_words`)
+
     def llama_start() -> Out:
         ep, secs = acquire("llama", "code")
         llama.append(ep)
-        return Out(True, round(secs, 1), log=f"{ep.base_url} alias={ep.model_alias}")
+        said = ladder_words(ctl)
+        if said:
+            ladder.append(said)
+        # Rule 5: the load passes whatever step the engine chose (the whole model on the card, or llama.cpp
+        # keeping some experts in the PC's memory); a load that spilled was stopped by the engine, and the
+        # acquire then raises: that, and only that, fails this row.
+        where = f"{ep.base_url} alias={ep.model_alias}"
+        return Out(True, round(secs, 1), log=f"{where}; {said}" if said else where)
 
     started = rec.run(names.LLAMA_START, llama_start, "NS-E203")
     ep_llama = llama[0] if llama else None
@@ -1039,7 +1073,10 @@ def run_verify(
         sp = rec.run(names.LLAMA_TOK_S, llama_speed, "NS-E301")
         if sp is not None:
             v = float(sp.value or 0)
-            rec.bench("code_tok_s", v, f">= {tg.tok_s:.0f} tok/s", v >= tg.tok_s)
+            # a soft row (plan rule 6): the speed depends on the ladder step and on what the desktop holds,
+            # so a miss is logged with the step it was measured at, never a failed update
+            rec.bench("code_tok_s", v, f">= {tg.tok_s:.0f} tok/s", v >= tg.tok_s, soft=True,
+                      note=ladder[0] if ladder else None)  # fmt: skip
     if ep_llama is not None:
         release("llama")
 
