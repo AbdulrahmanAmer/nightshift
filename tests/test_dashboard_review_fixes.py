@@ -325,15 +325,27 @@ def test_update_output_of_ns_update_github_is_understood():
     assert started["state"] == "started"
 
 
-def test_update_state_file_is_read_from_run_update_state_json(tmp_home: Path):
+def test_update_state_file_is_read_from_run_update_state_json(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
     import json
+
+    from ns_common import release_keys
+    from ns_supervisor.update import NO_KEY_SHORT
 
     dash, state = make(tmp_home)
     assert dash.library.update_state()["state"] == "idle"
     f = state.paths.home / "run" / "update_state.json"
     f.parent.mkdir(parents=True, exist_ok=True)  # the dashboard's start checked studio.db: run/db-check.json
     f.write_text(json.dumps({"state": "running", "old": "0.1.0", "new": "0.1.1", "message": "Installing"}), encoding="utf-8")
-    assert dash.library.update_state() == {"state": "running", "old": "0.1.0", "new": "0.1.1", "message": "Installing", "updated_at": None}
+    progress = {"state": "running", "old": "0.1.0", "new": "0.1.1", "message": "Installing", "updated_at": None}
+    # card update-signing: besides the file's fields the answer carries the sentence Settings > Updates shows
+    # for as long as this program pins no release key, and nothing more once it pins one. Both states are set
+    # here, so the test does not turn with the day the owner makes the key.
+    with monkeypatch.context() as m:
+        m.setattr(release_keys, "TRUSTED", {})
+        assert dash.library.update_state() == {**progress, "unsigned_note": NO_KEY_SHORT}
+    with monkeypatch.context() as m:
+        m.setattr(release_keys, "TRUSTED", {"0123456789abcdef": "a pinned key"})
+        assert dash.library.update_state() == progress
     f.write_text("{not json", encoding="utf-8")
     assert dash.library.update_state()["state"] == "idle"
     f.write_text(json.dumps({"state": "done", "old": "0.1.0", "new": "0.1.1"}), encoding="utf-8")
