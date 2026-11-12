@@ -404,19 +404,94 @@ def test_the_windows_row_note_reads_a_later_retry_in_plain_words():
     assert note == "The internet stopped this file; it is tried again when the other files are done"
 
 
+def test_ns_models_get_says_every_wait_and_the_later_line_on_screen():
+    """Ruling 6c: ``ns models get`` has its own reporter; the waits and the "later" line reach the screen."""
+    from ns_supervisor.models_get import EchoReporter
+
+    said: list[str] = []
+    rep = EchoReporter(said.append)
+    rep.retrying("m.gguf", 1, "stall", 2.0)
+    rep.retrying("m.gguf", 0, "later", 0.0)
+    assert said == [
+        "m.gguf: No data came for a while. Trying again in 2 s",
+        "m.gguf: The internet stopped this file. The other files go on, and this one is tried again"
+        " at the end",
+    ]
+
+
+# ---------------------------------------------------------------------------------------------- setup's end
+def test_an_unattended_setup_on_a_dead_line_says_each_round_and_ends_with_run_install_again(
+    tmp_path, monkeypatch
+):
+    """Rulings 6a and 6b: the network give-up ends with "run INSTALL.cmd again"; each unattended round is
+    said and logged before it starts (which of how many, and why); the whole run stays inside the bound the
+    wizard's docstring gives (about 80 to 100 minutes of waiting on a dead line)."""
+    from installer.stage2.testing import make_test_context
+    from installer.stage2.wizard import EXIT_FAILED, Wizard
+    from tests.test_downloader_site_outage import DownloadStep
+
+    monkeypatch.setattr(dl, "network_is_up", lambda u, timeout=5.0: False)
+
+    def dead(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route", request=request)
+
+    ctx = make_test_context(tmp_path, unattended=True, simulate=False,
+                            http=lambda: httpx.Client(transport=httpx.MockTransport(dead)))
+    t = FakeTime()
+    ctx.sleep = t.sleep
+    assert Wizard(ctx, [DownloadStep(tmp_path / "bin" / "a.bin")]).run() == EXIT_FAILED
+    shown = ctx.ui.text
+    way_out = "What to do: Run INSTALL.cmd again when the internet is back: setup continues where it stopped."
+    assert way_out in shown
+    assert "firewall" not in shown, "the generic hint is not the way out of an outage"
+    for n in (1, 2, 3):
+        assert f"Retry {n} of 3 in " in shown
+    assert shown.count("because this step stopped with NS-E105") == 3
+    records = log_records(ctx.paths.logs)
+    order = [r["event"] for r in records if r["event"] in ("stage_start", "stage_error", "stage_retry")]
+    assert order == ["stage_start", "stage_error", "stage_retry"] * 3 + ["stage_start", "stage_error"]
+    rounds = [r["data"] for r in records if r["event"] == "stage_retry"]
+    assert [(d["round"], d["of"], d["code"]) for d in rounds] == [(n, 3, "NS-E105") for n in (1, 2, 3)]
+    # four rounds of (a ten-minute window, then ten minutes waiting for the network), plus 5 + 15 + 45 s
+    assert 4 * 2 * 600 <= sum(t.sleeps) <= 100 * 60
+
+
+def test_the_setup_windows_failed_screen_says_run_install_again_after_an_outage(tmp_path, monkeypatch):
+    """Ruling 6a on the window's route: the Failed screen of a network give-up names Retry and INSTALL.cmd."""
+    from tests.test_installer_web_controller import Setup
+
+    s = Setup(tmp_path, monkeypatch)
+    s.accept()
+    s.ctl._ev_failure({"type": "failure", "step": "s03_download_models", "code": "NS-E105", "message": "m",
+                       "hint": "", "detail": "1 file is still to come.", "optional": False, "attempt": 1,
+                       "host": "huggingface.co", "side": "network"})
+    f = s.snap()["failure"]
+    assert "Retry" in f["whatToDo"]
+    assert "run INSTALL.cmd again: it continues where it stopped" in f["whatToDo"]
+    assert "firewall" not in f["whatToDo"]
+
+
 # ---------------------------------------------------------------------------------------------- stop
 def test_t10_stop_during_the_wait_before_a_pass_is_seen_within_one_slice(tmp_path, monkeypatch):
     monkeypatch.setattr(dl, "network_is_up", lambda u, timeout=5.0: False)
     t = FakeTime()
     between = threading.Event()
     stop = threading.Event()
-    after: list[float] = []
+    pressed: list[float] = []                           # the sleep Stop was pressed in
+    after: list[float] = []                             # what was slept after Stop: must be nothing
+    waited = [0.0]
 
     def sleep(seconds: float) -> None:
         t.sleep(seconds)
-        if between.is_set():
+        if stop.is_set():
             after.append(seconds)
-            stop.set()                                  # Stop is pressed during this slice
+            return
+        if between.is_set():
+            waited[0] += seconds
+            # deep in the wait, inside its 16 s step (2 + 4 + 8 + 16 > 20): a step slept whole shows 16 here
+            if waited[0] >= 20.0:
+                pressed.append(seconds)
+                stop.set()
 
     link = Link({"a.bin": BIG}, lambda name, n: STALL, t)
     gets_then: list[int] = []
@@ -435,5 +510,6 @@ def test_t10_stop_during_the_wait_before_a_pass_is_seen_within_one_slice(tmp_pat
     item = dl.DownloadItem(name="a.bin", url=url("a.bin"), dest=tmp_path / "a.bin", sha256=BIG_SHA)
     with pytest.raises(Boom):
         dl.run_plan([item], client=link.client(), reporter=Stoppable(), sleep=sleep, network_window_s=10.0)
-    assert len(after) == 1 and after[0] <= dl.SITE_SLICE_S, "seen at the end of the slice it was pressed in"
+    assert len(pressed) == 1 and pressed[0] <= dl.SITE_SLICE_S, "the wait is slept in slices of 5 s at most"
+    assert after == [], "seen at the end of the slice it was pressed in"
     assert gets_then == [link.count("a.bin")], "no second pass began"

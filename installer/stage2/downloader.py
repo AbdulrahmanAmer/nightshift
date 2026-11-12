@@ -618,7 +618,8 @@ def download(
     attempts were used (at most ``MAX_RETRIES``) and the trouble has lasted ``network_window_s`` (ten minutes)
     without progress. Progress is ``PROGRESS_MIN_BYTES`` more on disk than at the previous failure: it starts
     the window and the attempts anew. The window is measured by ``clock`` and by the waits themselves (backoff
-    and offline waits), whichever is larger; time spent paused does not count. The error is NS-E105 with
+    and offline waits), whichever is larger; a pause before a try does not count (a pause that lands in a
+    backoff or offline wait lets that one wait count, at most 120 s). The error is NS-E105 with
     ``side="network"``. ``network_window_s`` 0 or less: one try, no wait (a plan whose line is already known
     to be dead, N2).
 

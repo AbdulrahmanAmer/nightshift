@@ -156,6 +156,12 @@ class EchoReporter:
 
         self._echo(f"{name}: {site_wait_text(host, status, wait_s, left_s)}")
 
+    def retrying(self, name: str, attempt: int, reason: str, wait_s: float) -> None:
+        """A transfer waits to be tried again, or the internet stopped it until the other files are done."""
+        from installer.stage2.downloader import retry_text
+
+        self._echo(f"{name}: {retry_text(reason, wait_s)}")
+
     def finish(self, name: str, outcome: str) -> None:
         """A file ended."""
         self._echo(f"{name}: {outcome}")
