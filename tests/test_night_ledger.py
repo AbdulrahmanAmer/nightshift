@@ -829,11 +829,13 @@ def test_a_half_made_job_that_would_not_fit_tonight_waits_for_the_next_night(
     job_id = _one([r["job_id"] for r in world.db.query("select distinct job_id from combos")])
     world.clock.advance(24 * 3600)
     world.ran.clear()
+    taken = len(world.acquirer.calls)
     report = world.night(left_s=left_s)
     if continued:
         assert world.ran == ["nf_c", "nf_d"] and [j["job_id"] for j in report["jobs"]] == [job_id]
-        # its finished llama group is still taken (as before) but never refused for time, at most 1 s of wait
-        assert world.acquirer.calls[-1] == ("llama", 1)
+        # its finished llama group is not taken at all (card footage-robust F4: a skipped stage acquires
+        # nothing), so it can neither be refused for time nor wait
+        assert world.acquirer.calls[taken:] == []
         return
     assert world.ran == [] and report["jobs"] == [] and report["failures"] == []
     left = _one(report.get("out_of_time") or [])
