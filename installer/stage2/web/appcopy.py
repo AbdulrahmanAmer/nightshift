@@ -61,7 +61,7 @@ ROOT_ENTRIES = frozenset(
         "operator.md", "readme.md", "uninstall.cmd", "version", "contracts", "dev", "docs", "installer",
         "launchers", "manifest.json", "ns_common", "ns_dashboard", "ns_studio", "ns_supervisor", "ns_tts",
         "pyproject.toml", "uv.lock", "tools", "tests", "bin", "answers.example.json", ".editorconfig",
-        ".gitattributes", ".gitignore", "proofs",
+        ".gitattributes", ".gitignore", ".gitleaksignore", "proofs",
     }
 )
 RENAME_TRIES = 20
