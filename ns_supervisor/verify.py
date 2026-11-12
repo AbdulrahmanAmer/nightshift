@@ -967,17 +967,39 @@ def run_verify(
         except Exception as e:  # tolerant by design: a baseline that cannot be had is said, never guessed
             why = f"the supervisor's status could not be read ({type(e).__name__})"
         if why is None:
-            try:
-                used = vram_used()
-            except Exception:
-                used = None
+            used = settled()
             if used is None:
                 why = "nvidia-smi gave no figure"
             else:
                 baseline["mb"] = float(used)
         if why is not None:
             baseline["why"] = why
-        rec.log.info("vram_baseline", mb=baseline.get("mb"), why=baseline.get("why"))
+        rec.log.info("vram_baseline", mb=baseline.get("mb"), waited_s=baseline.get("waited_s"),
+                     why=baseline.get("why"))  # fmt: skip
+
+    def reading() -> int | None:
+        try:
+            return vram_used()
+        except Exception:
+            return None
+
+    def settled() -> int | None:
+        """The card's memory in use once it stopped falling (review of block E2, finding 5): a model stopped
+        a moment ago may still be counted for up to a few seconds (on the studio PC about one), and a
+        baseline that held it would hide a leak. The idle row's own allowance: at most 10 x 0.5 s."""
+        used = reading()
+        waited = 0.0
+        for _ in range(10):
+            if used is None:
+                break
+            d.sleep(0.5)
+            waited += 0.5
+            later = reading()
+            if later is None or later >= used:
+                break
+            used = later
+        baseline["waited_s"] = waited
+        return used
 
     read_baseline()
 
@@ -1264,8 +1286,10 @@ def run_verify(
         limit = f"<= {tg.idle_vram_mb:.0f} MB"
         ok = ours <= tg.idle_vram_mb
         rec.bench("idle_vram_mb", ours, limit, ok)
-        return Out(ok, ours, limit, f"{used:.0f} MB in use, {base:.0f} MB of it held by other programs "
-                                    "before the test")  # fmt: skip
+        waited = float(baseline.get("waited_s") or 0.0)
+        said = (f"{used:.0f} MB in use, {base:.0f} MB of it held by other programs before the test (read "
+                f"once it stopped falling, after {waited:.1f} s)")
+        return Out(ok, ours, limit, said)
 
     rec.run(names.VRAM_IDLE, idle_vram, "NS-E102")
 

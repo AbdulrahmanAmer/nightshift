@@ -255,8 +255,22 @@ def test_t4_the_idle_row_counts_what_nightshift_left(tmp_path: Path) -> None:
     report, _ = idle_row(tmp_path, CardCtl(loaded=False), [800, 806])
     row = by_name(report)[names.VRAM_IDLE]
     assert row.passed and row.value == 6.0 and row.limit == "<= 300 MB"
-    assert row.log == "806 MB in use, 800 MB of it held by other programs before the test"
+    # (the Head's ruling on finding 5 of the review: the log also says how long the baseline was waited for)
+    assert row.log == (
+        "806 MB in use, 800 MB of it held by other programs before the test (read once it stopped falling, "
+        "after 0.5 s)"
+    )
     assert report.benchmarks["idle_vram_mb"] == 6.0
+
+
+def test_t4_the_baseline_is_read_once_the_card_stopped_falling(tmp_path: Path) -> None:
+    """Review of block E2, finding 5: a model stopped a moment before still counted 2000 MB, then 1200, then
+    the card settled at 800 (the other programs). A baseline of 2000 would make 806 after the test look like
+    nothing left (`max(0, 806 - 2000)`) and hide any leak; the baseline is 800, read after 1.5 s."""
+    report, _ = idle_row(tmp_path, CardCtl(loaded=False), [2000, 1200, 800, 800, 806])
+    row = by_name(report)[names.VRAM_IDLE]
+    assert row.passed and row.value == 6.0, row
+    assert "800 MB of it held by other programs" in (row.log or "") and "after 1.5 s" in (row.log or "")
 
 
 def test_t4_more_left_than_the_limit_is_a_missed_target(tmp_path: Path) -> None:
