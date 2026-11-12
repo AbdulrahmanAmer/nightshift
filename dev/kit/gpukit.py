@@ -2965,7 +2965,7 @@ class Kit:
             "- one Assistant conversation (the kit's question), in the Assistant's history",
             "- one OpenCode session (the kit's prompt), in OpenCode's own folder of the user's profile",
             "The model test (ns verify) leaves nothing: its sample job runs in a folder of its own that is "
-            "removed when it ends.",
+            "removed when it ends; a file another program still holds stays until the next full ns verify.",
             "",
             "Masked in every text file:",
             *(f"- {m}" for m in MASKED),
