@@ -645,7 +645,7 @@ wheels = [
 
 [[package]]
 name = "nightshift"
-version = "0.1.15rc7"
+version = "0.1.15rc8"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
