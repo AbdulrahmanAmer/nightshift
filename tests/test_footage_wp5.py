@@ -33,7 +33,11 @@ from tests.test_footage_robust import FakeTime, StubSource, _cand, _pixabay, _sl
 needs_ffmpeg = pytest.mark.skipif(not ff.available(), reason="ffmpeg required")
 
 DATA = bytes(range(256)) * 1200  # 307,200 bytes
-CUT = 100_000
+#: Where the connection is lost: a whole number of the 64 KiB blocks `_fetch_once` reads
+#: (`iter_bytes(1 << 16)`). httpx hands a block on only when it is full, so the bytes of a part block at the
+#: moment of a ReadError never reach the disk: with a cut at 100,000 the part holds 65,536 and the resume
+#: rightly asks from there.
+CUT = 2 * 65_536
 
 
 class Cut(httpx.SyncByteStream):
@@ -81,13 +85,13 @@ def test_f6_a_cut_download_continues_from_the_bytes_it_has(tmp_path: Path):
     dest, got, t = _download(tmp_path, handler)
     assert dest.read_bytes() == DATA
     assert len(seen) == 2 and t.slept == [2.0]
-    assert sum(got) == len(DATA)  # every byte fetched once: the retry did not pay for the first 100,000 again
+    assert sum(got) == len(DATA)  # every byte fetched once: the retry did not pay for the first CUT again
     assert not list(tmp_path.rglob("*.part"))
 
 
 def test_f6_a_body_that_ends_short_of_its_announced_size_is_continued_not_kept(tmp_path: Path):
     def handler(req: httpx.Request) -> httpx.Response:
-        if "range" not in req.headers:  # the connection "ends" cleanly after 100,000 of 307,200 bytes
+        if "range" not in req.headers:  # the connection "ends" cleanly after CUT of 307,200 bytes
             return httpx.Response(200, headers=_full_headers(), stream=Cut(DATA, CUT, quiet=True))
         crange = f"bytes {CUT}-{len(DATA) - 1}/{len(DATA)}"
         return httpx.Response(206, headers={"content-range": crange}, content=DATA[CUT:])

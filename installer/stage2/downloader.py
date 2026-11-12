@@ -306,6 +306,20 @@ def hashed_at(dest: Path) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def marker_digest(dest: Path) -> str | None:
+    """The SHA256 the marker recorded for ``dest``, while the marker still matches the file; else None.
+
+    Every release writes the digest it compared (0.1.15-rc5 and older write no ``hashed_at``), so this is how
+    a model check tells a file setup verified on a home made by an older release (block G review 1, B2)."""
+    if not marker_matches(dest):
+        return None
+    try:
+        value = json.loads(_marker(dest).read_text(encoding="utf-8")).get("sha256")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
 def is_verified(dest: Path, sha256: str | None) -> bool:
     """True when ``dest`` exists and its marker matches size, mtime and the expected hash.
 
