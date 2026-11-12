@@ -285,8 +285,39 @@ def test_t5_a_folder_of_that_name_without_the_marker_is_left_and_named(
     with pytest.raises(NsError) as e:
         verify.fake_job(home, command=studio.command, alive=NOBODY_ELSE)
     assert str(folder) in e.value.detail and verify.SCRATCH_MARKER in e.value.detail
+    assert "not this test's folder. Move that folder out of" in e.value.detail  # what the person does
     assert (folder / "mine.txt").read_text(encoding="utf-8") == "not the check's"
     assert not studio.ran()
+
+
+def test_t5_an_empty_folder_a_kill_left_without_its_marker_is_removed(
+    home: Paths, studio: SimpleNamespace
+) -> None:
+    """Review of block E2, finding 3: a kill between `mkdir` and the marker (or between the marker's removal
+    and `rmdir`) leaves an empty folder of that name; it goes (rmdir), so the next full run is not stopped."""
+    folder = verify.scratch_home(home)
+    folder.mkdir(parents=True)
+    got = verify.fake_job(home, command=studio.command, alive=NOBODY_ELSE)
+    assert isinstance(got, verify.JobRun) and got.notes == ()
+    assert studio.ran() and not os.path.lexists(folder)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the read-only attribute is Windows' own")
+def test_t5_read_only_entries_of_a_folder_proven_ours_are_removed(
+    home: Paths, studio: SimpleNamespace
+) -> None:
+    import stat
+
+    left = verify.make_scratch(home)
+    (left / verify.SCRATCH_MARKER).write_text(marker_text([999_999]), encoding="utf-8")
+    sub = left / "data" / "kept"
+    sub.mkdir(parents=True)
+    (sub / "read-only.bin").write_bytes(b"x")
+    os.chmod(sub / "read-only.bin", stat.S_IREAD)
+    os.chmod(sub, stat.S_IREAD | stat.S_IEXEC)
+    got = verify.fake_job(home, command=studio.command, alive=NOBODY_ELSE)
+    assert isinstance(got, verify.JobRun) and got.notes == (), got
+    assert not os.path.lexists(left)
 
 
 def test_t5_a_link_of_that_name_is_left_and_its_target_untouched(

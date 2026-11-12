@@ -474,7 +474,8 @@ def not_ours(paths: Paths, alive: Callable[[int], bool] = pid_alive) -> str | No
         return f"{folder} leads to {real}, outside {run}"
     mark = _marker_of(folder)
     if mark is None:
-        return f"{folder} has no {SCRATCH_MARKER} of this check, so this check did not make it"
+        return (f"{folder} has no {SCRATCH_MARKER} of this check, so it is not this test's folder. Move that "
+                f"folder out of {run}, then run the test again")
     pids = mark.get("pids")
     others = [p for p in (pids if isinstance(pids, list) else []) if isinstance(p, int) and p != os.getpid()]
     busy = [p for p in others if alive(p)]
@@ -542,14 +543,47 @@ def _remove_tree(folder: Path, keep: str | None = None) -> list[Path]:
             _remove_entry(p, stayed)
     if keep is not None:
         return stayed
-    try:
-        os.rmdir(folder)
-    except FileNotFoundError:
-        pass
-    except OSError:
-        if not stayed:
-            stayed.append(folder)
+    if not _rmdir(folder) and not stayed:
+        stayed.append(folder)
     return stayed
+
+
+def _rmdir(folder: Path) -> bool:
+    """`os.rmdir` (it removes nothing but an empty folder); a read-only folder of the scratch home gets its
+    read-only attribute cleared first. True when the folder is gone. Never for a link: callers checked."""
+    for attempt in (1, 2):
+        try:
+            os.rmdir(folder)
+            return True
+        except FileNotFoundError:
+            return True
+        except PermissionError:
+            if attempt == 2:
+                return False
+            try:
+                os.chmod(folder, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+            except OSError:
+                return False
+        except OSError:
+            return False
+    return False
+
+
+def _empty_unmarked(paths: Paths) -> bool:
+    r"""True when `<home>\run\verify-job` is a real, EMPTY folder directly under a `run` that is no link and
+    has no marker: what a kill between its `mkdir` and its marker, or between the marker's removal and its
+    `rmdir`, leaves (review of block E2, finding 3). Removing it with `os.rmdir` can remove nothing else."""
+    run = paths.home / "run"
+    folder = run / SCRATCH_NAME
+    if _is_link(run) or _is_link(folder) or not folder.is_dir():
+        return False
+    if _real(Path(os.path.realpath(folder)).parent) != _real(run) or _marker_of(folder) is not None:
+        return False
+    try:
+        with os.scandir(folder) as it:
+            return next(it, None) is None
+    except OSError:
+        return False
 
 
 def remove_scratch(paths: Paths, alive: Callable[[int], bool] = pid_alive) -> str | None:
@@ -565,17 +599,15 @@ def remove_scratch(paths: Paths, alive: Callable[[int], bool] = pid_alive) -> st
     except Exception as e:  # tolerant: a folder that cannot be looked at is left alone
         why = f"{folder} could not be looked at ({type(e).__name__}: {e})"
     if why is not None:
+        if _empty_unmarked(paths) and _rmdir(folder):  # a kill's empty leftover: rmdir takes nothing else
+            return None
         return f"Left alone: {why}."
     if _is_link(folder):  # once more, the moment before it is entered
         return f"Left alone: {folder} became a link."
     stayed = _remove_tree(folder, keep=SCRATCH_MARKER)
     if not stayed:  # everything else went: now the marker, then the empty folder
         _remove_entry(folder / SCRATCH_MARKER, stayed)
-        try:
-            os.rmdir(folder)
-        except FileNotFoundError:
-            pass
-        except OSError:
+        if not stayed and not _rmdir(folder):
             stayed.append(folder)
     if not stayed:
         return None
