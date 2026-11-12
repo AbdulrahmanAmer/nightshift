@@ -861,6 +861,29 @@ class Result:
     stop: bool = False  # the steps after it do not run now
 
 
+#: `ns_supervisor.verify.MIRRORS`: a bench row that repeats a check row's figure (one target, said once)
+VERIFY_MIRRORS = {"bench.tts_rtf": "tts.rate", "bench.idle_vram_mb": "vram.idle"}
+
+
+def verify_failures(report: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
+    """(targets missed, parts that did not work) of `ns verify`'s report file; None when it cannot be read.
+
+    The product's own rule (`ns_supervisor.verify.split_failures`, card verify-limits L6), repeated here
+    because the kit may run beside an install older than that function: a failed row that carries a `limit`
+    is a missed target, a failed row without one is a part that did not work.
+    """
+    try:
+        checks = json.loads(report.read_text(encoding="utf-8-sig"))["checks"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(checks, list) or not all(isinstance(c, dict) for c in checks):
+        return None
+    failed = [c for c in checks if c.get("passed") is not True]
+    gone = {c.get("name") for c in failed}
+    missed = [c for c in failed if c.get("limit") and VERIFY_MIRRORS.get(str(c.get("name"))) not in gone]
+    return missed, [c for c in failed if not c.get("limit")]
+
+
 #: The person's checklists ({paste}, {hand}, {folder}: full paths, filled in at run time). Asked only what the
 #: kit cannot observe itself; what it can (powercfg /a, the ledger's "slept" lines, Windows' power events)
 #: is recorded beside the answers.
@@ -1473,26 +1496,46 @@ class Kit:
         if rc == 0 and not fresh:
             return Result("FAIL", "ns verify ended 0 but wrote no logs\\verify-report.json in this run. What "
                           "to do: send the zip.", done=False, stop=True)  # fmt: skip
+        # Card verify-limits L7: the kit reads the rows. A part that did not work ends the kit, as before;
+        # only targets missed is a FAIL the owner sees, and the kit goes on (every model answered). A report
+        # it cannot read, or a non-zero exit with no failed row in it, counts as a part that did not work.
+        missed: list[dict[str, Any]] = []
         if rc != 0:
-            return Result("FAIL", "a model did not answer its short test (ns verify; its report "
-                          "logs\\verify-report.json is in the zip). What to do: send the zip.",
-                          done=False, stop=True)  # fmt: skip
+            rows = verify_failures(report) if fresh else None
+            if rows is None:
+                ended = "did not end in its time" if rc is None else f"ended {rc}"
+                return Result("FAIL", f"ns verify {ended} and its report of this run could not be read "
+                              "(logs\\verify-report.json). What to do: send the zip.",
+                              done=False, stop=True)  # fmt: skip
+            missed, broken = rows
+            if broken or not missed:
+                named = ", ".join(str(r.get("name")) for r in broken) or f"none of its rows failed, exit {rc}"
+                return Result("FAIL", f"a part did not work in the model test (ns verify: {named}; its "
+                              "report logs\\verify-report.json is in the zip). What to do: send the zip.",
+                              done=False, stop=True)  # fmt: skip
         # the proof runner starts an engine itself when none answers and would then end it by itself: the kit
         # brings Nightshift up first (under its own record), so the runner starts and ends nothing
         why = self.engine()
         if why:
-            return Result("FAIL", f"{why}, so the proofs were not run. What to do: run GPU-KIT.cmd again; if "
-                          "this line comes back, send the zip.", done=False, stop=True)  # fmt: skip
+            first = "every model answered but missed a target (logs\\verify-report.json); " if missed else ""
+            return Result("FAIL", f"{first}{why}, so the proofs were not run. What to do: run GPU-KIT.cmd "
+                          "again; if this line comes back, send the zip.", done=False, stop=True)  # fmt: skip
         args = ["--home", str(self.home), "--dept", "kit", "--lock-file", str(self.ev / "kit.lock"),
                 "--tools", str(KIT_DIR / "tools"), "--runs", str(self.ev / "proofs"), "--all", "--strict",
                 "--no-window"]  # fmt: skip
         prc, out = self.product.prove(args, 60 * 60)
         tail = (out or "").strip().splitlines()
         summary = next((ln for ln in reversed(tail) if " passed, " in ln), tail[-1] if tail else "no output")
+        verified = f"ns verify exit 0 ({vreport})"
+        if missed:  # a finding, never a pass: the step is a FAIL whatever the proofs say
+            said = "; ".join(f"{r.get('name')} {r.get('value')} (limit {r.get('limit')})" for r in missed)
+            n = len(missed)
+            verified = (f"every model answered; ns verify missed {n} {'target' if n == 1 else 'targets'}: "
+                        f"{said} ({vreport})")  # fmt: skip
         if prc == 2 and "no proofs to run" in (out or ""):
             self.write_json("proofs.json", {"exit": prc, "output": out})
-            return Result("PASS", f"ns verify exit 0 ({vreport}); no proof fits this install (prove.py --all "
-                          "selected none)")  # fmt: skip
+            return Result("FAIL" if missed else "PASS", f"{verified}; no proof fits this install (prove.py "
+                          "--all selected none)")  # fmt: skip
         # `--all` selects only the proofs of this install's kind (prove.py: a wrong kind is left out quietly),
         # so F-B13/F-B14 (install "dev") are never selected on a real install; any skip of a selected proof
         # is a FAIL here (`--strict`, exit 3), as on the release rule
@@ -1501,12 +1544,11 @@ class Kit:
         self.write_json(
             "proofs.json", {"exit": prc, "output": out, "evidence": str(folder) if folder else None}
         )
-        verified = f"ns verify exit 0 ({vreport})"
         if folder is None or not folder.is_dir() or (self.ev / "proofs") not in folder.parents:
             return Result("FAIL", f"{verified}; the proof runner named no evidence folder of this run "
                           f"({summary})")  # fmt: skip
         # a failed proof is a fact for the Head: the kit goes on
-        return Result("PASS" if prc == 0 else "FAIL", f"{verified}; proofs: {summary}")
+        return Result("PASS" if prc == 0 and not missed else "FAIL", f"{verified}; proofs: {summary}")
 
     # -------------------------------------------------------------------------------------- K3 story video
     def kit_jobs(self, mine_only: bool = True) -> list[dict[str, Any]]:
