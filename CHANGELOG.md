@@ -20,8 +20,11 @@ Nightshift and not of the PC. Compared with 0.1.15-rc5 this candidate fixes what
 a part that did not work, and no longer leaves its sample video on your channel; the kit goes on after a missed
 target; a story job repairs a chapter that came back too short or too long instead of ending, never replaces an idea
 you approved without telling you, and has one retry for each kind of trouble; a program that has ended no longer
-keeps the graphics card from the next job; a download of hours survives an internet outage of minutes; and the PC
-check reads the newest NVIDIA driver's banner. No whole video has been made on a real PC yet: that is what this
+keeps the graphics card from the next job; a download of hours survives an internet outage of minutes; the PC
+check reads the newest NVIDIA driver's banner; and six items merged earlier in the block, which had no entry, are
+written below (signed update packages, a damaged database replaced from a good backup, a damaged model file
+fetched again by Repair, the uv an update brings, a command typed for another version's install refused, and the
+Head's own fixes). No whole video has been made on a real PC yet: that is what this
 candidate is for. 0.1.15-rc5 added the
 items of block E, "the first real nights": a nightly run never begins work that cannot end inside the time Windows
 allows the task, and says in the morning what it left and what stopped a night that died; other programs holding the
@@ -366,6 +369,23 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
   beside your own work are unknown until the GPU PC's nights have written the ledger. Shown by tests with
   stand-ins for the engine, the clock, FFmpeg, OpenCode, the models and the Windows readers, and by a dry run on a
   test install with the simulated card, not on a real one.
+- A damaged model file is found, named, and downloaded again by Repair (model-file-damaged; box F-E23). Before, a
+  model file damaged in place kept its size and date, so Repair skipped it; only `ns verify --downloads` hashed the
+  files, with no progress shown; and no message named the file. Now `ns doctor` checks that every model file is
+  there and has its size (story model, voices, tokenizer, whisper) and says when the files were last checked by
+  hash. `ns verify --downloads` shows each file's progress, speed and time left, writes `logs\model-check.json`, and
+  Ctrl+C changes nothing. When a model fails to load, its file is checked by hash, and one that does not match is
+  named (NS-E127) in the error, the Queue's failure card and the morning note, with "run INSTALL.cmd again and
+  choose Repair". Repair (INSTALL.cmd over the install, in the window or without it) now hashes every pinned model,
+  says first how much and how long, sets a damaged file aside as `.bad`, downloads it again and deletes `.bad` only
+  after the new file checks. A file gone together with its marker is found too. A file a program holds open is
+  refused (NS-E119): Stop All, then Repair. The nightly pre-check stops a night only for files that night's jobs
+  load; for another damaged file it leaves a note. Not covered: unpacked programs (llama.cpp, the voice engine) and
+  a custom story model have no hash to check; the PyTorch fallback voice's weights (`models\tts\hf`) are read by no
+  check but Repair (follow-up card `tts-fallback-weights-checked`); a file damaged in place with nothing recorded
+  shows Done in the setup window until `ns verify --downloads` has recorded it; the nightly set is by service, not
+  by tonight's jobs; a Stop All during a long hash is not worked out. Shown by tests; the card's proof (one byte
+  changed in a model file of an engine-test install) has not run on a real install.
 
 ### Updates, files and safety
 
@@ -831,6 +851,65 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
   graphics card, and `GPU-KIT.cmd` itself has not been run from a real install yet (block E's install proof has
   not run). When the kit switched Automatic runs on and its record is then unreadable, they stay on after the two
   nights until you or the kit's last step switch them off. Shown by tests.
+- Update packages are signed and checked before anything changes (update-signing; box F-E26). Each release now has
+  a `.sig` file made with the owner's release key. A Nightshift that knows that key installs an update only when
+  the `.sig` fits the file's exact name, version and content. The check comes first on every route (Update now,
+  `ns update <zip>`, `--github`, the Update shortcut, Settings > Updates > From a file, which now takes three files:
+  the zip, its `.sha256` and its `.sig`), before anything is stopped or changed. A package that was changed,
+  renamed, signed by another key or has no `.sig` is refused (NS-E707); Nightshift keeps running as it was, and the
+  sentence says which case it is and what to download. Before, the `.sha256` came from the same place as the zip,
+  so it showed that the file arrived whole, not who made it. The check needs no extra package. An update from
+  0.1.14 and a rollback to it still work. Not covered: the owner has not yet run `dev\release_keys.ps1 -Create`, so
+  no key is built in. Until then `TRUSTED` is empty: the program accepts a package on its SHA256 alone and says once
+  per update "This version of Nightshift does not check who made an update yet", candidates are published unsigned
+  with a warning in the release run, and a FINAL tag fails the release run. The first signed update needs one
+  bootstrap from an unsigned version, which is accepted on its SHA256. A rollback, setup's INSTALL.cmd and
+  `ns update --git` check no `.sig`: verify a Setup zip with its `.sha256`. An older signed package is accepted
+  (there is no downgrade rule), and a refused zip stays in `data\updates`. Shown by tests; no update has been signed
+  or installed on a real PC, and the card's proof with a throwaway key is written and has not run.
+- A damaged database is found at start and replaced by the newest good backup (db-integrity; box F-E25). Before, a
+  database damaged by a crash, a full disk or a bad sector made every job fail with a raw error until you found
+  `ns restore`. Now each start checks `studio.db` quickly. A damaged one is set aside in `data\damaged`, the newest
+  nightly copy that passes a full check is put back, the videos made since that copy are put back in the Queue as
+  "to review" from their job folders, and a morning note (NS-W213) says which day it went back to and what is not in
+  that copy. With no good copy a new database is built from the job folders: the history is gone, the videos are
+  not. The Assistant's `assistant.db` is set aside and starts empty. The nightly copy is written under a temporary
+  name, checked, and only then does it replace the day's file and let old copies go. A night whose database breaks
+  half way stops with one note (NS-E209), and the next start does the restore. A copy that cannot be read right now
+  (a backup tool or antivirus holds it) is never taken as damaged: the start stops and changes nothing (NS-E209).
+  A nightly copy that fails is counted and said (NS-W214), and `ns doctor` has a row "database". Not covered: only
+  the videos are put back. Your ratings, the incident notes, the clip use and the nights' record are not in an older
+  copy, and an idea used since then comes back unused. Damage that only an index carries is answered by the older
+  copy too. `data\damaged` is never emptied for you. A `studio` command typed by hand shows the raw error and the
+  next night then stops and marks it. Shown by tests and by SQLite probes on this laptop; no damaged database has
+  been restored on a real PC.
+- An update brings the uv its program pins before it reads the program's lock (uv-pin-on-update; box F-E28).
+  Before, an update used whatever uv was in the install folder, so the day a release moved to a newer uv or lock
+  format every update would fail and roll back. Now every update route, and a rollback, first put the uv named in
+  the program's `manifest.json` in place: from a `files` folder beside the zip, then the install's cache, then
+  GitHub, each checked by its SHA256 and run once. The old uv is kept in `bin\uv.prev`, and a rollback puts it
+  back. When no copy can be had the update is refused before any change (NS-E708), naming the version and the file
+  (for a PC without internet, put the uv zip in `files`; for From a file and Update now that is
+  `data\updates\files`). A failed update puts the old uv back; if that fails too, the sentence says so and to
+  choose Repair. The same pin changes nothing. `ns doctor` has a row "uv" that compares it with the pin. Not
+  covered: an install updated by 0.1.14's updater has packages that were not installed from the lock until its next
+  update or Repair; a rollback that cannot get the older uv still goes back and says in its result line that uv
+  stays at the newer version. Shown by tests with a stand-in uv; no real uv, kill or held file was seen.
+- A program no longer rewrites the settings of an install of another version by accident (version-mismatch-writes;
+  box F-E29). Before, `ns tune` or `ns schedule install` typed in an old PowerShell window that still named another
+  Nightshift install rewrote that install's settings with this version's fields, which the older version then
+  refused at its next start. Now a command that would change something there (settings, folders, the database, the
+  nightly task, starting work) stops before any change with NS-E128, naming both installs and the command that works
+  for each (`<install>\cmd\ns.cmd`). It applies only when the install's version differs and the window's
+  NIGHTSHIFT_HOME is what points there. Commands that only read still work (doctor, status, backup,
+  `ns schedule show`, `ns tune --dry-run`, `ns update --check`), open the database read-only and write no log line
+  in that install. The check runs once at the start of `ns`, `studio`, the engine, the Dashboard, the voice server
+  and the job children, and a command in no list counts as writing. Never refused: an install's own program and
+  shortcuts, a home named on purpose (`ns update --home`, setup, the proofs, the GPU kit), an update or rollback,
+  and a variable that is only the PC's default. Not covered: an older program has no such check and can still write
+  a newer install; a window with no variable and another install's program typed by its full path; an install
+  whose version changes while a command runs; a dev install as the target is refused (its version cannot be read).
+  Shown by tests; never run with two real installs.
 
 ### Videos and stories
 
@@ -1066,6 +1145,23 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
   checked; whether the Footage page shows the link to Pexels that Pexels asks for was not checked, and a
   photographer's name is not kept; box F-B14 (rate limits against a real site) is unticked and must be proven again,
   because its evidence quoted the old code.
+- The Head's own fixes of block E (head-own; D-52, D-53, D-57, NS-E331 and two more, from the install proof and the
+  final review). Reject moves a video's files together or not at all (D-57): before, a Reject while a Queue page had
+  the video open failed with WinError 32, left a whole copy in `rejected` and the row unchanged, because the preview
+  kept the file open for as long as the page showed the player. Now the preview opens the file per block, the files
+  move in one step (a copy only across drives), a held file is tried 5 times, and on failure everything already
+  moved is put back and NS-E331 names the held file; the row stays as it was, and Reject again works. `ns tune` on a
+  PC with no graphics card decides the context on warm, repeated measurements (D-52): before, two runs saved 32768
+  and then 16384 because the cold first load stood for the floor; the graphics-card choice is unchanged. An update
+  to a candidate shows "What is new" from its release's notes (D-53): before, it showed none, because the notes
+  were looked up under the candidate's own version. The morning note says a video is "made over several nights"
+  only of a job the night really left half made, not one that failed, finished or never started. A browser that
+  sends nothing identifying (Edge's Internet Explorer mode, a Firefox older than 90) can no longer change anything
+  with an empty request: a request that is not a GET with no Sec-Fetch, Origin or Referer, from a User-Agent that
+  names Trident or Firefox, is refused (NS-E207), with one note a day. One test no longer fails on a loaded PC.
+  Not covered: what the Dashboard page shows for the refused Reject was not looked at; the old-browser rule goes by
+  the User-Agent, so a program that names neither and sends nothing is not caught; `ns tune` has not run on a real
+  PC. Shown by tests.
 
 ### Clips and the Assistant
 
