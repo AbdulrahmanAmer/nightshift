@@ -47,6 +47,26 @@ class EngineOffline(Exception):
     """The supervisor does not answer."""
 
 
+class ReplyCutInToolCall(Exception):
+    """The reply hit its token cap inside a tool call: the arguments are cut and cannot be parsed (G-43 c).
+
+    llama-server answers 500 "Failed to parse tool call arguments as JSON ... missing closing quote" for this;
+    a reply that ends with finish_reason "length" and tool calls is the same cut."""
+
+    def __init__(self, cause: str) -> None:
+        super().__init__(cause)
+        self.cause = cause
+
+
+CUT_MARKERS = ("failed to parse tool call arguments", "missing closing quote")
+
+
+def is_cut_tool_call(status: int, body: str) -> bool:
+    """True when an HTTP error answer is llama-server's "the tool call arguments were cut" refusal."""
+    low = body.lower()
+    return status >= 500 and any(m in low for m in CUT_MARKERS)
+
+
 class ToolLlmClient(LlmClient):
     """`LlmClient` plus `chat_tools` (chat completions with `tools`)."""
 
@@ -70,9 +90,14 @@ class ToolLlmClient(LlmClient):
         }
         try:
             r = self.client.post(f"{self.base_url}/v1/chat/completions", json=body)
+            if is_cut_tool_call(r.status_code, r.text):
+                raise ReplyCutInToolCall(f"HTTP {r.status_code}: {r.text[:300]}")
             r.raise_for_status()
-            msg = r.json()["choices"][0]["message"]
-        except NsError:
+            choice = r.json()["choices"][0]
+            msg = choice["message"]
+            if choice.get("finish_reason") == "length" and msg.get("tool_calls"):
+                raise ReplyCutInToolCall("finish_reason length with a tool call in the reply")
+        except (NsError, ReplyCutInToolCall):
             raise
         except Exception as e:  # network or malformed reply: wrap into the coded error
             raise NsError("NS-E301", f"assistant chat failed: {e}", url=self.base_url) from e
