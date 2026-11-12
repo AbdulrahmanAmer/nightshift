@@ -7,12 +7,22 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
-## [0.1.15] - 2026-11-10
+## [0.1.15] - 2026-11-12
 
-This is release candidate 0.1.15-rc5, published for testing. It is a prerelease: it is not offered as an update to a
-PC on 0.1.14, and you install it by hand (`Nightshift-Setup-0.1.15-rc5.zip` for a first install, or
-`Nightshift-Update-0.1.15-rc5.zip` through Settings > Updates > From a file). It is the first candidate meant to be
-installed on the GPU PC, and nothing in it has run on a real graphics card yet. Compared with 0.1.15-rc4 it adds the
+This is release candidate 0.1.15-rc6, published for testing. It is a prerelease: it is not offered as an update to a
+PC on 0.1.14 or on an earlier candidate, and you install it by hand (`Nightshift-Setup-0.1.15-rc6.zip` for a first
+install, or `Nightshift-Update-0.1.15-rc6.zip` through Settings > Updates > From a file). It is the first candidate
+written from a real graphics card. 0.1.15-rc5 was installed on the GPU PC on 2026-11-12 (an RTX 5060 Ti with 16 GB):
+setup ran through in one go, every model answered once, a voice was designed and one was cloned, and the Assistant
+answered; the GPU kit stopped at its third step and the first long video stopped at its fourth, both for faults of
+Nightshift and not of the PC. Compared with 0.1.15-rc5 this candidate fixes what that day found: the model test
+(`ns verify`) measures the voice's speaking and the video memory Nightshift itself left, tells a missed target from
+a part that did not work, and no longer leaves its sample video on your channel; the kit goes on after a missed
+target; a story job repairs a chapter that came back too short or too long instead of ending, never replaces an idea
+you approved without telling you, and has one retry for each kind of trouble; a program that has ended no longer
+keeps the graphics card from the next job; a download of hours survives an internet outage of minutes; and the PC
+check reads the newest NVIDIA driver's banner. No whole video has been made on a real PC yet: that is what this
+candidate is for. 0.1.15-rc5 added the
 items of block E, "the first real nights": a nightly run never begins work that cannot end inside the time Windows
 allows the task, and says in the morning what it left and what stopped a night that died; other programs holding the
 graphics card's memory are waited for and named; the upload sheet holds what YouTube accepts; every answer of Pexels
@@ -32,6 +42,50 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
 
 ### Setup and install
 
+- The model test measures what it claims (verify-limits; found on the GPU PC, where `ns verify` failed a healthy
+  install). "The voice speaks" is its own row (`tts.preset` and the designed and cloned voice's rows) and carries no
+  speed limit. The speed is a new row, `tts.rate`: six sentences sent as one request, timed from the first sentence's
+  arrival to the last, so it is the speaking that is measured and not the voice program's start; the start is its
+  own row, `tts.start_s`, with a soft target that never fails the test. Before, one sentence was timed with the
+  program's start and the load of its model in it, and a card that speaks at a sixth of real time was shown as more
+  than twice too slow. The idle row, `vram.idle`, counts the video memory in use after the models are unloaded MINUS
+  what other programs held before the test loaded anything (read once the card stopped falling); before, it compared
+  the whole card with 300 MB, which no PC with a desktop open can meet. The table's last line says whether a part
+  did not work or a target was missed, with the row, its value and its limit. The voice program's own lines (which
+  device it chose, its timings) are kept in the log after every run. `ns verify --quick`, which setup and an update
+  run, has the same rows and exit code as before, except that its idle row now also counts only Nightshift's share.
+  Not covered: the speed row rests on the voice program handing over each sentence as it finishes; if it holds
+  them back the row falls back to the whole request and says so, and which of the two the real program does is not
+  yet seen. Shown by tests with stand-in programs.
+- The model test's sample video no longer lands on your channel (verify-job-isolated; found on the GPU PC, where
+  the owner's first look at the Dashboard showed a finished Short he had not made). The full `ns verify` proves the
+  studio's pipeline with one sample job made from a built-in story and stand-in footage. That job now runs in a
+  folder of its own, `run\verify-job` in the install, with the install's programs and its own data, Outbox, ledger
+  and cache, and the folder is removed when the check ends, passed or failed, and at the next run's start if a kill
+  left one. Nothing of it appears in the Queue, the Outbox, the Library, the statistics or the time estimates.
+  Before, it wrote a Short with upload sheets into the Outbox of every active channel, a story, an idea and 22
+  stand-in clips into the Library, and its timings into the ledger the estimates are made from. The clean-up removes
+  that one folder and nothing else: a link is never entered, a folder of that name it did not make is left alone
+  (and the row says to move it away), and a run whose state it cannot tell is treated as still running. Not
+  covered: a folder swapped for a link in the instant between the clean-up's check and its entry, which only a
+  program of your own user account that can already write the install could do; the sample job no longer loads the
+  install's spaCy model (its text check uses the fallback); a sample Short an earlier candidate left is not found or
+  removed for you: reject it in the Outbox. Shown by tests; the job itself with a real FFmpeg is not yet seen.
+- The GPU kit's step 3 reads the model test's rows (found on the GPU PC, where it stopped a healthy install with "a
+  model did not answer"). When a part did not work the kit stops and names the rows. When only targets were missed
+  the step is still a FAIL, its line says that every model answered and names each row with its value and limit,
+  and the kit goes on to the next step. Shown by tests; not yet run on a real PC.
+- Setup's downloads survive an internet outage of minutes (download-outage). A file is given up for network trouble
+  only after its tries are used AND the trouble has lasted ten minutes without progress; once one file has used
+  that time up, the files after it get one try each instead of ten minutes each; when the other files are done,
+  the files the outage interrupted are tried again, as often as a pass still gets one of them further. Every wait,
+  every file set aside for now and every new pass is said on the screen and written to the log. Without a terminal
+  (a window that is not a console, a session of a program) setup prints plain lines instead of live bars: one when
+  a file starts and ends, and at most once a minute how much of the total is down and how fast. Not covered: seen
+  on stand-in servers only; the real unattended route on a real line is not yet seen.
+- The PC check reads the banner of NVIDIA driver 621.01 ("CUDA UMD Version"), and no longer warns that
+  `download.visualstudio.microsoft.com` is unreachable on a PC that already has the Visual C++ runtime (that site
+  serves the runtime and nothing else). Not covered: a translated banner is still left to the driver number.
 - Setting up again after "uninstall, keep my data" now follows the answers you give the second time. The answers
   from `--answers`, from the file next to INSTALL.cmd or from the setup window win for every choice they name
   (choices they leave out stay as before), and setup lists each difference on screen. A tier named without
@@ -780,6 +834,25 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
 
 ### Videos and stories
 
+- A story job no longer ends because a rewrite came back too short, and never replaces your idea in silence
+  (story-robust; found on the GPU PC, where the owner's first long video ended after three minutes with NS-E303
+  "length: 202 words, allowed 247-371" while the studio had already put a story of its own in the place of the idea
+  he had approved). Four changes. (1) When the critic asks for a rewrite, the rewrite is told the length it must
+  keep. A chapter (or a Short's story) that is outside its length window is repaired where it happened, lengthened
+  or trimmed by the missing words, at most twice, and scored by the critic again; only when that does not hold
+  does the job see NS-E303, and the message names every rule the text still breaks. (2) An idea you approved is
+  checked before it is marked used. If the safety check refuses it, it goes back to Library > Ideas as new: a
+  video you started yourself ends at once with the reason (NS-E601) and nothing is written in its place; a nightly
+  run goes on with your next approved idea, or with one of its own when none is left, and says so in the log. (3)
+  When the idea is yours and the written story is refused later (by the text check or by the critic), the retry
+  writes the story again from the same idea; it never draws another. (4) A job has one retry for each kind of
+  trouble (the idea, the text, the video and sound) instead of one for all of them; before, a refused idea spent
+  the retry that a short chapter needed. The hints of NS-E303 and NS-E601 say what happened and what you can do.
+  Not covered: whether the real story model keeps to the length it is told is not yet seen (one rewrite on a real
+  PC is all the evidence); the safety check's wrong refusal of that idea is not fixed here, it is only made
+  visible and survivable; there is no "use my idea anyway" choice yet; a nightly run's message in the Queue does
+  not yet name the idea it set aside, and the error box still shows the failed run's folder as a short path.
+  Shown by tests with a scripted stand-in model.
 - A Short or a master chapter with many clips no longer builds an FFmpeg command that grows with the clip count.
   More than 12 clips are rendered in parts of at most 12 (video only, in a `<video>.parts` folder removed after a
   good render), then one more call joins the parts and adds the audio. The longest command stays at about 1,100
@@ -1083,6 +1156,14 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
 
 ### Behind the scenes
 
+- A program that has ended no longer keeps the graphics card (found by a test on a busy PC). The engine asks
+  whether the program that holds the card still runs; the library it asked (psutil 7.2.2) can call a program that
+  has just ended "running" for as long as Windows still lists its number, and on a busy PC that happened in a
+  third to a half of the tries, so the next job waited for a holder that was gone. The engine now asks Windows
+  itself for the program's exit code and start time and falls back to the library only when Windows gives no
+  answer. Not covered: a holder started with administrator rights was not probed (the fallback answers there).
+  Two tests that rested on a time (three seconds for an engine to stop, twenty for a stand-in to start) now wait
+  for the event instead.
 - Tests and CI: a docs-only pull request no longer runs the whole suite and the suite runs in shards weighed
   from real timings (six here, eight since rc4); CI's FFmpeg install cannot fail silently; a push to `main` is never cancelled by a newer
   one; a test fails on stray control characters in tracked text files; the dashboard and setup window now each
