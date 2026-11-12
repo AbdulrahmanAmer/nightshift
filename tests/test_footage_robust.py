@@ -243,8 +243,10 @@ def test_f2_f5_a_redo_after_qc_downloads_nothing_new_and_the_cost_is_recorded(tm
     assert len(first) == len(shots)  # one file per shot, no spare needed
     cost = ctx.read_json("clips/footage.json")
     assert cost["runs"][0]["files_downloaded"] == len(shots) and cost["bytes"] > 0
+    # a QC redo whose cause is not the footage (black frames replace the clips under the black: the test
+    # `test_f2_a_redo_for_black_frames_replaces_only_the_clip_under_the_black`)
     ctx.write_json("policy_attempts.json", {"regenerations": 1, "history": [
-        {"code": "NS-E404", "detail": "s1: black_frames", "rejected_to": None, "cause": "media"}]})
+        {"code": "NS-E404", "detail": "s1: loudness", "rejected_to": None, "cause": "media"}]})
     ClipsStage().run(ctx)
     assert src.downloads == first  # the redo takes every clip from the cache
     again = ctx.read_json("clips/footage.json")
