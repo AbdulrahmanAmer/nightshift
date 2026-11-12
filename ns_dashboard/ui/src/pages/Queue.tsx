@@ -529,7 +529,7 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
   const notes = useLoad<MorningNote[]>(() => api.get("/notes"), [], []);
   const r = runs.data[0];
   if (!r) return null;
-  const made = r.summary?.jobs?.length ?? 0; const failed = r.summary?.failures ?? []; const skipped = r.summary?.skipped ?? [];
+  const made = r.summary?.jobs?.length ?? 0; const ideaNotes = (r.summary?.jobs ?? []).filter((j) => j.idea_note); const failed = r.summary?.failures ?? []; const skipped = r.summary?.skipped ?? [];
   // jobs the night did not start because the drive had no room for them (nothing was made half way): the sentence is the server's own, "needs about N MB; D: has M MB free"
   const noRoom = r.summary?.no_room ?? []; const notStarted = noRoom.reduce((n, x) => n + x.jobs, 0);
   // jobs the night did not start because their channel was paused (before or during the night, P47); a half-made one waits for the resume
@@ -557,6 +557,7 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
       </p>
       {unfinished.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{unfinished.map((u) => <li key={u.job_id}>{channelName(u.channel)}: {interruptedWords(u, status)}</li>)}</ul>}
       {notes.data.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{notes.data.map((n, i) => <li key={i}>{n.message} <span className="text-ds-muted">({fmtClock(n.at)})</span></li>)}</ul>}
+      {ideaNotes.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{ideaNotes.map((j) => <li key={j.job_id}>{channelName(j.channel)}: {j.idea_note}</li>)}</ul>}
       {noRoom.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{noRoom.map((x, i) => <li key={i}>{channelName(x.channel)}: {plural(x.jobs, "job")} not started, not enough disk space ({x.short || x.message || "free some space"})</li>)}</ul>}
       {held.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{held.map((x, i) => <li key={i}>{x.job_id ? `${channelName(x.channel)} is paused: its half-made job waits for the resume` : `${plural(x.jobs, "job")} not started: ${channelName(x.channel)} is paused`}</li>)}</ul>}
       {left.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{left.map((x, i) => <li key={i}>{leftWords(x, channelName, status)}</li>)}</ul>}

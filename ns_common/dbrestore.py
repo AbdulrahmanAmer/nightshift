@@ -847,6 +847,122 @@ def backup_made(paths: Paths) -> None:
         backup_state_path(paths).unlink(missing_ok=True)
 
 
+DAILY_STATE_FILE = "db-daily-backup.json"   # run/: the last daily copy that could not be made
+DAILY_LOCK_FILE = "db-daily-backup.lock"    # run/: one process makes today's copy at a time
+DAILY_LOCK_STALE_S = 600
+#: Hours of the install's life before a missing copy is a doctor FAIL (the first day has none yet).
+FIRST_DAY_HOURS = 24
+BACKUP_COMMAND = "ns backup"
+
+
+def daily_state_path(paths: Paths) -> Path:
+    return run_dir(paths) / DAILY_STATE_FILE
+
+
+def _copy_dated(paths: Paths, days: set[str]) -> bool:
+    try:
+        named = (_BACKUP_NAME.match(p.name) for p in paths.backup_dir.iterdir())
+        return any(m.group(1) in days for m in named if m)
+    except OSError:
+        return False
+
+
+def daily_backup(paths: Paths, log: NsLogger | None = None) -> Path | None:
+    """The day's copy of studio.db (the engine's first start of a day, a job's start): the same rules as the
+    nightly one (`Db.backup`: checked copy, keep 14), made only when none is dated today, and NEVER an error:
+    a copy that cannot be made is a WARN (NS-W214) and `run/db-daily-backup.json` (the doctor's database row
+    shows it), and the work goes on. Returns the copy, or None (made already today, no database yet, another
+    process is making it, or it failed)."""
+    from ns_common.db import BackupFailed, Db
+
+    lock = run_dir(paths) / DAILY_LOCK_FILE
+    held = False
+    try:
+        try:
+            if not paths.db_path.is_file() or paths.db_path.stat().st_size == 0:
+                return None
+            days = {datetime.now().strftime("%Y%m%d"), _now().strftime("%Y%m%d")}
+            if _copy_dated(paths, days):
+                return None
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if time.time() - lock.stat().st_mtime > DAILY_LOCK_STALE_S:
+                    lock.unlink(missing_ok=True)  # a process killed in the middle of its copy
+            except FileNotFoundError:
+                pass
+            try:
+                os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            except FileExistsError:
+                return None
+            held = True
+            db = Db(paths.db_path)
+            try:
+                made = db.backup(paths.backup_dir)
+            finally:
+                db.close()
+        finally:
+            if held:
+                with contextlib.suppress(OSError):
+                    lock.unlink(missing_ok=True)
+    except BackupFailed as e:
+        _daily_failed(paths, log, str(e))
+        return None
+    except Exception as e:  # noqa: BLE001 - a copy that breaks never stops the work
+        _daily_failed(paths, log, f"{type(e).__name__}: {e}")
+        return None
+    with contextlib.suppress(OSError):
+        daily_state_path(paths).unlink(missing_ok=True)
+    if log is not None:
+        log.info("db_daily_backup", f"today's copy of the database was made: {made.name}")
+    return made
+
+
+def _daily_failed(paths: Paths, log: NsLogger | None, why: str) -> None:
+    try:
+        _write(daily_state_path(paths), {"at": _now().isoformat(timespec="seconds"), "error": why[:500]})
+    except OSError:
+        pass
+    if log is not None:
+        log.warn("db_daily_backup_failed",
+                 f"today's copy of the database could not be made ({why}); the work goes on. "
+                 f"{newest_copy_words(paths)}. Run '{BACKUP_COMMAND}' to save a copy by hand.",
+                 code=UNSAFE_CODE)
+
+
+def backup_facts(paths: Paths, now: datetime | None = None) -> tuple[bool, str]:
+    """For the doctor's database row: (ok, words) about the database file's size and its newest copy.
+    FAIL when no copy exists and the install is older than `FIRST_DAY_HOURS`; no words when there is no
+    database file yet."""
+    try:
+        st = paths.db_path.stat()
+    except OSError:
+        return True, ""
+    size = f"{st.st_size / 1048576:.1f} MiB" if st.st_size >= 1048576 else f"{max(1, st.st_size // 1024)} KiB"
+    try:
+        listed = _backups(paths)
+    except OSError as e:
+        return True, f"size {size}; the copies cannot be listed now ({type(e).__name__})"
+    failed = read_json(daily_state_path(paths))
+    tail = f"; today's copy failed ({failed.get('error')})" if failed is not None else ""
+    if listed:
+        d = listed[0][1]
+        return True, f"size {size}; newest backup {d[:4]}-{d[4:6]}-{d[6:]}{tail}"
+    born = db_born(paths)
+    age_h = ((now or datetime.now(UTC)).timestamp() - born) / 3600 if born is not None else 0.0
+    if age_h >= FIRST_DAY_HOURS:
+        return False, (f"size {size}; NO BACKUP exists after {int(age_h // 24)} day(s) of use{tail}; "
+                       f"run '{BACKUP_COMMAND}' now (Nightshift makes one when it starts)")
+    return True, f"size {size}; no backup yet (the first is made when Nightshift starts){tail}"
+
+
+def db_born(paths: Paths) -> float | None:
+    """When studio.db was made (Windows: the file's creation time). None when it cannot be read."""
+    try:
+        return paths.db_path.stat().st_ctime
+    except OSError:
+        return None
+
+
 KEPT_FOUND = (
     "Nightshift had begun to replace its database (found damaged {found}) and was stopped before it "
     "finished. The database that is there now passed its check, so it was kept as it is and the "
