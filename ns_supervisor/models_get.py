@@ -188,7 +188,8 @@ def get_model(
     todo = [i for i in items if not downloader.is_done(i)]
     if todo:
         log = NsLogger("models", paths.logs, echo=False)
-        (run_plan or downloader.run_plan)(todo, reporter=EchoReporter(echo), log=log)
+        # say=echo: the lines about the whole plan ("Trying again: N file(s) ...") reach the screen too
+        (run_plan or downloader.run_plan)(todo, reporter=EchoReporter(echo), log=log, say=echo)
     else:
         echo("Already downloaded and verified.")
     if kind == "story_llm":
