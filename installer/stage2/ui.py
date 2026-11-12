@@ -7,7 +7,8 @@ rest of the code never calls ``print``.
 from __future__ import annotations
 
 import threading
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -30,58 +31,161 @@ STATUS_STYLE = {"ok": "green", "warn": "yellow", "fail": "red", "done": "green",
                 "failed": "red", "pending": "yellow"}
 
 
-class RichReporter:
-    """Per-file and overall progress bars with speed and ETA (rich). Use as a context manager."""
+PLAIN_INTERVAL_S = 60.0     # without a terminal: one total line at most this often (card download-outage N5)
+GIB = 1024**3
+MIB = 1024**2
+PLAIN_OUTCOMES = {"downloaded": "downloaded", "copied": "copied from your folder", "skipped": "already here",
+                  "missing_optional": "not available, setup goes on without it", "failed": "failed"}
 
-    def __init__(self, console: Console, total_bytes: int = 0) -> None:
-        self._progress = Progress(
-            TextColumn("{task.description}", justify="left"),
-            BarColumn(bar_width=30),
-            DownloadColumn(),
-            TransferSpeedColumn(),
-            TimeRemainingColumn(),
-            console=console,
-        )
+
+def _gb(n: float) -> str:
+    return f"{n / GIB:.1f} GB"
+
+
+def _took(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds} s"
+    if seconds < 3600:
+        return f"{seconds // 60} min {seconds % 60} s"
+    return f"{seconds // 3600} h {seconds % 3600 // 60} min"
+
+
+class RichReporter:
+    """Per-file and overall progress bars with speed and ETA (rich). Use as a context manager.
+
+    When the console is not a terminal (unattended setup with its output in a file) no bars are drawn: plain
+    lines instead, each written whole and flushed (N5). A line when a file starts (name, size), one when it
+    ends (outcome, size, time taken) and a total line at most once per ``PLAIN_INTERVAL_S``: GB of GB,
+    percent, MB/s over the last interval, files done of all. Waits and retries are a line on both routes.
+    """
+
+    def __init__(
+        self, console: Console, total_bytes: int = 0, *, files: int = 0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._console = console
+        self._plain = not console.is_terminal
         self._lock = threading.Lock()
         self._tasks: dict[str, TaskID] = {}
         self._done: dict[str, int] = {}
-        self._overall = self._progress.add_task("[bold]Overall", total=total_bytes or None)
+        self._total_bytes = total_bytes
+        # plain lines: the clock, the file count of the plan, when each file started, what ended
+        self._clock = clock
+        self._files = files
+        self._sizes: dict[str, int | None] = {}
+        self._began: dict[str, float] = {}
+        self._ended: dict[str, str] = {}
+        self._moved = 0                         # bytes that arrived while this reporter watched
+        self._line_t = clock()
+        self._line_moved = 0
+        self._progress: Progress | None = None
+        if not self._plain:
+            self._progress = Progress(
+                TextColumn("{task.description}", justify="left"),
+                BarColumn(bar_width=30),
+                DownloadColumn(),
+                TransferSpeedColumn(),
+                TimeRemainingColumn(),
+                console=console,
+            )
+            self._overall = self._progress.add_task("[bold]Overall", total=total_bytes or None)
 
     def __enter__(self) -> RichReporter:
-        self._progress.start()
+        if self._progress is not None:
+            self._progress.start()
         return self
 
     def __exit__(self, *exc: object) -> None:
-        self._progress.stop()
+        if self._progress is not None:
+            self._progress.stop()
+
+    def _line(self, text: str) -> None:
+        """One whole line: above the bars on a terminal; written and flushed as is into a file."""
+        if self._progress is not None:
+            self._progress.console.print(text, markup=False, highlight=False)
+            return
+        out = self._console.file
+        out.write(text + "\n")
+        out.flush()
 
     def start(self, name: str, total: int | None) -> None:
-        """Add a bar for a file."""
+        """Add a bar for a file (the same bar when a later pass starts it again), or say that it starts."""
         with self._lock:
-            self._tasks[name] = self._progress.add_task(name[-38:], total=total)
+            again = name in self._began
+            self._began[name] = self._clock()
+            self._sizes[name] = total
+            self._ended.pop(name, None)
+            self._done.pop(name, None)          # the first report of a start is a baseline, not speed
+            if self._progress is not None:
+                task = self._tasks.get(name)
+                if task is None:
+                    self._tasks[name] = self._progress.add_task(name[-38:], total=total)
+                else:
+                    self._progress.update(task, description=name[-38:], total=total)
+                return
+            size = _gb(total) if total else "size not known yet"
+            self._line(f"{name}: {'starting again' if again else 'starting'}, {size}")
 
     def update(self, name: str, done: int, total: int | None) -> None:
-        """Advance a file bar and the overall bar."""
+        """Advance a file bar and the overall bar; without a terminal, a total line now and then."""
         with self._lock:
-            task = self._tasks.get(name)
-            if task is None:
+            if self._progress is not None:
+                task = self._tasks.get(name)
+                if task is None:
+                    return
+                self._done[name] = done
+                self._progress.update(task, completed=done, total=total)
+                self._progress.update(self._overall, completed=sum(self._done.values()))
                 return
-            self._progress.update(task, completed=done, total=total)
+            before = self._done.get(name)
+            if before is not None and done > before:
+                self._moved += done - before
             self._done[name] = done
-            self._progress.update(self._overall, completed=sum(self._done.values()))
+            if total:
+                self._sizes[name] = total
+            now = self._clock()
+            if now - self._line_t >= PLAIN_INTERVAL_S:
+                self._total_line(now)
+
+    def _total_line(self, now: float) -> None:
+        got = sum(self._done.values())
+        total = self._total_bytes
+        pct = f" ({min(100, int(got * 100 / total))}%)" if total else ""
+        speed = (self._moved - self._line_moved) / max(now - self._line_t, 1e-9) / MIB
+        ended = sum(1 for o in self._ended.values() if o != "failed")
+        files = max(self._files, len(self._began))
+        of_total = f" of {_gb(total)}" if total else ""
+        self._line(f"Downloaded {_gb(got)}{of_total}{pct}, {speed:.1f} MB/s, {ended} of {files} files done")
+        self._line_t, self._line_moved = now, self._moved
 
     def finish(self, name: str, outcome: str) -> None:
-        """Mark a file finished."""
+        """Mark a file finished, or say how it ended (outcome, size, time taken)."""
         with self._lock:
-            task = self._tasks.get(name)
-            if task is not None:
-                self._progress.update(task, description=f"{name[-30:]} [{outcome}]")
+            self._ended[name] = outcome
+            if self._progress is not None:
+                task = self._tasks.get(name)
+                if task is not None:
+                    self._progress.update(task, description=f"{name[-30:]} [{outcome}]")
+                return
+            size = self._sizes.get(name) or self._done.get(name)
+            took = _took(self._clock() - self._began.get(name, self._clock()))
+            what = PLAIN_OUTCOMES.get(outcome, outcome)
+            self._line(f"{name}: {what}, {_gb(size) if size else 'size not known'}, {took}")
+
+    def retrying(self, name: str, attempt: int, reason: str, wait_s: float) -> None:
+        """A transfer waits to be tried again (reason stall, network, offline, hash or later): one line."""
+        from installer.stage2.downloader import retry_text
+
+        with self._lock:
+            self._line(f"{name[-38:]}: {retry_text(reason, wait_s)}")
 
     def site_wait(self, name: str, host: str, status: int, wait_s: float, left_s: float) -> None:
         """A download site answered 5xx or 429: print the wait above the bars (host, status, time left)."""
         from installer.stage2.downloader import site_wait_text
 
-        self._progress.console.print(f"{name[-38:]}: {site_wait_text(host, status, wait_s, left_s)}",
-                                     markup=False, highlight=False)
+        with self._lock:
+            self._line(f"{name[-38:]}: {site_wait_text(host, status, wait_s, left_s)}")
 
 
 class Ui:
@@ -104,8 +208,12 @@ class Ui:
     def notice(self, code: str, detail: str = "") -> None:
         """A warning (NS-W code) was raised."""
 
+    _plan_files = 0
+
     def plan(self, items: Sequence[Any]) -> None:
-        """A download plan is about to run (``DownloadItem`` objects)."""
+        """A download plan is about to run (``DownloadItem`` objects): its file count is kept for the plain
+        total line ("3 of 13 files done")."""
+        self._plan_files = len(items)
 
     def verify_checks(self, checks: Sequence[dict[str, Any]]) -> None:
         """The ``ns verify`` result rows (name, passed, value, limit)."""
@@ -150,7 +258,7 @@ class Ui:
 
     def reporter(self, total_bytes: int = 0) -> RichReporter:
         """A progress reporter for downloads."""
-        return RichReporter(self.console, total_bytes)
+        return RichReporter(self.console, total_bytes, files=self._plan_files)
 
     # ---- input ----
     def _eof(self) -> None:

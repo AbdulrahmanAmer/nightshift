@@ -4,6 +4,13 @@ Runs the steps s00 to s10 in order. Every step has ``check`` / ``run`` / ``verif
 written to ``install_state.json``, so a crash, reboot or closed window resumes at the failed step.
 Interactive errors offer [R]etry / [S]kip (optional steps only) / [L]og / [Q]uit; unattended runs retry
 three times with backoff, write the diagnostics bundle and exit non-zero.
+
+The bound of the unattended retries: a failed step runs at most three more rounds, after 5, 15 and 45 s
+(``BACKOFF_S``), each said on screen and logged (``stage_retry``) before it starts. A site's NS-E105 is not
+retried (it had its ten minutes). On a dead internet line one round of the download step takes about 20 to 25
+minutes (each file's ten-minute network window, then at most ten minutes waiting for the network before
+another pass; card download-outage), so an unattended setup on a dead line ends by itself after about 80 to
+100 minutes, and a line that comes back within that time needs nobody.
 """
 
 from __future__ import annotations
@@ -226,6 +233,9 @@ class Wizard:
         if failure.data.get("side") == "site":
             # the site had its ten minutes: the generic "check the internet" would contradict the detail
             hint = "Run INSTALL.cmd again later: setup continues where it stopped."
+        elif failure.data.get("side") == "network":
+            # the internet stopped the downloads (card download-outage, ruling 6a): what is downloaded is kept
+            hint = "Run INSTALL.cmd again when the internet is back: setup continues where it stopped."
         body += f"\n\nWhat to do: {hint}"
         # shown now: the commands it names as this owner types them (FN-3); the error keeps the plain words
         self.ctx.ui.panel(render(body, self.ctx.paths.home), title=f"{step.title} failed")
@@ -242,7 +252,12 @@ class Wizard:
                 return "quit"       # the site had its ten minutes already; another round would wait ten more
             if attempts <= len(self.backoff):
                 wait = self.backoff[attempts - 1]
-                ui.say(f"Retry {attempts} of {len(self.backoff)} in {wait:g} s ...")
+                # said and logged before the round starts: which round of how many, and why (ruling 6b)
+                line = (f"Retry {attempts} of {len(self.backoff)} in {wait:g} s, because this step stopped "
+                        f"with {failure.code}: {failure.message}")
+                ui.say(line)
+                ctx.log.warn("stage_retry", line, step=step.id, round=attempts, of=len(self.backoff),
+                             wait_s=wait, code=failure.code)
                 ctx.sleep(wait)
                 return "retry"
             return "quit"

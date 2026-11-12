@@ -1,7 +1,7 @@
 """Resumable, verified downloads for the installer (component C1, spec 21.7).
 
 Every download: HEAD for the size, stream to ``<file>.part`` with HTTP ``Range`` resume, SHA256 verify
-(``NS-E109``), atomic rename, three attempts with capped exponential backoff, two files at a time.
+(``NS-E109``), atomic rename, capped exponential backoff between attempts, two files at a time.
 ``models_source`` folder mode copies files whose name and SHA256 match instead of downloading them, and so
 does the ``files`` folder beside INSTALL.cmd for every pinned file, programs included (``run_plan``).
 
@@ -20,6 +20,15 @@ Crash and rerun rules (the installer may be closed or killed at any moment, then
   anew) with backoff 2, 4, 8 ... 60 s or ``Retry-After``, whichever is larger; every wait is reported (host,
   status, time left) and the end is ``NS-E105`` naming the host and status, saying it is the site's side and
   that a later try continues. 404, 403 and other 4xx, a wrong size and a wrong hash stop at once;
+* network trouble (no data for 60 s, a dropped or refused connection) has a window too (card download-outage,
+  N1): a file is given up only when BOTH its attempts (three by default) are used AND the trouble has lasted
+  ``NETWORK_WINDOW_S`` (ten minutes) without progress. Progress is ``PROGRESS_MIN_BYTES`` (1 MiB) more on disk
+  than at the previous failure; it starts the window and the attempts anew, a trickle below it starts nothing.
+  The give-up is ``NS-E105`` with ``side="network"`` saying for how long no data came;
+* in a plan (``run_plan``), once one file used its network window up, the files that start later in that pass
+  get one try and no window (N2); after the pass, the files the network stopped are tried again in another
+  pass once the network answers (at most ``PASS_WAIT_S`` of waiting), and passes go on while the pass before
+  got a file further (N3). Every wait, every file given up for now and every pass is said and logged (N4);
 * Stop and Pause keep the ``.part`` and hold no file handle or connection while waiting.
 """
 
@@ -59,8 +68,11 @@ CHUNK = 1 << 20                  # hashing and copying
 STALL_TIMEOUT_S = 60.0           # no bytes for this long aborts the attempt (network error, retried)
 PROGRESS_BYTES = 1 << 16         # progress is reported every 64 KiB ...
 PROGRESS_INTERVAL_S = 0.25       # ... or every 250 ms, whichever comes first (while bytes are arriving)
-DEFAULT_RETRIES = 3              # attempts per file
+DEFAULT_RETRIES = 3              # attempts per file (network trouble also needs its window used up, N1)
 MAX_RETRIES = 5                  # a caller can ask for more, never gets more
+NETWORK_WINDOW_S = 600.0         # network trouble is waited out for about this long without progress (N1)
+PROGRESS_MIN_BYTES = 1 << 20     # more on disk than at the previous failure: the window and attempts restart
+PASS_WAIT_S = 600.0              # before another pass the network is waited for at most this long (N3)
 BACKOFF_CAP_S = 30.0             # wait before attempt n+1 is min(2 ** n, this)
 HASH_ATTEMPTS = 2                # a wrong hash is downloaded once more from scratch, then NS-E109
 OFFLINE_WAIT_S = 120.0           # after a network error wait up to this long for the internet first
@@ -122,7 +134,10 @@ class Reporter(Protocol):
         """A file ended with outcome downloaded, copied, skipped, missing or failed."""
 
     # Optional: ``retrying(name, attempt, reason, wait_s)`` is called before a retry wait (reason stall,
-    # network or hash). A reporter without it simply is not told.
+    # network, offline or hash) and once with reason ``later`` (wait 0) when the network stopped a file for
+    # this pass and it is tried again after the other files. A reporter without it simply is not told.
+    # Optional: ``check_stop()`` raises when Stop was pressed; called between the slices of the wait before
+    # another pass, where no file reports progress.
     # Optional: ``site_wait(name, host, status, wait_s, left_s)`` is called before each wait for a download
     # site that answers 5xx or 429; a reporter without it gets ``retrying(name, n, "site", wait_s)``.
 
@@ -197,6 +212,41 @@ def refused_error(url: str, status: int, phrase: str) -> NsError:
     answer = f"{status} {phrase}".strip()
     detail = f"{host} answered {answer} for {url}"
     return make_error("NS-E105", detail, status=status, host=host, side="request")
+
+
+def span_text(seconds: float) -> str:
+    """A span of time in plain words: ``10 min`` (rounded) or ``45 s``."""
+    return f"{round(seconds / 60)} min" if seconds >= 60 else f"{int(seconds)} s"
+
+
+def network_error(url: str, waited_s: float, cause: NsError | None) -> NsError:
+    """NS-E105 when network trouble outlasted the window (N1): says for how long no data came and that what is
+    downloaded is kept. ``waited_s`` 0 is a file that had one try because another one already used the window
+    up (N2). Names no INSTALL.cmd: ``ns models get`` and the dashboard raise it too."""
+    host = urlsplit(url).hostname or url
+    how = f"No data came from {host}" + (f" for {span_text(waited_s)}" if waited_s >= 1 else "")
+    why = f" ({cause.detail})" if cause is not None and cause.detail else ""
+    detail = (
+        f"{how}{why}. The internet connection dropped or carries no data. What is already downloaded is "
+        "kept and a later try continues where it stopped."
+    )
+    return make_error("NS-E105", detail, host=host, side="network", waited_s=round(waited_s))
+
+
+RETRY_TEXTS = {
+    "stall": "No data came for a while. Trying again in {wait} s",
+    "network": "The connection dropped. Trying again in {wait} s",
+    "offline": "No internet right now. Checking again in {wait} s",
+    "hash": "The file failed its check. Downloading it again in {wait} s",
+    "site": "The download site is in trouble. Trying again in {wait} s",
+    "later": "The internet stopped this file. The other files go on, and this one is tried again at the end",
+}
+
+
+def retry_text(reason: str, wait_s: float) -> str:
+    """The plain line for a wait before a retry (console, plain lines and the log)."""
+    text = RETRY_TEXTS.get(reason, "The download stopped. Trying again in {wait} s")
+    return text.format(wait=int(wait_s))
 
 
 def hf_url(repo: str, revision: str, file: str) -> str:
@@ -556,12 +606,22 @@ def download(
     clock: Callable[[], float] = time.monotonic,
     on_site_wait: SiteWaitFn | None = None,
     site_window_s: float = SITE_WINDOW_S,
+    network_window_s: float = NETWORK_WINDOW_S,
 ) -> Path:
     """Download ``url`` to ``dest`` with resume, SHA256 check and atomic rename.
 
     Raises NS-E109 when the hash is wrong twice (the first wrong file is removed and fetched again from zero),
-    NS-E105 when the site cannot be reached after ``retries`` attempts (at most ``MAX_RETRIES``; 404 is not
-    retried) and NS-E104 when the disk is full (not retried: the ``.part`` stays for the next run).
+    NS-E105 when the network trouble outlasts its window (below; 404 is not retried) and NS-E104 when the
+    disk is full (not retried: the ``.part`` stays for the next run).
+
+    Network trouble (reasons ``network`` and ``stall``) gives the file up only when BOTH hold: ``retries``
+    attempts were used (at most ``MAX_RETRIES``) and the trouble has lasted ``network_window_s`` (ten minutes)
+    without progress. Progress is ``PROGRESS_MIN_BYTES`` more on disk than at the previous failure: it starts
+    the window and the attempts anew. The window is measured by ``clock`` and by the waits themselves (backoff
+    and offline waits), whichever is larger; a pause before a try does not count (a pause that lands in a
+    backoff or offline wait lets that one wait count, at most 120 s). The error is NS-E105 with
+    ``side="network"``. ``network_window_s`` 0 or less: one try, no wait (a plan whose line is already known
+    to be dead, N2).
 
     ``gate`` is the setup window's pause switch (set = running, cleared = paused). It is checked after every
     block that arrives (64 KiB at most), so Pause takes effect inside the file: the file and the connection
@@ -573,7 +633,8 @@ def download(
     the end. A transfer that delivers no bytes for ``stall_timeout`` seconds (60 by default) is aborted and
     counts as a network error: the next attempt follows after the backoff (2, 4, 8 ... capped at 30 s) and
     resumes with ``Range``. ``on_retry`` is told ``(attempt, reason, wait seconds)`` before each wait; reason
-    is ``stall``, ``network`` or ``hash``. Stopping (an exception from ``progress``) keeps the ``.part``.
+    is ``stall``, ``network``, ``offline`` (the network probe says down: waiting for it) or ``hash``. Stopping
+    (an exception from ``progress``) keeps the ``.part``.
 
     A download site that answers 5xx or 429 is not an attempt: it is waited out for ``site_window_s`` (ten
     minutes) with the backoff 2, 4, 8 ... 60 s, or the site's ``Retry-After`` when that is longer (at most
@@ -602,10 +663,25 @@ def download(
     site_waited, site_tries = 0.0, 0
     part = _part(dest)
     last_size = part.stat().st_size if part.exists() else 0
+    # the network window (N1): when the trouble began (None: no trouble since the last progress), what was
+    # waited since, and the size on disk at the previous network failure (the progress baseline)
+    net_started: float | None = None
+    net_waited = 0.0
+    net_base = last_size
+
+    def offline_wait(wait_s: float) -> None:
+        nonlocal net_waited
+        net_waited += wait_s                # the offline wait's time counts into the window
+        if on_retry is not None:
+            on_retry(attempt, "offline", wait_s)
+
     try:
-        while attempt < retries:
-            if gate is not None:
+        while True:
+            if gate is not None and not gate.is_set():
+                held = clock()
                 gate.wait()
+                if net_started is not None:
+                    net_started += clock() - held   # paused is not network trouble: the window waits too
             try:
                 _fetch_once(
                     http, url, dest, sha256, resume=resume, progress=progress, size=size, chunk=chunk,
@@ -662,26 +738,43 @@ def download(
                 _wait_checked(sleep, wait, progress, dest, size)
                 site_waited += wait
                 continue
-            if reason in ("network", "stall") and offline_waits < MAX_OFFLINE_WAITS:
-                # a PC that woke from sleep has no network for a while: wait for it, do not burn the tries
-                online = wait_for_network(
-                    url, sleep=sleep, probe=network_is_up,
-                    on_wait=(lambda w, a=attempt: on_retry(a, "offline", w)) if on_retry else None,
-                )
-                if online == "back":
-                    offline_waits += 1
-                    continue
-            attempt += 1
-            if attempt < retries:
+            if reason in ("network", "stall"):
+                if size_now - net_base >= PROGRESS_MIN_BYTES:
+                    # the file got further since the previous failure: a new outage, a new window and attempts
+                    net_started, net_waited, attempt = None, 0.0, 0
+                net_base = size_now
+                if net_started is None:
+                    net_started = clock()
+                if network_window_s <= 0:
+                    raise network_error(url, 0.0, last)     # N2: the line is known dead, one try only
+                if offline_waits < MAX_OFFLINE_WAITS:
+                    # a PC that woke from sleep has no network for a while: wait for it, do not burn the tries
+                    online = wait_for_network(url, sleep=sleep, probe=network_is_up, on_wait=offline_wait)
+                    if online == "back":
+                        offline_waits += 1
+                        continue
+                attempt += 1
+                trouble = max(clock() - net_started, net_waited)
+                if attempt >= retries and trouble >= network_window_s:
+                    raise network_error(url, trouble, last)
                 wait = min(float(2**attempt), BACKOFF_CAP_S)
                 if on_retry is not None:
                     on_retry(attempt, reason, wait)
                 sleep(wait)
+                net_waited += wait
+                continue
+            # a wrong hash (the second one raised above): an attempt, as before
+            attempt += 1
+            if attempt >= retries:
+                assert last is not None
+                raise last
+            wait = min(float(2**attempt), BACKOFF_CAP_S)
+            if on_retry is not None:
+                on_retry(attempt, reason, wait)
+            sleep(wait)
     finally:
         if client is None:
             http.close()
-    assert last is not None
-    raise last
 
 
 def _find_in_source(root: Path, name: str, max_depth: int = 4) -> list[Path]:
@@ -1104,6 +1197,8 @@ def run_plan(
     sources: Sequence[Path | str] = (),
     say: Callable[[str], None] | None = None,
     kit_hint: bool = False,
+    network_window_s: float = NETWORK_WINDOW_S,
+    pass_wait_s: float = PASS_WAIT_S,
 ) -> PlanResult:
     """Fetch every item (copy from a source folder when possible), two at a time, then extract zips.
 
@@ -1118,13 +1213,25 @@ def run_plan(
     ``kit_hint``: the plan is pinned programs, so an NS-E105 of a pinned item also says how to get the file
     from a files folder (``filesdir.KIT_HINT``).
 
-    All items are attempted even if one fails; the first failure is raised afterwards so a rerun resumes.
+    All items are attempted even if one fails; a failure is raised afterwards so a rerun resumes. A failure
+    that is not the network's (hash, 4xx, site window, disk, blocked) wins over a network one.
     ``fetch`` replaces ``download`` (simulate mode and tests). ``gate`` is the pause switch.
 
     A site that answers 5xx or 429 is waited out for ``site_window_s`` (see ``download``): each wait goes
     to the reporter's ``site_wait`` (or its ``retrying`` with reason ``site``) and to ``log``. Once a host has
     used its window up, the files still to come from it fail at their first 5xx without waiting again, so a
     plan of five files does not wait fifty minutes.
+
+    Network trouble (card download-outage): each file has its own ``network_window_s`` (``download``). Once
+    one file used it up in a pass, the files that start later in that pass get one try and no window (N2). A
+    file the network stopped is told at once (``retrying`` with reason ``later``, ``download_file_failed``)
+    and its ``finish`` waits for the end of the run. After the pass the network is waited for
+    (``network_is_up`` on the first such file's host, at most ``pass_wait_s``, in slices of ``SITE_SLICE_S``
+    with the pause gate and the reporter's ``check_stop`` between them), then those files only are tried
+    again. Passes go on while the pass before got a file further (finished, or ``PROGRESS_MIN_BYTES`` more on
+    disk); otherwise the run ends with NS-E105 saying how many files are still to come. Every wait
+    (``download_retry``), file given up (``download_file_failed``) and pass (``download_pass``) goes to
+    ``log`` whatever the reporter can do.
     """
     rep: Reporter = reporter or _NullReporter()
     result = PlanResult()
@@ -1133,6 +1240,16 @@ def run_plan(
     do_fetch = fetch or download
     extra: dict[str, Any] = {"gate": gate} if gate is not None else {}
     dead_hosts: set[str] = set()            # hosts whose window is used up (guarded by ``lock``)
+    # per pass (guarded by ``lock``): the pass number, and whether a file used its network window up in it
+    run: dict[str, Any] = {"pass": 1, "line_dead": False}
+    retrying = getattr(rep, "retrying", None)
+
+    def plan_line(event: str, line: str, *, warn: bool = False, **data: Any) -> None:
+        """A line about the whole plan: to the log and to ``say`` (the console or the window)."""
+        if log is not None:
+            (log.warn if warn else log.info)(event, line, **data)
+        if say is not None:
+            say(line)
 
     def outcome(item: DownloadItem, kind: str) -> None:
         with lock:
@@ -1155,9 +1272,11 @@ def run_plan(
         def progress(done: int, total: int | None) -> None:
             report(item.name, done, total)
 
-        retrying = getattr(rep, "retrying", None)
-
         def on_retry(attempt: int, reason: str, wait_s: float) -> None:
+            # every wait is logged whatever the reporter can do (N4); the reporter says it if it can
+            if log is not None:
+                log.warn("download_retry", f"{item.name}: {retry_text(reason, wait_s)}", file=item.name,
+                         attempt=attempt, reason=reason, wait_s=wait_s, pass_no=run["pass"])
             if retrying is not None:
                 retrying(item.name, attempt, reason, wait_s)
 
@@ -1217,10 +1336,16 @@ def run_plan(
                 return
             with lock:
                 window = 0.0 if host in dead_hosts else site_window_s
+                # N2: once a file of this pass used its network window up, a file starting now gets one try
+                net_window = 0.0 if run["line_dead"] else network_window_s
+            # only a changed window is passed, so a replaced ``fetch`` that predates it still works
+            net_kw: dict[str, Any] = (
+                {"network_window_s": net_window} if net_window != NETWORK_WINDOW_S else {}
+            )
             do_fetch(
                 item.url, item.dest, item.sha256, progress=progress, client=http, size=item.size,
                 retries=retries, sleep=sleep, on_retry=on_retry, on_site_wait=on_site_wait,
-                site_window_s=window, **extra,
+                site_window_s=window, **net_kw, **extra,
             )
             if item.kind in ("zip", "nupkg"):
                 _extract_item(item)
@@ -1229,12 +1354,27 @@ def run_plan(
             if item.optional and e.data.get("status") == 404:
                 outcome(item, "missing_optional")
                 return
+            network = is_network_failure(e)
             with lock:
                 if e.code == "NS-E105" and e.data.get("side") == "site":
                     dead_hosts.add(host)
+                if network:
+                    run["line_dead"] = True
                 if kit_hint and pinned and e.code == "NS-E105":
                     e = make_error("NS-E105", f"{e.detail} {KIT_HINT}", **e.data)      # the way out
                 result.failed[item.name] = e
+            if network:
+                # given up for now (N4): said and logged at once; ``finish`` comes when the run ends
+                if log is not None:
+                    log.warn("download_file_failed", f"{item.name}: {retry_text('later', 0)}", file=item.name,
+                             code=e.code, side="network", detail=e.detail, again=True, pass_no=run["pass"])
+                if retrying is not None:
+                    retrying(item.name, 0, "later", 0.0)
+                return
+            if log is not None:
+                log.warn("download_file_failed", f"{item.name}: {e.code} {e.detail}", file=item.name,
+                         code=e.code, side=e.data.get("side"), detail=e.detail, again=False,
+                         pass_no=run["pass"])
             rep.finish(item.name, "failed")
         except OSError as e:        # unpacking or saving: a scanner (WinError 225) is NS-E113
             err = (
@@ -1243,14 +1383,110 @@ def run_plan(
             )
             with lock:
                 result.failed[item.name] = err
+            if log is not None:
+                log.warn("download_file_failed", f"{item.name}: {err.code} {err.detail}", file=item.name,
+                         code=err.code, detail=err.detail, again=False, pass_no=run["pass"])
             rep.finish(item.name, "failed")
 
-    try:
+    def run_pass(batch: list[DownloadItem]) -> None:
+        with lock:
+            run["line_dead"] = False                    # the flag of N2 is per pass
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
-            list(pool.map(work, items))
+            list(pool.map(work, batch))
+
+    def stopped_by_network() -> list[DownloadItem]:
+        with lock:
+            return [i for i in items if i.name in result.failed and is_network_failure(result.failed[i.name])]
+
+    check_stop = getattr(rep, "check_stop", None)
+
+    def hold() -> None:
+        """Between the slices of the wait before a pass: Pause waits here (holding nothing), Stop raises."""
+        while gate is not None and not gate.is_set():
+            gate.wait(SITE_SLICE_S)
+            if check_stop is not None:
+                check_stop()
+        if check_stop is not None:
+            check_stop()
+
+    def network_back(url: str, count: int) -> bool:
+        """Wait for the network before another pass: True when the probe answers within ``pass_wait_s``."""
+        hold()
+        if network_is_up(url):
+            return True
+        plan_line("download_pass", f"The internet is not answering. Waiting up to {span_text(pass_wait_s)} "
+                  f"for it, then {count} file(s) are tried again.", warn=True, state="waiting",
+                  pass_no=run["pass"] + 1, wait_s=pass_wait_s)
+        waited, step = 0.0, 2.0
+        while waited < pass_wait_s:
+            wait = min(step, BACKOFF_CAP_S, pass_wait_s - waited)
+            remaining = wait
+            while remaining > 0:                        # in slices, so Stop is seen within SITE_SLICE_S
+                piece = min(SITE_SLICE_S, remaining)
+                sleep(piece)
+                remaining -= piece
+                hold()
+            waited += wait
+            step *= 2
+            if network_is_up(url):
+                return True
+        return False
+
+    def part_size(item: DownloadItem) -> int:
+        part = _part(item.dest)
+        return part.stat().st_size if part.exists() else 0
+
+    outage = False                                      # a file was stopped by the network in this run
+    ended = ""                                          # why the passes ended without every file
+    try:
+        run_pass(items)
+        gained = True                                   # the first pass always earns a second one
+        while True:
+            again = stopped_by_network()
+            if not again:
+                break
+            outage = True
+            if not gained:
+                ended = "the last pass got no file further"
+                break
+            if not network_back(again[0].url, len(again)):
+                ended = f"the internet did not answer for {span_text(pass_wait_s)}"
+                break
+            before = {i.name: part_size(i) for i in again}
+            with lock:
+                run["pass"] += 1
+                for i in again:
+                    result.failed.pop(i.name, None)
+            plan_line("download_pass", f"Trying again: {len(again)} file(s) the internet outage interrupted",
+                      state="start", pass_no=run["pass"], files=[i.name for i in again])
+            run_pass(again)
+            with lock:
+                gained = any(
+                    i.name not in result.failed or part_size(i) - before[i.name] >= PROGRESS_MIN_BYTES
+                    for i in again
+                )
     finally:
         if client is None:
             http.close()
+    still = stopped_by_network()
+    for i in still:
+        rep.finish(i.name, "failed")                    # the finish held back since the file was given up
+    if outage and not still:
+        plan_line("download_pass", f"Every file the internet outage interrupted is here now "
+                  f"(pass {run['pass']}).", state="end", pass_no=run["pass"])
+    if still:
+        plan_line("download_pass", f"Downloads stopped: {len(still)} file(s) still to come, because {ended}.",
+                  warn=True, state="end", pass_no=run["pass"], files=[i.name for i in still])
     if result.failed:
-        raise next(iter(result.failed.values()))
+        others = [e for e in result.failed.values() if not is_network_failure(e)]
+        if others:
+            raise others[0]                             # a hash, a refusal, a site or a disk wins (N3)
+        first = result.failed[still[0].name]
+        count = f"{len(still)} file{'s are' if len(still) != 1 else ' is'} still to come"
+        raise make_error("NS-E105", f"{count}. {first.detail}", **first.data)
     return result
+
+
+def is_network_failure(e: NsError) -> bool:
+    """True for the give-up of network trouble (N1): NS-E105 with ``side="network"``."""
+    return e.code == "NS-E105" and e.data.get("side") == "network"

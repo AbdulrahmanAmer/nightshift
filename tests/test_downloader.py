@@ -730,7 +730,9 @@ def test_a_stalled_transfer_is_aborted_and_retried_with_range_as_a_network_error
     assert sleeps == [wait for _, _, wait in retries]
 
 
-def test_a_server_that_always_stalls_ends_in_e105_after_the_retries(tmp_path: Path):
+def test_a_server_that_always_stalls_ends_in_e105_after_the_retries_and_the_window(tmp_path: Path):
+    # card download-outage N1: the attempts alone no longer end it; the network window (1 s here) must be
+    # used up too. After try 1 nothing was waited yet, so try 2 follows; after it the 2 s waited end both.
     data = bytes(range(256)) * 1024
     server, state = start_stalling_server(data, stall_after=1000, stall_first=99)
     sleeps: list[float] = []
@@ -738,10 +740,11 @@ def test_a_server_that_always_stalls_ends_in_e105_after_the_retries(tmp_path: Pa
         url = f"http://127.0.0.1:{server.server_address[1]}/a.bin"
         with httpx.Client(trust_env=False) as client, pytest.raises(NsError) as ei:
             dl.download(url, tmp_path / "a.bin", None, client=client, sleep=sleeps.append,
-                        stall_timeout=0.2, retries=2)
+                        stall_timeout=0.2, retries=2, network_window_s=1.0)
     finally:
         stop_server(server, state)
     assert ei.value.code == "NS-E105" and "no data for 0.2 s" in ei.value.detail
+    assert ei.value.data["side"] == "network"
     assert len(state["ranges"]) == 2 and sleeps == [2]
 
 

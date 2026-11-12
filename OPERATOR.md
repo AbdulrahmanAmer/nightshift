@@ -91,10 +91,17 @@ or **Pause**, or you close the Nightshift setup window.
   marker, the size and the date must still match). A finished file is left alone. A half file continues from
   the byte where it stopped, not from zero. A file that is missing, changed or has a marker that no longer matches
   is fetched again. Nothing that is fine is downloaded twice.
-- **When the internet is slow or drops.** A file that gets no data for 60 seconds is dropped and tried again
-  after 2, then 4 seconds (never more than 30), at most three tries; the row says *The connection dropped, trying
-  again in 2 s (try 2 of 3)*. After the third try the row turns red with `NS-E105`: check the internet and press
-  **Retry**, the file continues.
+- **When the internet is slow or drops.** A file that gets no data for 60 seconds is tried again after 2, then
+  4 seconds (never more than 30), and the row says why: *No data for 60 s, trying again*, *The connection
+  dropped, trying again* or *No internet right now, waiting for it to come back*. Setup keeps trying that file
+  for ten minutes without progress, and every megabyte that arrives starts the ten minutes again, so a slow line
+  never uses the tries up. A file the internet stopped for longer is not lost: its row says *The internet stopped
+  this file; it is tried again when the other files are done*, setup goes on with the other files and comes back
+  to it when the internet answers. Only when the internet stays away does the step stop with `NS-E105`: check the
+  internet and press **Retry** (or run INSTALL.cmd again); the file continues from the byte where it stopped.
+  Without a window (`INSTALL.cmd -Answers`) setup prints the same sentences, a line when each file starts and
+  ends, and a total line each minute (GB done, percent, MB/s); left alone there, it repeats a download step
+  that failed up to three more times and ends by itself, after about 80 to 100 minutes on a dead line.
 - **When the download site is down.** The files that setup itself downloads in step 2 (the models and the model
   programs: llama, cudart, qwentts and the rest of the download plan) wait out a site that answers 5xx, 408, 425
   or 429 (GitHub's 504 incident) for up to ten minutes of continuous trouble. Between tries it waits 2, 4, 8 ... 60
@@ -220,9 +227,9 @@ after 10 seconds).
 - If a site that was only a warning is needed after all (a file is missing from the folder although the check
   passed, or you took the folder away), that step tries for a bounded time and then stops with `NS-E105`, naming
   the file and the kit steps: stage 1 (uv, the Visual C++ runtime) waits at most 100 seconds for the site to
-  start answering; the tools step tries three times with 120 seconds each; a program download makes three
-  tries and waits up to two minutes for the network before each counts, about eight minutes for one file. It
-  never waits forever. Add the file and run INSTALL.cmd again.
+  start answering; the tools step tries three times with 120 seconds each; a program download keeps trying for
+  ten minutes without progress, then waits up to ten more for the network and tries once again, about 20 to 25
+  minutes for a site that stays away. It never waits forever. Add the file and run INSTALL.cmd again.
 
 ## If a row is red or a message shows an error code
 

@@ -13,6 +13,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -31,6 +32,10 @@ pytestmark = [
 
 REDIRECTS = (301, 302, 303, 307, 308)
 MIB = 1024 * 1024
+# Every real download here: no waiting between tries, and a network window of 20 s instead of the product's
+# ten minutes. With the default window a site that stalls would hold one of these tests for many minutes of
+# real 60 s stalls before it gives up, and a CI shard has 12; 20 s still allows the three tries rc5 made.
+QUICK: dict[str, Any] = {"sleep": lambda s: None, "network_window_s": 20.0}
 
 
 def evidence(*lines: str) -> None:
@@ -126,7 +131,7 @@ def interrupted_download(url: str, dest: Path, sha256: str | None, wire: Wire, p
     def work() -> None:
         try:
             outcome["path"] = dl.download(
-                url, dest, sha256, client=wire.client, gate=gate, progress=progress, sleep=lambda s: None
+                url, dest, sha256, client=wire.client, gate=gate, progress=progress, **QUICK
             )
         except BaseException as e:  # re-raised in the test thread
             outcome["error"] = e
@@ -244,7 +249,7 @@ def test_hugging_face_cdn_pause_resume_through_the_redirect_matches_a_straight_d
     straight_wire = Wire()
     try:
         straight = dl.download(
-            url, tmp_path / "straight" / fname, None, client=straight_wire.client, sleep=lambda s: None
+            url, tmp_path / "straight" / fname, None, client=straight_wire.client, **QUICK
         )
     finally:
         straight_wire.close()
@@ -288,7 +293,7 @@ class Crash(BaseException):
 def test_hugging_face_part_truncated_by_hand_resumes_from_the_truncated_size(tmp_path: Path, wire: Wire):
     repo, revision, fname, size = pick_small_hf_file(load_manifest())
     url = dl.hf_url(repo, revision, fname)
-    reference = dl.download(url, tmp_path / "ref" / fname, None, client=wire.client, sleep=lambda s: None)
+    reference = dl.download(url, tmp_path / "ref" / fname, None, client=wire.client, **QUICK)
     reference_hash = dl.sha256_file(reference)
     wire.requests.clear()
 
@@ -300,13 +305,13 @@ def test_hugging_face_part_truncated_by_hand_resumes_from_the_truncated_size(tmp
             raise Crash()
 
     with pytest.raises(Crash):
-        dl.download(url, dest, None, client=wire.client, progress=kill, sleep=lambda s: None)
+        dl.download(url, dest, None, client=wire.client, progress=kill, **QUICK)
     part = dest.with_name(dest.name + ".part")
     cut = part.stat().st_size - 4097  # the last written bytes were lost in the crash
     with part.open("r+b") as fh:
         fh.truncate(cut)
     wire.requests.clear()
-    dl.download(url, dest, None, client=wire.client, sleep=lambda s: None)
+    dl.download(url, dest, None, client=wire.client, **QUICK)
     want = f"bytes={cut}-"
     assert {r[2] for r in wire.ranged()} == {want}
     assert len([r for r in wire.ranged() if r[1] == url]) == 1

@@ -134,6 +134,8 @@ RETRY_NOTES = {
     "network": "The connection dropped, trying again",
     "offline": "No internet right now, waiting for it to come back",
     "hash": "The file failed its check, downloading it again",
+    # the network stopped the file for this pass (downloader ``run_plan``, card download-outage N3)
+    "later": "The internet stopped this file; it is tried again when the other files are done",
 }
 
 
@@ -1387,7 +1389,7 @@ class SetupController:
 
     def _set_failure(
         self, step: str, code: str, message: str, hint: str, detail: str, optional: bool,
-        site: tuple[str, int] | None = None,
+        site: tuple[str, int] | None = None, network: bool = False,
     ) -> None:
         title, what = preflight.copy_for(code, message, hint)
         if site is not None:       # NS-E105 after the ten minutes: the Failed screen says whose side it is
@@ -1396,6 +1398,10 @@ class SetupController:
             what = ("This is the download site's side (their side); nothing on this PC is wrong. "
                     "Press Retry to wait for it again, or close setup and run INSTALL.cmd later: "
                     "it continues where it stopped")
+        elif network:              # the internet stopped the downloads (card download-outage, ruling 6a)
+            what = ("The internet connection dropped or carries no data; what is downloaded is kept. Press "
+                    "Retry when it is back, or close setup and run INSTALL.cmd again: it continues where it "
+                    "stopped")
         self._attempts[step] = self._attempts.get(step, 0) + 1
         # the Failed screen shows it now: the commands it names as this owner types them (FN-3); the log and
         # install-report.json keep the plain words
@@ -2103,7 +2109,8 @@ class SetupController:
         host, status = str(ev.get("host") or ""), int(ev.get("status") or 0)
         site = (host, status) if ev.get("side") == "site" and host and status else None
         self._set_failure(str(ev.get("step")), str(ev.get("code")), str(ev.get("message", "")),
-                          str(ev.get("hint", "")), str(ev.get("detail", "")), bool(ev.get("optional")), site)
+                          str(ev.get("hint", "")), str(ev.get("detail", "")), bool(ev.get("optional")), site,
+                          network=ev.get("side") == "network")
 
     def _verify_pending(self) -> None:
         rows = labels.VERIFY_PENDING_ROWS
