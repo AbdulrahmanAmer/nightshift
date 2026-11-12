@@ -157,7 +157,7 @@ def test_a_job_is_started_from_the_draft_file_as_it_reads_at_the_yes(home: fixtu
     (card,) = [e["payload"] for e in events if e["kind"] == "confirm"]
     assert card["text"] == (f"Make a Short for after-dark from the draft {d['draft_id']}, as the file reads when you "
                             "press Yes. This uses the GPU for a while.")
-    assert "porch" not in card["text"].lower()  # the card never repeats the story
+    assert "porch" not in card["text"].replace(d["draft_id"], "").lower()  # the card never repeats the story (its id names the title)
     assert len(home.state.store.list_jobs(limit=1000)) == jobs_before  # nothing started before the Yes
     # the owner edits the file between the card and his Yes (Notepad-style: CRLF line ends)
     edited = path.read_text(encoding="utf-8").replace(PARTS[1], EDITED)

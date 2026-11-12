@@ -467,6 +467,7 @@ def test_a_failed_load_with_others_holding_memory_becomes_ns_e208(tmp_path: Path
     after = card(200, [(4242, "C", "game.exe", 12000)]) if other else card(9000)
     table = StubTable(extra={"llama": ["--exit-immediately"]})
     eng = Engine(tmp_path, [card(9000), after], table=table)
+    eng.measured(STUB_NEED)  # since G-53 only a MEASURED need blames others (an estimate never does)
     e = eng.run(lambda: refused(eng, "llama", "opencode", model_alias="code"))
     if other:
         assert e.code == "NS-E208", str(e)

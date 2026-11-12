@@ -54,14 +54,14 @@ def test_a_copy_that_cannot_be_made_never_raises_and_the_doctor_says_so(
     def boom(self: Db, backup_dir: Path, keep: int = 14, today: object = None) -> Path:
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(Db, "backup", boom)
-    assert dbrestore.daily_backup(paths) is None  # no exception: the work goes on
-    state = json.loads(dbrestore.daily_state_path(paths).read_text(encoding="utf-8"))
-    assert "No space left" in state["error"]
-    ok, words = dbrestore.backup_facts(paths)
-    assert "today's copy failed" in words
-    assert not (paths.home / "run" / dbrestore.DAILY_LOCK_FILE).exists(), "the lock is released on failure"
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        m.setattr(Db, "backup", boom)
+        assert dbrestore.daily_backup(paths) is None  # no exception: the work goes on
+        state = json.loads(dbrestore.daily_state_path(paths).read_text(encoding="utf-8"))
+        assert "No space left" in state["error"]
+        ok, words = dbrestore.backup_facts(paths)
+        assert "today's copy failed" in words
+        assert not (paths.home / "run" / dbrestore.DAILY_LOCK_FILE).exists(), "lock released on failure"
     assert dbrestore.daily_backup(paths) is not None, "the next start tries again"
     assert not dbrestore.daily_state_path(paths).exists(), "a copy made ends the failure record"
 

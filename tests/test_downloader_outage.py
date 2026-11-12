@@ -363,13 +363,13 @@ def test_t9_without_a_terminal_a_start_line_an_end_line_and_at_most_one_total_li
             rep.update("b.gguf", second * MIB, 600 * MIB)
         rep.finish("a.gguf", "downloaded")
     lines = buf.getvalue().splitlines()
-    assert lines[0] == "a.gguf: starting, 0.6 GB" and lines[1] == "b.gguf: starting, 0.6 GB"
+    assert lines[0] == "a.gguf: starting, 600.0 MB" and lines[1] == "b.gguf: starting, 600.0 MB"
     totals = [x for x in lines if x.startswith("Downloaded ")]
     assert 1 <= len(totals) <= 300 // PLAIN_INTERVAL_S
     # at 60 s: a.gguf 60 MiB, b.gguf 50 MiB (its 60 s report comes after the line); 110 MiB moved in 60 s
-    assert totals[0] == "Downloaded 0.1 GB of 1.2 GB (9%), 1.8 MB/s, 0 of 3 files done"
+    assert totals[0] == "Downloaded 110.0 MB of 1.2 GB (9%), 1.8 MB/s, 0 of 3 files done"
     assert len(totals) == 5, "one per minute, never two"
-    assert lines[-1].startswith("a.gguf: downloaded, 0.6 GB, 5 min 0 s")
+    assert lines[-1].startswith("a.gguf: downloaded, 600.0 MB, 5 min 0 s")
     assert "\x1b" not in buf.getvalue()
 
 

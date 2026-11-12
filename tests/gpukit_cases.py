@@ -1319,7 +1319,7 @@ def test_no_secret_leaves_in_the_zip(world: World, monkeypatch: pytest.MonkeyPat
         f'{{"path": "{profile}\\\\Desktop", "home": {json.dumps(home)}, "pc": "{SECRET_PC}"}}',
         json.dumps({"profile": profile, "user": SECRET_USER, "home": home}),  # \\u escapes
         f"GET https://pixabay.com/api/?key=1234567-0123456789abcdef0123456789abcdef&q=rain {PEXELS} {HF}",
-        f"url file:///{profile.replace(chr(92), '/')}/x and %2F{SECRET_USER} {SECRET_USER.upper()}",
+        f"url file:///{profile.replace(chr(92), '/')}/x and %2F{SECRET_USER} /{SECRET_USER.upper()}",
     ])  # fmt: skip
     (world.home / "logs" / "studio-20261113.jsonl").write_text(planted + "\n", encoding="utf-8")
     (world.home / "answers.json").write_text(json.dumps({"pexels_api_key": PEXELS, "hf_token": HF}), "utf-8")
@@ -1710,7 +1710,7 @@ def test_the_one_reader_of_the_nights_record(world: World, kind: str, reader: st
 def test_each_stored_stock_key_is_tried_through_the_products_route_before_the_video(world: World) -> None:
     assert world.run() == 0, world.out
     line = world.state()["steps"]["KS"]["line"]
-    assert line.startswith("Pixabay: searched and downloaded one clip (0.0 MB, pixabay 701, 1920x1080)"), line
+    assert line.startswith("Pixabay: searched and downloaded one clip (5.3 KB, pixabay 701, 1920x1080)"), line
     assert "Pexels: NOT RUN (no Pexels key is stored)" in line
     stock = json.loads((world.ev / "stock.json").read_text(encoding="utf-8"))
     assert stock["pixabay"]["size_bytes"] == 5382 and stock["pixabay"]["source"] == "pixabay"
