@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import dataclasses
+import functools
 import json
 import math
 import os
+import sys
 import time
 from collections import deque
 from collections.abc import Callable
@@ -76,13 +79,74 @@ BUSY_RECENT_S = 120.0
 STATE_WAIT_S = 2.0
 
 
+#: Windows: `OpenProcess` access, its "no such process" error, the exit code of a process that runs, and
+#: 1970-01-01 as a FILETIME (100 ns ticks since 1601).
+_QUERY_LIMITED = 0x1000
+_ERROR_INVALID_PARAMETER = 87
+_STILL_ACTIVE = 259
+_EPOCH_AS_FILETIME = 116444736000000000
+
+
+@functools.cache
+def _kernel32() -> Any:
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # own object: no shared `argtypes`
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    k32.GetExitCodeProcess.restype = wintypes.BOOL
+    k32.GetProcessTimes.argtypes = [wintypes.HANDLE, *[ctypes.POINTER(wintypes.FILETIME)] * 4]
+    k32.GetProcessTimes.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+    return k32
+
+
+def _windows_started(pid: int) -> tuple[bool, float | None]:
+    """Windows' own answer for `pid`, from ONE handle: (True, creation time) while it runs; (True, None) when
+    no process has the pid or the one that has it has ended (its exit code is set); (False, None) when Windows
+    gives no answer (access denied, a failed call): the caller asks psutil, as before.
+
+    One handle: the exit code and the creation time are of the same process, and the pid cannot be reused
+    while the handle is open. The creation time is converted as psutil converts it: the two answers are equal.
+    """
+    from ctypes import wintypes
+
+    k32 = _kernel32()
+    handle = k32.OpenProcess(_QUERY_LIMITED, False, pid)
+    if not handle:
+        return (True, None) if ctypes.get_last_error() == _ERROR_INVALID_PARAMETER else (False, None)
+    try:
+        code = wintypes.DWORD()
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False, None
+        if code.value != _STILL_ACTIVE:
+            return True, None
+        created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+        if not k32.GetProcessTimes(handle, *(ctypes.byref(t) for t in (created, exited, kernel, user))):
+            return False, None
+        ticks = (created.dwHighDateTime << 32) | created.dwLowDateTime
+        return True, float(ticks - _EPOCH_AS_FILETIME) / 10_000_000
+    finally:
+        k32.CloseHandle(handle)
+
+
 def process_started(pid: int) -> float | None:
     """Creation time of the running process `pid`, None when no running process has that pid.
 
-    A process that has exited is None even while another program still holds a handle to it (Windows keeps
-    such a pid allocated; `psutil.pid_exists` asks for the exit code). Access denied and other psutil errors
-    raise: the caller cannot tell, so it must keep the holder.
+    A process that has ended is None at once, even while another program still holds a handle to it. On
+    Windows that answer is Windows' own (`_windows_started`): psutil 7.2.2 calls an ended process running,
+    with its old creation time, for as long as Windows still lists its pid (`psutil_check_phandle` overrules
+    the exit code with `EnumProcesses`; measured: a third of the rounds right after `Popen.wait` on a busy PC,
+    review block-e3-fullpass, failure 1). When Windows gives no answer, psutil does: access denied and other
+    psutil errors raise there, the caller cannot tell, so it must keep the holder. A process that ended with
+    exit code 259 (`STILL_ACTIVE`'s value) reads as running while its handle is held: kept, never taken.
     """
+    if sys.platform == "win32" and 0 < pid < 2**32:
+        answered, created = _windows_started(pid)
+        if answered:
+            return created
     try:
         if not psutil.pid_exists(pid):
             return None
