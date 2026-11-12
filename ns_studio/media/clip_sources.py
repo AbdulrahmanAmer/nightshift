@@ -161,6 +161,8 @@ class _HttpSource:
         log: NsLogger | None = None,
     ) -> None:
         self.log = log
+        #: Called with the size of every chunk a download writes (the clips stage's MB count, F5); None: off.
+        self.progress: Callable[[int], None] | None = None
         self._key = key
         self.cache_dir = cache_dir
         self.client = client or httpx.Client(timeout=60, follow_redirects=True)
@@ -250,21 +252,70 @@ class _HttpSource:
             self._sleep(wait)
 
     def _fetch_file(self, url: str, dest: Path) -> Path:
+        """Stream `url` to `dest` through a `.part` file, with the search's retry rules (footage-robust F1).
+
+        A timeout, a refused or reset connection and a 5xx are tried again after `OUTAGE_BACKOFF_S` (2, 5,
+        15 s), the part file removed before every new try; a 429 is waited out (four times), as a search is.
+        Anything else (a 4xx, an answer that cannot be read) stops at once: asking again gets the same answer.
+        Every retry and the giving up are logged. A file link carries no key, so no status of it says the key
+        is wrong (`key_sent=False`).
+        """
+        outage_retries = 0
+        rate_limited = 0
+        while True:
+            answer = self._fetch_once(url, dest)
+            if answer.ok:
+                return dest
+            if answer.kind == sa.RATE_LIMITED:
+                rate_limited += 1
+                wait = answer.wait or sa.DEFAULT_WAIT_S
+                if rate_limited >= 4:
+                    if self.log:
+                        self.log.error("footage_download_failed", source=self.name, file=dest.name,
+                                       reason=answer.why, tries=rate_limited)
+                    raise answer.error(f"Asked {rate_limited} times. The download stopped.", gave_up=True)
+                if self.log:
+                    self.log.warn("footage_rate_limited", source=self.name, wait_s=wait, attempt=rate_limited)
+                self._sleep(wait)
+                continue
+            if answer.kind not in (sa.FAILING, sa.NO_CONNECTION):
+                if self.log:
+                    self.log.warn("footage_download_failed", source=self.name, file=dest.name,
+                                  reason=answer.why, tries=outage_retries + rate_limited + 1)
+                raise answer.error("The download stopped.", gave_up=True)
+            if outage_retries >= len(OUTAGE_BACKOFF_S):
+                if self.log:
+                    self.log.error("footage_download_failed", source=self.name, file=dest.name,
+                                   reason=answer.why, tries=outage_retries + 1)
+                raise answer.error(f"Tried {outage_retries + 1} times. The download stopped.", gave_up=True)
+            wait = OUTAGE_BACKOFF_S[outage_retries]
+            outage_retries += 1
+            if self.log:
+                self.log.warn("footage_download_retry", source=self.name, file=dest.name, reason=answer.why,
+                              wait_s=wait, retry=outage_retries)
+            self._sleep(wait)
+
+    def _fetch_once(self, url: str, dest: Path) -> sa.Answer:
+        """One try of a file download: the answer's kind (ok when `dest` is complete); leaves no part file.
+
+        A full disk raises NS-E104 at once; any other local error is raised as it is.
+        """
         part = dest.with_name(dest.name + ".part")
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             with self.client.stream("GET", url, follow_redirects=True) as r:
                 if r.status_code >= 300:
-                    # a file link carries no key: no status of it says the key is wrong (`key_sent=False`);
-                    # a failing download stops at once, with no retry here (as before)
                     r.read()
-                    raise self._classify(r, key_sent=False).error("The download stopped.", gave_up=True)
+                    return self._classify(r, key_sent=False)
                 with part.open("wb") as fh:
                     for chunk in r.iter_bytes(1 << 16):
                         fh.write(chunk)
+                        if self.progress is not None:
+                            self.progress(len(chunk))
             part.replace(dest)
+            return sa.Answer(self.name, sa.OK)
         except httpx.HTTPError as e:
-            raise self._classify(failed=e).error("The download stopped.", gave_up=True) from None
+            return self._classify(failed=e)
         except OSError as e:
             if is_disk_full(e):
                 raise disk_full_error(dest.parent, self.log) from e
@@ -272,7 +323,6 @@ class _HttpSource:
         finally:
             with contextlib.suppress(OSError):
                 part.unlink(missing_ok=True)  # whatever went wrong, no half file stays in the cache
-        return dest
 
 
 def _slug_words(page_url: str) -> tuple[str, ...]:
@@ -489,11 +539,17 @@ class FakeClipSource:
 
     name = "fake"
 
-    def __init__(self, root: Path, *, per_keyword: int = 6) -> None:
+    def __init__(
+        self, root: Path, *, per_keyword: int = 6, fail: Sequence[str] = (), black: Sequence[str] = ()
+    ) -> None:
         self.root = root
         self.per_keyword = per_keyword
         self.searches: list[tuple[str, str]] = []
         self.downloads: list[str] = []
+        #: Clip ids whose download gives up as a stock site's would after its retries (NS-E503), and clip ids
+        #: rendered pure black: the footage-robust tests' stand-ins for a dead link and for black footage.
+        self.fail = set(fail)
+        self.black = set(black)
 
     def search(self, keyword: str, *, orientation: Orientation, per_page: int = 80) -> list[ClipCandidate]:
         """`per_keyword` deterministic candidates tagged with the keyword."""
@@ -521,13 +577,18 @@ class FakeClipSource:
     def download(self, cand: ClipCandidate, dest: Path) -> Path:
         """Render a testsrc2 or flat-colour clip of the candidate's duration."""
         self.downloads.append(cand.id)
+        if cand.id in self.fail:
+            raise sa.Answer(self.name, sa.NO_CONNECTION, "ReadTimeout").error(
+                "Tried 4 times. The download stopped.", gave_up=True
+            )
         idx = int(cand.id.rsplit("-", 1)[-1])
         w, h = (cand.width // 2, cand.height // 2)
         kind: Literal["testsrc2", "color"] = "testsrc2" if idx % 2 == 0 else "color"
+        colour = _PALETTE[idx % len(_PALETTE)]
+        if cand.id in self.black:
+            kind, colour = "color", "0x000000"
         try:
-            return ff.make_test_clip(
-                dest, width=w, height=h, seconds=cand.duration, kind=kind, color=_PALETTE[idx % len(_PALETTE)]
-            )
+            return ff.make_test_clip(dest, width=w, height=h, seconds=cand.duration, kind=kind, color=colour)
         except NsError as e:
             remove_partial(dest)  # no truncated clip stays in the cache
             mapped = classify_ffmpeg_error(e, dest.parent)

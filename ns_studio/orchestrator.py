@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from itertools import groupby
 from pathlib import Path
 
@@ -15,7 +15,7 @@ from ns_studio.context import JobContext, owner_script_of
 from ns_studio.media.job_formats import prepare_job_formats
 from ns_studio.nightclock import job_line
 from ns_studio.pause import require_not_paused
-from ns_studio.stages import REGISTRY, Stage, StageState, Tenant, needs_embed, run_stage
+from ns_studio.stages import REGISTRY, Stage, StageState, Tenant, inputs_hash, needs_embed, run_stage
 from ns_studio.text.story_profile import note_job
 
 # Canonical stage order per format. Stage modules only `register()` their stages; the order lives here so
@@ -292,20 +292,27 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
     with _job_timed(ctx):  # the job's `job_end` ledger line, whatever ends it
         for tenant, group in groupby(stages, key=_tenant_of):
             group_list = list(group)
-            if tenant is not None:
-                # Before the graphics card is asked for: a job paused between two groups must not make the
-                # engine swap tenants and load a model it will not use (the check before every stage, below,
-                # stays: the wait for the card can take hours, and a pause may come during it).
-                not_paused(group_list[0].name)
-                wait = _wait_cap(ctx, [s.name for s in stages], [s.name for s in group_list], tenant)
-                with _timed(ctx, tenant, group_list[0].name, wait):
-                    alias = "story" if tenant == "llama" else None
-                    ctx.services.acquirer.acquire(tenant, owner, model_alias=alias, **wait)  # type: ignore[arg-type]
+            held = False
             try:
-                for st in group_list:
-                    if needs_embed(st):
+                for i, st in enumerate(group_list):
+                    # A stage a resume skips needs no service (card footage-robust F4, C3: a redo from `clips`
+                    # loaded the story model for 21 s and started the voice service for nothing). The tenant
+                    # is acquired before the first stage of the group that will really run, and only then.
+                    runs = not will_skip(ctx, st, force=not resume)
+                    if tenant is not None and runs and not held:
+                        # Before the graphics card is asked for: a job paused between two groups must not make
+                        # the engine swap tenants and load a model it will not use (the check before every
+                        # stage, below, stays: the wait for the card can take hours, and a pause may come).
+                        not_paused(st.name)
+                        rest = [s.name for s in group_list[i:]]
+                        wait = _wait_cap(ctx, [s.name for s in stages], rest, tenant)
+                        with _timed(ctx, tenant, st.name, wait):
+                            alias = "story" if tenant == "llama" else None
+                            ctx.services.acquirer.acquire(tenant, owner, model_alias=alias, **wait)  # type: ignore[arg-type]
+                        held = True
+                    if needs_embed(st) and runs:
                         not_paused(st.name)  # likewise before the embed service is started for this stage
-                    with embed_lease(ctx, st, owner):
+                    with embed_lease(ctx, st, owner) if runs else nullcontext():
                         # The check no route gets past: immediately before EVERY stage, after any wait for the
                         # GPU or the embed lease (up to hours); a pause waits for the stage under way only.
                         # Raising here releases the tenant in the `finally` below, so a held job keeps no
@@ -314,11 +321,20 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
                         run_stage(ctx, st, force=not resume)
                     ran.append(st.name)
             finally:
-                if tenant == "whisper":  # free the weights before the lock goes to the next tenant (llama)
+                if tenant == "whisper" and held:  # free the weights before the lock goes to the next tenant
                     ctx.services.transcriber.unload()
-                if tenant is not None:
-                    ctx.services.acquirer.release(tenant, owner)
+                if held:
+                    ctx.services.acquirer.release(tenant, owner)  # type: ignore[arg-type]
     return ran
+
+
+def will_skip(ctx: JobContext, stage: Stage, *, force: bool = False) -> bool:
+    """True when `run_stage` would skip `stage` now: not forced, its outputs exist and it finished earlier
+    with the same inputs hash. These are the three conditions `stages.run_stage` tests: a change to one must
+    be made to both."""
+    if force or not all(ctx.file(o).exists() for o in stage.outputs):
+        return False
+    return StageState.load(ctx.job_dir).is_done(stage.name, inputs_hash(ctx, stage))
 
 
 @contextmanager

@@ -494,6 +494,26 @@ published SHA256 and resumes if stopped. When it is done, design the voice again
 on the next request, there is nothing to restart. Code `NS-E314` ("the voice design model is not installed") means this
 step is still to do.
 
+## What the footage of a video costs in data
+
+Every shot of a video is its own stock clip (a clip is never shown twice in one video), and Nightshift downloads
+the whole clip, about 15 MB on average (the first real Short: 77 files, 1.15 GB). The smallest copy that is still
+1080p is taken. Sizes are in Windows units (1 MB = 1024 x 1024 bytes):
+
+- A Short cuts every 1.5 to 3 s: about 24 to 31 clips per minute of narration, so about 0.35 to 0.45 GB per minute.
+  A 60-second Short costs about 0.4 GB, a 3-minute Short about 1.1 to 1.3 GB.
+- A full video cuts every 5 to 9 s: an 11-minute video has about 85 to 105 clips, about 1.3 to 1.6 GB, and each
+  Short cut from it adds its own upright clips at the Short rate above.
+- A clip already in `cache\clips` costs nothing (kept 90 days). A clip that turns out black after its download is
+  replaced, at most 2 more files plus 1 per 10 shots.
+- A video sent back by Checking quality (black frames, loudness) is redone with the clips it already has; for black
+  frames only the clips under the black are replaced, one new file each. Only a video whose footage the policy check refused (`NS-E611`, `NS-E613`) downloads a new set.
+- While it finds footage the log says every 30 s how many clips are done of all and how many MB came in
+  (`clips_progress`), and `clips\footage.json` in the job folder keeps what the footage of that job cost.
+- One slow answer of Pixabay does not end the video: a download is tried 4 times (after 2, 5 and 15 s), and a clip
+  that still fails is replaced by the next one. Three clips in a row that cannot be fetched stop the video with
+  `NS-E503`, which names the shot.
+
 ## If stock footage stops at night
 
 Your stock footage keys (Pixabay, and Pexels if you added one) are kept in Windows Credential Manager. The night run

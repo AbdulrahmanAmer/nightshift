@@ -367,11 +367,13 @@ def test_d5_a_key_error_does_not_mark_a_host_down():
 
 
 def test_d5_a_download_503_is_an_outage_not_a_key_error(tmp_path: Path):
-    src = PexelsSource("K", tmp_path, client=_client(lambda r: httpx.Response(503)))
+    t, calls = FakeTime(), {"n": 0}
+    src = PexelsSource("K", tmp_path, client=_client(_counting(calls, 503)), sleep=t.sleep, wall=t.clock)
     cand = parse_pexels(_load("pexels_search.json"), "portrait")[0]
     with pytest.raises(NsError) as ei:
         src.download(cand, tmp_path / "pexels" / "a.mp4")
     assert ei.value.code == "NS-E503" and "not answering right now" in ei.value.detail
+    assert calls["n"] == 4 and t.slept == [2.0, 5.0, 15.0]  # footage-robust F1: retried like the search
     assert not list(tmp_path.rglob("*.part"))
     bad = PexelsSource("K", tmp_path, client=_client(lambda r: httpx.Response(403)))
     with pytest.raises(NsError) as ei2:
