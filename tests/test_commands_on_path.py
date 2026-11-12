@@ -907,7 +907,7 @@ def test_the_windows_without_python_show_the_same_full_path(tmp_path: Path, monk
     assert commandline.ps_formatter() in follower and follower.isascii()
     assert "Format-NsCommands ([string]$state.if_stopped_here) $nsHome" in follower
     shortcut = (ROOT / "launchers" / "update.ps1").read_text(encoding="utf-8")
-    for shown in ("Format-NsCommands $lines[$i] $nsHome", "Format-NsCommands ([string]$state.if_stopped_here) $nsHome",
+    for shown in ("Format-NsCommands $Line $nsHome", "Format-NsCommands ([string]$state.if_stopped_here) $nsHome",
                   "Format-NsCommands ([string]$final.message) $nsHome"):
         assert shown in shortcut, shown
 

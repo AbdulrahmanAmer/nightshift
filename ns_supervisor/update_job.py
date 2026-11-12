@@ -570,8 +570,18 @@ def _echo_new(log: Path, offset: int, echo: Callable[[str], None]) -> int:
     except OSError:
         return offset
     for line in chunk.decode("utf-8", errors="replace").splitlines():
-        echo(line)
+        if not is_result_json(line):
+            echo(line)
     return offset + len(chunk)
+
+
+def is_result_json(line: str) -> bool:
+    """The worker's log ends with the machine-readable result (`{"updated": true, ..., "release_notes": "<the
+    whole changelog section>"}`, tens of KB): a program reads it, a window that follows the update does not
+    show it (its `Result:` line says the same in a sentence). The PowerShell followers (`follower_script`,
+    `launchers/update.ps1`) skip the same lines."""
+    t = line.strip()
+    return t.startswith('{"') and t.endswith("}")
 
 
 WAIT_PREFIX = "update-wait-"
@@ -623,6 +633,9 @@ def follower_script(status: Path, log: Path, pid: int, *, wait: bool = True, hom
         "    if (-not (Test-Path -LiteralPath $logFile)) { return }",
         "    $lines = @(Get-Content -LiteralPath $logFile -Encoding UTF8 -ErrorAction SilentlyContinue)",
         "    for ($i = $script:seen; $i -lt $lines.Count; $i++) {",
+        # the machine-readable result line (it holds the whole release notes) is not shown: see is_result_json
+        "        $t = ([string]$lines[$i]).Trim()",
+        "        if ($t.StartsWith('{\"') -and $t.EndsWith('}')) { continue }",
         "        Write-Host (Format-NsCommands $lines[$i] $nsHome)",
         "    }",
         "    if ($lines.Count -gt $script:seen) { $script:seen = $lines.Count }",
