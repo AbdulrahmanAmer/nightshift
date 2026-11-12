@@ -27,6 +27,8 @@ from ns_studio.media.clips import (
     clip_seed,
     fallback_beat,
     make_lemmatizer,
+    record_footage_cost,
+    treatment_probe,
 )
 from ns_studio.media.formats import footage_orientation, shot_range, style_for_format
 from ns_studio.media.job_formats import job_format, job_format_entry
@@ -142,9 +144,12 @@ def derive_short(
     spans = beat_spans(beats, words, total)
     slots = plan_slots(spans, shot_range(treatment.cut_range_s, fmt))
     seed = clip_seed(ctx, item)
+    cache.total += len(slots)  # this part's shots join the count the Dashboard shows (FR F5)
+    cache.report(force=True)
     shots = assign_clips(
         beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked, seed=seed,
         wanted=footage_orientation(fmt), used=used, extra_keywords=ctx.channel.seed_keywords,
+        probe=treatment_probe(treatment, canvas) if ff.available() else None, label=item,
     )
     luma = fit_caption_contrast(
         words=words, style=style, opts=opts, shots=shots, total_s=total, size=canvas, ass_path=ass,
@@ -195,12 +200,16 @@ class ShortsDeriveStage:
         used: set[tuple[str, str]] = set()  # one set for all Shorts: siblings never share a clip (NS-E611)
         report: dict[str, Any] = {}
         shots_out: dict[str, Any] = {}
-        for spec in load_shorts(ctx):
-            item = f"s{spec.k}"
-            report[item], shots_out[item] = derive_short(
-                ctx, spec, timings[spec.k], plan, manifest, captions_report, searcher, cache, blocked, used
-            )
-            ctx.log.info("render_done", job_id=ctx.job_id, item=item, duration_s=report[item]["duration_s"],
-                         shots=report[item]["shots"])
+        try:
+            for spec in load_shorts(ctx):
+                item = f"s{spec.k}"
+                report[item], shots_out[item] = derive_short(
+                    ctx, spec, timings[spec.k], plan, manifest, captions_report, searcher, cache, blocked,
+                    used,
+                )
+                ctx.log.info("render_done", job_id=ctx.job_id, item=item,
+                             duration_s=report[item]["duration_s"], shots=report[item]["shots"])
+        finally:  # what the Shorts' footage cost, also when the stage failed half way (F5)
+            record_footage_cost(ctx, cache)
         ctx.write_json("clips/shorts_shots.json", shots_out)
         ctx.write_json("render/report.json", with_mark(ctx, report))

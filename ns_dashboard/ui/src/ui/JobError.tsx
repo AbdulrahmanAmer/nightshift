@@ -13,8 +13,17 @@ function retryWords(p?: { count?: number; resume_job_id?: string | null }): stri
   return more > 0 ? `Continuing from where it stopped, then making ${more} more ${more === 1 ? "video" : "videos"} of that request` : "Continuing from where it stopped";
 }
 
+/** The whole path of the failed run's job folder (`<home>\data\jobs\<id>`, the folder's own files and the
+ *  stage records; the log lines are in `<home>\logs`), written with the separator the home itself uses. Without a
+ *  known home, what the folder is called under it. */
+export function logWhere(home: string | null | undefined, id: string): string {
+  if (!home) return `data/jobs/${id}`;
+  const sep = home.includes("\\") ? "\\" : "/"; const root = home.replace(/[\\/]+$/, "");
+  return `${root}${sep}data${sep}jobs${sep}${id} (log lines: ${root}${sep}logs)`;
+}
+
 export function JobError({ j }: { j: Job }) {
-  const { toast, refresh } = useApp(); const [busy, setBusy] = useState(false); const [resuming, setResuming] = useState(false);
+  const { toast, refresh, status } = useApp(); const [busy, setBusy] = useState(false); const [resuming, setResuming] = useState(false);
   const code = j.result?.error?.code; const hint = j.result?.error?.hint;
   const studioIds: string[] = [...(j.result?.studio_job_ids || []), ...(j.result?.studio_job_id ? [j.result.studio_job_id] : [])];
   const report = async () => { setBusy(true); try { const r = await api.post("/diagnostics"); toast(`Report saved to ${r?.path || "your Desktop"}`, "ok"); } catch (e: any) { toast(e.message, "bad"); } setBusy(false); };
@@ -26,7 +35,7 @@ export function JobError({ j }: { j: Job }) {
       <p className="flex items-start gap-2 font-semibold"><Icon name="alert" size={16} className="mt-0.5 shrink-0 text-ds-danger" />{stoppedAt(j.stage)}{code && code !== "job_failed" && code !== "unavailable" ? <span className="font-mono text-ds-2xs">{code}</span> : null}</p>
       {j.message && <p className="text-ds-text-2">{j.message}</p>}
       {hint && <p><span className="font-semibold">What to do: </span>{hint}</p>}
-      {studioIds.length > 0 && <p className="text-ds-2xs text-ds-muted">Logs of the failed run: <span className="font-mono">jobs/{studioIds[studioIds.length - 1]}</span></p>}
+      {studioIds.length > 0 && <p className="break-all text-ds-2xs text-ds-muted">Logs of the failed run: <span className="font-mono">{logWhere(status?.disk?.home, studioIds[studioIds.length - 1])}</span></p>}
       <div className="flex flex-wrap items-center gap-2">
         {canResume && <Button size="sm" variant="soft" leadingIcon="refresh" disabled={resuming} onClick={resume}>{resuming ? "Starting" : "Retry from where it stopped"}</Button>}
         <Button size="sm" variant="soft" leadingIcon="archive" disabled={busy} onClick={report}>Make a diagnostics report</Button>

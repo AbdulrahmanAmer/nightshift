@@ -166,12 +166,12 @@ def test_f1_a_dead_clip_is_skipped_for_the_next_candidate(tmp_home: Path):
     assert src.downloads == ["a", "b", "c"]  # the dead one once, then one file per slot
 
 
-def test_f1_no_candidate_left_is_ns_e503_naming_the_slot(tmp_home: Path):
+def test_f1_no_candidate_left_is_ns_e402_naming_the_slot(tmp_home: Path):
     ctx = make_ctx(tmp_home)
     src = StubSource(["a", "b"], dead={"a", "b"})  # two dead clips: under MAX_GIVE_UPS_IN_A_ROW
     with pytest.raises(NsError) as ei:
         _assign(ctx, src, _slots(2.0))
-    assert ei.value.code == "NS-E503"
+    assert ei.value.code == "NS-E402"  # a shortage (rc8 WP5, f5), not the network code of the dead clips
     assert "No other clip was left for s1 shot 1 (0.0-2.0 s)" in ei.value.detail
     assert src.downloads == ["a", "b"]
 

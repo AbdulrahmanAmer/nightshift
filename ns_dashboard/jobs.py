@@ -174,6 +174,7 @@ class JobRecord:
             "stage": _stage_of(self.message) or self.failed_stage(),
             "step": _steps_of(self.message)[0],
             "steps": _steps_of(self.message)[1],
+            "detail": _detail_of(self.message),  # the stage's own progress (footage: clips and MB)
             "message": render(self.message),     # stored raw; shown as this owner types its commands (FN-3)
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -210,7 +211,9 @@ def public_params(params: dict[str, Any]) -> dict[str, Any]:
     return {**{k: v for k, v in params.items() if k != "script"}, "script_words": word_count(text)}
 
 
-_STAGE_RE = re.compile(r"^(.*) \((\d+)/(\d+)\)$")
+#: `name (i/n)`, with an optional ` - <note>` behind it: the running stage's own progress ("12 of 85 clips,
+#: 40 MB downloaded", `studio_job.note`).
+_STAGE_RE = re.compile(r"^(.*?) \((\d+)/(\d+)\)(?: - (.*))?$", re.DOTALL)
 INTERRUPTED_CODE = "NS-E328"
 INTERRUPTED_HINT = (
     "Nightshift or the PC restarted while this job ran. Press Retry from where it stopped: the finished "
@@ -230,6 +233,12 @@ def _steps_of(message: str) -> tuple[int | None, int | None]:
     """`(i, n)` from a `name (i/n)` progress message, else `(None, None)`."""
     m = _STAGE_RE.match(message or "")
     return (int(m.group(2)), int(m.group(3))) if m else (None, None)
+
+
+def _detail_of(message: str) -> str | None:
+    """The note behind a `name (i/n) - note` message ("12 of 85 clips, 40 MB downloaded"), else None."""
+    m = _STAGE_RE.match(message or "")
+    return (m.group(4) or None) if m else None
 
 
 def _dismissed_at(raw: str | None) -> str | None:
