@@ -40,9 +40,10 @@ windows = pytest.mark.skipif(sys.platform != "win32", reason="the engine's lock 
 
 #: The engine stand-in: takes the home's engine lock like `ns_supervisor.app.main`, says so, then either
 #: ends by itself `late` seconds later or never ends (`late` < 0). With a fourth argument (a file) the `late`
-#: seconds count from the moment that file exists, not from the start: a test makes it when the update begins
-#: to stop Nightshift, so "late" is late by the same amount however slow the machine was until then (counted
-#: from the start, a loaded machine found the engine already gone before the stop began).
+#: seconds count from the moment that file exists, not from the start: a test makes it when the product says
+#: it waits for Nightshift to stop, so "late" is late by the same amount however slow the machine was until
+#: then (counted from the start, a loaded machine found the engine already gone before the stop began;
+#: counted from the stop request, a loaded machine's process listing outlasted it: review block-e3-fullpass).
 #: "ns_supervisor.app" is on its command line, and the program is ONE line, as a real engine's command line
 #: is: setup and the updater read the process listing line by line and know their own engine by what follows
 #: the program on that line (a program written over several lines hid it: setup then called this engine a
@@ -178,14 +179,32 @@ def short_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ------------------------------------------------------------------------ 1: stops late, inside the bound
+class Heard(list[str]):
+    """What the product said; its first "Waiting for Nightshift to stop: " line makes `marker` (the moment the
+    product waits, from which the engine stand-in counts its `late` seconds)."""
+
+    def __init__(self, marker: Path) -> None:
+        super().__init__()
+        self.marker = marker
+
+    def append(self, line: str) -> None:
+        super().append(line)
+        if line.startswith("Waiting for Nightshift to stop: ") and not self.marker.exists():
+            self.marker.write_text(line, encoding="utf-8")
+
+
 @windows
 def test_an_engine_that_stops_late_is_waited_for_and_the_rollback_goes_on(
     tmp_path: Path, started: Any
 ) -> None:
     app, paths = updated(tmp_path)
-    stop_began = tmp_path / "stop-began"
-    engine = started.engine(paths, late=3.0, after=stop_began)   # 3 s after the stop begins; the bound: 10 s
-    said: list[str] = []
+    stop_began, waits = tmp_path / "stop-began", tmp_path / "product-waits"
+    # It ends by itself as soon as the product SAYS it waits for it (an event, not a time: 3 s counted from
+    # the stop request, a loaded PC's process listing outlasted and found it gone; review block-e3-fullpass,
+    # failure 2). Any wait added here would again race the product's listings against its 10 s bound. If the
+    # product never waits, the stand-in never ends by itself and is ended at that bound: the asserts fail.
+    engine = started.engine(paths, late=0.0, after=waits)
+    said = Heard(waits)
     env = real_stop(paths, said)
     product_stop = env.stop
 
