@@ -4,6 +4,19 @@ $ErrorActionPreference = 'Stop'
 # "Nightshift Dashboard" shortcut: start the engine minimized if needed, then open the web UI.
 . (Join-Path $PSScriptRoot '_common.ps1')
 
+# G-52: an error nothing below catches ends a PowerShell script with its message on a console that closes with it
+# (a shortcut window has no pause of its own): the start then ends with no window, no engine and no word. This
+# puts the error in logs\launch-<date>.log and keeps the window open with it.
+trap {
+    $failure = [string]$_.Exception.Message
+    $where = ''
+    try { $where = [string]$_.InvocationInfo.PositionMessage } catch { $where = '' }
+    Write-NsLaunchLog 'error' ($failure + ' ' + $where) 'ERROR'
+    Exit-NsWithPause ('The Nightshift launcher stopped: ' + $failure + ' (The step it stopped at is in the newest launch-*.log in the logs folder of the Nightshift home.)')
+}
+
+Write-NsLaunchLog 'launcher' ('started: ' + $PSCommandPath + ', session ' + (Get-NsOwnSessionId) + ', PowerShell ' + $PSVersionTable.PSVersion)
+
 # Neither this launcher nor the window host it starts may hold the app folder as its working directory, or
 # `ns update` cannot swap the folder while the dashboard window is open.
 Set-NsHomeLocation
@@ -25,6 +38,7 @@ if (Test-NsSupervisor) {
 }
 
 if (-not (Test-NsSupervisor)) {
+    Write-NsLaunchLog 'engine' 'not running: starting it'
     Start-NsSupervisor
     if (-not (Wait-NsSupervisor -TimeoutSec 90)) {
         Exit-NsWithPause 'The Nightshift engine did not start. Run "Nightshift - Diagnostics" and send the zip.'
@@ -34,6 +48,7 @@ if (-not (Test-NsSupervisor)) {
 # A freshly started engine warms the dashboard itself. One that was already running may be headless (left by
 # `ns verify --quick` or the nightly task) and would never start it, so always ask. It is a no-op when the
 # service is up. Then wait for the page; never open a dead address.
+Write-NsLaunchLog 'dashboard' 'asking the engine to start the dashboard service'
 [void](Start-NsDashboardService)
 if (-not (Wait-NsPort -Url $url -TimeoutSec 60)) {
     Exit-NsWithPause 'The Nightshift dashboard did not start. Run "Nightshift - Diagnostics" and send the zip.'
@@ -62,6 +77,7 @@ if ((Test-Path -LiteralPath $hostScript) -and ($env:NS_DASHBOARD_NO_HOST -ne '1'
     }
     # Only a clean 0 means the window runs (or an open one was raised). 3 = WebView2 unavailable, anything else
     # is a failure of the host: both fall through to the browser app window.
+    Write-NsLaunchLog 'window' ('the window host ended its start with code ' + $hostCode)
     if ($hostCode -eq 0) { return }
     if ($hostCode -ne 3) { Write-Host "The Nightshift window stopped with exit code $hostCode; opening the browser app window instead." }
 }
