@@ -20,7 +20,7 @@ def read(rel: str) -> str:
 
 
 def test_changelog_has_a_heading_for_the_version_file():
-    # a release candidate (VERSION 0.1.15-rc6) uses the heading of the final version it previews (H-12)
+    # a release candidate (VERSION 0.1.15-rc7) uses the heading of the final version it previews (H-12)
     version = read("VERSION").strip().split("-rc", 1)[0]
     text = read("CHANGELOG.md")
     m = re.search(rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\s*$", text, re.MULTILINE)
@@ -40,6 +40,25 @@ def test_release_workflow_builds_the_uis_before_the_bundle():
     assert "git status --porcelain ns_dashboard/static" in wf
     assert "git status --porcelain installer/ui/static" in wf
     assert wf.index("git status --porcelain installer/ui/static") < bundle
+
+
+def test_the_release_text_stays_under_githubs_limit():
+    """The rc6 release run (43256493476) failed: HTTP 422 "body is too long (maximum is 125000 characters)". The
+    body is the notes template plus this version's CHANGELOG section; over 100,000 characters (room for the list
+    --generate-notes adds) the section is replaced by a pointer to CHANGELOG.md."""
+    wf = read(".github/workflows/release.yml")
+    build = wf[wf.index("$template = (Get-Content dev/release_notes.md -Raw)"):]
+    build = build[: build.index("Set-Content -Path release-notes.md")]
+    assert "if ($body.Length -gt 100000)" in build
+    cut = build[build.index("if ($body.Length -gt 100000)"):]
+    assert "$m.Groups['body']" not in cut, "the cut text must not carry the changelog section again"
+    assert "CHANGELOG.md" in cut
+    assert "Set-Content -Path release-notes.md -Value $body" in wf
+    # the 0.1.15 section is itself over the limit: the cut is what lets this version publish
+    changelog = read("CHANGELOG.md")
+    start = changelog.index("## [0.1.15]")
+    end = changelog.index("\n## [", start + 1)
+    assert end - start > 125000
 
 
 def test_ci_ui_build_checks_both_committed_builds():
