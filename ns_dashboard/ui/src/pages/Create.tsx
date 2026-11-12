@@ -312,7 +312,7 @@ function JobRow({ j, channelName, onCancel }: { j: Job; channelName: (s?: string
   return (
     <li>
       <NotificationItem state="raised" title={jobTitle(j, channelName)}
-        subtitle={<span className="text-ds-accent-ink">{j.status === "queued" && j.schedule_at && new Date(j.schedule_at).getTime() > Date.now() ? `Scheduled for ${fmtWhen(j.schedule_at)}` : j.status === "queued" ? "Waiting for the engine" : stageWords(j.stage)}<span className="text-ds-muted">{j.step && j.steps ? `, step ${j.step} of ${j.steps}` : ""}</span></span>}>
+        subtitle={<span className="text-ds-accent-ink">{j.status === "queued" && j.schedule_at && new Date(j.schedule_at).getTime() > Date.now() ? `Scheduled for ${fmtWhen(j.schedule_at)}` : j.status === "queued" ? "Waiting for the engine" : stageWords(j.stage)}<span className="text-ds-muted">{j.step && j.steps ? `, step ${j.step} of ${j.steps}` : ""}</span>{j.detail ? <span className="text-ds-text-2">: {j.detail}</span> : null}</span>}>
         {!held && <ProgressBar value={j.progress ?? 0} label="Job progress" />}
         {!held && <ol className="mt-3 flex flex-wrap gap-x-3 gap-y-1">
           {stages.map((s, i) => <li key={s} className={cx("flex items-center gap-1 text-ds-2xs", i < cur ? "text-ds-text-2" : i === cur ? "font-semibold text-ds-text" : "text-ds-muted")}>{i < cur ? <Icon name="check" size={12} className="text-ds-success-ink" /> : <span aria-hidden className={cx("size-1.5 rounded-full", i === cur ? "bg-ds-accent" : "bg-ds-border")} />}{stageWords(s)}</li>)}
