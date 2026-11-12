@@ -10,7 +10,7 @@ Fixes to apply:
 - {{ f }}
 {% endfor %}
 {% if window is defined %}
-Length: the text is {{ words_now }} words now. Your text must be between {{ window.min_words }} and {{ window.max_words }} words (about {{ window.words }}).
+Length: the text is {{ words_now }} words now. Your text must be between {{ window.min_words }} and {{ window.max_words }} words (about {{ window.words }}). This length replaces the 10 percent rule.
 {% endif %}
 Text:
 {{ story }}
