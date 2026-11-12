@@ -192,7 +192,11 @@ class JobContext:
 
     @property
     def attempt(self) -> int:
-        """How many times the policy gate has already sent this job back (0 on the first pass)."""
+        """How many times the policy gate has already sent this job back (0 on the first pass).
+
+        The total over the three causes of `policy.regen` (idea, text, media; card story-robust S4): the
+        file's `regenerations` stays that total, so the hotter prompts and the new seeds follow every one.
+        """
         try:
             return int(self._attempts_data().get("regenerations", 0))
         except (TypeError, ValueError):
