@@ -1154,7 +1154,8 @@ made in parts). Below is everything merged since 0.1.14; each "Not covered" line
   PC with no graphics card decides the context on warm, repeated measurements (D-52): before, two runs saved 32768
   and then 16384 because the cold first load stood for the floor; the graphics-card choice is unchanged. An update
   to a candidate shows "What is new" from its release's notes (D-53): before, it showed none, because the notes
-  were looked up under the candidate's own version. The morning note says a video is "made over several nights"
+  were looked up under the candidate's own version (the updater that runs is the installed one, so an update from
+  0.1.15-rc5 to this candidate still shows none; the next one does). The morning note says a video is "made over several nights"
   only of a job the night really left half made, not one that failed, finished or never started. A browser that
   sends nothing identifying (Edge's Internet Explorer mode, a Firefox older than 90) can no longer change anything
   with an empty request: a request that is not a GET with no Sec-Fetch, Origin or Referer, from a User-Agent that
