@@ -385,6 +385,23 @@ def test_t5_a_held_file_never_fails_the_check_and_the_next_run_removes_it(
     assert not os.path.lexists(folder)
 
 
+def test_a_link_is_a_junction_a_symbolic_link_or_a_name_surrogate_never_a_cloud_file() -> None:
+    """Review of block E2, finding 7: a home in a OneDrive folder (cloud-file reparse tags) is no link, so its
+    sample job runs; a junction, a symbolic link and any other name-surrogate tag are links."""
+    import stat
+
+    reparse = stat.FILE_ATTRIBUTE_REPARSE_POINT
+    folder = stat.S_IFDIR | 0o777
+    assert verify.link_by_stat(folder, reparse | stat.FILE_ATTRIBUTE_DIRECTORY, 0xA0000003)  # junction
+    assert verify.link_by_stat(folder, reparse | stat.FILE_ATTRIBUTE_DIRECTORY, 0xA000000C)  # symbolic link
+    assert verify.link_by_stat(folder, reparse, 0x20000099)  # any tag with the name-surrogate bit
+    assert verify.link_by_stat(stat.S_IFLNK | 0o777, 0, 0)  # a symbolic link off Windows
+    for cloud in (0x9000001A, 0x9000101A, 0x9000F01A, 0x80000023):  # OneDrive placeholders, a dedup file
+        assert not verify.link_by_stat(folder, reparse | stat.FILE_ATTRIBUTE_DIRECTORY, cloud), hex(cloud)
+    assert not verify.link_by_stat(folder, stat.FILE_ATTRIBUTE_DIRECTORY, 0xA0000003)  # no reparse point
+    assert not verify.link_by_stat(stat.S_IFREG | 0o666, 0, 0)
+
+
 # ------------------------------------------------------------------------------------------------ T6
 def test_t6_quick_mode_runs_no_job_and_makes_no_folder(home: Paths, sync: SyncSupervisor) -> None:
     calls: list[Paths] = []

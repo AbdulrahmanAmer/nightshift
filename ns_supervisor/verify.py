@@ -399,15 +399,31 @@ def scratch_home(paths: Paths) -> Path:
     return paths.home / "run" / SCRATCH_NAME
 
 
+#: The name-surrogate bit of a reparse tag (`IsReparseTagNameSurrogate`): set for a junction (mount point,
+#: 0xA0000003), a symbolic link (0xA000000C) and every other tag that names another place; not set for cloud
+#: files (OneDrive, 0x9000001A and its kin), which are ordinary files and folders to us.
+NAME_SURROGATE = 0x20000000
+
+
+def link_by_stat(mode: int, attributes: int, tag: int) -> bool:
+    """Is a name with this `lstat` (mode, Windows file attributes, reparse tag) a link: a symbolic link, a
+    junction, or any reparse point whose tag names another place? A reparse point of another kind (a cloud
+    file or folder) is not (review of block E2, finding 7)."""
+    if stat.S_ISLNK(mode):
+        return True
+    return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT) and bool(tag & NAME_SURROGATE)
+
+
 def _is_link(p: Path) -> bool:
-    """True for a symbolic link, a junction or any other reparse point (never followed, never entered)."""
+    """True for a symbolic link, a junction or any other name-surrogate reparse point (never followed, never
+    entered); `link_by_stat`."""
     try:
         st = os.lstat(p)
     except OSError:
         return False
-    if stat.S_ISLNK(st.st_mode):
-        return True
-    return bool(getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    return link_by_stat(
+        st.st_mode, getattr(st, "st_file_attributes", 0), getattr(st, "st_reparse_tag", 0)
+    )
 
 
 def _real(p: Path) -> str:
