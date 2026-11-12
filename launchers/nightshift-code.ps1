@@ -109,6 +109,12 @@ try {
         Pop-Location
     }
 }
+catch {
+    # an error before or around OpenCode: the card goes back now, named for what it was, then the trap logs
+    # the error and keeps the window open (the finally below then has nothing left to release)
+    Invoke-NsCodeRelease 'after the error'
+    throw
+}
 finally {
     Invoke-NsCodeRelease 'OpenCode ended'
 }

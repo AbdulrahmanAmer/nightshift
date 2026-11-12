@@ -253,7 +253,7 @@ function Format-NsCommands {
     if (-not $Text -or -not $NsHome) { return $Text }
     try {
         $out = $Text
-        foreach ($tool in @(@('ns', 'supervisor', 'ns.exe', 'backup|doctor|models|notify|restore|schedule|stop|tune|update|verify'), @('studio', 'studio', 'studio.exe', 'ask|calibrate|channel|clip|dashboard|learn|mark-uploaded|pause|resume|review|run|series|status|voice'))) {
+        foreach ($tool in @(@('ns', 'supervisor', 'ns.exe', 'backup|doctor|models|notify|restore|schedule|stop|tune|update|verify'), @('studio', 'studio', 'studio.exe', 'ask|calibrate|channel|clip|dashboard|learn|mark-uploaded|pause|remove|resume|review|run|series|status|voice'))) {
             $file = Join-Path $NsHome ('cmd\' + $tool[0] + '.cmd')
             if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
                 $file = Join-Path $NsHome ('venvs\' + $tool[1] + '\Scripts\' + $tool[2])
