@@ -534,11 +534,41 @@ Plan → draft → critique → revise; best-of-5 + judge for hooks and titles; 
 |---|---|
 | `code` generation, 16K ctx | ≥ 40 tok/s [≥ 30] |
 | Model load, warm page cache, NVMe | ≤ 30 s (soft; logged, HDD exempt) |
-| TTS real-time factor | ≤ 0.5 (2× faster than real time) [≤ 0.8] |
+| TTS real-time factor (`tts.rate`, `bench.tts_rtf`): speaking only, six sentences in one batch request | ≤ 0.5 (2× faster than real time) [≤ 0.8] |
+| TTS start (`tts.start_s`, `bench.tts_start_s`): request to the first sentence of that batch | ≤ 15 s (soft; logged) |
 | One 50-second Short, idea → MP4 (shorts-only) | ≤ 3 min [≤ 5] |
 | One master job: 12-min long-form + 5 Shorts + thumbnails | ≤ 60 min [≤ 90] |
 | Nightly run, 2 channels × 1 master job | ≤ 2 h [≤ 3] |
-| Idle VRAM after unload | ≤ 300 MB |
+| Idle VRAM after unload (`vram.idle`): what Nightshift left, other programs' share subtracted | ≤ 300 MB |
+
+What each number measures (card verify-limits, 2026-11-12):
+- **The voice speaks** (`tts.preset`, `tts.design`, `tts.clone`, quick and full): one sentence per installed
+  talker; the value is the whole call in seconds, which is one start of the voice program and its model; no
+  limit, the row passes when sound came back.
+- **TTS real-time factor** (`tts.rate`, full only): one batch of six sentences through
+  `/v1/audio/speech/batch`, the product's own route. The service stamps each sentence's arrival while it reads
+  the voice program's output; the rate is (last arrival − first arrival) / (audio seconds of the sentences after
+  the first), so the start and the model load are not counted. An engine without stamps (fake, Windows speech,
+  reference) gives the whole batch call over its audio, and the row's log says so. The voice stage's own time
+  limit is still sized from the single call's whole ratio (`save_rtf`), not from this rate.
+- **TTS start** (`tts.start_s`, full only): seconds from the service beginning that batch to its first sentence.
+- **Idle VRAM** (`vram.idle`, `bench.idle_vram_mb`): memory in use after unload minus memory in use before the
+  test loaded anything of Nightshift's, read only at a moment the supervisor's status shows none of its card
+  services (llama, tts, whisper) loaded; without such a moment the row is "n/a" with the reason and passes.
+- **The sample job** (`job.fake_services`, full only; card verify-job-isolated): the install's own `studio run
+  --fake-services --format shorts_only --count 1` in a home of its own, `<home>\run\verify-job`, made new for
+  each run (real files only: the install's `runtime.json` and formats copied in, no link) and handed over with
+  `NIGHTSHIFT_HOME` and `NS_HOME_EXPLICIT`. Its data, Outbox, ledger and logs are its own; it is removed when the
+  check ends, pass or fail, and at the next run's start after a kill, only when it is directly under `run`, no
+  link, and carries the marker the check wrote. A failed job's error lines go into the row and the verify log.
+  Known limit: the guard checks a folder for a link a moment before it enters it, so a program that swaps it
+  for a junction in those microseconds could have the junction's target emptied. Only a program of the same
+  user, which could delete the install's files directly anyway, can do that; closing it needs removal by handle.
+- **Missed target or a part that did not work**: a failed row that carries a limit is a missed target; one
+  without a limit is a part that did not work. `ns verify`'s last line says which; its exit code is non-zero
+  for either, as before. The GPU kit goes on after missed targets only (they stay a FAIL of its step 3).
+- The voice program's own words (`[Load] Talker backend`, `[Perf] Total`) are logged after every run as the
+  `qwentts_said` event of `logs\tts-*.jsonl`.
 
 ---
 

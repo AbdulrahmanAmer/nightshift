@@ -247,12 +247,24 @@ def test_the_reference_engine_row_is_unchanged(tmp_path: Path, service: Service_
     assert row.passed is True and row.value == "reference" and (row.log or "").startswith("NS-W301")
 
 
-def test_full_mode_is_unchanged(tmp_path: Path, three_talkers: Service_) -> None:
+def test_full_mode_speaks_with_every_talker_then_times_one_batch(
+    tmp_path: Path, three_talkers: Service_
+) -> None:
+    """Card verify-limits (stale: this test pinned the RTF limit on every talker's single sentence, which
+    timed the voice program's start, L1): the talker rows prove the voice speaks and carry no limit; the speed
+    is the `tts.rate` row of one batch. The fake engine has no stream, so its rate is the whole call (L2)."""
     report = run(tmp_path, three_talkers, quick=False)
     rows = tts_rows(report)
-    assert [n for n in rows if n != "tts.voices"] == ["tts.preset", "tts.design", "tts.clone"]
-    assert all(rows[n].limit == "<= 0.5 RTF" for n in ("tts.preset", "tts.design", "tts.clone"))
-    assert "tts_rtf" in report.benchmarks
+    assert [n for n in rows if n != "tts.voices"] == [
+        "tts.preset", "tts.design", "tts.clone", "tts.rate", "tts.start_s",
+    ]  # fmt: skip
+    for n in ("tts.preset", "tts.design", "tts.clone"):
+        assert rows[n].passed and rows[n].limit is None and isinstance(rows[n].value, float), rows[n]
+    rate = rows["tts.rate"]
+    assert rate.passed and rate.limit == "<= 0.5 RTF" and isinstance(rate.value, float)
+    assert "whole call" in (rate.log or "") and "no per-sentence times" in (rate.log or "")
+    assert rows["tts.start_s"].passed and rows["tts.start_s"].value == "n/a"
+    assert report.benchmarks["tts_rtf"] == rate.value and "tts_start_s" not in report.benchmarks
     assert any(c.name == "bench.tts_rtf" and c.passed for c in report.checks)
     assert report.slice == "verify"
 
@@ -348,7 +360,8 @@ def test_the_run_fails_only_when_the_preset_does_a_voice_that_does_not_speak_is_
         assert ("NS-E311" if clone == "failing" else "NS-E310") in (c.log or "")
         assert verify.talker_warnings(report.checks) == [c.log]
     assert rows["tts.design"].passed and rows["tts.design"].value != names.TALKER_WARNING_VALUE
-    assert voices_spoken(three_talkers.engine) == ["Ryan", "Dee", "Cleo"]       # no talker is skipped
+    # no talker is skipped; a full run then times the first voice on six sentences in one batch (L2)
+    assert voices_spoken(three_talkers.engine) == ["Ryan", "Dee", "Cleo"] + ([] if quick else ["Ryan"])
 
 
 def test_a_failing_design_voice_does_not_skip_the_clone_voice_after_it(

@@ -3,18 +3,47 @@
 Writes `logs\\verify-report.json` shaped like `GateReport` (spec 15.6) with the spec 14.6 table as
 `bench.*` checks. Every check is tolerant: a missing component becomes a failed check carrying the
 NS code and fix hint, never an exception.
+
+What the voice and memory numbers measure (card verify-limits, spec 14.6):
+- `tts.preset`, `tts.design`, `tts.clone`: the voice speaks. One sentence each, quick or full; the value is
+  the whole call in seconds (the voice program's start and model load included), and the row carries NO
+  limit: it passes when sound came back (L1).
+- `tts.rate` (full only): the speaking rate on the product's real route, ONE batch request of six sentences
+  through `/v1/audio/speech/batch`: (arrival of the last sentence - arrival of the first) / (audio seconds
+  of the sentences after the first), from the stamps the service took while it read the voice program's
+  output. Limit: the RTF target; `bench.tts_rtf` records it (L2). An engine without stamps (fake, Windows
+  speech, reference) gives the whole batch call over its audio instead, and the row's log says so.
+- `tts.start_s` (full only): seconds from the service beginning that batch to its first sentence: the voice
+  program's start, its model load and one sentence. `bench.tts_start_s` has a SOFT target of 15 s (L3).
+- `save_rtf` still gets the single calls' whole ratio (the worst), as before this card (L4).
+- `vram.idle` / `bench.idle_vram_mb`: what Nightshift left on the card, (in use after unload) minus (in use
+  before the test loaded anything of ours), read only when the supervisor's status showed none of our
+  services loaded; without such a moment the row is "n/a" with the reason and passes (L5).
+- A failed row that carries a `limit` is a missed target; a failed row without one is a part that did not
+  work (`split_failures`, L6). The exit code is unchanged: non-zero when any row failed.
+
+The sample job (`job.fake_services`, full only; card verify-job-isolated J1 to J7): the install's own
+`studio` runs `studio run --fake-services` with a home of its own, `<home>\\run\\verify-job`, made new for
+each run (real folders and files only, the install's `runtime.json` and formats copied in, never linked) and
+handed over with NIGHTSHIFT_HOME and the marker that vouches for it (`ns_common.paths.home_env`). Its data,
+Outbox, ledger, owner files and logs are its own; the install's are never written. The folder is removed when
+the check ends, pass or fail, and at the next run's start when a kill left it, and only when it is proven to
+be the one this check made (`not_ours`). A failed job's own error lines go into the row and the verify log.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -28,8 +57,8 @@ from ns_common.errors import NsError
 from ns_common.llm_client import LlmClient
 from ns_common.logging import NsLogger
 from ns_common.models import GateCheck, GateReport, Runtime
-from ns_common.paths import Paths
-from ns_common.tts_client import TtsClient
+from ns_common.paths import Paths, home_env
+from ns_common.tts_client import TtsClient, TtsItem, TtsStamp
 from ns_common.tts_timeout import save_rtf
 from ns_supervisor import check_names as names
 from ns_supervisor import procs
@@ -40,6 +69,24 @@ from ns_supervisor.gpu import SIMULATED_EVIDENCE, labelled, simulated_mark, smi_
 OWNER = "verify"
 TTS_SENTENCE = "Nightshift verification sentence. The quick brown fox jumps over the lazy dog."
 NOT_MEASURED = "short_job_s,master_job_s,nightly_run_s"
+#: The batch `tts.rate` is measured on: six plain sentences of about the length of a narration's, one per item
+#: (one chunk each), all with the first talker's voice, so the service runs them in ONE voice process.
+RATE_SENTENCES: tuple[str, ...] = (
+    "The rain had stopped by the time the last train left the station.",
+    "Nobody on the platform noticed the man with the grey umbrella.",
+    "He walked to the end of the line and waited without a word.",
+    "A light came on in the signal box, then went out again.",
+    "Somewhere in the town a church bell rang eleven times.",
+    "When the silence came back, the man and his umbrella were gone.",
+)
+#: The soft target of `bench.tts_start_s` (L3): logged when missed, never a failure.
+TTS_START_SOFT_S = 15.0
+#: Supervisor states of a service that holds nothing on the card (`ns_supervisor.core`: stopped, starting,
+#: ready, stopping, error; "error" is a service that crashed out and has no process).
+UNLOADED_STATES = ("stopped", "error")
+#: The services that load a model onto the graphics card (`ns_supervisor.services`: the memory index and the
+#: Dashboard run on the processor, and the Dashboard is up during every `ns verify`).
+CARD_SERVICES = ("llama", "tts", "whisper")
 #: How long the first talker (the preset: the engine check, which carries the cold load of the voice engine)
 #: may take to answer, as it always had, and how long each further talker may take. Up to three talkers are
 #: spoken one after the other, and 0.1.14's updater runs `ns verify --quick` with no timeout of its own while
@@ -120,6 +167,77 @@ def read_talker_warnings(paths: Paths) -> list[str]:
     except (OSError, ValueError, KeyError, TypeError):
         return []
     return talker_warnings(checks)
+
+
+def speaking_rate(stamps: tuple[TtsStamp, ...] | None) -> tuple[float, float, float] | None:
+    """(rate, start seconds, audio seconds after the first) from a batch's stamps (L2, L3); None when they
+    cannot give one: no stamps, one utterance, no audio after the first, or two utterances that did not
+    arrive one after the other (a voice program that held its output and wrote it at once would otherwise
+    give a rate near 0, a pass measured on nothing)."""
+    if not stamps or len(stamps) < 2:
+        return None
+    after = sum(s.audio_s for s in stamps[1:])
+    if after <= 0 or any(b.at_s <= a.at_s for a, b in zip(stamps, stamps[1:], strict=False)):
+        return None
+    return (stamps[-1].at_s - stamps[0].at_s) / after, stamps[0].at_s, after
+
+
+def nothing_of_ours_loaded(status: dict[str, Any]) -> str | None:
+    """None when the supervisor's status shows none of our services loaded and nobody holding the card; else
+    the reason, in words (L5: only then is the card's memory in use a baseline of the other programs)."""
+    services = status.get("services")
+    if not isinstance(services, dict):
+        return "the supervisor's status named no services"
+    loaded = sorted(
+        str(n) for n, s in services.items()
+        if n in CARD_SERVICES
+        and (not isinstance(s, dict) or s.get("state") not in UNLOADED_STATES or s.get("pid") is not None)
+    )
+    if loaded:
+        return f"{', '.join(loaded)} {'was' if len(loaded) == 1 else 'were'} loaded"
+    if status.get("gpu_owner"):
+        return f"{status.get('gpu_owner')} held the graphics card"
+    return None
+
+
+#: `bench.*` rows that record the same figure as a check row: when both miss, it is ONE target missed, said
+#: by the check row (the studio PC's report counted the voice speed and the idle memory twice each).
+MIRRORS: dict[str, str] = {"bench.tts_rtf": names.TTS_RATE, "bench.idle_vram_mb": names.VRAM_IDLE}
+
+
+def split_failures(checks: list[GateCheck]) -> tuple[list[GateCheck], list[GateCheck]]:
+    """(targets missed, parts that did not work) of a report's failed rows (L6).
+
+    The rule, with no field of its own: a failed row that carries a `limit` measured something and missed
+    its target; a failed row without one is a part that did not work. A bench row whose check row (`MIRRORS`)
+    also failed is that same target and is not counted again.
+    """
+    failed = [c for c in checks if not c.passed]
+    gone = {c.name for c in failed}
+    missed = [c for c in failed if c.limit and MIRRORS.get(c.name) not in gone]
+    return missed, [c for c in failed if not c.limit]
+
+
+def _missed(c: GateCheck) -> str:
+    return f"{c.name} {c.value} (limit {c.limit})"
+
+
+def verdict(checks: list[GateCheck]) -> str:
+    """The report in one plain sentence (the printed table's last line, L6)."""
+    missed, broken = split_failures(checks)
+    if not missed and not broken:
+        return "ALL CHECKS PASSED"
+    said: list[str] = []
+    if broken:
+        n = len(broken)
+        said.append(f"{n} {'part' if n == 1 else 'parts'} did not work: {', '.join(c.name for c in broken)}.")
+    else:
+        said.append("Everything works.")
+    if missed:
+        n = len(missed)
+        rows = "; ".join(_missed(c) for c in missed)
+        said.append(f"{n} {'target' if n == 1 else 'targets'} missed: {rows}.")
+    return " ".join(said)
 
 
 class Controller(Protocol):
@@ -255,29 +373,451 @@ def x264_probe() -> None:
     )
 
 
-def fake_job(paths: Paths) -> float | None:
-    """`studio run --fake-services --format shorts_only --count 1`; seconds, or None if studio is absent."""
-    exe = paths.venvs / "studio" / "Scripts" / "studio.exe"
-    studio = str(exe) if exe.exists() else shutil.which("studio")
-    if studio is None:
+# -- the sample job's own home (card verify-job-isolated) ----------------------------------------------------
+#: `<home>\run\verify-job`: the sample job's whole home, made new for each full run (J1).
+SCRATCH_NAME = "verify-job"
+#: The file this check writes FIRST into the folder it made; nothing without it is ever removed (J6).
+SCRATCH_MARKER = "nightshift-verify-job.json"
+SCRATCH_KIND = "ns verify sample job"
+JOB_ARGS: tuple[str, ...] = ("run", "--fake-services", "--format", "shorts_only", "--count", "1")
+JOB_COMMAND = "studio " + " ".join(JOB_ARGS)
+JOB_TIMEOUT_S = 1800.0
+#: The studio's own warning and error lines a failed sample job leaves in the verify log (J2).
+JOB_LOG_LINES = 20
+
+
+@dataclass(frozen=True)
+class JobRun:
+    """What the sample job gave: its seconds, and what the clean-up has to say (a file that stayed)."""
+
+    seconds: float
+    notes: tuple[str, ...] = ()
+
+
+def scratch_home(paths: Paths) -> Path:
+    r"""`<home>\run\verify-job`: where the sample job lives while it runs (and nowhere else)."""
+    return paths.home / "run" / SCRATCH_NAME
+
+
+#: The name-surrogate bit of a reparse tag (`IsReparseTagNameSurrogate`): set for a junction (mount point,
+#: 0xA0000003), a symbolic link (0xA000000C) and every other tag that names another place; not set for cloud
+#: files (OneDrive, 0x9000001A and its kin), which are ordinary files and folders to us.
+NAME_SURROGATE = 0x20000000
+
+
+def link_by_stat(mode: int, attributes: int, tag: int) -> bool:
+    """Is a name with this `lstat` (mode, Windows file attributes, reparse tag) a link: a symbolic link, a
+    junction, or any reparse point whose tag names another place? A reparse point of another kind (a cloud
+    file or folder) is not (review of block E2, finding 7)."""
+    if stat.S_ISLNK(mode):
+        return True
+    return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT) and bool(tag & NAME_SURROGATE)
+
+
+def _is_link(p: Path) -> bool:
+    """True for a symbolic link, a junction or any other name-surrogate reparse point (never followed, never
+    entered); `link_by_stat`."""
+    try:
+        st = os.lstat(p)
+    except OSError:
+        return False
+    return link_by_stat(
+        st.st_mode, getattr(st, "st_file_attributes", 0), getattr(st, "st_reparse_tag", 0)
+    )
+
+
+def _real(p: Path) -> str:
+    return os.path.normcase(os.path.realpath(p))
+
+
+def _mark(folder: Path, pids: Sequence[int]) -> None:
+    """Write (or rewrite) the folder's marker: what it is, whose home, and the processes that use it."""
+    body = {"kind": SCRATCH_KIND, "home": str(folder.parent.parent), "pids": [int(p) for p in pids],
+            "made": datetime.now().isoformat(timespec="seconds")}
+    write_text_atomic(folder / SCRATCH_MARKER, json.dumps(body) + "\n")
+
+
+def _marker_of(folder: Path) -> dict[str, Any] | None:
+    f = folder / SCRATCH_MARKER
+    if _is_link(f) or not f.is_file():
         return None
-    t0 = time.perf_counter()
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("kind") == SCRATCH_KIND else None
+
+
+def pid_alive(pid: int) -> bool | None:
+    """True while a process with this pid exists, False when it is gone, None when that cannot be told (a
+    `tasklist` that did not run or answered nothing; review of block E2, finding 6: the caller then leaves the
+    folder). A reused pid only keeps a folder one run longer."""
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return None
+        return True
     try:
         r = subprocess.run(
-            [studio, "run", "--fake-services", "--format", "shorts_only", "--count", "1"],
-            capture_output=True,
-            text=True,
-            timeout=1800,
-            check=False,
-            env=child_env(),
-            creationflags=window_flags(),
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        raise NsError("NS-E202", f"fake-services job could not run: {e}") from e
-    if r.returncode != 0:
-        tail = " | ".join((r.stderr or r.stdout).strip().splitlines()[-3:])
-        raise NsError("NS-E202", f"fake-services job exited {r.returncode}: {tail}")
-    return round(time.perf_counter() - t0, 1)
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True,
+            timeout=15, check=False, env=child_env(), creationflags=window_flags(),
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = (r.stdout or "").strip()
+    if r.returncode != 0 or not out:
+        return None
+    return out.startswith('"')  # a CSV row names the process; "INFO: No tasks ..." (any language) does not
+
+
+def not_ours(paths: Paths, alive: Callable[[int], bool | None] = pid_alive) -> str | None:
+    r"""Why what is at `<home>\run\verify-job` must be left alone (J6), in words; None only when it is
+    provably the folder this check made and no live process of another run uses it:
+    `<home>\run` is no link; the name is no link and a real folder; its resolved path is directly under the
+    resolved `<home>\run`; it carries this check's marker file; no process the marker names (another
+    `ns verify`, or the studio it started, which may outlive a killed `ns verify`) is still running."""
+    run = paths.home / "run"
+    folder = run / SCRATCH_NAME
+    if _is_link(run):
+        return f"{run} is a link, so {folder} may lead outside this install"
+    if _is_link(folder):
+        return f"{folder} is a link, not the folder this check made"
+    if not folder.is_dir():
+        return f"{folder} is not a folder"
+    real = Path(os.path.realpath(folder))
+    if os.path.normcase(real.name) != os.path.normcase(SCRATCH_NAME) or _real(real.parent) != _real(run):
+        return f"{folder} leads to {real}, outside {run}"
+    mark = _marker_of(folder)
+    if mark is None:
+        return (f"{folder} has no {SCRATCH_MARKER} of this check, so it is not this test's folder. Move that "
+                f"folder out of {run}, then run the test again")
+    pids = mark.get("pids")
+    others = [p for p in (pids if isinstance(pids, list) else []) if isinstance(p, int) and p != os.getpid()]
+    said = {p: alive(p) for p in others}
+    busy = [p for p, up in said.items() if up]
+    if busy:
+        return f"{folder} is in use by another model test (process {busy[0]} still runs)"
+    unknown = [p for p, up in said.items() if up is None]
+    if unknown:  # not known is alive (finding 6): the folder waits for a run that can tell
+        return (f"{folder} may be in use by another model test (whether process {unknown[0]} still runs "
+                "could not be told)")
+    return None
+
+
+def _remove_entry(p: Path, stayed: list[Path]) -> None:
+    """Remove ONE name: a file, or a link itself (`rmdir` takes a junction or a folder link away without
+    entering it, `unlink` a file link). A read-only file gets its write bit first."""
+    if _is_link(p):
+        try:
+            os.rmdir(p)
+            return
+        except OSError:
+            pass
+        try:
+            os.unlink(p)
+        except OSError:
+            stayed.append(p)
+        return
+    try:
+        os.unlink(p)
+        return
+    except PermissionError:
+        pass
+    except FileNotFoundError:
+        return
+    except OSError:
+        stayed.append(p)
+        return
+    try:
+        os.chmod(p, stat.S_IWRITE)
+        os.unlink(p)
+    except FileNotFoundError:
+        return
+    except OSError:
+        stayed.append(p)
+
+
+def _remove_tree(folder: Path, keep: str | None = None) -> list[Path]:
+    """Remove `folder` and everything in it WITHOUT EVER FOLLOWING A LINK: a link inside is removed as a
+    name, its target is never entered. A hard link is a name too: its other names keep the file. Returns
+    what stayed (a file another program holds open, a folder that is then not empty).
+
+    `keep` (the marker's name) is left in `folder`, and `folder` itself then stays: the caller removes the
+    marker LAST, only once everything else went, so a folder that kept a held file still carries the proof
+    that it is this check's and the next run removes it."""
+    stayed: list[Path] = []
+    try:
+        with os.scandir(folder) as it:
+            entries = list(it)
+    except FileNotFoundError:
+        return stayed
+    except OSError:
+        return [folder]
+    for e in entries:
+        p = Path(e.path)
+        if keep is not None and e.name == keep:
+            continue
+        if not _is_link(p) and e.is_dir(follow_symlinks=False):
+            stayed += _remove_tree(p)
+        else:
+            _remove_entry(p, stayed)
+    if keep is not None:
+        return stayed
+    if not _rmdir(folder) and not stayed:
+        stayed.append(folder)
+    return stayed
+
+
+def _rmdir(folder: Path) -> bool:
+    """`os.rmdir` (it removes nothing but an empty folder); a read-only folder of the scratch home gets its
+    read-only attribute cleared first. True when the folder is gone. Never for a link: callers checked."""
+    for attempt in (1, 2):
+        try:
+            os.rmdir(folder)
+            return True
+        except FileNotFoundError:
+            return True
+        except PermissionError:
+            if attempt == 2:
+                return False
+            try:
+                os.chmod(folder, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+            except OSError:
+                return False
+        except OSError:
+            return False
+    return False
+
+
+def _empty_unmarked(paths: Paths) -> bool:
+    r"""True when `<home>\run\verify-job` is a real, EMPTY folder directly under a `run` that is no link and
+    has no marker: what a kill between its `mkdir` and its marker, or between the marker's removal and its
+    `rmdir`, leaves (review of block E2, finding 3). Removing it with `os.rmdir` can remove nothing else."""
+    run = paths.home / "run"
+    folder = run / SCRATCH_NAME
+    if _is_link(run) or _is_link(folder) or not folder.is_dir():
+        return False
+    if _real(Path(os.path.realpath(folder)).parent) != _real(run) or _marker_of(folder) is not None:
+        return False
+    try:
+        with os.scandir(folder) as it:
+            return next(it, None) is None
+    except OSError:
+        return False
+
+
+def remove_scratch(paths: Paths, alive: Callable[[int], bool | None] = pid_alive) -> str | None:
+    """Remove the sample job's folder when `not_ours` proves it is this check's (J6). Never raises.
+
+    Returns the sentence for the row, or None when nothing was there or it all went: what was left alone and
+    why, or what stayed (a held file) with the word that the next full `ns verify` removes it."""
+    folder = scratch_home(paths)
+    if not os.path.lexists(folder):
+        return None
+    try:
+        why = not_ours(paths, alive)
+    except Exception as e:  # tolerant: a folder that cannot be looked at is left alone
+        why = f"{folder} could not be looked at ({type(e).__name__}: {e})"
+    if why is not None:
+        if _empty_unmarked(paths) and _rmdir(folder):  # a kill's empty leftover: rmdir takes nothing else
+            return None
+        return f"Left alone: {why}."
+    if _is_link(folder):  # once more, the moment before it is entered
+        return f"Left alone: {folder} became a link."
+    stayed = _remove_tree(folder, keep=SCRATCH_MARKER)
+    if not stayed:  # everything else went: now the marker, then the empty folder
+        _remove_entry(folder / SCRATCH_MARKER, stayed)
+        if not stayed and not _rmdir(folder):
+            stayed.append(folder)
+    if not stayed:
+        return None
+    first = stayed[0]
+    return (f"{len(stayed)} {'item' if len(stayed) == 1 else 'items'} of the sample job's folder stayed "
+            f"(another program holds it open: {first}); the next full ns verify removes {folder}.")
+
+
+def _copy_settings(paths: Paths, folder: Path) -> None:
+    """The install's settings the job reads, copied as files (never linked): `runtime.json` (encoder,
+    profile, dev mode) and the owner's formats. Notifications are off in the copy: the job shows no toast."""
+    config = folder / "config"
+    config.mkdir()
+    src = paths.runtime_file
+    if src.is_file() and not _is_link(src):
+        shutil.copyfile(src, config / src.name)
+    formats = paths.formats_dir
+    if formats.is_dir() and not _is_link(formats):
+        (config / formats.name).mkdir()
+        for f in formats.iterdir():
+            if f.is_file() and not _is_link(f):
+                shutil.copyfile(f, config / formats.name / f.name)
+    (config / "dashboard.json").write_text('{"notifications": false}\n', encoding="utf-8")
+
+
+def make_scratch(paths: Paths) -> Path:
+    r"""Make `<home>\run\verify-job` new, its marker FIRST, then the settings it reads and its own `tmp`.
+
+    Raises NsError when it cannot (`<home>\run` is a link; the name is taken this moment by another run).
+    A folder made without its marker is taken away again at once (it is empty), so no folder of this name
+    is ever left that this check could not prove to be its own."""
+    run = paths.home / "run"
+    run.mkdir(parents=True, exist_ok=True)
+    if _is_link(run):
+        raise NsError("NS-E202", f"{run} is a link; the sample job is not run through it")
+    folder = run / SCRATCH_NAME
+    try:
+        folder.mkdir()
+    except FileExistsError as e:
+        raise NsError("NS-E202", f"{folder} was made by another model test this moment") from e
+    try:
+        _mark(folder, [os.getpid()])
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.rmdir(folder)
+        raise
+    try:
+        _copy_settings(paths, folder)
+        (folder / "tmp").mkdir()
+    except BaseException:  # half made (a full disk): it goes again, by the same proof as ever
+        remove_scratch(paths, lambda _pid: False)  # (only this process is in the marker yet)
+        raise
+    return folder
+
+
+def _tool_env(paths: Paths) -> dict[str, str]:
+    r"""NS_FFMPEG and NS_FFPROBE as this install finds them (an override, PATH, or its own `bin\ffmpeg`): the
+    job's home has no `bin`, and the studio asks those variables first."""
+    out: dict[str, str] = {}
+    tools = (("NS_FFMPEG", "ffmpeg", ffmpeg.ffmpeg_exe), ("NS_FFPROBE", "ffprobe", ffmpeg.ffprobe_exe))
+    for var, name, find in tools:
+        try:
+            out[var] = find()
+        except Exception:  # noqa: BLE001 - not found here: the job says so itself
+            own = paths.home / "bin" / "ffmpeg" / f"{name}.exe"
+            if own.is_file():
+                out[var] = str(own)
+    return out
+
+
+def _job_env(paths: Paths, folder: Path) -> dict[str, str]:
+    """The job's environment: this one, with its home handed over on purpose and its temp files inside it."""
+    tmp = str(folder / "tmp")
+    return child_env({**_tool_env(paths), **home_env(folder), "TEMP": tmp, "TMP": tmp})
+
+
+def _studio_lines(folder: Path) -> list[str]:
+    """The studio's own warning and error lines from the job's logs (the last `JOB_LOG_LINES`)."""
+    lines: list[str] = []
+    for f in sorted((folder / "logs").glob("studio-*.jsonl")):
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for raw in text.splitlines():
+            try:
+                rec = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(rec, dict) and rec.get("level") in ("WARN", "ERROR"):
+                data = rec.get("data") if isinstance(rec.get("data"), dict) else {}
+                code = f" {data.get('code')}" if data and data.get("code") else ""
+                msg = rec.get("msg") or ""
+                lines.append(f"{rec.get('level')} {rec.get('event')}{code}" + (f": {msg}" if msg else ""))
+    return lines[-JOB_LOG_LINES:]
+
+
+def _run_studio(
+    command: Sequence[str], env: dict[str, str], folder: Path, timeout_s: float
+) -> tuple[int, str]:
+    """Start the job, put its pid in the marker (a later run then sees it while it lives), wait for it.
+
+    At the time limit the job and everything it started are ended (`procs.kill_tree`)."""
+    proc = subprocess.Popen(
+        [*command, *JOB_ARGS], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", env=env, cwd=str(folder), creationflags=window_flags(),
+    )
+    try:
+        with contextlib.suppress(OSError):
+            _mark(folder, [os.getpid(), proc.pid])
+        try:
+            out, _ = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired as e:
+            procs.kill_tree(proc.pid)
+            proc.kill()
+            try:
+                out, _ = proc.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                out = ""
+            tail = " | ".join((out or "").strip().splitlines()[-3:])
+            raise NsError("NS-E202", f"the sample job did not end within {timeout_s:.0f} s: {tail}") from e
+    finally:
+        if proc.poll() is None:  # an exception of our own in the wait: the job does not run on unseen
+            procs.kill_tree(proc.pid)
+            proc.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.communicate(timeout=30)
+    return int(proc.returncode), out or ""
+
+
+def fake_job(
+    paths: Paths, *, command: Sequence[str] | None = None, timeout_s: float = JOB_TIMEOUT_S,
+    alive: Callable[[int], bool | None] = pid_alive,
+) -> JobRun | None:
+    """`studio run --fake-services --format shorts_only --count 1` in its own home (card verify-job-isolated).
+
+    None when studio is not installed. Raises NsError when the job failed or could not get its own folder;
+    the folder is removed in every case (`remove_scratch`), and what stayed or was left alone is said in the
+    row. `command` is the studio program (default: this install's `venvs\\studio\\Scripts\\studio.exe`)."""
+    if command is None:
+        exe = paths.venvs / "studio" / "Scripts" / "studio.exe"
+        studio = str(exe) if exe.exists() else shutil.which("studio")
+        if studio is None:
+            return None
+        command = [studio]
+    # D-48 for the install: the job's own gate looks at the job's home, while it runs the install's programs
+    from installer.stage2.web import venvrepair
+
+    why = venvrepair.home_refusal(paths.home)
+    if why is not None:
+        raise NsError(venvrepair.CODE, why)
+    folder = scratch_home(paths)
+    before = remove_scratch(paths, alive)  # what a killed earlier run left (J2), only when it is ours (J6)
+    if os.path.lexists(folder):
+        raise NsError("NS-E202", f"The sample job was not run: it needs {folder} new. "
+                                 f"{before or 'It is still there.'} Nothing of this install was changed.")
+    log = NsLogger("verify", paths.logs)
+    made = False
+    try:
+        make_scratch(paths)
+        made = True
+        t0 = time.perf_counter()
+        try:
+            rc, out = _run_studio(command, _job_env(paths, folder), folder, timeout_s)
+        except OSError as e:
+            raise NsError("NS-E202", f"fake-services job could not run: {e}") from e
+        secs = round(time.perf_counter() - t0, 1)
+        if rc != 0:
+            tail = " | ".join(out.strip().splitlines()[-3:])
+            said = _studio_lines(folder)
+            log.warn("sample_job_failed", exit=rc, output=out.strip().splitlines()[-JOB_LOG_LINES:],
+                     studio=said)
+            last = f" The studio's last error: {said[-1]}." if said else ""
+            raise NsError("NS-E202", f"fake-services job exited {rc}: {tail}.{last}")
+    except BaseException as e:
+        note = remove_scratch(paths, alive) if made else None
+        if note:
+            log.warn("sample_job_folder", note)
+            if isinstance(e, NsError):
+                raise NsError(e.code, f"{e.detail} {note}") from e
+        raise
+    note = remove_scratch(paths, alive)
+    if note:
+        log.warn("sample_job_folder", note)
+    return JobRun(secs, (note,) if note else ())
 
 
 def tts_engine_kind(base_url: str) -> str | None:
@@ -299,13 +839,15 @@ class Deps:
     whisper: Callable[[Paths, Runtime], float] = whisper_probe
     nvenc: Callable[[], None] = nvenc_probe
     x264: Callable[[], None] = x264_probe       # a dev install probes the CPU encoder instead of NVENC
-    job: Callable[[Paths], float | None] = fake_job
+    # the sample job (a test's stand-in may give its seconds alone)
+    job: Callable[[Paths], JobRun | float | None] = fake_job
     # None: this install's nvidia-smi (`gpu.smi_source`: the simulated card under `fake_gpu`, H-10)
     vram_used: Callable[[], int | None] | None = None
     gpu_name: Callable[[], str | None] | None = None
     ram: Callable[[], float | None] = ram_gb
     tts_engine: Callable[[str], str | None] = tts_engine_kind
     sleep: Callable[[float], None] = time.sleep
+    clock: Callable[[], float] = time.perf_counter  # times the voice's calls (tests give a fake one)
 
 
 @dataclass
@@ -406,6 +948,61 @@ def run_verify(
     if not quick:
         rec.run(names.SUPERVISOR_COLD_START, cold_start)
 
+    # A real install on a PC without an NVIDIA card (profile cpu-dev, answer `allow_cpu`) renders with libx264
+    # and has no nvidia-smi: the encoder check runs on the processor and nothing measures video memory.
+    no_card = rt.profile == "cpu-dev"
+
+    # -- the card's memory before the test loads anything of ours (L5) -----------------------------------
+    # Read only when the supervisor's own status shows none of our services loaded (quick: at the start;
+    # full: after the cold start stopped them). Without such a moment `vram.idle` compares nothing, says why.
+    baseline: dict[str, Any] = {}
+
+    def read_baseline() -> None:
+        if rt.dev_mode or no_card or mark is not None:
+            return
+        try:
+            why = nothing_of_ours_loaded(ctl.status())
+        except NsError as e:
+            why = f"the supervisor's status could not be read ({e.code})"
+        except Exception as e:  # tolerant by design: a baseline that cannot be had is said, never guessed
+            why = f"the supervisor's status could not be read ({type(e).__name__})"
+        if why is None:
+            used = settled()
+            if used is None:
+                why = "nvidia-smi gave no figure"
+            else:
+                baseline["mb"] = float(used)
+        if why is not None:
+            baseline["why"] = why
+        rec.log.info("vram_baseline", mb=baseline.get("mb"), waited_s=baseline.get("waited_s"),
+                     why=baseline.get("why"))  # fmt: skip
+
+    def reading() -> int | None:
+        try:
+            return vram_used()
+        except Exception:
+            return None
+
+    def settled() -> int | None:
+        """The card's memory in use once it stopped falling (review of block E2, finding 5): a model stopped
+        a moment ago may still be counted for up to a few seconds (on the studio PC about one), and a
+        baseline that held it would hide a leak. The idle row's own allowance: at most 10 x 0.5 s."""
+        used = reading()
+        waited = 0.0
+        for _ in range(10):
+            if used is None:
+                break
+            d.sleep(0.5)
+            waited += 0.5
+            later = reading()
+            if later is None or later >= used:
+                break
+            used = later
+        baseline["waited_s"] = waited
+        return used
+
+    read_baseline()
+
     # -- llama -----------------------------------------------------------------------------
     llama: list[Endpoint] = []
 
@@ -480,6 +1077,65 @@ def run_verify(
 
     rec.run(names.TTS_START, tts_start, "NS-E203")
 
+    def speaking(client: TtsClient, voice: str, out_dir: Path) -> None:
+        """`tts.rate` and `tts.start_s` (L2, L3): six sentences in ONE batch request, the product's own route.
+
+        A batch that fails is a part that did not work (a row without a limit); a rate over the target is a
+        missed target (the row carries the limit); a slow start is logged only (a soft bench).
+        """
+        say = progress or (lambda line: None)
+        say(f"timing the voice {voice} on six sentences in one request ...")
+        items = [TtsItem(f"rate-{k + 1}", text, voice) for k, text in enumerate(RATE_SENTENCES)]
+        rec.log.info("speaking_rate", voice=voice, sentences=len(items))
+        t0 = d.clock()
+        try:
+            batch = client.speak_batch_stamped(items, out_dir)
+        except Exception as e:  # tolerant by design: the row says what failed
+            err = e if isinstance(e, NsError) else NsError("NS-E310", f"{type(e).__name__}: {e}")
+            rec.log.warn("speaking_rate_failed", code=err.code, detail=err.detail)
+            rec.checks.append(GateCheck(
+                name=names.TTS_RATE, passed=False,
+                log=f"six sentences in one request with the voice {voice!r} failed: {explain(err)}",
+            ))
+            return
+        whole_s = d.clock() - t0
+        audio_s = sum(f.seconds for f in batch.files)
+        got = speaking_rate(batch.stamps)
+        if got is not None:
+            rate, start_s, after_s = got
+            how = (f"speaking only: first to last of {len(batch.stamps or ())} sentences in one request, "
+                   f"over the {after_s:.2f} s of audio after the first (the whole call took {whole_s:.1f} s)")
+        elif audio_s > 0:
+            rate, start_s = whole_s / audio_s, None
+            why = ("its per-sentence times did not arrive one after the other" if batch.stamps else
+                   "this voice engine gives no per-sentence times (fake, Windows speech, reference engine)")
+            how = (f"the whole call over its audio: {why}; {len(batch.files)} sentences, {audio_s:.2f} s "
+                   "of audio")
+        else:
+            rec.checks.append(GateCheck(
+                name=names.TTS_RATE, passed=False,
+                log=f"six sentences in one request with the voice {voice!r} came back without sound",
+            ))
+            return
+        ok = rate <= tg.rtf
+        rec.checks.append(GateCheck(
+            name=names.TTS_RATE, passed=ok, value=round(rate, 3), limit=f"<= {tg.rtf} RTF", log=how
+        ))
+        rec.bench("tts_rtf", round(rate, 3), f"<= {tg.rtf}", ok)
+        if start_s is None:
+            rec.checks.append(GateCheck(
+                name=names.TTS_START_S, passed=True, value="n/a",
+                log="no usable per-sentence times came back, so the start is not told apart from speaking",
+            ))
+            return
+        rec.checks.append(GateCheck(
+            name=names.TTS_START_S, passed=True, value=round(start_s, 1),
+            log="seconds to the first sentence of that request: the voice program's start, its model load "
+                "and one sentence",
+        ))  # fmt: skip
+        soft = f"<= {TTS_START_SOFT_S:.0f} s (soft)"
+        rec.bench("tts_start_s", round(start_s, 1), soft, start_s <= TTS_START_SOFT_S, soft=True)
+
     def tts_modes() -> Out:
         base_url = _need(tts[0] if tts else None, "tts").base_url
         client = TtsClient(base_url, timeout_s=FIRST_TALKER_TIMEOUT_S)
@@ -494,21 +1150,24 @@ def run_verify(
         picked = [(m, by_mode[m]) for m in order if m in by_mode]
         picked = picked or list(by_mode.items())[:1]
         # One sentence with every installed talker, quick or not (the Base talker of clone voices and
-        # VoiceDesign are tested at install, not at the first video); only the RTF bench is left out of
-        # quick. The first talker (the preset) is the engine check: when it does not speak its row fails, as
-        # it always did. A designed or cloned voice that does not speak is a WARNING row naming the mode and
-        # the voice (`talker_warning`): the run, an update and setup go on, and the next talker is still
-        # spoken.
+        # VoiceDesign are tested at install, not at the first video): it proves the voice SPEAKS, so the row
+        # carries no limit and its value is the whole call in seconds (L1; one sentence is one start of the
+        # voice program and its model, so its time says nothing about speaking speed). The first talker (the
+        # preset) is the engine check: when it does not speak its row fails, as it always did. A designed or
+        # cloned voice that does not speak is a WARNING row naming the mode and the voice (`talker_warning`):
+        # the run, an update and setup go on, and the next talker is still spoken. The speed is measured
+        # after them, full run only, on the batch route (`speaking`).
         say = progress or (lambda line: None)
         rtfs: list[float] = []
         failed: list[str] = []
+        first_spoke = False
         try:
             with tempfile.TemporaryDirectory(prefix="ns-verify-") as tmp:
                 for i, (mode, voice) in enumerate(picked):
                     line = f"speaking a test sentence with the {mode} voice {voice} ..."
                     say(line)
                     rec.log.info("speaking", mode=mode, voice=voice)
-                    t0 = time.perf_counter()
+                    t0 = d.clock()
                     try:
                         audio_s = (client if i == 0 else later).speak(
                             TTS_SENTENCE, voice, 1.0, Path(tmp) / f"{mode}.wav"
@@ -531,36 +1190,35 @@ def run_verify(
                         failed.append(mode)
                         rec.checks.append(talker_warning(mode, voice, "the answer had no sound"))
                         continue
-                    rtf = (time.perf_counter() - t0) / audio_s if audio_s > 0 else float("inf")
-                    rtfs.append(rtf)
-                    ok = audio_s > 0 and (quick or rtf <= tg.rtf)
+                    whole_s = d.clock() - t0
+                    if audio_s > 0:
+                        rtfs.append(whole_s / audio_s)
+                        first_spoke = first_spoke or i == 0
                     rec.checks.append(
                         GateCheck(
                             name=names.tts_mode(mode),
-                            passed=ok,
-                            value=round(rtf, 3),
-                            limit=f"<= {tg.rtf} RTF" if not quick else None,
+                            passed=audio_s > 0,
+                            value=round(whole_s, 3),
+                            limit=None,
                             log=f"voice={voice} audio_s={audio_s}",
                         )
                     )
+                if not quick and first_spoke:
+                    speaking(client, picked[0][1], Path(tmp) / "rate")
         finally:
             client.client.close()
             later.client.close()
         if rtfs:
-            worst = max(rtfs)
-            save_rtf(paths, worst, quick=quick)  # the voice stage sizes its batch time limit from it (gap L4)
-            if not quick:
-                rec.bench("tts_rtf", round(worst, 3), f"<= {tg.rtf}", worst <= tg.rtf)
+            # L4: the voice stage sizes its batch time limit from this figure, so it keeps getting exactly
+            # what it got before card verify-limits: the single calls' whole ratio (start and load included).
+            # The rate of `tts.rate` is smaller, and nothing yet shows a real job's limit may shrink to it.
+            save_rtf(paths, max(rtfs), quick=quick)
         note = "modes exercised" if not failed else f"modes exercised; did not speak: {', '.join(failed)}"
         return Out(True, ",".join(m for m, _ in picked), log=note)
 
     rec.run(names.TTS_VOICES, tts_modes, "NS-E202")
     if tts:
         release("tts")
-
-    # A real install on a PC without an NVIDIA card (profile cpu-dev, answer `allow_cpu`) renders with libx264
-    # and has no nvidia-smi: the encoder check runs on the processor and nothing measures video memory.
-    no_card = rt.profile == "cpu-dev"
 
     # -- whisper ---------------------------------------------------------------------------
     def whisper() -> Out:
@@ -590,10 +1248,12 @@ def run_verify(
     if not quick:
 
         def job() -> Out:
-            secs = d.job(paths)
-            if secs is None:
+            got = d.job(paths)
+            if got is None:
                 return Out(True, "skipped", log="studio is not installed yet")
-            return Out(True, secs, log="studio run --fake-services --format shorts_only --count 1")
+            run = got if isinstance(got, JobRun) else JobRun(float(got))
+            said = f"{JOB_COMMAND}, in a home of its own (run\\{SCRATCH_NAME}), removed when it ended"
+            return Out(True, run.seconds, log=" ".join([said + ".", *run.notes]))
 
         rec.run(names.JOB_FAKE_SERVICES, job, "NS-E202")
 
@@ -608,17 +1268,28 @@ def run_verify(
             ctl.stop_all()
         except NsError as e:  # no supervisor means nothing of ours is loaded; still measure the GPU
             rec.log.warn("stop_all_failed", e.detail)
+        base = baseline.get("mb")
         used: int | None = None
-        for _ in range(10):
+        for _ in range(10):  # the driver frees a stopped process's memory within a few seconds
             used = vram_used()
-            if used is None or used <= tg.idle_vram_mb:
+            if used is None or base is None or used - base <= tg.idle_vram_mb:
                 break
             d.sleep(0.5)
         if used is None:
             raise NsError("NS-E102", "nvidia-smi is not available")
-        ok = used <= tg.idle_vram_mb
-        rec.bench("idle_vram_mb", float(used), f"<= {tg.idle_vram_mb:.0f} MB", ok)
-        return Out(ok, float(used), f"<= {tg.idle_vram_mb:.0f} MB", "GPU memory in use after unload")
+        if base is None:
+            return Out(True, "n/a", log=(
+                f"{used:.0f} MB in use after unload, not compared: what other programs held could not be "
+                f"read at a moment with none of Nightshift's models loaded ({baseline.get('why')})"
+            ))  # fmt: skip
+        ours = max(0.0, float(used) - base)  # (other programs may have freed memory meanwhile: never below 0)
+        limit = f"<= {tg.idle_vram_mb:.0f} MB"
+        ok = ours <= tg.idle_vram_mb
+        rec.bench("idle_vram_mb", ours, limit, ok)
+        waited = float(baseline.get("waited_s") or 0.0)
+        said = (f"{used:.0f} MB in use, {base:.0f} MB of it held by other programs before the test (read "
+                f"once it stopped falling, after {waited:.1f} s)")
+        return Out(ok, ours, limit, said)
 
     rec.run(names.VRAM_IDLE, idle_vram, "NS-E102")
 
@@ -665,7 +1336,8 @@ def format_lines(report: GateReport) -> list[str]:
         lines.append(f"[{mark}] {c.name}{val}{lim}")
         if c.log and (not c.passed or warn or c.log.startswith("NS-W")):
             lines.append(f"       {c.log}")
-    result = "ALL CHECKS PASSED" if report.passed else "SOME CHECKS FAILED"
+    # L6: a failed row is said as a missed target (it carries its limit) or a part that did not work
+    result = verdict(report.checks) if not report.passed else "ALL CHECKS PASSED"
     if report.passed and warned:
         result += " (a voice did not speak: see the WARN lines above)"
     lines.append("Result: " + result)

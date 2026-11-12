@@ -61,12 +61,16 @@ def test_full_report_against_stub_services(engine: tuple[Paths, Runtime, SyncSup
         "nvenc.probe",
         "job.fake_services",
         "vram.idle",
+        "tts.rate",       # card verify-limits: the speed of one batch (the stub stamps it at 0.2)
+        "tts.start_s",
         "bench.model_load_s",
         "bench.code_tok_s",
         "bench.tts_rtf",
+        "bench.tts_start_s",
         "bench.idle_vram_mb",
     }
-    assert set(report.benchmarks) == {"model_load_s", "code_tok_s", "tts_rtf", "idle_vram_mb"}
+    assert set(report.benchmarks) == {"model_load_s", "code_tok_s", "tts_rtf", "tts_start_s", "idle_vram_mb"}
+    assert report.benchmarks["tts_rtf"] == 0.2 and report.benchmarks["tts_start_s"] == 1.0
     assert report.benchmarks["code_tok_s"] == 42.0
     assert report.machine["gpu"] == "Test GPU" and report.machine["targets"] == "32gb"
     assert report.slice == "verify"
@@ -191,7 +195,8 @@ def test_format_lines_marks_failures() -> None:
     )
     lines = verify.format_lines(rep)
     assert lines[0].startswith("[PASS] a = 1.0") and lines[1].startswith("[FAIL] b")
-    assert "Hint: y" in lines[2] and lines[-1].endswith("SOME CHECKS FAILED")
+    # card verify-limits L6 (stale: the last line said "SOME CHECKS FAILED"): it says which kind, in words
+    assert "Hint: y" in lines[2] and lines[-1] == "Result: 1 part did not work: b."
 
 
 def test_whisper_probe_needs_the_studio_venv(tmp_path: Path) -> None:
