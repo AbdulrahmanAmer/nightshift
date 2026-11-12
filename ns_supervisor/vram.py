@@ -311,7 +311,7 @@ def need(paths: Paths, d: ServiceDef, model_dir: str | None = None, mark: str | 
         if _same(e, key, mark):
             mbs = [int(m) for m in e.get("mb") or [] if isinstance(m, int) and m > 0][-KEEP:]
             low = e.get("min_mb") if isinstance(e.get("min_mb"), int) and e["min_mb"] > 0 else None
-            extra = {k: _whole(e.get(k)) for k in ("floor_mb", "commit_mb", "offset_mb")}
+            extra: dict[str, Any] = {k: _whole(e.get(k)) for k in ("floor_mb", "commit_mb", "offset_mb")}
             speed = e.get("tok_s")
             extra["tok_s"] = float(speed) if isinstance(speed, int | float) and speed > 0 else None
             if mbs or low:
