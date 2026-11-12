@@ -21,18 +21,29 @@ What the voice and memory numbers measure (card verify-limits, spec 14.6):
   services loaded; without such a moment the row is "n/a" with the reason and passes (L5).
 - A failed row that carries a `limit` is a missed target; a failed row without one is a part that did not
   work (`split_failures`, L6). The exit code is unchanged: non-zero when any row failed.
+
+The sample job (`job.fake_services`, full only; card verify-job-isolated J1 to J7): the install's own
+`studio` runs `studio run --fake-services` with a home of its own, `<home>\\run\\verify-job`, made new for
+each run (real folders and files only, the install's `runtime.json` and formats copied in, never linked) and
+handed over with NIGHTSHIFT_HOME and the marker that vouches for it (`ns_common.paths.home_env`). Its data,
+Outbox, ledger, owner files and logs are its own; the install's are never written. The folder is removed when
+the check ends, pass or fail, and at the next run's start when a kill left it, and only when it is proven to
+be the one this check made (`not_ours`). A failed job's own error lines go into the row and the verify log.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -46,7 +57,7 @@ from ns_common.errors import NsError
 from ns_common.llm_client import LlmClient
 from ns_common.logging import NsLogger
 from ns_common.models import GateCheck, GateReport, Runtime
-from ns_common.paths import Paths
+from ns_common.paths import Paths, home_env
 from ns_common.tts_client import TtsClient, TtsItem, TtsStamp
 from ns_common.tts_timeout import save_rtf
 from ns_supervisor import check_names as names
@@ -362,29 +373,378 @@ def x264_probe() -> None:
     )
 
 
-def fake_job(paths: Paths) -> float | None:
-    """`studio run --fake-services --format shorts_only --count 1`; seconds, or None if studio is absent."""
-    exe = paths.venvs / "studio" / "Scripts" / "studio.exe"
-    studio = str(exe) if exe.exists() else shutil.which("studio")
-    if studio is None:
-        return None
-    t0 = time.perf_counter()
+# -- the sample job's own home (card verify-job-isolated) ----------------------------------------------------
+#: `<home>\run\verify-job`: the sample job's whole home, made new for each full run (J1).
+SCRATCH_NAME = "verify-job"
+#: The file this check writes FIRST into the folder it made; nothing without it is ever removed (J6).
+SCRATCH_MARKER = "nightshift-verify-job.json"
+SCRATCH_KIND = "ns verify sample job"
+JOB_ARGS: tuple[str, ...] = ("run", "--fake-services", "--format", "shorts_only", "--count", "1")
+JOB_COMMAND = "studio " + " ".join(JOB_ARGS)
+JOB_TIMEOUT_S = 1800.0
+#: The studio's own warning and error lines a failed sample job leaves in the verify log (J2).
+JOB_LOG_LINES = 20
+
+
+@dataclass(frozen=True)
+class JobRun:
+    """What the sample job gave: its seconds, and what the clean-up has to say (a file that stayed)."""
+
+    seconds: float
+    notes: tuple[str, ...] = ()
+
+
+def scratch_home(paths: Paths) -> Path:
+    r"""`<home>\run\verify-job`: where the sample job lives while it runs (and nowhere else)."""
+    return paths.home / "run" / SCRATCH_NAME
+
+
+def _is_link(p: Path) -> bool:
+    """True for a symbolic link, a junction or any other reparse point (never followed, never entered)."""
     try:
-        r = subprocess.run(
-            [studio, "run", "--fake-services", "--format", "shorts_only", "--count", "1"],
-            capture_output=True,
-            text=True,
-            timeout=1800,
-            check=False,
-            env=child_env(),
-            creationflags=window_flags(),
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        raise NsError("NS-E202", f"fake-services job could not run: {e}") from e
-    if r.returncode != 0:
-        tail = " | ".join((r.stderr or r.stdout).strip().splitlines()[-3:])
-        raise NsError("NS-E202", f"fake-services job exited {r.returncode}: {tail}")
-    return round(time.perf_counter() - t0, 1)
+        st = os.lstat(p)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    return bool(getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _real(p: Path) -> str:
+    return os.path.normcase(os.path.realpath(p))
+
+
+def _mark(folder: Path, pids: Sequence[int]) -> None:
+    """Write (or rewrite) the folder's marker: what it is, whose home, and the processes that use it."""
+    body = {"kind": SCRATCH_KIND, "home": str(folder.parent.parent), "pids": [int(p) for p in pids],
+            "made": datetime.now().isoformat(timespec="seconds")}
+    write_text_atomic(folder / SCRATCH_MARKER, json.dumps(body) + "\n")
+
+
+def _marker_of(folder: Path) -> dict[str, Any] | None:
+    f = folder / SCRATCH_MARKER
+    if _is_link(f) or not f.is_file():
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("kind") == SCRATCH_KIND else None
+
+
+def pid_alive(pid: int) -> bool:
+    """True while a process with this pid exists (`tasklist`; a reused pid only keeps a folder longer)."""
+    from ns_supervisor import control
+
+    return control.image_name(pid) is not None
+
+
+def not_ours(paths: Paths, alive: Callable[[int], bool] = pid_alive) -> str | None:
+    r"""Why what is at `<home>\run\verify-job` must be left alone (J6), in words; None only when it is
+    provably the folder this check made and no live process of another run uses it:
+    `<home>\run` is no link; the name is no link and a real folder; its resolved path is directly under the
+    resolved `<home>\run`; it carries this check's marker file; no process the marker names (another
+    `ns verify`, or the studio it started, which may outlive a killed `ns verify`) is still running."""
+    run = paths.home / "run"
+    folder = run / SCRATCH_NAME
+    if _is_link(run):
+        return f"{run} is a link, so {folder} may lead outside this install"
+    if _is_link(folder):
+        return f"{folder} is a link, not the folder this check made"
+    if not folder.is_dir():
+        return f"{folder} is not a folder"
+    real = Path(os.path.realpath(folder))
+    if os.path.normcase(real.name) != os.path.normcase(SCRATCH_NAME) or _real(real.parent) != _real(run):
+        return f"{folder} leads to {real}, outside {run}"
+    mark = _marker_of(folder)
+    if mark is None:
+        return f"{folder} has no {SCRATCH_MARKER} of this check, so this check did not make it"
+    pids = mark.get("pids")
+    others = [p for p in (pids if isinstance(pids, list) else []) if isinstance(p, int) and p != os.getpid()]
+    busy = [p for p in others if alive(p)]
+    if busy:
+        return f"{folder} is in use by another model test (process {busy[0]} still runs)"
+    return None
+
+
+def _remove_entry(p: Path, stayed: list[Path]) -> None:
+    """Remove ONE name: a file, or a link itself (`rmdir` takes a junction or a folder link away without
+    entering it, `unlink` a file link). A read-only file gets its write bit first."""
+    if _is_link(p):
+        try:
+            os.rmdir(p)
+            return
+        except OSError:
+            pass
+        try:
+            os.unlink(p)
+        except OSError:
+            stayed.append(p)
+        return
+    try:
+        os.unlink(p)
+        return
+    except PermissionError:
+        pass
+    except FileNotFoundError:
+        return
+    except OSError:
+        stayed.append(p)
+        return
+    try:
+        os.chmod(p, stat.S_IWRITE)
+        os.unlink(p)
+    except FileNotFoundError:
+        return
+    except OSError:
+        stayed.append(p)
+
+
+def _remove_tree(folder: Path, keep: str | None = None) -> list[Path]:
+    """Remove `folder` and everything in it WITHOUT EVER FOLLOWING A LINK: a link inside is removed as a
+    name, its target is never entered. A hard link is a name too: its other names keep the file. Returns
+    what stayed (a file another program holds open, a folder that is then not empty).
+
+    `keep` (the marker's name) is left in `folder`, and `folder` itself then stays: the caller removes the
+    marker LAST, only once everything else went, so a folder that kept a held file still carries the proof
+    that it is this check's and the next run removes it."""
+    stayed: list[Path] = []
+    try:
+        with os.scandir(folder) as it:
+            entries = list(it)
+    except FileNotFoundError:
+        return stayed
+    except OSError:
+        return [folder]
+    for e in entries:
+        p = Path(e.path)
+        if keep is not None and e.name == keep:
+            continue
+        if not _is_link(p) and e.is_dir(follow_symlinks=False):
+            stayed += _remove_tree(p)
+        else:
+            _remove_entry(p, stayed)
+    if keep is not None:
+        return stayed
+    try:
+        os.rmdir(folder)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        if not stayed:
+            stayed.append(folder)
+    return stayed
+
+
+def remove_scratch(paths: Paths, alive: Callable[[int], bool] = pid_alive) -> str | None:
+    """Remove the sample job's folder when `not_ours` proves it is this check's (J6). Never raises.
+
+    Returns the sentence for the row, or None when nothing was there or it all went: what was left alone and
+    why, or what stayed (a held file) with the word that the next full `ns verify` removes it."""
+    folder = scratch_home(paths)
+    if not os.path.lexists(folder):
+        return None
+    try:
+        why = not_ours(paths, alive)
+    except Exception as e:  # tolerant: a folder that cannot be looked at is left alone
+        why = f"{folder} could not be looked at ({type(e).__name__}: {e})"
+    if why is not None:
+        return f"Left alone: {why}."
+    if _is_link(folder):  # once more, the moment before it is entered
+        return f"Left alone: {folder} became a link."
+    stayed = _remove_tree(folder, keep=SCRATCH_MARKER)
+    if not stayed:  # everything else went: now the marker, then the empty folder
+        _remove_entry(folder / SCRATCH_MARKER, stayed)
+        try:
+            os.rmdir(folder)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            stayed.append(folder)
+    if not stayed:
+        return None
+    first = stayed[0]
+    return (f"{len(stayed)} {'item' if len(stayed) == 1 else 'items'} of the sample job's folder stayed "
+            f"(another program holds it open: {first}); the next full ns verify removes {folder}.")
+
+
+def _copy_settings(paths: Paths, folder: Path) -> None:
+    """The install's settings the job reads, copied as files (never linked): `runtime.json` (encoder,
+    profile, dev mode) and the owner's formats. Notifications are off in the copy: the job shows no toast."""
+    config = folder / "config"
+    config.mkdir()
+    src = paths.runtime_file
+    if src.is_file() and not _is_link(src):
+        shutil.copyfile(src, config / src.name)
+    formats = paths.formats_dir
+    if formats.is_dir() and not _is_link(formats):
+        (config / formats.name).mkdir()
+        for f in formats.iterdir():
+            if f.is_file() and not _is_link(f):
+                shutil.copyfile(f, config / formats.name / f.name)
+    (config / "dashboard.json").write_text('{"notifications": false}\n', encoding="utf-8")
+
+
+def make_scratch(paths: Paths) -> Path:
+    r"""Make `<home>\run\verify-job` new, its marker FIRST, then the settings it reads and its own `tmp`.
+
+    Raises NsError when it cannot (`<home>\run` is a link; the name is taken this moment by another run).
+    A folder made without its marker is taken away again at once (it is empty), so no folder of this name
+    is ever left that this check could not prove to be its own."""
+    run = paths.home / "run"
+    run.mkdir(parents=True, exist_ok=True)
+    if _is_link(run):
+        raise NsError("NS-E202", f"{run} is a link; the sample job is not run through it")
+    folder = run / SCRATCH_NAME
+    try:
+        folder.mkdir()
+    except FileExistsError as e:
+        raise NsError("NS-E202", f"{folder} was made by another model test this moment") from e
+    try:
+        _mark(folder, [os.getpid()])
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.rmdir(folder)
+        raise
+    try:
+        _copy_settings(paths, folder)
+        (folder / "tmp").mkdir()
+    except BaseException:  # half made (a full disk): it goes again, by the same proof as ever
+        remove_scratch(paths, lambda _pid: False)  # (only this process is in the marker yet)
+        raise
+    return folder
+
+
+def _tool_env(paths: Paths) -> dict[str, str]:
+    r"""NS_FFMPEG and NS_FFPROBE as this install finds them (an override, PATH, or its own `bin\ffmpeg`): the
+    job's home has no `bin`, and the studio asks those variables first."""
+    out: dict[str, str] = {}
+    tools = (("NS_FFMPEG", "ffmpeg", ffmpeg.ffmpeg_exe), ("NS_FFPROBE", "ffprobe", ffmpeg.ffprobe_exe))
+    for var, name, find in tools:
+        try:
+            out[var] = find()
+        except Exception:  # noqa: BLE001 - not found here: the job says so itself
+            own = paths.home / "bin" / "ffmpeg" / f"{name}.exe"
+            if own.is_file():
+                out[var] = str(own)
+    return out
+
+
+def _job_env(paths: Paths, folder: Path) -> dict[str, str]:
+    """The job's environment: this one, with its home handed over on purpose and its temp files inside it."""
+    tmp = str(folder / "tmp")
+    return child_env({**_tool_env(paths), **home_env(folder), "TEMP": tmp, "TMP": tmp})
+
+
+def _studio_lines(folder: Path) -> list[str]:
+    """The studio's own warning and error lines from the job's logs (the last `JOB_LOG_LINES`)."""
+    lines: list[str] = []
+    for f in sorted((folder / "logs").glob("studio-*.jsonl")):
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for raw in text.splitlines():
+            try:
+                rec = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(rec, dict) and rec.get("level") in ("WARN", "ERROR"):
+                data = rec.get("data") if isinstance(rec.get("data"), dict) else {}
+                code = f" {data.get('code')}" if data and data.get("code") else ""
+                msg = rec.get("msg") or ""
+                lines.append(f"{rec.get('level')} {rec.get('event')}{code}" + (f": {msg}" if msg else ""))
+    return lines[-JOB_LOG_LINES:]
+
+
+def _run_studio(
+    command: Sequence[str], env: dict[str, str], folder: Path, timeout_s: float
+) -> tuple[int, str]:
+    """Start the job, put its pid in the marker (a later run then sees it while it lives), wait for it.
+
+    At the time limit the job and everything it started are ended (`procs.kill_tree`)."""
+    proc = subprocess.Popen(
+        [*command, *JOB_ARGS], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", env=env, cwd=str(folder), creationflags=window_flags(),
+    )
+    try:
+        with contextlib.suppress(OSError):
+            _mark(folder, [os.getpid(), proc.pid])
+        try:
+            out, _ = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired as e:
+            procs.kill_tree(proc.pid)
+            proc.kill()
+            try:
+                out, _ = proc.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                out = ""
+            tail = " | ".join((out or "").strip().splitlines()[-3:])
+            raise NsError("NS-E202", f"the sample job did not end within {timeout_s:.0f} s: {tail}") from e
+    finally:
+        if proc.poll() is None:  # an exception of our own in the wait: the job does not run on unseen
+            procs.kill_tree(proc.pid)
+            proc.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.communicate(timeout=30)
+    return int(proc.returncode), out or ""
+
+
+def fake_job(
+    paths: Paths, *, command: Sequence[str] | None = None, timeout_s: float = JOB_TIMEOUT_S,
+    alive: Callable[[int], bool] = pid_alive,
+) -> JobRun | None:
+    """`studio run --fake-services --format shorts_only --count 1` in its own home (card verify-job-isolated).
+
+    None when studio is not installed. Raises NsError when the job failed or could not get its own folder;
+    the folder is removed in every case (`remove_scratch`), and what stayed or was left alone is said in the
+    row. `command` is the studio program (default: this install's `venvs\\studio\\Scripts\\studio.exe`)."""
+    if command is None:
+        exe = paths.venvs / "studio" / "Scripts" / "studio.exe"
+        studio = str(exe) if exe.exists() else shutil.which("studio")
+        if studio is None:
+            return None
+        command = [studio]
+    # D-48 for the install: the job's own gate looks at the job's home, while it runs the install's programs
+    from installer.stage2.web import venvrepair
+
+    why = venvrepair.home_refusal(paths.home)
+    if why is not None:
+        raise NsError(venvrepair.CODE, why)
+    folder = scratch_home(paths)
+    before = remove_scratch(paths, alive)  # what a killed earlier run left (J2), only when it is ours (J6)
+    if os.path.lexists(folder):
+        raise NsError("NS-E202", f"The sample job was not run: it needs {folder} new. "
+                                 f"{before or 'It is still there.'} Nothing of this install was changed.")
+    log = NsLogger("verify", paths.logs)
+    made = False
+    try:
+        make_scratch(paths)
+        made = True
+        t0 = time.perf_counter()
+        try:
+            rc, out = _run_studio(command, _job_env(paths, folder), folder, timeout_s)
+        except OSError as e:
+            raise NsError("NS-E202", f"fake-services job could not run: {e}") from e
+        secs = round(time.perf_counter() - t0, 1)
+        if rc != 0:
+            tail = " | ".join(out.strip().splitlines()[-3:])
+            said = _studio_lines(folder)
+            log.warn("sample_job_failed", exit=rc, output=out.strip().splitlines()[-JOB_LOG_LINES:],
+                     studio=said)
+            last = f" The studio's last error: {said[-1]}." if said else ""
+            raise NsError("NS-E202", f"fake-services job exited {rc}: {tail}.{last}")
+    except BaseException as e:
+        note = remove_scratch(paths, alive) if made else None
+        if note:
+            log.warn("sample_job_folder", note)
+            if isinstance(e, NsError):
+                raise NsError(e.code, f"{e.detail} {note}") from e
+        raise
+    note = remove_scratch(paths, alive)
+    if note:
+        log.warn("sample_job_folder", note)
+    return JobRun(secs, (note,) if note else ())
 
 
 def tts_engine_kind(base_url: str) -> str | None:
@@ -406,7 +766,8 @@ class Deps:
     whisper: Callable[[Paths, Runtime], float] = whisper_probe
     nvenc: Callable[[], None] = nvenc_probe
     x264: Callable[[], None] = x264_probe       # a dev install probes the CPU encoder instead of NVENC
-    job: Callable[[Paths], float | None] = fake_job
+    # the sample job (a test's stand-in may give its seconds alone)
+    job: Callable[[Paths], JobRun | float | None] = fake_job
     # None: this install's nvidia-smi (`gpu.smi_source`: the simulated card under `fake_gpu`, H-10)
     vram_used: Callable[[], int | None] | None = None
     gpu_name: Callable[[], str | None] | None = None
@@ -792,10 +1153,12 @@ def run_verify(
     if not quick:
 
         def job() -> Out:
-            secs = d.job(paths)
-            if secs is None:
+            got = d.job(paths)
+            if got is None:
                 return Out(True, "skipped", log="studio is not installed yet")
-            return Out(True, secs, log="studio run --fake-services --format shorts_only --count 1")
+            run = got if isinstance(got, JobRun) else JobRun(float(got))
+            said = f"{JOB_COMMAND}, in a home of its own (run\\{SCRATCH_NAME}), removed when it ended"
+            return Out(True, run.seconds, log=" ".join([said + ".", *run.notes]))
 
         rec.run(names.JOB_FAKE_SERVICES, job, "NS-E202")
 
