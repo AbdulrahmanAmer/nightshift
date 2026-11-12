@@ -105,12 +105,25 @@ def test_critic_pass_after_one_revision(tmp_home: Path):
 
 
 def test_critic_validator_failure_is_e303(tmp_home: Path):
+    # Card story-robust S2: a story outside its window is lengthened twice first; this lengthening keeps
+    # coming back short (before the card the stage raised at once, without a repair).
     ctx = make_ctx(tmp_home)
     ctx.write_json("story.json", {"text": "Too short.", "word_count": 2, "revisions": 0})
+
+    class ShortExpand(FakeLlm):
+        def complete_text(self, *, prompt_name: str, system: str, user: str, thinking: bool = False,
+                          temperature: float = 0.8, max_tokens: int = 2048) -> str:
+            if prompt_name == "expand":
+                self.calls.append({"prompt_name": prompt_name, "user": user})
+                return "Too short."
+            return super().complete_text(prompt_name=prompt_name, system=system, user=user, thinking=thinking)
+
+    ctx.services.llm = ShortExpand(FIXTURES_LLM)
     with pytest.raises(NsError) as ei:
         REGISTRY["critic_revise"].run(ctx)
     assert ei.value.code == "NS-E303"
-    assert "length" in ei.value.detail
+    assert "length" in ei.value.detail and "after 2 length repairs" in ei.value.detail
+    assert len([c for c in ctx.services.llm.calls if c["prompt_name"] == "expand"]) == 2
 
 
 def test_critic_numbers_requires_all_scores():

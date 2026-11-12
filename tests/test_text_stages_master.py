@@ -248,14 +248,27 @@ def test_chapters_critic_fails_with_e304(tmp_home: Path, monkeypatch: pytest.Mon
 
 
 def test_chapters_critic_validates_length_e303(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    # Card story-robust S2: a chapter outside its window is lengthened twice first; this lengthening keeps
+    # coming back short (before the card the stage raised at once, without a repair).
     ctx = _master_ctx(monkeypatch, tmp_home, M.MASTER_STAGES[:3])
     run_job(ctx)
     draft = ctx.read_json("story_draft.json")
     draft["chapters"][1]["text"] = "Too short to be a chapter."
     ctx.write_json("story_draft.json", draft)
+
+    class ShortExpand(FakeLlm):
+        def complete_text(self, *, prompt_name: str, system: str, user: str, thinking: bool = False,
+                          temperature: float = 0.8, max_tokens: int = 2048) -> str:
+            if prompt_name == "expand":
+                self.calls.append({"prompt_name": prompt_name, "user": user})
+                return "Too short to be a chapter."
+            return super().complete_text(prompt_name=prompt_name, system=system, user=user, thinking=thinking)
+
+    ctx.services.llm = ShortExpand(FIXTURES_LLM)
     with pytest.raises(NsError) as ei:
         REGISTRY["chapters_critic"].run(ctx)
-    assert ei.value.code == "NS-E303" and "length" in ei.value.detail
+    assert ei.value.code == "NS-E303" and "length" in ei.value.detail and "chapter 2" in ei.value.detail
+    assert len([c for c in ctx.services.llm.calls if c["prompt_name"] == "expand"]) == 2
 
 
 def test_long_plan_with_wrong_chapter_count_is_e302(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
