@@ -130,10 +130,24 @@ def test_verify_probes_child_env(
         f.write_text("", encoding="ascii")
     with pytest.raises(NsError):
         verify.whisper_probe(paths, Runtime.default("gpu"))
+    assert len(seen) == 1
+    check(seen, tmp_path)
+
+    # The sample job (stale since card verify-job-isolated J1, which hands the job a home of its own on
+    # purpose): its NIGHTSHIFT_HOME and the marker that vouches for it are the scratch home, and the switch
+    # still reaches it not. The stand-in refuses to start the program, as a program that is not there would.
+    def refused(argv: Any, **kw: Any) -> None:
+        seen.append(kw)
+        raise OSError("stand-in: the program did not start")
+
+    monkeypatch.setattr(subprocess, "Popen", refused)
     with pytest.raises(NsError):
         verify.fake_job(paths)
     assert len(seen) == 2
-    check(seen, tmp_path)
+    job = seen[-1]["env"]
+    scratch = str(verify.scratch_home(paths))
+    assert SWITCH not in job and job["NIGHTSHIFT_HOME"] == scratch and job["NS_HOME_EXPLICIT"] == scratch
+    assert not verify.scratch_home(paths).exists()  # and its folder went again
 
 
 def test_update_children_child_env(
